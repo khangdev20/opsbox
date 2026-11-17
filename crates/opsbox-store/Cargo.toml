@@ -1,0 +1,23 @@
+[package]
+name = "opsbox-store"
+description = "SQLite storage: pragmas, numbered migrations, settings and the hash-chained audit log."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+thiserror = "2.0"
+time = { version = "0.3", features = ["formatting"] }
+ulid = "3.0"
+
+[dev-dependencies]
+tempfile = "3.27"
+
+[lints]
+workspace = true
