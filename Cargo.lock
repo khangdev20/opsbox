@@ -1579,6 +1579,7 @@ dependencies = [
  "opsbox-proxy",
  "opsbox-store",
  "opsbox-update",
+ "opsbox-watchdog",
  "rpassword",
  "serde",
  "serde_json",
@@ -1789,6 +1790,32 @@ dependencies = [
 [[package]]
 name = "opsbox-watchdog"
 version = "0.1.0"
+dependencies = [
+ "argon2",
+ "base64 0.23.1",
+ "chacha20poly1305",
+ "getrandom 0.4.3",
+ "hmac",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "nix",
+ "opsbox-proto",
+ "opsbox-store",
+ "rcgen 0.13.2",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "zeroize",
+]
 
 [[package]]
 name = "ordered-stream"
