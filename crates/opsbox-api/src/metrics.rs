@@ -153,7 +153,15 @@ pub(crate) async fn get_metrics(
 }
 
 pub(crate) async fn get_attention(State(state): State<AppState>, Viewer(_): Viewer) -> Json<Value> {
-    Json(json!(state.metrics.attention()))
+    let mut items = state.metrics.attention();
+    if let Some(ver) = state.updater.latest_available() {
+        items.push(opsbox_metrics::Attention {
+            kind: "update",
+            text: format!("opsbox {ver} is available"),
+            link: ("Review in Settings →".to_owned(), "#/settings".to_owned()),
+        });
+    }
+    Json(json!(items))
 }
 
 /// `WS /api/v1/stream/metrics`: one text frame a second, `{ "type": "metrics", "ts", "data" }`

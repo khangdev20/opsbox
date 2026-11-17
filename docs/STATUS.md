@@ -1,17 +1,18 @@
 # Status
 
-Last prompt done: `02-release-builds.md` (archived).
-Next prompt: `03-self-update.md`.
+Last prompt done: `03-self-update.md` (archived).
+Next prompt: `04-public-first-run.md`.
 
 ## What works
-- `crates/opsbox-priv/src/ops/files.rs` and `crates/opsbox-api/src/files.rs` use `rustix` dirfd/`*at` calls, `openat2` (Linux 5.6+) with `O_NOFOLLOW | O_DIRECTORY` fallback, and dev/ino deny checks.
-- `.github/workflows/ci.yml`: `cargo-deny` (`deny.toml`), static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` builds via `cargo-zigbuild`, binary size reporting.
-- `.github/workflows/release.yml`: builds both musl targets on `v*` tags, signs with minisign, attaches `.sha256`, `.minisig`, CycloneDX SBOM, and `install.sh`; marks `-alpha`/`-beta`/`-rc` as pre-release.
-- `install.sh`: embeds `MINISIGN_PUBKEY`, supports `--channel beta`, auto-installs `minisign` if missing, preserves data/config on in-place upgrade.
-- `README.md`, `site/index.html`, and `docs/RELEASING.md` updated.
+- `crates/opsbox-priv/src/ops/files.rs` and `crates/opsbox-api/src/files.rs`: `rustix` dirfd/`*at` calls, `openat2` (Linux 5.6+) with `O_NOFOLLOW | O_DIRECTORY` fallback, dev/ino deny checks.
+- CI & Release: `cargo-deny`, `cargo-zigbuild` musl builds, minisign-signed releases, CycloneDX SBOM, `install.sh` with embedded `MINISIGN_PUBKEY` and `--channel beta`.
+- Self-update (`opsbox-update`, `opsbox-priv/src/ops/update.rs`, `opsbox-api/src/update.rs`, `opsbox/src/cmd/update.rs`):
+  - Version slots (`/var/lib/opsbox/bin/opsbox-<version>`), `/usr/local/bin/opsbox` symlink, single-binary migration, keep current + previous.
+  - Daily GitHub Releases check, SHA-256 + minisign verification, `selftest`, `systemd-run` 2-minute health check & automatic rollback, SQLite pre-migration backup & incompatible rollback refusal.
+  - Real Settings "opsbox updates" UI, Overview `/attention` update item, CLI `opsbox update` & `opsbox rollback`.
 
 ## What is partial
-- None for prompt 02.
+- None.
 
 ## Found, not fixed
 - Unused dependency warning for `futures-util` in `crates/opsbox-priv/Cargo.toml`.

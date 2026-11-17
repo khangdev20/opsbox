@@ -588,6 +588,50 @@ impl PrivClient {
         .await
     }
 
+    pub async fn self_update_install(
+        &self,
+        rid: &str,
+        actor: &str,
+        staging: &str,
+        version: &str,
+        target_schema: u32,
+    ) -> Result<(), ClientError> {
+        self.expect(
+            rid,
+            Some(actor),
+            PrivOp::SelfUpdateInstall {
+                staging: staging.to_owned(),
+                version: version.to_owned(),
+                target_schema,
+            },
+            |r| match r {
+                PrivReply::Done => Ok(()),
+                o => Err(o),
+            },
+        )
+        .await
+    }
+
+    pub async fn self_update_rollback(
+        &self,
+        rid: &str,
+        actor: &str,
+        to_version: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.expect(
+            rid,
+            Some(actor),
+            PrivOp::SelfUpdateRollback {
+                to_version: to_version.map(ToOwned::to_owned),
+            },
+            |r| match r {
+                PrivReply::Done => Ok(()),
+                o => Err(o),
+            },
+        )
+        .await
+    }
+
     pub async fn security_scan(
         &self,
         rid: &str,

@@ -21,6 +21,7 @@ mod security;
 pub(crate) mod terminal;
 mod totp;
 mod units;
+mod update;
 
 pub use firewall::{janitor_tick, restore_on_start};
 
@@ -168,6 +169,16 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::CleanupRun { ids } => cleanup::run_ids(ids),
         PrivOp::CleanupAutoSet { on } => cleanup::set_auto(*on).map(|()| PrivReply::Done),
         PrivOp::SettingsGet => Ok(PrivReply::Settings(hostset::settings())),
+        PrivOp::SelfUpdateInstall {
+            staging,
+            version,
+            target_schema,
+        } => {
+            update::install(staging, version, *target_schema, &env.files).map(|()| PrivReply::Done)
+        }
+        PrivOp::SelfUpdateRollback { to_version } => {
+            update::rollback(to_version.as_deref()).map(|()| PrivReply::Done)
+        }
         PrivOp::SecurityScan { apps_dir } => Ok(security::scan(apps_dir, &env.master_key)),
         PrivOp::SecurityFix { id, apps_dir } => {
             security::fix(id, apps_dir).map(|()| PrivReply::Done)

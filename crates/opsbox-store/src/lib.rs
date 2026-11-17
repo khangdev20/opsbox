@@ -58,15 +58,32 @@ impl Store {
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
-        Self::init(conn)
+        let cur = migrations::current_version(&conn)?;
+        if cur > 0 && cur < migrations::LATEST_VERSION {
+            let bak = path.with_file_name(format!(
+                "{}.pre-v{}.bak",
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("opsbox.db"),
+                migrations::LATEST_VERSION
+            ));
+            create_private_file(&bak)?;
+            let mut dst = Connection::open_with_flags(
+                &bak,
+                OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?;
+            let backup = rusqlite::backup::Backup::new(&conn, &mut dst)?;
+            backup.run_to_completion(100, std::time::Duration::from_millis(10), None)?;
+        }
+        Self::init_conn(conn)
     }
 
     /// A private in-memory database, for tests and `selftest`.
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init_conn(Connection::open_in_memory()?)
     }
 
-    fn init(mut conn: Connection) -> Result<Self, StoreError> {
+    fn init_conn(mut conn: Connection) -> Result<Self, StoreError> {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         // WAL is a no-op ("memory") for in-memory databases, which is fine.
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
@@ -102,6 +119,15 @@ impl Store {
             .lock()
             .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))?)
     }
+}
+
+/// Read the current schema version of an existing database without modifying it.
+pub fn db_schema_version(path: &Path) -> Result<u32, StoreError> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    Ok(migrations::current_version(&conn)?)
 }
 
 /// Current time as RFC 3339 UTC with millisecond precision.

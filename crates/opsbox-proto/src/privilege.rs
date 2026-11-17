@@ -206,6 +206,16 @@ pub enum PrivOp {
     },
     /// The time zone (and the zones available) and the swap in use.
     SettingsGet,
+    /// Install a verified staged opsbox binary into a version slot, switch symlink, and restart.
+    SelfUpdateInstall {
+        staging: String,
+        version: String,
+        target_schema: u32,
+    },
+    /// Roll back to the previous (or named) opsbox version slot and restart.
+    SelfUpdateRollback {
+        to_version: Option<String>,
+    },
     /// Look at the things the security checks need.
     SecurityScan {
         apps_dir: String,
@@ -288,6 +298,8 @@ impl PrivOp {
             Self::CleanupRun { .. } => "cleanup_run",
             Self::CleanupAutoSet { .. } => "cleanup_auto_set",
             Self::SettingsGet => "settings_get",
+            Self::SelfUpdateInstall { .. } => "self_update_install",
+            Self::SelfUpdateRollback { .. } => "self_update_rollback",
             Self::SecurityScan { .. } => "security_scan",
             Self::SecurityFix { .. } => "security_fix",
             Self::AccessList => "access_list",

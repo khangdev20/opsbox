@@ -44,6 +44,7 @@ const REAL = new Set([
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
   'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap',
+  'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -932,7 +933,7 @@ export async function getSettings() { sample('getSettings');
     // Host name, time zone, swap and tokens are the server's. Panel address, GitHub, updates
     // and disk growth arrive with later phases and stay sample data (the page's badge says so).
     const r = await http('/settings'); realSettings = r;
-    return { ...clone(ST), hostname: r.hostname, tz: r.tz, timezones: r.timezones, swap: swapLabel(r.swapMb), tokens: r.tokens.map((t) => ({ id: t.id, name: t.name, can: t.can, last: t.last })) };
+    return { ...clone(ST), hostname: r.hostname, tz: r.tz, timezones: r.timezones, swap: swapLabel(r.swapMb), tokens: r.tokens.map((t) => ({ id: t.id, name: t.name, can: t.can, last: t.last })), opsboxUpdate: r.opsboxUpdate };
   }
   await lag(); return clone(ST); }
 export async function saveSettings(v) { sample('saveSettings');
@@ -959,7 +960,19 @@ export async function setSwap(v) { sample('setSwap');
   if (real('setSwap')) { const mb = v === 'None' ? 0 : Math.round(parseFloat(v) * 1024); const { task } = await http('/system/swap', { method: 'PUT', body: { sizeMb: mb } }); await waitTask(task, { every: 1000 }); return; }
   await lag(400); ST.swap = v; audit(`swap ${v}`); }
 export async function growFs() { sample('growFs'); await lag(900); ST.fsGrown = true; audit('grow filesystem'); }
-export async function setOpsboxAutoUpdate(on) { sample('setOpsboxAutoUpdate'); await lag(150); ST.autoUpdate = on; }
+export async function checkOpsboxUpdate() { sample('checkOpsboxUpdate');
+  if (real('checkOpsboxUpdate')) return http('/updates/check', { method: 'POST' });
+  await lag(250); return { current: '0.1.0', channel: ST.channel, auto: ST.autoUpdate, window: 3, updateAvailable: false, latest: null }; }
+export async function applyOpsboxUpdate(version = null) { sample('applyOpsboxUpdate');
+  if (real('applyOpsboxUpdate')) return http('/updates/apply', { method: 'POST', body: { version } });
+  await lag(500); return { ok: true, version }; }
+export async function rollbackOpsboxUpdate(version = null) { sample('rollbackOpsboxUpdate');
+  if (real('rollbackOpsboxUpdate')) return http('/updates/rollback', { method: 'POST', body: { version } });
+  await lag(500); return { ok: true }; }
+export async function setOpsboxAutoUpdate(v) { sample('setOpsboxAutoUpdate');
+  const body = typeof v === 'boolean' ? { auto: v } : v;
+  if (real('setOpsboxAutoUpdate')) return http('/updates/auto', { method: 'PUT', body });
+  await lag(150); if ('auto' in body) ST.autoUpdate = body.auto; if ('channel' in body) ST.channel = body.channel; }
 export async function disconnectGithub() { sample('disconnectGithub'); await lag(300); ST.github = false; audit('disconnect GitHub'); }
 export async function exportConfig() { sample('exportConfig'); await lag(400); audit('export configuration'); return JSON.stringify({ opsbox: '0.1.0', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel } }, null, 2); }
 

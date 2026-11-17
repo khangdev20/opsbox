@@ -25,6 +25,7 @@ mod tasks;
 mod terminal;
 mod tokens;
 mod ui;
+mod update;
 mod users;
 
 use std::future::Future;
@@ -76,6 +77,7 @@ pub struct AppState {
     pub allow: allowlist::AllowList,
     pub secure_cookies: SecureCookies,
     pub version: &'static str,
+    pub updater: update::Updater,
 }
 
 impl AppState {
@@ -90,13 +92,20 @@ impl AppState {
         let metrics = Metrics::spawn(priv_client.clone(), store.clone());
         let allow = allowlist::AllowList::default();
         allow.set(security::stored_allow_list(&store));
+        let files = FilesSettings::default();
+        let updater = update::Updater::spawn(
+            store.clone(),
+            priv_client.clone(),
+            files.xfer_dir.clone(),
+            version,
+        );
         Self {
             store,
             priv_client,
             auth,
             metrics,
             tasks: tasks::Tasks::default(),
-            files: FilesSettings::default(),
+            files,
             terminal: TerminalSettings::default(),
             limits: limits::RateLimits::default(),
             stream_slots: Arc::new(tokio::sync::Semaphore::new(64)),
@@ -104,6 +113,7 @@ impl AppState {
             allow,
             secure_cookies,
             version,
+            updater,
         }
     }
 }
@@ -185,6 +195,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/attention", get(metrics::get_attention))
         .route("/api/v1/stream/metrics", get(metrics::stream))
         .route("/api/v1/settings", get(tokens::get_settings))
+        .route("/api/v1/updates/self", get(update::get_status))
+        .route("/api/v1/updates/check", post(update::check))
+        .route("/api/v1/updates/apply", post(update::apply))
+        .route("/api/v1/updates/rollback", post(update::rollback))
+        .route("/api/v1/updates/auto", put(update::set_auto))
         .route("/api/v1/tokens", post(tokens::create))
         .route("/api/v1/tokens/{id}", delete(tokens::revoke))
         .route("/api/v1/security", get(security::get))

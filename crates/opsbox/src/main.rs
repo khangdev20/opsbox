@@ -79,6 +79,22 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             logging::init(&config)?;
             cmd::privileged::run(config)?;
         }
+        Command::Update { channel, version } => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            cmd::update::run_update(&config, channel.as_deref(), version.as_deref())?;
+        }
+        Command::Rollback => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            cmd::update::run_rollback(&config)?;
+        }
+        Command::UpdateVerify { from, to } => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            return Ok(ok_or_failure(cmd::update::run_update_verify(
+                &config,
+                from.as_deref(),
+                to,
+            )));
+        }
         // Handled above; listed so adding a command forces a decision here.
         _ => unreachable!("unimplemented commands return before this match"),
     }

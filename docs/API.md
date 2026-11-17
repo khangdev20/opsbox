@@ -104,6 +104,11 @@ Streams revalidate their session/token, role and allowed address every five seco
 | `GET` | `/api/v1/terminal/users` | [terminal::users](../crates/opsbox-api/src/terminal.rs) |
 | `POST` | `/api/v1/tokens` | [tokens::create](../crates/opsbox-api/src/tokens.rs) |
 | `DELETE` | `/api/v1/tokens/{id}` | [tokens::revoke](../crates/opsbox-api/src/tokens.rs) |
+| `POST` | `/api/v1/updates/apply` | [update::apply](../crates/opsbox-api/src/update.rs) |
+| `PUT` | `/api/v1/updates/auto` | [update::set_auto](../crates/opsbox-api/src/update.rs) |
+| `POST` | `/api/v1/updates/check` | [update::check](../crates/opsbox-api/src/update.rs) |
+| `POST` | `/api/v1/updates/rollback` | [update::rollback](../crates/opsbox-api/src/update.rs) |
+| `GET` | `/api/v1/updates/self` | [update::get_status](../crates/opsbox-api/src/update.rs) |
 | `POST` | `/api/v1/users/invites` | [users::invite](../crates/opsbox-api/src/users.rs) |
 | `DELETE` | `/api/v1/users/{name}` | [users::remove](../crates/opsbox-api/src/users.rs) |
 | `GET` | `/healthz` | [health::healthz](../crates/opsbox-api/src/health.rs) |

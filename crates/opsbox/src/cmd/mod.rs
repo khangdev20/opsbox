@@ -6,6 +6,7 @@ pub mod privileged;
 pub mod selftest;
 pub mod serve;
 pub mod status;
+pub mod update;
 
 use tokio::signal::unix::{SignalKind, signal};
 use tracing::info;

@@ -54,7 +54,7 @@ pub enum MigrationError {
     Sqlite(#[from] rusqlite::Error),
 }
 
-pub(crate) fn current_version(conn: &Connection) -> rusqlite::Result<u32> {
+pub fn current_version(conn: &Connection) -> rusqlite::Result<u32> {
     let table_exists: bool = conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations')",
         [],

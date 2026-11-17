@@ -67,6 +67,7 @@ pub(crate) async fn get_settings(
         "timezones": if s.timezones.is_empty() { vec![s.timezone.clone()] } else { s.timezones },
         "swapMb": s.swap_mb,
         "tokens": tokens.iter().map(|k| token_json(k, t)).collect::<Vec<_>>(),
+        "opsboxUpdate": state.updater.snapshot(),
     })))
 }
 

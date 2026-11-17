@@ -75,13 +75,25 @@ pub enum Command {
         action: UserAction,
     },
     /// Update opsbox
+    #[command(disable_version_flag = true)]
     Update {
-        /// Release channel
+        /// Release channel (stable or beta)
         #[arg(long)]
         channel: Option<String>,
+        /// Specific version to install (for example v0.1.0-alpha.2)
+        #[arg(long)]
+        version: Option<String>,
     },
     /// Go back to the previous version
     Rollback,
+    /// Internal: verify a new version after update and roll back if unhealthy
+    #[command(hide = true)]
+    UpdateVerify {
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: String,
+    },
     /// Back up without the UI
     Backup {
         #[command(subcommand)]
@@ -240,7 +252,10 @@ impl Command {
             | Self::Doctor
             | Self::SetupToken
             | Self::User { .. }
-            | Self::Audit { .. } => return None,
+            | Self::Audit { .. }
+            | Self::Update { .. }
+            | Self::Rollback
+            | Self::UpdateVerify { .. } => return None,
             Self::Pair => "pair",
             Self::Web {
                 action: WebAction::Enable { .. },
@@ -249,8 +264,6 @@ impl Command {
                 action: WebAction::Disable,
             } => "web disable",
             Self::RecoveryCode => "recovery-code",
-            Self::Update { .. } => "update",
-            Self::Rollback => "rollback",
             Self::Backup {
                 action: BackupAction::Now,
             } => "backup now",
@@ -292,6 +305,7 @@ mod tests {
             "user password alice",
             "update",
             "update --channel beta",
+            "update --version 0.1.0-alpha.2",
             "rollback",
             "backup now",
             "backup list",

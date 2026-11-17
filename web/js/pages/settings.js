@@ -7,7 +7,15 @@ const LIVE = api.MODE === 'http';
 const sampleBadge = () => LIVE ? html`<span class="tag-sm sample" style="align-self:flex-start">sample data</span>` : '';
 export async function view() {
   let d = await api.getSettings(), root;
-  const body = () => html`
+  const upd = () => d.opsboxUpdate || { current: '0.1.0', channel: d.channel || 'stable', auto: !!d.autoUpdate, window: 3, updateAvailable: false, latest: null, previousVersion: null, lastOutcome: null };
+  const hours = Array.from({ length: 24 }, (_, i) => i);
+  const body = () => {
+    const u = upd();
+    const notesLink = u.latest?.notesUrl ? html` · <a href="${u.latest.notesUrl}" target="_blank" rel="noopener">release notes</a>` : '';
+    const statusText = u.updateAvailable && u.latest
+      ? html`opsbox ${u.current} · <b>${u.latest.version} available</b>${notesLink}`
+      : html`opsbox ${u.current} · up to date`;
+    return html`
     ${section('General', html`<div style="max-width:520px;display:flex;flex-direction:column;gap:16px">
       <div class="field"><label for="sh">Hostname</label><input class="input" id="sh" value="${d.hostname}"></div>
       <div class="field"><label for="sz">Time zone</label><select class="select" id="sz">${(d.timezones || TZ).map((z) => html`<option${z === d.tz ? ' selected' : ''}>${z}</option>`)}</select><span class="hint">Used for cron jobs, backups and alert quiet hours.</span></div>
@@ -18,8 +26,9 @@ export async function view() {
       <div class="field"><label for="sw">Swap file</label><select class="select" id="sw" data-act="swap">${(SWAP.includes(d.swap) ? SWAP : [...SWAP, d.swap]).map((v) => html`<option${v === d.swap ? ' selected' : ''}>${v}</option>`)}</select></div>
       <div class="row">${sampleBadge()}${btn('Grow filesystem to fill disk', { act: 'grow', disabled: LIVE || d.fsGrown })}<span class="mono sm muted">disk 120 GB · filesystem ${d.fsGrown ? '120' : '100'} GB</span></div></div>`)}
     ${section('GitHub', html`${sampleBadge()}<div class="row spread"><div><b>${d.github ? 'github.com/acme-co' : 'Not connected'}</b><div class="sm muted mono">${d.github ? 'GitHub App · read-only code access · 14 of 31 repositories' : 'Connect to deploy from your repositories'}</div></div>${d.github ? btn('Disconnect', { act: 'gh', kind: 'danger', disabled: LIVE }) : btn('Connect', { act: 'gh', kind: 'primary', disabled: LIVE })}</div>`)}
-    ${section('opsbox updates', html`${sampleBadge()}<div class="list-row"><span>opsbox 0.1.0 · ${d.channel} channel · up to date</span>${btn('Check now', { act: 'check', disabled: LIVE })}</div><div class="list-row"><span>Update opsbox automatically</span>${LIVE ? btn(d.autoUpdate ? 'ON' : 'OFF', { disabled: true }) : sw('Update opsbox automatically', d.autoUpdate, 'autoup')}</div><p class="muted sm">If a new version fails its health check, the watchdog rolls back to the previous one by itself.</p>`)}
+    ${section('opsbox updates', html`<div class="list-row"><span>${statusText}</span><div class="row">${btn('Check now', { act: 'check' })}${u.updateAvailable ? btn('Update now', { act: 'updateNow', kind: 'primary' }) : ''}${u.previousVersion ? btn(`Roll back to ${u.previousVersion}`, { act: 'rollback' }) : ''}</div></div>${u.lastOutcome ? html`<p class="sm muted">${u.lastOutcome.message}</p>` : ''}<div class="list-row"><span>Release channel</span><select class="select" id="uch" style="width:auto"><option value="stable"${u.channel === 'stable' ? ' selected' : ''}>stable</option><option value="beta"${u.channel === 'beta' ? ' selected' : ''}>beta</option></select></div><div class="list-row"><span>Update opsbox automatically</span><div class="row">${sw('Update opsbox automatically', u.auto, 'autoup')}<select class="select" id="uwin" aria-label="Daily update window" style="width:auto">${hours.map((h) => html`<option value="${h}"${h === (u.window ?? 3) ? ' selected' : ''}>${String(h).padStart(2, '0')}:00 UTC</option>`)}</select></div></div><p class="muted sm">If a new version fails its health check after 2 minutes, opsbox rolls back to the previous one by itself.</p>`)}
     ${section('Export and uninstall', html`${sampleBadge()}<p class="muted sm" style="max-width:620px">Export saves services and settings as a file you can import on a new server. Uninstall removes opsbox but leaves your apps and data running.</p><div class="row">${btn('Export configuration', { act: 'export', disabled: LIVE })}${btn('Uninstall opsbox', { act: 'uninstall', kind: 'danger', disabled: LIVE })}</div>`)}`;
+  };
   const paint = () => { root.querySelector('#b').innerHTML = body().toString(); };
   const reload = async () => { d = await api.getSettings(); paint(); };
   return {
@@ -27,15 +36,21 @@ export async function view() {
     html: html`<main class="narrow">${header('Settings', `${d.hostname} · opsbox 0.1.0`)}<div id="b"></div></main>`,
     mount(r) {
       root = r; paint();
-      root.addEventListener('change', async (e) => { if (e.target.id === 'sw') { toast('Changing swap. This can take a minute.'); try { await api.setSwap(e.target.value); toast('Swap updated.'); } catch (err) { toast(err.message, 'err'); } await reload(); } });
+      root.addEventListener('change', async (e) => {
+        if (e.target.id === 'sw') { toast('Changing swap. This can take a minute.'); try { await api.setSwap(e.target.value); toast('Swap updated.'); } catch (err) { toast(err.message, 'err'); } await reload(); }
+        if (e.target.id === 'uch') { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ channel: e.target.value }); toast(`Channel set to ${e.target.value}.`); } catch (err) { toast(err.message, 'err'); } paint(); }
+        if (e.target.id === 'uwin') { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ window: Number(e.target.value) }); toast('Update window saved.'); } catch (err) { toast(err.message, 'err'); } paint(); }
+      });
       bindActions(root, {
         save: async () => { try { await api.saveSettings({ hostname: root.querySelector('#sh').value, tz: root.querySelector('#sz').value, panel: root.querySelector('#sp').value }); toast('Saved.'); await reload(); } catch (e) { root.querySelector('#err').textContent = e.message; } },
         token: async () => { const out = await askForm({ title: 'Create API token', fields: [{ name: 'n', label: 'Name', placeholder: 'ci-deploy' }, { name: 'c', label: 'Can do', options: ['deploy only', 'read-only metrics', 'full access'], value: 'deploy only' }], submit: 'Create' }, (o) => api.createToken(o.n.trim(), o.c)); if (out) { await confirmDialog({ title: 'Copy your token now', body: `${out.secret} — it is shown only once.`, confirm: 'I have copied it' }); await reload(); } },
         revoke: async (el) => { if (await confirmDialog({ title: 'Revoke this token?', body: 'Anything using it stops working.', confirm: 'Revoke', danger: true })) { await api.revokeToken(el.dataset.id); await reload(); } },
         grow: async () => { await api.growFs(); toast('Filesystem grown.'); await reload(); },
         gh: async () => { if (d.github) { if (await confirmDialog({ title: 'Disconnect GitHub?', body: 'Existing services keep running but auto-deploy stops.', confirm: 'Disconnect', danger: true })) { await api.disconnectGithub(); await reload(); } } else toast('GitHub connection opens in the real build.'); },
-        check: () => toast('opsbox is up to date.'),
-        autoup: async (el) => { await api.setOpsboxAutoUpdate(el.getAttribute('aria-checked') !== 'true'); await reload(); },
+        check: async () => { try { const u = await api.checkOpsboxUpdate(); d.opsboxUpdate = u; paint(); toast(u.updateAvailable && u.latest ? `opsbox ${u.latest.version} is available.` : 'opsbox is up to date.'); } catch (e) { toast(e.message, 'err'); } },
+        updateNow: async () => { const u = upd(); if (u.latest && await confirmDialog({ title: `Update to opsbox ${u.latest.version}?`, body: 'The panel will restart briefly. If the health check fails after 2 minutes, it rolls back automatically.', confirm: 'Update now' })) { toast('Downloading and verifying update...'); try { await api.applyOpsboxUpdate(u.latest.version); toast('Update started. Reconnecting...'); } catch (e) { toast(e.message, 'err'); } } },
+        rollback: async () => { const u = upd(); if (u.previousVersion && await confirmDialog({ title: `Roll back to opsbox ${u.previousVersion}?`, body: 'The panel will restart with the previous version.', confirm: 'Roll back', danger: true })) { try { await api.rollbackOpsboxUpdate(u.previousVersion); toast('Rolling back...'); } catch (e) { toast(e.message, 'err'); } } },
+        autoup: async (el) => { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ auto: el.getAttribute('aria-checked') !== 'true' }); paint(); } catch (e) { toast(e.message, 'err'); } },
         export: async () => { download('opsbox-config.json', await api.exportConfig(), 'application/json'); toast('Exported.'); },
         uninstall: async () => { if (await confirmDialog({ title: 'Uninstall opsbox?', body: 'The panel is removed. Your apps and data keep running.', confirm: 'Uninstall', danger: true, typed: 'uninstall' })) toast('The demo does not uninstall anything.'); },
       });
