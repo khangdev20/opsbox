@@ -27,3 +27,17 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for ApiJson<T> {
         }
     }
 }
+
+/// With `Option<ApiJson<T>>` a request without a `Content-Type` has no body (for example a
+/// `POST` that only means "do it"), instead of being an error.
+impl<S: Send + Sync, T: DeserializeOwned> axum::extract::OptionalFromRequest<S> for ApiJson<T> {
+    type Rejection = HttpError;
+    async fn from_request(req: Request, state: &S) -> Result<Option<Self>, HttpError> {
+        if !req.headers().contains_key(axum::http::header::CONTENT_TYPE) {
+            return Ok(None);
+        }
+        <Self as FromRequest<S>>::from_request(req, state)
+            .await
+            .map(Some)
+    }
+}

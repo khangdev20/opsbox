@@ -51,7 +51,9 @@ pub enum PrivOp {
     /// Create a TOTP secret. `priv` keeps the plaintext only long enough to return it
     /// once (for the QR code) and as a sealed value to store. `context` binds the
     /// sealed value to its owner, e.g. `totp:<user id>`.
-    TotpNewSecret { context: String },
+    TotpNewSecret {
+        context: String,
+    },
     /// Check a 6-digit code against a sealed secret (RFC 6238, SHA-1, 30 s, +-1 step).
     /// Only steps newer than `after_step` match, so a code cannot be used twice.
     /// The secret never leaves `priv`.
@@ -63,9 +65,80 @@ pub enum PrivOp {
     },
     /// Cumulative machine counters (CPU, memory, disks, network, ...). `procs` also
     /// scans every process, which is the expensive part, so it is asked for less often.
-    MetricsSample { procs: bool },
+    MetricsSample {
+        procs: bool,
+    },
     /// Reboot-required flag, failed systemd units and pending package updates.
     SystemFacts,
+    /// Pending package updates, reboot flag and the automatic-update setting.
+    PkgList,
+    /// Install updates. Names are never taken from the caller: `priv` works out what is
+    /// pending itself and installs the security subset or everything.
+    PkgInstall {
+        which: crate::system::PkgSelect,
+    },
+    /// Turn automatic security updates on or off.
+    AutoUpdatesSet {
+        on: bool,
+    },
+    UnitList,
+    UnitAction {
+        name: String,
+        action: crate::system::UnitActionKind,
+    },
+    /// Read the journal, newest first. `after` is a cursor: only newer entries are returned.
+    JournalQuery {
+        unit: Option<String>,
+        max_priority: u8,
+        text: Option<String>,
+        limit: u32,
+        after: Option<String>,
+    },
+    JobList,
+    JobAdd {
+        name: String,
+        cron: String,
+        command: String,
+    },
+    JobRun {
+        id: String,
+    },
+    JobRemove {
+        id: String,
+    },
+    FirewallList,
+    /// `caller_ip` is the address the request came from; a change that could cut it off
+    /// needs `confirm` and is undone after 60 s unless `FirewallConfirm` follows.
+    FirewallAdd {
+        rule: crate::system::NewRule,
+        caller_ip: Option<String>,
+        confirm: bool,
+    },
+    FirewallRemove {
+        id: String,
+        caller_ip: Option<String>,
+        confirm: bool,
+    },
+    FirewallConfirm,
+    /// Open SSH to one address for an hour.
+    SshEmergency {
+        caller_ip: String,
+    },
+    /// Reboot after `delay_min` minutes (1 to 60); can be cancelled until then.
+    Reboot {
+        delay_min: u32,
+    },
+    RebootCancel,
+    /// Create or resize the swap file; 0 turns swap off and removes it.
+    SwapSet {
+        size_mb: u64,
+    },
+    HostnameSet {
+        name: String,
+    },
+    TimezoneSet {
+        zone: String,
+    },
 }
 
 impl PrivOp {
@@ -78,6 +151,26 @@ impl PrivOp {
             Self::TotpVerify { .. } => "totp_verify",
             Self::MetricsSample { .. } => "metrics_sample",
             Self::SystemFacts => "system_facts",
+            Self::PkgList => "pkg_list",
+            Self::PkgInstall { .. } => "pkg_install",
+            Self::AutoUpdatesSet { .. } => "auto_updates_set",
+            Self::UnitList => "unit_list",
+            Self::UnitAction { .. } => "unit_action",
+            Self::JournalQuery { .. } => "journal_query",
+            Self::JobList => "job_list",
+            Self::JobAdd { .. } => "job_add",
+            Self::JobRun { .. } => "job_run",
+            Self::JobRemove { .. } => "job_remove",
+            Self::FirewallList => "firewall_list",
+            Self::FirewallAdd { .. } => "firewall_add",
+            Self::FirewallRemove { .. } => "firewall_remove",
+            Self::FirewallConfirm => "firewall_confirm",
+            Self::SshEmergency { .. } => "ssh_emergency",
+            Self::Reboot { .. } => "reboot",
+            Self::RebootCancel => "reboot_cancel",
+            Self::SwapSet { .. } => "swap_set",
+            Self::HostnameSet { .. } => "hostname_set",
+            Self::TimezoneSet { .. } => "timezone_set",
         }
     }
 }
@@ -143,6 +236,17 @@ pub enum PrivReply {
     Metrics(Box<crate::metrics::RawSample>),
     /// Answer to [`PrivOp::SystemFacts`].
     SystemFacts(crate::metrics::SystemFacts),
+    Pkgs(crate::system::PkgState),
+    Outcome(crate::system::CommandOutcome),
+    Units(Vec<crate::system::UnitInfo>),
+    Journal(Vec<crate::system::JournalEntry>),
+    Jobs(Vec<crate::system::JobInfo>),
+    Firewall(crate::system::FirewallState),
+    FirewallChange(crate::system::FirewallChange),
+    /// A job was created; this is its id.
+    JobId(String),
+    /// Nothing to report: the operation succeeded.
+    Done,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +264,13 @@ pub enum PrivErrorCode {
     Forbidden,
     /// Known operation that this platform cannot perform.
     Unsupported,
+    /// The arguments were rejected; the message says why, in words for a person.
+    Invalid,
+    /// Policy says no (for example stopping opsbox itself); the message says why.
+    Refused,
+    /// The change could cut the caller off. Repeat it with `confirm` to go ahead.
+    ConfirmRequired,
+    NotFound,
     Internal,
 }
 

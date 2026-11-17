@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    HostInfo, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, RawSample,
-    Secret, SystemFacts,
+    CommandOutcome, FirewallChange, FirewallState, HostInfo, JobInfo, JournalEntry, NewRule,
+    PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
+    RawSample, Secret, SystemFacts, UnitActionKind, UnitInfo,
 };
 use tokio::net::UnixStream;
 
@@ -213,5 +214,261 @@ impl PrivClient {
             PrivReply::SystemFacts(f) => Ok(f),
             other => Err(ClientError::Protocol(format!("unexpected reply {other:?}"))),
         }
+    }
+
+    /// Perform `op` for `actor` and pick the expected kind of reply out of the answer.
+    async fn expect<T>(
+        &self,
+        request_id: &str,
+        actor: Option<&str>,
+        op: PrivOp,
+        pick: impl FnOnce(PrivReply) -> Result<T, PrivReply>,
+    ) -> Result<T, ClientError> {
+        let reply = self.call(request_id, actor, op).await?;
+        pick(reply).map_err(|other| ClientError::Protocol(format!("unexpected reply {other:?}")))
+    }
+
+    pub async fn pkg_list(&self, rid: &str) -> Result<PkgState, ClientError> {
+        self.expect(rid, None, PrivOp::PkgList, |r| match r {
+            PrivReply::Pkgs(p) => Ok(p),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn pkg_install(
+        &self,
+        rid: &str,
+        actor: &str,
+        which: PkgSelect,
+    ) -> Result<CommandOutcome, ClientError> {
+        self.expect(
+            rid,
+            Some(actor),
+            PrivOp::PkgInstall { which },
+            |r| match r {
+                PrivReply::Outcome(o) => Ok(o),
+                o => Err(o),
+            },
+        )
+        .await
+    }
+
+    pub async fn auto_updates_set(
+        &self,
+        rid: &str,
+        actor: &str,
+        on: bool,
+    ) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::AutoUpdatesSet { on }).await
+    }
+
+    pub async fn unit_list(&self, rid: &str) -> Result<Vec<UnitInfo>, ClientError> {
+        self.expect(rid, None, PrivOp::UnitList, |r| match r {
+            PrivReply::Units(u) => Ok(u),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn unit_action(
+        &self,
+        rid: &str,
+        actor: &str,
+        name: &str,
+        action: UnitActionKind,
+    ) -> Result<(), ClientError> {
+        self.done(
+            rid,
+            actor,
+            PrivOp::UnitAction {
+                name: name.to_owned(),
+                action,
+            },
+        )
+        .await
+    }
+
+    pub async fn journal(
+        &self,
+        rid: &str,
+        unit: Option<&str>,
+        max_priority: u8,
+        text: Option<&str>,
+        limit: u32,
+        after: Option<&str>,
+    ) -> Result<Vec<JournalEntry>, ClientError> {
+        let op = PrivOp::JournalQuery {
+            unit: unit.map(str::to_owned),
+            max_priority,
+            text: text.map(str::to_owned),
+            limit,
+            after: after.map(str::to_owned),
+        };
+        self.expect(rid, None, op, |r| match r {
+            PrivReply::Journal(j) => Ok(j),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn job_list(&self, rid: &str) -> Result<Vec<JobInfo>, ClientError> {
+        self.expect(rid, None, PrivOp::JobList, |r| match r {
+            PrivReply::Jobs(j) => Ok(j),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn job_add(
+        &self,
+        rid: &str,
+        actor: &str,
+        name: &str,
+        cron: &str,
+        command: &str,
+    ) -> Result<String, ClientError> {
+        let op = PrivOp::JobAdd {
+            name: name.to_owned(),
+            cron: cron.to_owned(),
+            command: command.to_owned(),
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::JobId(id) => Ok(id),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn job_run(&self, rid: &str, actor: &str, id: &str) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::JobRun { id: id.to_owned() })
+            .await
+    }
+
+    pub async fn job_remove(&self, rid: &str, actor: &str, id: &str) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::JobRemove { id: id.to_owned() })
+            .await
+    }
+
+    pub async fn firewall_list(&self, rid: &str) -> Result<FirewallState, ClientError> {
+        self.expect(rid, None, PrivOp::FirewallList, |r| match r {
+            PrivReply::Firewall(f) => Ok(f),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn firewall_add(
+        &self,
+        rid: &str,
+        actor: &str,
+        rule: NewRule,
+        caller_ip: Option<&str>,
+        confirm: bool,
+    ) -> Result<FirewallChange, ClientError> {
+        let op = PrivOp::FirewallAdd {
+            rule,
+            caller_ip: caller_ip.map(str::to_owned),
+            confirm,
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::FirewallChange(c) => Ok(c),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn firewall_remove(
+        &self,
+        rid: &str,
+        actor: &str,
+        id: &str,
+        caller_ip: Option<&str>,
+        confirm: bool,
+    ) -> Result<FirewallChange, ClientError> {
+        let op = PrivOp::FirewallRemove {
+            id: id.to_owned(),
+            caller_ip: caller_ip.map(str::to_owned),
+            confirm,
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::FirewallChange(c) => Ok(c),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn firewall_confirm(&self, rid: &str, actor: &str) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::FirewallConfirm).await
+    }
+
+    /// Open SSH to `caller_ip` for an hour; returns the unix time it closes.
+    pub async fn ssh_emergency(
+        &self,
+        rid: &str,
+        actor: &str,
+        caller_ip: &str,
+    ) -> Result<i64, ClientError> {
+        let op = PrivOp::SshEmergency {
+            caller_ip: caller_ip.to_owned(),
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::FirewallChange(FirewallChange { revert_at: Some(t) }) => Ok(t),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn reboot(&self, rid: &str, actor: &str, delay_min: u32) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::Reboot { delay_min }).await
+    }
+
+    pub async fn reboot_cancel(&self, rid: &str, actor: &str) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::RebootCancel).await
+    }
+
+    pub async fn swap_set(&self, rid: &str, actor: &str, size_mb: u64) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::SwapSet { size_mb }).await
+    }
+
+    pub async fn hostname_set(
+        &self,
+        rid: &str,
+        actor: &str,
+        name: &str,
+    ) -> Result<(), ClientError> {
+        self.done(
+            rid,
+            actor,
+            PrivOp::HostnameSet {
+                name: name.to_owned(),
+            },
+        )
+        .await
+    }
+
+    pub async fn timezone_set(
+        &self,
+        rid: &str,
+        actor: &str,
+        zone: &str,
+    ) -> Result<(), ClientError> {
+        self.done(
+            rid,
+            actor,
+            PrivOp::TimezoneSet {
+                zone: zone.to_owned(),
+            },
+        )
+        .await
+    }
+
+    /// An operation whose only answer is "done".
+    async fn done(&self, rid: &str, actor: &str, op: PrivOp) -> Result<(), ClientError> {
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::Done => Ok(()),
+            o => Err(o),
+        })
+        .await
     }
 }

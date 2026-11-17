@@ -10,11 +10,12 @@ ExecStart=/usr/local/bin/opsbox priv
 Restart=always
 RestartSec=2
 
-# Runs as root, but owns no network: it only speaks on its Unix socket
-# (docs/BACKEND_SPEC.md section 2). It must not be fully sandboxed, because the
-# operations it will gain in later phases (packages, systemd, firewall, files) act on
-# the whole system. Tighten per operation as they land, not here.
-RestrictAddressFamilies=AF_UNIX
+# Runs as root. priv itself listens only on its Unix socket and never opens a network
+# listener, but the tools it runs for you inherit these limits: apt and dnf download
+# over IPv4/IPv6, nft and ufw talk netlink, systemctl and journalctl use Unix sockets.
+# Everything else (packet sockets, vsock, ...) stays closed. It must not be fully
+# sandboxed, because its operations act on the whole system; tighten per operation.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
 LockPersonality=yes
 RestrictRealtime=yes
 SystemCallArchitectures=native

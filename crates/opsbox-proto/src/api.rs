@@ -14,6 +14,10 @@ pub enum ErrorCode {
     NotFound,
     MethodNotAllowed,
     Conflict,
+    /// The change could lock the caller out; repeat it with `confirm: true` to go ahead.
+    ConfirmationRequired,
+    /// This machine cannot do that (no supported package manager, no systemd...).
+    Unsupported,
     RateLimited,
     /// A dependency (for example the privileged helper) is not reachable.
     Unavailable,
@@ -29,7 +33,8 @@ impl ErrorCode {
             Self::Forbidden => 403,
             Self::NotFound => 404,
             Self::MethodNotAllowed => 405,
-            Self::Conflict => 409,
+            Self::Conflict | Self::ConfirmationRequired => 409,
+            Self::Unsupported => 501,
             Self::RateLimited => 429,
             Self::Unavailable => 503,
             Self::Internal => 500,

@@ -114,3 +114,42 @@ sqlite3 /var/lib/opsbox/opsbox.db "select ts,round(cpu,1),round(mem,1),net_in fr
 ps -o pid,rss,cmd -C opsbox | awk 'NR==1{print} NR>1{printf "%s  %.1f MB  %s %s\n",$1,$2/1024,$3,$4}'
 systemctl show opsbox -p MemoryCurrent
 ```
+
+---
+
+## M4. System
+
+**Read this first.** None of the system tools (apt, dnf, systemd, ufw, nft) can run on the machine this was written on, so this milestone is covered by tests of everything that does not need them (parsers on real-looking output, the cron converter, the lockout-guard decision, validation, roles) and by CI. **This section is the first real run.** Take a VM snapshot before the firewall steps. Reinstall as in the preamble (the `opsbox-priv.service` unit changed: it now allows network and netlink sockets for apt and nft).
+
+Open **System** (`#/system`). The "sample data" badge is gone.
+
+**Updates tab**
+
+1. Compare with `apt list --upgradable` in the VM: same packages, the **security** tag on those from `*-security`, the running kernel, and "checked HH:MM" (the time of the last `apt update`).
+2. **Install security updates**: the button stays busy for a while (it runs `apt-get update` then installs only the security packages). Watch it: `sudo journalctl -u opsbox-priv -f`. It finishes with "Installed N updates." Running it twice at once is refused ("already running").
+3. If a kernel was installed (or `/run/reboot-required` exists) the **Reboot** callout appears. **Reboot…** asks, then schedules in one minute: a red banner "A reboot is scheduled for HH:MM" with **Cancel reboot** appears (`shutdown -c` equivalent). Cancel it: the banner goes. (`ls /run/systemd/shutdown/scheduled` exists while scheduled.)
+4. The **automatic security updates** switch writes `/etc/apt/apt.conf.d/20auto-upgrades` (check `cat` it) and installs `unattended-upgrades` if needed.
+
+**Services tab**
+
+5. Failed units first, then running ones, with memory. **Restart** a harmless service (`cron`); it works. **Stop** `opsbox`, `ssh`, `systemd-networkd`: each is **refused with a sentence** ("opsbox itself", "only way back in", ...). Restarting `ssh` is allowed.
+
+**Logs tab**
+
+6. Lines of the journal (oldest first); filter by text and priority; "unit: x ✕" appears when you came from a service. Press **Live ●**: in another shell run `logger -t demo hello` and the line appears within about two seconds, appended below. Switching tab stops it.
+
+**Jobs tab**
+
+7. **Add job**: schedule `*/5 * * * *`, description "demo", command `date >> /tmp/opsbox-demo.log`. Check: `systemctl list-timers | grep opsbox-job`, `cat /etc/systemd/system/opsbox-job-*.service`. **Run now** runs it (the file gets a line). **Remove** deletes both units. Try `0 2 1 * 1` (both day-of-month and day-of-week): refused with a readable sentence; also `0 2 * *`.
+
+**Firewall tab** (Ubuntu has ufw installed but off, so this starts on the `nftables` backend)
+
+8. The rules list is empty (no firewall is on). **Add rule** port `8080`: because this turns the firewall on, you are asked first ("This turns the firewall on…"). Confirm: a **countdown dialog** appears ("Undoing in 60 s"). Open a *second* SSH session to prove you are not locked out, then press **Yes, keep it**. `sudo nft list table inet opsbox` shows `policy drop`, SSH, the WireGuard port and 8080.
+9. Remove the 8080 rule: no question (not an SSH rule).
+10. **Lockout guard**: add rule `22/tcp from anywhere`, then remove it. You are warned ("lets you reach port 22 (SSH)… could lock you out"). Confirm, then *do not press Keep*: after 60 s the rule is put back by itself (watch `sudo nft list table inet opsbox`). Because you are reaching the panel through a tunnel the panel treats every removal on an SSH port as risky, which is intended.
+11. **Open emergency SSH for 1 hour**: the panel asks which public address you connect from (it only sees `127.0.0.1` through a tunnel), opens SSH to it, and shows the callout. After an hour (or `sudo rm`-ing nothing: just wait, or edit `/etc/opsbox/firewall.json` `until` to the past; the janitor runs every 10 s) the entry disappears.
+12. To try the ufw backend: `sudo ufw allow 22/tcp && sudo ufw enable`, reload the page: the same tab now shows `ufw` rules; add and remove work and the same guard applies.
+
+**Audit**: every change above is in the audit log with your name and address: `sudo opsbox audit verify`; `sudo -u opsbox sqlite3 /var/lib/opsbox/opsbox.db "select seq,actor,action,target,result from audit where action like 'system.%'"`.
+
+Not wired yet (still sample data, by design): the Settings page (hostname, time zone and swap controls). The operations and endpoints exist (`PUT /api/v1/system/swap|hostname|timezone`); the page is wired in M7 together with real settings data, because it is prefilled from mock values today.

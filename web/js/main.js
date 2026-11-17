@@ -2,9 +2,16 @@
 import { applyTheme, initialTheme, session, server, listeners } from './store.js';
 import * as api from './api.js';
 import { mountShell, setNav, refreshStatus } from './shell.js';
-import { toast } from './ui.js';
+import { toast, confirmDialog, formDialog, keepOrUndoDialog } from './ui.js';
 
 applyTheme(initialTheme());
+
+// Questions the API layer needs a person to answer (see api.setUiHooks).
+api.setUiHooks({
+  confirm: (message) => confirmDialog({ title: 'This could lock you out', body: message, confirm: 'Continue', danger: true }),
+  prompt: async ({ title, body, label, placeholder }) => { const r = await formDialog({ title, body, fields: [{ name: 'v', label, placeholder }], submit: 'Continue' }); return r && r.v ? r.v.trim() : null; },
+  revert: (at, keep) => keepOrUndoDialog({ title: 'Keep this firewall change?', body: 'Check that you can still reach this machine (open a second SSH session or reload this page). If you do nothing, the change is undone.', until: at, keep }),
+});
 
 const BARE = new Set(['login', 'setup', 'enroll', 'recovery']);
 const ROUTES = [

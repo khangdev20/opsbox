@@ -37,6 +37,8 @@ const REAL = new Set([
   'auth.session', 'auth.login', 'auth.logout', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
   'auth.enroll', 'auth.enrollConfirm', 'signOutAll',
   'getMetrics', 'getAttention',
+  'getUpdates', 'installUpdates', 'setAutoUpdates', 'reboot', 'cancelReboot', 'getUnits', 'unitAction', 'getJournal',
+  'getJobs', 'runJob', 'addJob', 'removeJob', 'getFirewall', 'addRule', 'removeRule', 'confirmFirewall', 'openSsh',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -67,7 +69,7 @@ export const PAGE_USES = {
   security: ['getSecurity', 'inviteUser', 'openSsh', 'setAllowIps', 'signOutAll', 'toggleCheck'],
   settings: ['createToken', 'disconnectGithub', 'exportConfig', 'getSettings', 'growFs', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setSwap'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
-  system: ['addJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
+  system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['TEMPLATES', 'addTemplate', 'deployCompose'],
   terminal: ['HOSTS', 'termExec'],
 };
@@ -119,6 +121,76 @@ async function http(path, { method = 'GET', body } = {}) {
   }
   return data;
 }
+
+
+// ---- helpers for the System functions
+// The page registers these so the API layer can ask a person things: confirm a risky firewall
+// change, enter an address, keep a change that will otherwise be undone.
+const hooks = { confirm: null, prompt: null, revert: null };
+export function setUiHooks(h) { Object.assign(hooks, h); }
+
+// A background task on the server (installs, swap): poll until it ends.
+async function waitTask(id, { every = 1500, max = 45 * 60 * 1000 } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    const t = await http('/tasks/' + id);
+    if (t.status === 'ok') return t;
+    if (t.status === 'failed') throw new Error(t.error || 'The operation failed.');
+    if (Date.now() - t0 > max) throw new Error('This is taking very long. Check the System page again later.');
+    await sleep(every);
+  }
+}
+
+// "today 02:00", "Sun 03:00", "2026-11-01 02:00", "never"
+function when(sec) {
+  if (!sec) return 'never';
+  const d = new Date(sec * 1000), t = new Date(), hm = hhmm(d.getTime());
+  if (d.toDateString() === t.toDateString()) return `today ${hm}`;
+  if (t - d < 6 * DAY) return `${d.toLocaleDateString('en', { weekday: 'short' })} ${hm}`;
+  return `${d.toISOString().slice(0, 10)} ${hm}`;
+}
+
+// A firewall change the server thinks could lock you out comes back as "confirmation
+// required": ask, then repeat it with confirm. If it is applied provisionally, the server
+// undoes it after 60 s unless the person keeps it.
+async function changeFirewall(path, opts, confirmed = false) {
+  const withConfirm = !confirmed ? opts : opts.method === 'DELETE' ? opts : { ...opts, body: { ...opts.body, confirm: true } };
+  try {
+    const r = await http(confirmed && opts.method === 'DELETE' ? path + '?confirm=true' : path, withConfirm);
+    if (r.revertAt && hooks.revert) hooks.revert(r.revertAt, () => confirmFirewall());
+    return r;
+  } catch (e) {
+    if (e.code === 'confirmation_required' && !confirmed && hooks.confirm && await hooks.confirm(e.message)) return changeFirewall(path, opts, true);
+    throw e;
+  }
+}
+
+async function openSshReal(ip) {
+  try {
+    const r = await http('/ssh/emergency', { method: 'POST', body: ip ? { ip } : undefined });
+    return { until: r.until };
+  } catch (e) {
+    // Through an SSH tunnel the server only sees its own address: ask for the real one.
+    if (e.field === 'ip' && hooks.prompt) {
+      const v = await hooks.prompt({ title: 'Which address should be allowed?', body: e.message, label: 'Your public IP address', placeholder: '203.0.113.5' });
+      if (v) return openSshReal(v);
+      throw new Error('Emergency SSH was not opened.');
+    }
+    throw e;
+  }
+}
+
+// Live journal lines (http mode). `onEntries` gets arrays of {t, proc, prio, msg}; returns a stop function.
+export function streamJournal({ unit = '', prio = 6, q = '' } = {}, onEntries) {
+  if (MODE !== 'http' || !REAL.has('getJournal')) return () => {};
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/stream/journal?${new URLSearchParams({ unit, prio, q })}`);
+  ws.onmessage = (e) => { try { const m = JSON.parse(e.data); if (m.type === 'journal') onEntries(m.entries); } catch { /* ignore */ } };
+  return () => { try { ws.close(); } catch { /* closed */ } };
+}
+
+export async function cancelReboot() { sample('cancelReboot'); if (real('cancelReboot')) return http('/system/reboot/cancel', { method: 'POST' }); await lag(150); return { ok: true }; }
+export async function confirmFirewall() { sample('confirmFirewall'); if (real('confirmFirewall')) return http('/firewall/confirm', { method: 'POST' }); await lag(100); return { ok: true }; }
+export async function removeJob(id) { sample('removeJob'); if (real('removeJob')) return http('/jobs/' + encodeURIComponent(id), { method: 'DELETE' }); await lag(200); const i = S.jobs.findIndex((x) => x.id === id); if (i >= 0) S.jobs.splice(i, 1); audit('remove job'); return { ok: true }; }
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -422,20 +494,26 @@ export function buildLog(svc, deploy) { sample('buildLog');
 
 // ---------------------------------------------------------------- system
 export async function getUpdates() { sample('getUpdates');
+  if (real('getUpdates')) { const u = await http('/system/updates'); return { ...u, checked: u.checkedAt ? hhmm(u.checkedAt * 1000) : 'unknown' }; }
   await lag();
   return { list: clone(S.updates), total: S.updates.length + S.extraUpdates, security: S.updates.filter((u) => u.sec).length, reboot: S.rebootRequired, auto: S.autoUpdates, running: S.host.kernel, checked: '03:30' };
 }
 export async function installUpdates(which) { sample('installUpdates');
+  if (real('installUpdates')) { const { task } = await http('/system/updates/install', { method: 'POST', body: { which } }); return { installed: (await waitTask(task)).result?.installed ?? 0 }; }
   await lag(1400);
   const before = S.updates.length;
   if (which === 'security') { S.updates.some((u) => u.sec && u.kernel) && (S.rebootRequired = true, S.host.kernelNew = '6.8.0-52'); S.updates = S.updates.filter((u) => !u.sec); }
   else { if (S.updates.some((u) => u.kernel)) S.rebootRequired = true; S.updates = []; S.extraUpdates = 0; }
   audit(`install ${which} updates (${before - S.updates.length})`); return { installed: before - S.updates.length };
 }
-export async function setAutoUpdates(on) { sample('setAutoUpdates'); await lag(150); S.autoUpdates = on; audit(`auto security updates ${on ? 'on' : 'off'}`); }
-export async function reboot() { sample('reboot'); await lag(500); S.rebootRequired = false; S.host.kernel = S.host.kernelNew || S.host.kernel; S.host.upDays = 0; audit('reboot instance'); return { ok: true }; }
-export async function getUnits() { sample('getUnits'); await lag(); return clone(S.units); }
+export async function setAutoUpdates(on) { sample('setAutoUpdates');
+  if (real('setAutoUpdates')) return http('/system/updates/auto', { method: 'PUT', body: { on } }); await lag(150); S.autoUpdates = on; audit(`auto security updates ${on ? 'on' : 'off'}`); }
+export async function reboot() { sample('reboot');
+  if (real('reboot')) return http('/system/reboot', { method: 'POST' }); await lag(500); S.rebootRequired = false; S.host.kernel = S.host.kernelNew || S.host.kernel; S.host.upDays = 0; audit('reboot instance'); return { ok: true }; }
+export async function getUnits() { sample('getUnits');
+  if (real('getUnits')) return http('/system/units'); await lag(); return clone(S.units); }
 export async function unitAction(name, action) { sample('unitAction');
+  if (real('unitAction')) return http(`/system/units/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
   await lag(400);
   const u = S.units.find((x) => x.name === name); if (!u) throw new Error('No such unit');
   if (action === 'restart') u.state = 'active'; if (action === 'start') { u.state = 'active'; if (name === 'ssh.service') { S.sshOpenUntil = now() + HOUR; u.boot = 'disabled'; } }
@@ -449,28 +527,36 @@ const JOURNAL = [
   ['sshd[9121]', 4, 'Failed password for root from 203.0.113.9'], ['opsbox[412]', 6, 'admin restart web-app'],
 ];
 export async function getJournal({ unit = '', prio = 6, q = '' } = {}) { sample('getJournal');
+  if (real('getJournal')) return http('/system/journal?' + new URLSearchParams({ unit, prio, q, limit: 300 }));
   await lag(100); const t = now();
   return JOURNAL.map((j, i) => ({ t: t - (JOURNAL.length - i) * 4 * MIN, proc: j[0], prio: j[1], msg: j[2] }))
     .filter((l) => (!unit || l.proc.startsWith(unit.replace('.service', ''))) && l.prio <= prio && (!q || (l.proc + l.msg).toLowerCase().includes(q.toLowerCase())));
 }
-export async function getJobs() { sample('getJobs'); await lag(); return clone(S.jobs); }
-export async function runJob(id) { sample('runJob'); await lag(700); const j = S.jobs.find((x) => x.id === id); if (!j) throw new Error('No such job'); j.last = `today ${hhmm()}`; audit(`run job: ${j.name}`); return { ok: true }; }
+export async function getJobs() { sample('getJobs');
+  if (real('getJobs')) return (await http('/jobs')).map((j) => ({ ...j, last: when(j.lastRun) })); await lag(); return clone(S.jobs); }
+export async function runJob(id) { sample('runJob');
+  if (real('runJob')) return http(`/jobs/${encodeURIComponent(id)}/run`, { method: 'POST' }); await lag(700); const j = S.jobs.find((x) => x.id === id); if (!j) throw new Error('No such job'); j.last = `today ${hhmm()}`; audit(`run job: ${j.name}`); return { ok: true }; }
 export async function addJob(job) { sample('addJob');
+  if (real('addJob')) return http('/jobs', { method: 'POST', body: { name: job.name, cron: job.cron, command: job.command } });
   await lag(250);
   if (!/^(\S+\s+){4}\S+$/.test((job.cron || '').trim())) throw new Error('Schedule must have 5 fields, e.g. 0 2 * * *');
   if (!(job.name || '').trim()) throw new Error('Describe what the job does.');
   S.jobs.push({ id: 'j' + (S.jobs.length + 1) + Date.now() % 1000, cron: job.cron.trim(), name: job.name.trim(), last: 'never', ok: true }); audit(`add job: ${job.name}`);
 }
-export async function getFirewall() { sample('getFirewall'); await lag(); return { rules: clone(S.firewall), sshOpen: S.sshOpenUntil > now() }; }
+export async function getFirewall() { sample('getFirewall');
+  if (real('getFirewall')) return http('/firewall'); await lag(); return { rules: clone(S.firewall), sshOpen: S.sshOpenUntil > now() }; }
 export async function addRule(r) { sample('addRule');
+  if (real('addRule')) return changeFirewall('/firewall/rules', { method: 'POST', body: { port: r.port, proto: r.proto || 'tcp', src: r.src || 'anywhere', note: r.note || '' } });
   await lag(250);
   const port = parseInt(r.port, 10);
   if (!(port >= 1 && port <= 65535)) throw new Error('Port must be between 1 and 65535.');
   if (!/^(anywhere|\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?)$/.test(r.src || 'anywhere')) throw new Error('Source must be "anywhere" or an IP / CIDR such as 203.0.113.0/24.');
   S.firewall.push({ id: 'f' + Date.now(), port: String(port), proto: r.proto || 'tcp', src: r.src || 'anywhere', note: r.note || '' }); audit(`firewall allow ${port}/${r.proto || 'tcp'} from ${r.src || 'anywhere'}`);
 }
-export async function removeRule(id) { sample('removeRule'); await lag(250); const r = S.firewall.find((x) => x.id === id); S.firewall = S.firewall.filter((x) => x.id !== id); audit(`firewall remove ${r ? r.port : id}`); }
-export async function openSsh() { sample('openSsh'); await lag(400); S.sshOpenUntil = now() + HOUR; S.units.find((u) => u.name === 'ssh.service').state = 'active'; audit('emergency SSH enabled for 1 hour', 'admin', true); return { until: S.sshOpenUntil }; }
+export async function removeRule(id) { sample('removeRule');
+  if (real('removeRule')) return changeFirewall('/firewall/rules/' + encodeURIComponent(id), { method: 'DELETE' }); await lag(250); const r = S.firewall.find((x) => x.id === id); S.firewall = S.firewall.filter((x) => x.id !== id); audit(`firewall remove ${r ? r.port : id}`); }
+export async function openSsh() { sample('openSsh');
+  if (real('openSsh')) return openSshReal(); await lag(400); S.sshOpenUntil = now() + HOUR; S.units.find((u) => u.name === 'ssh.service').state = 'active'; audit('emergency SSH enabled for 1 hour', 'admin', true); return { until: S.sshOpenUntil }; }
 
 // ---------------------------------------------------------------- cleanup
 export async function scanCleanup() { sample('scanCleanup');

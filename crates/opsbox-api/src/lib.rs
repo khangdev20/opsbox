@@ -13,6 +13,8 @@ mod metrics;
 mod request_id;
 pub mod session;
 mod setup;
+mod system;
+mod tasks;
 mod ui;
 
 use std::future::Future;
@@ -22,7 +24,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post, put};
 use opsbox_auth::{Auth, AuthConfig};
 use opsbox_metrics::Metrics;
 use opsbox_priv::PrivClient;
@@ -49,6 +51,7 @@ pub struct AppState {
     pub priv_client: PrivClient,
     pub auth: Auth,
     pub metrics: Metrics,
+    pub tasks: tasks::Tasks,
     pub secure_cookies: SecureCookies,
     pub version: &'static str,
 }
@@ -68,6 +71,7 @@ impl AppState {
             priv_client,
             auth,
             metrics,
+            tasks: tasks::Tasks::default(),
             secure_cookies,
             version,
         }
@@ -87,6 +91,33 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route("/api/v1/host", get(host::get_host))
+        .route("/api/v1/tasks/{id}", get(system::get_task))
+        .route("/api/v1/system/updates", get(system::get_updates))
+        .route(
+            "/api/v1/system/updates/install",
+            post(system::install_updates),
+        )
+        .route("/api/v1/system/updates/auto", put(system::set_auto_updates))
+        .route("/api/v1/system/reboot", post(system::reboot))
+        .route("/api/v1/system/reboot/cancel", post(system::reboot_cancel))
+        .route("/api/v1/system/units", get(system::get_units))
+        .route(
+            "/api/v1/system/units/{name}/{action}",
+            post(system::unit_action),
+        )
+        .route("/api/v1/system/journal", get(system::get_journal))
+        .route("/api/v1/stream/journal", get(system::stream_journal))
+        .route("/api/v1/jobs", get(system::get_jobs).post(system::add_job))
+        .route("/api/v1/jobs/{id}/run", post(system::run_job))
+        .route("/api/v1/jobs/{id}", delete(system::remove_job))
+        .route("/api/v1/firewall", get(system::get_firewall))
+        .route("/api/v1/firewall/rules", post(system::add_rule))
+        .route("/api/v1/firewall/rules/{id}", delete(system::remove_rule))
+        .route("/api/v1/firewall/confirm", post(system::confirm_firewall))
+        .route("/api/v1/ssh/emergency", post(system::ssh_emergency))
+        .route("/api/v1/system/swap", put(system::set_swap))
+        .route("/api/v1/system/hostname", put(system::set_hostname))
+        .route("/api/v1/system/timezone", put(system::set_timezone))
         .route("/api/v1/metrics", get(metrics::get_metrics))
         .route("/api/v1/attention", get(metrics::get_attention))
         .route("/api/v1/stream/metrics", get(metrics::stream))

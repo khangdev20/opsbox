@@ -8,6 +8,7 @@ pub mod frame;
 pub mod metrics;
 pub mod privilege;
 pub mod role;
+pub mod system;
 
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
 pub use metrics::{CpuTimes, DiskIo, DiskUsage, MemInfo, NetIf, RawProc, RawSample, SystemFacts};
@@ -16,3 +17,7 @@ pub use privilege::{
     Secret,
 };
 pub use role::Role;
+pub use system::{
+    CommandOutcome, FirewallChange, FirewallRule, FirewallState, JobInfo, JournalEntry, NewRule,
+    PkgSelect, PkgState, PkgUpdate, UnitActionKind, UnitInfo,
+};

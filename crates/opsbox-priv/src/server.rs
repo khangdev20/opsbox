@@ -90,6 +90,16 @@ impl PrivServer {
             allowed_uids = ?allowed,
             "priv listening"
         );
+        // Firewall housekeeping: undo a change nobody confirmed, close emergency SSH when
+        // its hour is up, and put the nftables ruleset back after a reboot.
+        let janitor = tokio::spawn(async {
+            let _ = tokio::task::spawn_blocking(ops::restore_on_start).await;
+            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                tick.tick().await;
+                let _ = tokio::task::spawn_blocking(ops::janitor_tick).await;
+            }
+        });
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
@@ -112,6 +122,7 @@ impl PrivServer {
                 },
             }
         }
+        janitor.abort();
         info!("priv shutting down");
         if let Err(e) = std::fs::remove_file(&self.config.socket_path) {
             debug!(error = %e, "could not remove socket file");

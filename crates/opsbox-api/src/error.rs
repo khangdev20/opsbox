@@ -56,9 +56,19 @@ impl From<ClientError> for HttpError {
                 ErrorCode::Unavailable,
                 "The privileged helper does not accept this service. Check the allowed users in its configuration.",
             ),
-            ClientError::Remote(_) | ClientError::Io(_) | ClientError::Protocol(_) => {
-                Self::internal()
+            ClientError::Remote(remote) => {
+                // `priv` words its refusals and failures for people, so they pass through.
+                let code = match remote.code {
+                    PrivErrorCode::Invalid | PrivErrorCode::BadRequest => ErrorCode::Validation,
+                    PrivErrorCode::Refused | PrivErrorCode::Forbidden => ErrorCode::Forbidden,
+                    PrivErrorCode::ConfirmRequired => ErrorCode::ConfirmationRequired,
+                    PrivErrorCode::NotFound => ErrorCode::NotFound,
+                    PrivErrorCode::Unsupported => ErrorCode::Unsupported,
+                    PrivErrorCode::Internal => ErrorCode::Internal,
+                };
+                Self::new(code, remote.message)
             }
+            ClientError::Io(_) | ClientError::Protocol(_) => Self::internal(),
         }
     }
 }

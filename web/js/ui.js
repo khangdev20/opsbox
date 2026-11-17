@@ -154,3 +154,23 @@ export async function askForm(opts, run) {
 export function download(name, text, type = 'text/plain') {
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; document.body.append(a); a.click(); a.remove();
 }
+
+// ---------- keep-or-undo dialog for a provisional change ----------
+// `until` is when the server undoes the change (unix seconds). `keep()` tells it to keep it.
+export function keepOrUndoDialog({ title = 'Keep this change?', body, until, keep }) {
+  const d = document.createElement('dialog');
+  d.innerHTML = `<form method="dialog"><div class="d-b"><h2>${esc(title)}</h2><p class="muted">${esc(body)}</p><p class="mono" id="kc" role="timer" style="font-size:20px"></p></div><div class="d-f"><button class="btn primary" value="keep">Yes, keep it</button></div></form>`;
+  document.body.append(d);
+  const kc = d.querySelector('#kc');
+  const tick = () => {
+    const left = Math.max(0, Math.round(until - Date.now() / 1000));
+    kc.textContent = left > 0 ? `Undoing in ${left} s` : 'Time is up: the change was undone.';
+    if (left === 0) { clearInterval(timer); d.querySelector('button').textContent = 'Close'; d.querySelector('button').value = 'close'; }
+  };
+  const timer = setInterval(tick, 500); tick();
+  d.addEventListener('close', async () => {
+    clearInterval(timer); const kept = d.returnValue === 'keep'; d.remove();
+    if (kept) { try { await keep(); toast('Change kept.'); } catch (e) { toast(e.message || 'Could not keep the change.', 'err'); } }
+  });
+  d.showModal();
+}
