@@ -4,7 +4,10 @@
 //! denied system areas); deployers are confined to the apps directory by a *jail* that
 //! `priv` enforces after resolving symbolic links; viewers have no file access.
 
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
+
+use rustix::fs::{AtFlags, Mode, OFlags, fchmod, open, openat, unlinkat};
 
 use axum::Json;
 use axum::body::Body;
@@ -291,18 +294,23 @@ pub(crate) struct UploadQuery {
     overwrite: bool,
 }
 
-/// Make sure the staging folder exists and only the opsbox user can use it.
-async fn ensure_xfer(dir: &Path) -> Result<(), HttpError> {
+/// Make sure the staging folder exists and only the opsbox user can use it, returning its fd.
+async fn ensure_xfer(dir: &Path) -> Result<OwnedFd, HttpError> {
     tokio::fs::create_dir_all(dir).await.map_err(|e| {
         tracing::error!(error = %e, dir = %dir.display(), "cannot create the transfer folder");
         HttpError::internal()
     })?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await;
-    }
-    Ok(())
+    let xfer_fd = open(
+        dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| {
+        tracing::error!(error = %e, dir = %dir.display(), "cannot open the transfer folder");
+        HttpError::internal()
+    })?;
+    let _ = fchmod(&xfer_fd, Mode::from_raw_mode(0o700));
+    Ok(xfer_fd)
 }
 
 /// `POST /api/v1/files/upload?dir=&name=[&overwrite=true]` with the file as the request body.
@@ -334,19 +342,18 @@ pub(crate) async fn upload(
     {
         return Err(too_big());
     }
-    ensure_xfer(&state.files.xfer_dir).await?;
-    let staging = state
-        .files
-        .xfer_dir
-        .join(format!("{}.part", ulid::Ulid::generate()));
+    let xfer_fd = ensure_xfer(&state.files.xfer_dir).await?;
+    let part_name = format!("{}.part", ulid::Ulid::generate());
+    let staging = state.files.xfer_dir.join(&part_name);
     let stream_to_disk = async {
-        let mut file = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&staging)
-            .await
-            .map_err(|_| HttpError::internal())?;
+        let fd = openat(
+            &xfer_fd,
+            &part_name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|_| HttpError::internal())?;
+        let mut file = tokio::fs::File::from_std(std::fs::File::from(fd));
         let mut total = 0u64;
         let mut stream = body.into_data_stream();
         while let Some(chunk) = stream.next().await {
@@ -370,7 +377,7 @@ pub(crate) async fn upload(
     let total = match stream_to_disk.await {
         Ok(t) => t,
         Err(e) => {
-            let _ = tokio::fs::remove_file(&staging).await;
+            let _ = unlinkat(&xfer_fd, &part_name, AtFlags::empty());
             return Err(e);
         }
     };
@@ -392,7 +399,7 @@ pub(crate) async fn upload(
         .await;
     // Whether or not it was installed, the staged copy is no longer needed (a refused one is
     // sent again by the page if the person chooses to overwrite).
-    let _ = tokio::fs::remove_file(&staging).await;
+    let _ = unlinkat(&xfer_fd, &part_name, AtFlags::empty());
     installed?;
     let target = format!("{}/{}", q.dir.trim_end_matches('/'), q.name);
     audit(
@@ -438,7 +445,7 @@ pub(crate) async fn download(
     Query(q): Query<PathQuery>,
 ) -> Result<Response, HttpError> {
     let path = need_path(&q)?.to_owned();
-    ensure_xfer(&state.files.xfer_dir).await?;
+    let xfer_fd = ensure_xfer(&state.files.xfer_dir).await?;
     let staged = state
         .priv_client
         .clone()
@@ -450,12 +457,20 @@ pub(crate) async fn download(
             jail_for(&who, &state.files).as_deref(),
         )
         .await?;
-    let file = tokio::fs::File::open(&staged.staging)
-        .await
-        .map_err(|_| HttpError::internal())?;
+    let staged_name = Path::new(&staged.staging)
+        .file_name()
+        .ok_or_else(HttpError::internal)?;
+    let fd = openat(
+        &xfer_fd,
+        staged_name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| HttpError::internal())?;
     // The open file keeps the data alive; unlinking it now means nothing is left behind
     // whether the download finishes, is cancelled or the connection drops.
-    let _ = tokio::fs::remove_file(&staged.staging).await;
+    let _ = unlinkat(&xfer_fd, staged_name, AtFlags::empty());
+    let file = tokio::fs::File::from_std(std::fs::File::from(fd));
     audit(
         &state,
         &who,

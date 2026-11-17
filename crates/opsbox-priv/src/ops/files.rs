@@ -10,15 +10,24 @@
 //!    inside the canonical jail, so a symlink cannot lead out of it;
 //! 5. changing or deleting opsbox's own binaries, database or state is refused.
 
-use std::fs::{self, Metadata, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::collections::{HashSet, VecDeque};
+use std::fs::{self, Metadata};
+use std::io::{Read, Write};
+use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
-use nix::fcntl::OFlag;
 use opsbox_proto::{
     DirListing, FileContent, FileEntry, FileKind, PrivError, PrivErrorCode, Staged,
 };
+use rustix::fs::{
+    AtFlags, Dir, FileType, Gid, Mode, OFlags, Stat, Uid, chmodat, fchmod, fchown, fstat, fsync,
+    mkdirat, open, openat, readlinkat, renameat, stat, statat, unlinkat,
+};
+#[cfg(target_os = "linux")]
+use rustix::fs::{ResolveFlags, openat2};
+use rustix::io::Errno;
 
 /// Files above this size are download-only.
 pub const MAX_EDIT_BYTES: u64 = 5 * 1024 * 1024;
@@ -51,6 +60,10 @@ fn clean_io(e: &std::io::Error) -> String {
     }
 }
 
+fn r_io_err(what: &str, e: Errno) -> PrivError {
+    io_err(what, &std::io::Error::from(e))
+}
+
 /// Where transfers and the trash live. Set from the configuration.
 #[derive(Debug, Clone)]
 pub struct Dirs {
@@ -63,6 +76,7 @@ pub struct Dirs {
 const DENIED: [&str; 3] = ["/proc", "/sys", "/dev"];
 const DENIED_FILES: [&str; 1] = ["/etc/opsbox/master.key"];
 /// Read-only through the panel: changing these could break or take over opsbox.
+#[cfg(test)]
 const NO_MODIFY: [&str; 6] = [
     "/var/lib/opsbox/bin",
     "/var/lib/opsbox/opsbox.db",
@@ -71,11 +85,147 @@ const NO_MODIFY: [&str; 6] = [
     "/var/lib/opsbox/xfer",
     "/etc/opsbox/firewall.json",
 ];
+const NO_MODIFY_DIRS: [&str; 3] = [
+    "/var/lib/opsbox/bin",
+    "/var/lib/opsbox/xfer",
+    "/var/lib/opsbox/trash",
+];
+const NO_MODIFY_FILES: [&str; 4] = [
+    "/var/lib/opsbox/opsbox.db",
+    "/var/lib/opsbox/opsbox.db-wal",
+    "/var/lib/opsbox/opsbox.db-shm",
+    "/etc/opsbox/firewall.json",
+];
 /// Never deleted, whatever else is true.
 const NO_DELETE: [&str; 21] = [
     "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32", "/lib64", "/media", "/mnt",
     "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/usr", "/var", "/var/lib",
 ];
+
+const MAX_SYMLINK_HOPS: usize = 40;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct DevIno {
+    dev: u64,
+    ino: u64,
+}
+
+impl DevIno {
+    fn from_stat(st: &Stat) -> Self {
+        Self {
+            dev: st.st_dev as u64,
+            ino: st.st_ino as u64,
+        }
+    }
+}
+
+/// Device and inode sets for denied, read-only, and undeletable filesystem objects.
+#[derive(Debug, Clone)]
+struct Policy {
+    denied_fs_devs: HashSet<u64>,
+    denied_objs: HashSet<DevIno>,
+    no_modify_dirs: HashSet<DevIno>,
+    no_modify_files: HashSet<DevIno>,
+    no_delete_exact: HashSet<DevIno>,
+    opsbox_dir: Option<DevIno>,
+    opsbox_apps_dir: Option<DevIno>,
+}
+
+impl Policy {
+    fn current() -> Self {
+        let root_dev = stat("/").ok().map(|st| st.st_dev as u64);
+        let mut denied_fs_devs = HashSet::new();
+        let mut denied_objs = HashSet::new();
+        for p in DENIED {
+            if let Ok(st) = stat(p) {
+                let dev = st.st_dev as u64;
+                if Some(dev) != root_dev {
+                    denied_fs_devs.insert(dev);
+                }
+                denied_objs.insert(DevIno::from_stat(&st));
+            }
+        }
+        for p in DENIED_FILES {
+            if let Ok(st) = stat(p) {
+                denied_objs.insert(DevIno::from_stat(&st));
+            }
+        }
+        let collect = |paths: &[&str]| -> HashSet<DevIno> {
+            paths
+                .iter()
+                .filter_map(|p| stat(*p).ok().map(|st| DevIno::from_stat(&st)))
+                .collect()
+        };
+        let no_modify_dirs = collect(&NO_MODIFY_DIRS);
+        let no_modify_files = collect(&NO_MODIFY_FILES);
+        let mut no_delete_exact = collect(&NO_DELETE);
+        for p in NO_DELETE
+            .iter()
+            .copied()
+            .chain(["/var/lib/opsbox", "/etc/opsbox"])
+        {
+            if let Ok(st) = stat(p) {
+                no_delete_exact.insert(DevIno::from_stat(&st));
+            }
+            if let Ok(lst) = statat(rustix::fs::CWD, p, AtFlags::SYMLINK_NOFOLLOW) {
+                no_delete_exact.insert(DevIno::from_stat(&lst));
+            }
+        }
+        let opsbox_dir = stat("/var/lib/opsbox").ok().map(|st| DevIno::from_stat(&st));
+        let opsbox_apps_dir = stat("/var/lib/opsbox/apps")
+            .ok()
+            .map(|st| DevIno::from_stat(&st));
+        Self {
+            denied_fs_devs,
+            denied_objs,
+            no_modify_dirs,
+            no_modify_files,
+            no_delete_exact,
+            opsbox_dir,
+            opsbox_apps_dir,
+        }
+    }
+
+    fn is_denied_stat(&self, st: &Stat) -> bool {
+        self.denied_fs_devs.contains(&(st.st_dev as u64))
+            || self.denied_objs.contains(&DevIno::from_stat(st))
+    }
+
+    fn check_not_denied(&self, st: &Stat) -> Result<(), PrivError> {
+        if self.is_denied_stat(st) {
+            Err(err(
+                PrivErrorCode::Refused,
+                "System areas such as /proc, /sys, /dev and opsbox's master key are not available through the panel.",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn is_unmodifiable_stat(&self, st: &Stat) -> bool {
+        let id = DevIno::from_stat(st);
+        self.no_modify_dirs.contains(&id) || self.no_modify_files.contains(&id)
+    }
+
+    fn check_modifiable_stat(&self, st: &Stat) -> Result<(), PrivError> {
+        if self.is_unmodifiable_stat(st) {
+            Err(err(
+                PrivErrorCode::Refused,
+                "This belongs to opsbox itself and is read-only here.",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn is_undeletable_stat(&self, st: &Stat, in_opsbox_non_apps: bool) -> bool {
+        let id = DevIno::from_stat(st);
+        in_opsbox_non_apps
+            || self.no_delete_exact.contains(&id)
+            || self.no_modify_dirs.contains(&id)
+            || self.no_modify_files.contains(&id)
+    }
+}
 
 /// Make an absolute path free of `.`, `..` and empty parts, without touching the disk.
 /// `..` at the root stays at the root, as the kernel does.
@@ -104,51 +254,19 @@ fn is_denied(p: &Path) -> bool {
     DENIED.iter().any(|d| p.starts_with(d)) || DENIED_FILES.iter().any(|f| p == Path::new(f))
 }
 
+#[cfg(test)]
 fn is_unmodifiable(p: &Path) -> bool {
     NO_MODIFY.iter().any(|d| p.starts_with(d))
         // The trash and transfer areas are managed by opsbox, never edited by hand.
         || p.starts_with("/var/lib/opsbox/trash")
 }
 
+#[cfg(test)]
 fn is_undeletable(p: &Path) -> bool {
     NO_DELETE.iter().any(|d| p == Path::new(d))
         || p == Path::new("/var/lib/opsbox")
         || p == Path::new("/etc/opsbox")
         || (p.starts_with("/var/lib/opsbox") && !p.starts_with("/var/lib/opsbox/apps"))
-}
-
-/// Canonical form of `path`: symlinks followed. A path that does not exist yet keeps its
-/// last components as given, resolved against the deepest part that does.
-fn canonical(path: &Path, must_exist: bool) -> Result<PathBuf, PrivError> {
-    match fs::canonicalize(path) {
-        Ok(p) => Ok(p),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && !must_exist => {
-            let name = path
-                .file_name()
-                .ok_or_else(|| invalid("That is not a valid path."))?;
-            let parent = path
-                .parent()
-                .ok_or_else(|| invalid("That is not a valid path."))?;
-            let base = canonical(parent, true)
-                .map_err(|_| err(PrivErrorCode::NotFound, "The folder does not exist."))?;
-            Ok(base.join(name))
-        }
-        Err(e) => Err(io_err("Cannot open the path", &e)),
-    }
-}
-
-fn check_jail(p: &Path, jail: Option<&str>) -> Result<(), PrivError> {
-    let Some(j) = jail else { return Ok(()) };
-    let jail = fs::canonicalize(normalize_lexical(j)?)
-        .map_err(|_| err(PrivErrorCode::NotFound, "Your area does not exist yet."))?;
-    if p.starts_with(&jail) {
-        Ok(())
-    } else {
-        Err(err(
-            PrivErrorCode::Refused,
-            "That is outside the folders your account may use.",
-        ))
-    }
 }
 
 fn check_not_denied(p: &Path) -> Result<(), PrivError> {
@@ -162,35 +280,8 @@ fn check_not_denied(p: &Path) -> Result<(), PrivError> {
     }
 }
 
-/// Resolve `path` for reading or modifying a file or folder that may or may not exist yet.
-pub fn resolve(path: &str, jail: Option<&str>, must_exist: bool) -> Result<PathBuf, PrivError> {
-    let lexical = normalize_lexical(path)?;
-    check_not_denied(&lexical)?; // refuse before touching the disk at all
-    let real = canonical(&lexical, must_exist)?;
-    check_not_denied(&real)?;
-    check_jail(&real, jail)?;
-    Ok(real)
-}
-
-/// Like [`resolve`] for something about to be deleted: the last component is *not*
-/// followed, so deleting a symlink deletes the link and never what it points to.
-fn resolve_leaf(path: &str, jail: Option<&str>) -> Result<PathBuf, PrivError> {
-    let lexical = normalize_lexical(path)?;
-    check_not_denied(&lexical)?;
-    let name = lexical
-        .file_name()
-        .ok_or_else(|| err(PrivErrorCode::Refused, "That cannot be removed."))?
-        .to_owned();
-    let parent = canonical(lexical.parent().unwrap_or(Path::new("/")), true)?;
-    let real = parent.join(name);
-    check_not_denied(&real)?;
-    check_jail(&real, jail)?;
-    fs::symlink_metadata(&real).map_err(|e| io_err("Cannot find it", &e))?;
-    Ok(real)
-}
-
-fn check_modifiable(p: &Path) -> Result<(), PrivError> {
-    if is_unmodifiable(p) {
+fn check_unmodifiable_flag(unmodifiable: bool) -> Result<(), PrivError> {
+    if unmodifiable {
         Err(err(
             PrivErrorCode::Refused,
             "This belongs to opsbox itself and is read-only here.",
@@ -200,14 +291,432 @@ fn check_modifiable(p: &Path) -> Result<(), PrivError> {
     }
 }
 
+/// An opened root (either `/` or a deployer's jail directory) and the relative path inside it.
+struct RootCtx {
+    root_fd: OwnedFd,
+    root_lex: PathBuf,
+    root_real: Option<PathBuf>,
+    jailed: bool,
+    policy: Policy,
+}
+
+struct ResolvedParent {
+    parent_fd: OwnedFd,
+    leaf: String,
+    display_path: PathBuf,
+    unmodifiable: bool,
+    in_opsbox_non_apps: bool,
+}
+
+struct ResolvedDir {
+    dir_fd: OwnedFd,
+    display_path: PathBuf,
+}
+
+struct WalkState {
+    cur_fd: OwnedFd,
+    cur_path: PathBuf,
+    dir_stack: Vec<(OwnedFd, PathBuf, bool, bool)>,
+    unmodifiable: bool,
+    in_opsbox_non_apps: bool,
+    symlinks_followed: usize,
+}
+
+impl RootCtx {
+    fn open(path: &str, jail: Option<&str>) -> Result<(Self, Vec<String>), PrivError> {
+        let lexical = normalize_lexical(path)?;
+        check_not_denied(&lexical)?;
+        let policy = Policy::current();
+        if let Some(j) = jail {
+            let root_lex = normalize_lexical(j)?;
+            if !lexical.starts_with(&root_lex) {
+                return Err(err(
+                    PrivErrorCode::Refused,
+                    "That is outside the folders your account may use.",
+                ));
+            }
+            let root_fd = open(
+                &root_lex,
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|_| err(PrivErrorCode::NotFound, "Your area does not exist yet."))?;
+            let st = fstat(&root_fd).map_err(|e| r_io_err("Cannot open your area", e))?;
+            policy.check_not_denied(&st)?;
+            let root_real = fs::canonicalize(&root_lex).ok();
+            let rel = lexical
+                .strip_prefix(&root_lex)
+                .unwrap_or(Path::new(""))
+                .components()
+                .filter_map(|c| match c {
+                    Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect();
+            Ok((
+                Self {
+                    root_fd,
+                    root_lex,
+                    root_real,
+                    jailed: true,
+                    policy,
+                },
+                rel,
+            ))
+        } else {
+            let root_fd = open(
+                "/",
+                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| r_io_err("Cannot open root", e))?;
+            let rel = lexical
+                .components()
+                .filter_map(|c| match c {
+                    Component::Normal(n) => Some(n.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect();
+            Ok((
+                Self {
+                    root_fd,
+                    root_lex: PathBuf::from("/"),
+                    root_real: None,
+                    jailed: false,
+                    policy,
+                },
+                rel,
+            ))
+        }
+    }
+
+    fn init_walk(&self) -> Result<WalkState, PrivError> {
+        let cur_fd = self
+            .root_fd
+            .as_fd()
+            .try_clone_to_owned()
+            .map_err(|e| io_err("Cannot duplicate directory handle", &e))?;
+        let st = fstat(&cur_fd).map_err(|e| r_io_err("Cannot stat root", e))?;
+        Ok(WalkState {
+            cur_fd,
+            cur_path: self.root_lex.clone(),
+            dir_stack: Vec::new(),
+            unmodifiable: self.policy.is_unmodifiable_stat(&st),
+            in_opsbox_non_apps: false,
+            symlinks_followed: 0,
+        })
+    }
+
+    fn handle_symlink(
+        &self,
+        state: &mut WalkState,
+        link_name: &str,
+        queue: &mut VecDeque<String>,
+    ) -> Result<(), PrivError> {
+        state.symlinks_followed += 1;
+        if state.symlinks_followed > MAX_SYMLINK_HOPS {
+            return Err(r_io_err("Cannot open the path", Errno::LOOP));
+        }
+        let raw_target = readlinkat(&state.cur_fd, link_name, Vec::new())
+            .map_err(|e| r_io_err("Cannot read symbolic link", e))?;
+        let target_path = Path::new(std::ffi::OsStr::from_bytes(raw_target.as_bytes()));
+        let mut extra = Vec::new();
+        if target_path.is_absolute() {
+            let stripped = if self.jailed {
+                if let Ok(s) = target_path.strip_prefix(&self.root_lex) {
+                    s
+                } else if let Some(real) = &self.root_real
+                    && let Ok(s) = target_path.strip_prefix(real)
+                {
+                    s
+                } else {
+                    return Err(err(
+                        PrivErrorCode::Refused,
+                        "That is outside the folders your account may use.",
+                    ));
+                }
+            } else {
+                target_path.strip_prefix("/").unwrap_or(target_path)
+            };
+            for c in stripped.components() {
+                match c {
+                    Component::RootDir | Component::CurDir => {}
+                    Component::ParentDir => extra.push("..".to_owned()),
+                    Component::Normal(n) => extra.push(n.to_string_lossy().into_owned()),
+                    Component::Prefix(_) => return Err(invalid("That is not a valid path.")),
+                }
+            }
+            *state = WalkState {
+                symlinks_followed: state.symlinks_followed,
+                ..self.init_walk()?
+            };
+        } else {
+            for c in target_path.components() {
+                match c {
+                    Component::RootDir | Component::CurDir => {}
+                    Component::ParentDir => extra.push("..".to_owned()),
+                    Component::Normal(n) => extra.push(n.to_string_lossy().into_owned()),
+                    Component::Prefix(_) => return Err(invalid("That is not a valid path.")),
+                }
+            }
+        }
+        for c in extra.into_iter().rev() {
+            queue.push_front(c);
+        }
+        Ok(())
+    }
+
+    fn step_dir(&self, state: &mut WalkState, comp: &str, queue: &mut VecDeque<String>) -> Result<(), PrivError> {
+        match openat(
+            &state.cur_fd,
+            comp,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(next_fd) => {
+                let st = fstat(&next_fd).map_err(|e| r_io_err("Cannot open the path", e))?;
+                self.policy.check_not_denied(&st)?;
+                let prev_st = fstat(&state.cur_fd).ok();
+                let next_id = DevIno::from_stat(&st);
+                let next_unmod = state.unmodifiable || self.policy.is_unmodifiable_stat(&st);
+                let next_opsbox_non_apps = if state.in_opsbox_non_apps {
+                    true
+                } else if let (Some(pst), Some(ob)) = (prev_st, self.policy.opsbox_dir) {
+                    DevIno::from_stat(&pst) == ob && Some(next_id) != self.policy.opsbox_apps_dir
+                } else {
+                    false
+                };
+                let old_fd = std::mem::replace(&mut state.cur_fd, next_fd);
+                let next_path = state.cur_path.join(comp);
+                let old_path = std::mem::replace(&mut state.cur_path, next_path);
+                state.dir_stack.push((
+                    old_fd,
+                    old_path,
+                    state.unmodifiable,
+                    state.in_opsbox_non_apps,
+                ));
+                state.unmodifiable = next_unmod;
+                state.in_opsbox_non_apps = next_opsbox_non_apps;
+                Ok(())
+            }
+            Err(Errno::LOOP) => self.handle_symlink(state, comp, queue),
+            Err(Errno::NOENT) => Err(err(PrivErrorCode::NotFound, "The folder does not exist.")),
+            Err(Errno::NOTDIR) => {
+                if let Ok(st) = statat(&state.cur_fd, comp, AtFlags::SYMLINK_NOFOLLOW)
+                    && FileType::from_raw_mode(st.st_mode as _).is_symlink()
+                {
+                    return self.handle_symlink(state, comp, queue);
+                }
+                Err(invalid(format!(
+                    "{} is not a folder.",
+                    state.cur_path.join(comp).display()
+                )))
+            }
+            Err(e) => Err(r_io_err("Cannot open the path", e)),
+        }
+    }
+
+    fn step_parent(&self, state: &mut WalkState) -> Result<(), PrivError> {
+        if let Some((fd, path, unmod, opsbox_non_apps)) = state.dir_stack.pop() {
+            state.cur_fd = fd;
+            state.cur_path = path;
+            state.unmodifiable = unmod;
+            state.in_opsbox_non_apps = opsbox_non_apps;
+            Ok(())
+        } else if self.jailed {
+            Err(err(
+                PrivErrorCode::Refused,
+                "That is outside the folders your account may use.",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Walk component-by-component with `O_NOFOLLOW | O_DIRECTORY` on every parent, stopping at
+    /// `(parent_fd, leaf_name)`. When `follow_leaf_symlink` is true, a symlink at the leaf is
+    /// followed within the jail.
+    fn resolve_parent_and_leaf(
+        &self,
+        rel: &[String],
+        follow_leaf_symlink: bool,
+    ) -> Result<ResolvedParent, PrivError> {
+        let mut state = self.init_walk()?;
+        let mut queue: VecDeque<String> = rel.iter().cloned().collect();
+        while let Some(comp) = queue.pop_front() {
+            if comp.is_empty() || comp == "." {
+                continue;
+            }
+            if comp == ".." {
+                self.step_parent(&mut state)?;
+                continue;
+            }
+            if queue.is_empty() {
+                if follow_leaf_symlink
+                    && let Ok(st) = statat(&state.cur_fd, &comp, AtFlags::SYMLINK_NOFOLLOW)
+                    && FileType::from_raw_mode(st.st_mode as _).is_symlink()
+                {
+                    self.handle_symlink(&mut state, &comp, &mut queue)?;
+                    continue;
+                }
+                let display_path = state.cur_path.join(&comp);
+                let prev_st = fstat(&state.cur_fd).ok();
+                let leaf_opsbox_non_apps = if state.in_opsbox_non_apps {
+                    true
+                } else if let (Some(pst), Some(ob)) = (prev_st, self.policy.opsbox_dir) {
+                    if DevIno::from_stat(&pst) == ob {
+                        match statat(&state.cur_fd, &comp, AtFlags::SYMLINK_NOFOLLOW) {
+                            Ok(lst) => Some(DevIno::from_stat(&lst)) != self.policy.opsbox_apps_dir,
+                            Err(_) => true,
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                return Ok(ResolvedParent {
+                    parent_fd: state.cur_fd,
+                    leaf: comp,
+                    display_path,
+                    unmodifiable: state.unmodifiable,
+                    in_opsbox_non_apps: leaf_opsbox_non_apps,
+                });
+            }
+            self.step_dir(&mut state, &comp, &mut queue)?;
+        }
+        Err(invalid("That is not a valid path."))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_openat2(&self, rel: &[String], oflags: OFlags) -> Option<Result<OwnedFd, PrivError>> {
+        if rel.is_empty() {
+            return None;
+        }
+        let rel_path: PathBuf = rel.iter().collect();
+        match openat2(
+            &self.root_fd,
+            &rel_path,
+            oflags,
+            Mode::empty(),
+            ResolveFlags::BENEATH | ResolveFlags::NO_MAGICLINKS,
+        ) {
+            Ok(fd) => Some(Ok(fd)),
+            // Fall back to component walk when openat2 is unavailable (< 5.6) or encounters an
+            // intra-jail absolute symlink (EXDEV).
+            Err(Errno::NOSYS | Errno::XDEV) => None,
+            Err(Errno::NOENT) => Some(Err(err(PrivErrorCode::NotFound, "No such file or directory."))),
+            Err(Errno::NOTDIR) => Some(Err(invalid("Not a folder."))),
+            Err(e) => Some(Err(r_io_err("Cannot open the path", e))),
+        }
+    }
+
+    fn resolve_dir(&self, rel: &[String]) -> Result<ResolvedDir, PrivError> {
+        if rel.is_empty() {
+            let dir_fd = self
+                .root_fd
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|e| io_err("Cannot duplicate directory handle", &e))?;
+            let st = fstat(&dir_fd).map_err(|e| r_io_err("Cannot open the folder", e))?;
+            self.policy.check_not_denied(&st)?;
+            return Ok(ResolvedDir {
+                dir_fd,
+                display_path: self.root_lex.clone(),
+            });
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(res) = self.try_openat2(
+            rel,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        ) {
+            let dir_fd = res?;
+            let st = fstat(&dir_fd).map_err(|e| r_io_err("Cannot open the folder", e))?;
+            self.policy.check_not_denied(&st)?;
+            let mut display_path = self.root_lex.clone();
+            for c in rel {
+                display_path.push(c);
+            }
+            return Ok(ResolvedDir {
+                dir_fd,
+                display_path,
+            });
+        }
+        let mut state = self.init_walk()?;
+        let mut queue: VecDeque<String> = rel.iter().cloned().collect();
+        while let Some(comp) = queue.pop_front() {
+            if comp.is_empty() || comp == "." {
+                continue;
+            }
+            if comp == ".." {
+                self.step_parent(&mut state)?;
+                continue;
+            }
+            self.step_dir(&mut state, &comp, &mut queue)?;
+        }
+        let st = fstat(&state.cur_fd).map_err(|e| r_io_err("Cannot open the folder", e))?;
+        self.policy.check_not_denied(&st)?;
+        Ok(ResolvedDir {
+            dir_fd: state.cur_fd,
+            display_path: state.cur_path,
+        })
+    }
+
+    fn resolve_open_file(&self, rel: &[String]) -> Result<(OwnedFd, Stat, PathBuf), PrivError> {
+        if rel.is_empty() {
+            return Err(invalid("That is not a regular file."));
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(res) = self.try_openat2(rel, OFlags::RDONLY | OFlags::CLOEXEC) {
+            let fd = res?;
+            let st = fstat(&fd).map_err(|e| r_io_err("Cannot open the file", e))?;
+            self.policy.check_not_denied(&st)?;
+            let mut display_path = self.root_lex.clone();
+            for c in rel {
+                display_path.push(c);
+            }
+            return Ok((fd, st, display_path));
+        }
+        let rp = self.resolve_parent_and_leaf(rel, true)?;
+        let fd = openat(
+            &rp.parent_fd,
+            &rp.leaf,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| r_io_err("Cannot open the file", e))?;
+        let st = fstat(&fd).map_err(|e| r_io_err("Cannot open the file", e))?;
+        self.policy.check_not_denied(&st)?;
+        Ok((fd, st, rp.display_path))
+    }
+}
+
+/// Resolve `path` for reading or modifying a file or folder that may or may not exist yet.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn resolve(path: &str, jail: Option<&str>, must_exist: bool) -> Result<PathBuf, PrivError> {
+    let (ctx, rel) = RootCtx::open(path, jail)?;
+    if rel.is_empty() {
+        let st = fstat(&ctx.root_fd).map_err(|e| r_io_err("Cannot open the path", e))?;
+        ctx.policy.check_not_denied(&st)?;
+        return Ok(ctx.root_lex);
+    }
+    let rp = ctx.resolve_parent_and_leaf(&rel, true)?;
+    match statat(&rp.parent_fd, &rp.leaf, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(st) => {
+            ctx.policy.check_not_denied(&st)?;
+            Ok(rp.display_path)
+        }
+        Err(_) if !must_exist => Ok(rp.display_path),
+        Err(e) => Err(r_io_err("Cannot open the path", e)),
+    }
+}
+
 // ------------------------------------------------------------ small helpers
 
-/// `ls`-style mode string.
-pub fn mode_string(meta: &Metadata) -> String {
-    let m = meta.mode();
-    let kind = if meta.is_dir() {
+fn mode_string_raw(m: u32, is_dir: bool, is_link: bool) -> String {
+    let kind = if is_dir {
         'd'
-    } else if meta.file_type().is_symlink() {
+    } else if is_link {
         'l'
     } else {
         '-'
@@ -233,8 +742,19 @@ pub fn mode_string(meta: &Metadata) -> String {
     )
 }
 
-fn mtime(meta: &Metadata) -> i64 {
-    meta.mtime()
+/// `ls`-style mode string.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn mode_string(meta: &Metadata) -> String {
+    mode_string_raw(meta.mode(), meta.is_dir(), meta.file_type().is_symlink())
+}
+
+fn mode_string_stat(st: &Stat) -> String {
+    let ft = FileType::from_raw_mode(st.st_mode as _);
+    mode_string_raw(st.st_mode as u32, ft.is_dir(), ft.is_symlink())
+}
+
+fn stat_mtime(st: &Stat) -> i64 {
+    st.st_mtime as i64
 }
 
 /// A hint for files that probably should not be readable by everyone.
@@ -263,49 +783,55 @@ pub fn valid_name(name: &str) -> bool {
             .any(|c| c == '/' || c == '\0' || c.is_control())
 }
 
-fn chown_like(path: &Path, reference: &Metadata) -> Result<(), PrivError> {
-    std::os::unix::fs::chown(path, Some(reference.uid()), Some(reference.gid()))
-        .map_err(|e| io_err("Cannot set the owner", &e))
-}
-
 // ------------------------------------------------------------------ list
 
 pub(super) fn list(path: &str, jail: Option<&str>) -> Result<DirListing, PrivError> {
-    let dir = resolve(path, jail, true)?;
-    let meta = fs::metadata(&dir).map_err(|e| io_err("Cannot open the folder", &e))?;
-    if !meta.is_dir() {
-        return Err(invalid(format!("{} is not a folder.", dir.display())));
-    }
+    let (ctx, rel) = RootCtx::open(path, jail)?;
+    let resolved = ctx.resolve_dir(&rel)?;
+    let mut dir =
+        Dir::read_from(&resolved.dir_fd).map_err(|e| r_io_err("Cannot read the folder", e))?;
     let mut entries = Vec::new();
-    for e in fs::read_dir(&dir)
-        .map_err(|e| io_err("Cannot read the folder", &e))?
-        .flatten()
-        .take(MAX_ENTRIES)
-    {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let Ok(lmeta) = fs::symlink_metadata(e.path()) else {
+    while let Some(res) = dir.read() {
+        if entries.len() >= MAX_ENTRIES {
+            break;
+        }
+        let Ok(e) = res else { continue };
+        let cname = e.file_name();
+        let name = cname.to_string_lossy().into_owned();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let Ok(lst) = statat(&resolved.dir_fd, cname, AtFlags::SYMLINK_NOFOLLOW) else {
             continue;
         };
-        let is_link = lmeta.file_type().is_symlink();
-        let (meta, kind) = match (is_link, fs::metadata(e.path())) {
-            (_, Ok(m)) => {
-                let k = if m.is_dir() {
-                    FileKind::Dir
-                } else {
-                    FileKind::File
-                };
-                (m, k)
+        let is_link = FileType::from_raw_mode(lst.st_mode as _).is_symlink();
+        let (st, kind) = if is_link {
+            match statat(&resolved.dir_fd, cname, AtFlags::empty()) {
+                Ok(m) => {
+                    let k = if FileType::from_raw_mode(m.st_mode as _).is_dir() {
+                        FileKind::Dir
+                    } else {
+                        FileKind::File
+                    };
+                    (m, k)
+                }
+                Err(_) => (lst, FileKind::BrokenLink),
             }
-            (true, Err(_)) => (lmeta.clone(), FileKind::BrokenLink),
-            (false, Err(_)) => continue,
+        } else {
+            let k = if FileType::from_raw_mode(lst.st_mode as _).is_dir() {
+                FileKind::Dir
+            } else {
+                FileKind::File
+            };
+            (lst, k)
         };
-        let mode_bits = meta.mode();
+        let mode_bits = st.st_mode as u32;
         entries.push(FileEntry {
-            path: dir.join(&name).to_string_lossy().into_owned(),
+            path: resolved.display_path.join(&name).to_string_lossy().into_owned(),
             kind,
-            mode: mode_string(&meta),
-            mtime: mtime(&meta),
-            size: (kind != FileKind::Dir).then_some(meta.len()),
+            mode: mode_string_stat(&st),
+            mtime: stat_mtime(&st),
+            size: (kind != FileKind::Dir).then_some(st.st_size.max(0) as u64),
             is_link,
             warn: warn_for(&name, mode_bits),
             name,
@@ -317,7 +843,7 @@ pub(super) fn list(path: &str, jail: Option<&str>) -> Result<DirListing, PrivErr
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     Ok(DirListing {
-        path: dir.to_string_lossy().into_owned(),
+        path: resolved.display_path.to_string_lossy().into_owned(),
         entries,
     })
 }
@@ -325,81 +851,80 @@ pub(super) fn list(path: &str, jail: Option<&str>) -> Result<DirListing, PrivErr
 // ------------------------------------------------------------------ read
 
 pub(super) fn read(path: &str, jail: Option<&str>) -> Result<FileContent, PrivError> {
-    let p = resolve(path, jail, true)?;
-    let meta = fs::metadata(&p).map_err(|e| io_err("Cannot open the file", &e))?;
-    if !meta.is_file() {
+    let (ctx, rel) = RootCtx::open(path, jail)?;
+    let (fd, st, display_path) = ctx.resolve_open_file(&rel)?;
+    if !FileType::from_raw_mode(st.st_mode as _).is_file() {
         return Err(invalid("That is not a regular file."));
     }
-    if meta.len() > MAX_EDIT_BYTES {
+    let size = st.st_size.max(0) as u64;
+    if size > MAX_EDIT_BYTES {
         return Err(invalid(format!(
             "This file is {:.1} MB, too big to edit in the browser (limit {} MB). Download it instead.",
-            meta.len() as f64 / 1_048_576.0,
+            size as f64 / 1_048_576.0,
             MAX_EDIT_BYTES / 1_048_576
         )));
     }
-    let bytes = fs::read(&p).map_err(|e| io_err("Cannot read the file", &e))?;
+    let mut file = fs::File::from(fd);
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.read_to_end(&mut bytes)
+        .map_err(|e| io_err("Cannot read the file", &e))?;
     if is_binary(&bytes) {
         return Err(invalid(
             "This file is not text, so it cannot be edited here. Download it instead.",
         ));
     }
     Ok(FileContent {
-        path: p.to_string_lossy().into_owned(),
+        path: display_path.to_string_lossy().into_owned(),
         content: String::from_utf8(bytes).unwrap_or_default(),
-        size: meta.len(),
-        mode: mode_string(&meta),
-        mtime: mtime(&meta),
+        size,
+        mode: mode_string_stat(&st),
+        mtime: stat_mtime(&st),
     })
 }
 
 // ----------------------------------------------------------------- write
 
-/// Write `bytes` to a temporary file next to `target`, flush it to disk and rename it over.
-fn write_atomic(
-    target: &Path,
+/// Write `bytes` to a temporary file inside `parent_fd` with `O_EXCL`, `fsync`, and `renameat`.
+fn write_atomic_at(
+    parent_fd: impl AsFd,
+    target_name: &str,
     bytes: &[u8],
     mode: u32,
-    owner_of: &Metadata,
+    uid: u32,
+    gid: u32,
 ) -> Result<(), PrivError> {
-    let dir = target
-        .parent()
-        .ok_or_else(|| invalid("That is not a valid path."))?;
+    let dir = parent_fd.as_fd();
     let mut rnd = [0u8; 6];
     getrandom::fill(&mut rnd)
         .map_err(|_| err(PrivErrorCode::Internal, "random number generator failed"))?;
     let suffix: String = rnd.iter().map(|b| format!("{b:02x}")).collect();
-    let tmp = dir.join(format!(
-        ".{}.opsbox-{suffix}.tmp",
-        target
-            .file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default()
-    ));
+    let tmp_name = format!(".{target_name}.opsbox-{suffix}.tmp");
     let result = (|| {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(OFlag::O_NOFOLLOW.bits())
-            .open(&tmp)
-            .map_err(|e| io_err("Cannot create the file", &e))?;
+        let tmp_fd = openat(
+            dir,
+            &tmp_name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|e| r_io_err("Cannot create the file", e))?;
+        let mut f = fs::File::from(tmp_fd);
         f.write_all(bytes)
             .map_err(|e| io_err("Cannot write the file", &e))?;
         f.sync_all()
             .map_err(|e| io_err("Cannot flush the file", &e))?;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode & 0o7777))
-            .map_err(|e| io_err("Cannot set the permissions", &e))?;
-        chown_like(&tmp, owner_of)?;
-        fs::rename(&tmp, target).map_err(|e| io_err("Cannot replace the file", &e))
+        fchmod(&f, Mode::from_raw_mode((mode & 0o7777) as _))
+            .map_err(|e| r_io_err("Cannot set the permissions", e))?;
+        fchown(&f, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid)))
+            .map_err(|e| r_io_err("Cannot set the owner", e))?;
+        renameat(dir, &tmp_name, dir, target_name)
+            .map_err(|e| r_io_err("Cannot replace the file", e))
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+        let _ = unlinkat(dir, &tmp_name, AtFlags::empty());
     }
     result?;
     // Make the rename itself durable; failure here is not worth failing the save for.
-    if let Ok(d) = fs::File::open(dir) {
-        let _ = d.sync_all();
-    }
+    let _ = fsync(dir);
     Ok(())
 }
 
@@ -415,31 +940,41 @@ pub(super) fn write(
             MAX_EDIT_BYTES / 1_048_576
         )));
     }
-    let p = resolve(path, jail, false)?;
-    check_modifiable(&p)?;
-    let (mode, owner_src) = match fs::metadata(&p) {
-        Ok(m) if m.is_file() => {
+    let (ctx, rel) = RootCtx::open(path, jail)?;
+    if rel.is_empty() {
+        return Err(invalid("That is not a regular file."));
+    }
+    let rp = ctx.resolve_parent_and_leaf(&rel, true)?;
+    check_unmodifiable_flag(rp.unmodifiable)?;
+    let (mode, uid, gid) = match statat(&rp.parent_fd, &rp.leaf, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(st) => {
+            ctx.policy.check_not_denied(&st)?;
+            ctx.policy.check_modifiable_stat(&st)?;
+            if !FileType::from_raw_mode(st.st_mode as _).is_file() {
+                return Err(invalid("That is not a regular file."));
+            }
             if let Some(expected) = expect_mtime
-                && mtime(&m) != expected
+                && stat_mtime(&st) != expected
             {
                 return Err(err(
                     PrivErrorCode::Conflict,
                     "This file changed on the server since you opened it. Reload it, then make your edit again so nothing is lost.",
                 ));
             }
-            (m.mode(), m)
+            (st.st_mode as u32, st.st_uid, st.st_gid)
         }
-        Ok(_) => return Err(invalid("That is not a regular file.")),
-        // A new file: 0644, owned like the folder it goes in.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
-            0o644,
-            fs::metadata(p.parent().unwrap_or(Path::new("/")))
-                .map_err(|e| io_err("Cannot open the folder", &e))?,
-        ),
-        Err(e) => return Err(io_err("Cannot open the file", &e)),
+        Err(Errno::NOENT) => {
+            let parent_st =
+                fstat(&rp.parent_fd).map_err(|e| r_io_err("Cannot open the folder", e))?;
+            ctx.policy.check_not_denied(&parent_st)?;
+            (0o644, parent_st.st_uid, parent_st.st_gid)
+        }
+        Err(e) => return Err(r_io_err("Cannot open the file", e)),
     };
-    write_atomic(&p, content.as_bytes(), mode, &owner_src)?;
-    Ok(fs::metadata(&p).map(|m| mtime(&m)).unwrap_or(0))
+    write_atomic_at(&rp.parent_fd, &rp.leaf, content.as_bytes(), mode, uid, gid)?;
+    Ok(statat(&rp.parent_fd, &rp.leaf, AtFlags::SYMLINK_NOFOLLOW)
+        .map(|st| stat_mtime(&st))
+        .unwrap_or(0))
 }
 
 // ------------------------------------------------------- chmod and mkdir
@@ -453,31 +988,82 @@ pub fn parse_mode(text: &str) -> Result<u32, String> {
 
 pub(super) fn chmod(path: &str, mode: &str, jail: Option<&str>) -> Result<(), PrivError> {
     let bits = parse_mode(mode).map_err(invalid)?;
-    let p = resolve(path, jail, true)?;
-    check_modifiable(&p)?;
-    fs::set_permissions(&p, fs::Permissions::from_mode(bits))
-        .map_err(|e| io_err("Cannot change the permissions", &e))
+    let (ctx, rel) = RootCtx::open(path, jail)?;
+    if rel.is_empty() {
+        let st = fstat(&ctx.root_fd).map_err(|e| r_io_err("Cannot open the path", e))?;
+        ctx.policy.check_not_denied(&st)?;
+        ctx.policy.check_modifiable_stat(&st)?;
+        return fchmod(&ctx.root_fd, Mode::from_raw_mode(bits as _))
+            .map_err(|e| r_io_err("Cannot change the permissions", e));
+    }
+    let rp = ctx.resolve_parent_and_leaf(&rel, true)?;
+    check_unmodifiable_flag(rp.unmodifiable)?;
+    let st = statat(&rp.parent_fd, &rp.leaf, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|e| r_io_err("Cannot open the path", e))?;
+    ctx.policy.check_not_denied(&st)?;
+    ctx.policy.check_modifiable_stat(&st)?;
+    match openat(
+        &rp.parent_fd,
+        &rp.leaf,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => {
+            let fst = fstat(&fd).map_err(|e| r_io_err("Cannot open the path", e))?;
+            ctx.policy.check_not_denied(&fst)?;
+            ctx.policy.check_modifiable_stat(&fst)?;
+            fchmod(&fd, Mode::from_raw_mode(bits as _))
+                .map_err(|e| r_io_err("Cannot change the permissions", e))
+        }
+        Err(Errno::ACCESS) => chmodat(
+            &rp.parent_fd,
+            &rp.leaf,
+            Mode::from_raw_mode(bits as _),
+            AtFlags::empty(),
+        )
+        .map_err(|e| r_io_err("Cannot change the permissions", e)),
+        Err(e) => Err(r_io_err("Cannot change the permissions", e)),
+    }
 }
 
 pub(super) fn mkdir(path: &str, jail: Option<&str>) -> Result<(), PrivError> {
-    let p = resolve(path, jail, false)?;
-    check_modifiable(&p)?;
-    if fs::symlink_metadata(&p).is_ok() {
+    let (ctx, rel) = RootCtx::open(path, jail)?;
+    if rel.is_empty() {
         return Err(err(
             PrivErrorCode::Conflict,
             "Something with that name already exists.",
         ));
     }
-    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    if !valid_name(name) {
+    let rp = ctx.resolve_parent_and_leaf(&rel, false)?;
+    check_unmodifiable_flag(rp.unmodifiable)?;
+    if statat(&rp.parent_fd, &rp.leaf, AtFlags::SYMLINK_NOFOLLOW).is_ok() {
+        return Err(err(
+            PrivErrorCode::Conflict,
+            "Something with that name already exists.",
+        ));
+    }
+    if !valid_name(&rp.leaf) {
         return Err(invalid("That is not a valid folder name."));
     }
-    let parent_meta = fs::metadata(p.parent().unwrap_or(Path::new("/")))
-        .map_err(|e| io_err("Cannot open the folder", &e))?;
-    fs::create_dir(&p).map_err(|e| io_err("Cannot create the folder", &e))?;
-    fs::set_permissions(&p, fs::Permissions::from_mode(0o755))
-        .map_err(|e| io_err("Cannot set the permissions", &e))?;
-    chown_like(&p, &parent_meta)
+    let parent_st = fstat(&rp.parent_fd).map_err(|e| r_io_err("Cannot open the folder", e))?;
+    ctx.policy.check_not_denied(&parent_st)?;
+    mkdirat(&rp.parent_fd, &rp.leaf, Mode::from_raw_mode(0o755))
+        .map_err(|e| r_io_err("Cannot create the folder", e))?;
+    let new_fd = openat(
+        &rp.parent_fd,
+        &rp.leaf,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| r_io_err("Cannot open the new folder", e))?;
+    fchmod(&new_fd, Mode::from_raw_mode(0o755))
+        .map_err(|e| r_io_err("Cannot set the permissions", e))?;
+    fchown(
+        &new_fd,
+        Some(Uid::from_raw(parent_st.st_uid)),
+        Some(Gid::from_raw(parent_st.st_gid)),
+    )
+    .map_err(|e| r_io_err("Cannot set the owner", e))
 }
 
 // ---------------------------------------------------------------- remove
@@ -494,81 +1080,157 @@ pub(super) fn remove(
     // Resolve and check everything first: either all of it goes or none of it does.
     let mut targets = Vec::new();
     for raw in paths {
-        let p = resolve_leaf(raw, jail)?;
-        check_modifiable(&p)?;
-        if is_undeletable(&p) {
+        let (ctx, rel) = RootCtx::open(raw, jail)?;
+        if rel.is_empty() {
+            return Err(err(PrivErrorCode::Refused, "That cannot be removed."));
+        }
+        let rp = ctx.resolve_parent_and_leaf(&rel, false)?;
+        check_unmodifiable_flag(rp.unmodifiable)?;
+        let st = statat(&rp.parent_fd, &rp.leaf, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| r_io_err("Cannot find it", e))?;
+        ctx.policy.check_not_denied(&st)?;
+        ctx.policy.check_modifiable_stat(&st)?;
+        if ctx.policy.is_undeletable_stat(&st, rp.in_opsbox_non_apps) {
             return Err(err(
                 PrivErrorCode::Refused,
                 format!(
                     "{} is part of the system or of opsbox and is never deleted from the panel.",
-                    p.display()
+                    rp.display_path.display()
                 ),
             ));
         }
-        targets.push(p);
+        targets.push(rp);
     }
     let mut n = 0;
-    for p in targets {
+    for rp in targets {
         if permanent {
-            delete_forever(&p)?;
+            delete_forever_at(&rp.parent_fd, &rp.leaf, &rp.display_path)?;
         } else {
-            move_to_trash(&p, dirs)?;
+            move_to_trash_at(&rp.parent_fd, &rp.leaf, &rp.display_path, dirs)?;
         }
         n += 1;
     }
     Ok(n)
 }
 
-fn delete_forever(p: &Path) -> Result<(), PrivError> {
-    let meta = fs::symlink_metadata(p).map_err(|e| io_err("Cannot find it", &e))?;
-    // remove_dir_all does not follow symbolic links.
-    if meta.is_dir() {
-        fs::remove_dir_all(p)
-    } else {
-        fs::remove_file(p)
+fn remove_dir_all_at(parent_fd: impl AsFd, name: &str) -> Result<(), PrivError> {
+    let dir_fd = openat(
+        parent_fd.as_fd(),
+        name,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| r_io_err(&format!("Cannot delete {name}"), e))?;
+    let mut dir =
+        Dir::read_from(&dir_fd).map_err(|e| r_io_err(&format!("Cannot read {name}"), e))?;
+    while let Some(entry) = dir.read() {
+        let entry = entry.map_err(|e| r_io_err(&format!("Cannot read {name}"), e))?;
+        let cname = entry.file_name();
+        let entry_name = cname.to_string_lossy();
+        if entry_name == "." || entry_name == ".." {
+            continue;
+        }
+        let st = statat(&dir_fd, cname, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| r_io_err(&format!("Cannot find {entry_name}"), e))?;
+        if FileType::from_raw_mode(st.st_mode as _).is_dir() {
+            remove_dir_all_at(&dir_fd, &entry_name)?;
+        } else {
+            unlinkat(&dir_fd, cname, AtFlags::empty())
+                .map_err(|e| r_io_err(&format!("Cannot delete {entry_name}"), e))?;
+        }
     }
-    .map_err(|e| io_err(&format!("Cannot delete {}", p.display()), &e))
+    unlinkat(parent_fd.as_fd(), name, AtFlags::REMOVEDIR)
+        .map_err(|e| r_io_err(&format!("Cannot delete {name}"), e))
 }
 
-fn move_to_trash(p: &Path, dirs: &Dirs) -> Result<(), PrivError> {
+fn delete_forever_at(
+    parent_fd: impl AsFd,
+    leaf: &str,
+    display_path: &Path,
+) -> Result<(), PrivError> {
+    let st = statat(parent_fd.as_fd(), leaf, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|e| r_io_err("Cannot find it", e))?;
+    if FileType::from_raw_mode(st.st_mode as _).is_dir() {
+        remove_dir_all_at(parent_fd.as_fd(), leaf)
+            .map_err(|_| err(PrivErrorCode::Internal, format!("Cannot delete {}", display_path.display())))
+    } else {
+        unlinkat(parent_fd.as_fd(), leaf, AtFlags::empty())
+            .map_err(|e| r_io_err(&format!("Cannot delete {}", display_path.display()), e))
+    }
+}
+
+fn move_to_trash_at(
+    parent_fd: impl AsFd,
+    leaf: &str,
+    display_path: &Path,
+    dirs: &Dirs,
+) -> Result<(), PrivError> {
     fs::create_dir_all(&dirs.trash).map_err(|e| io_err("Cannot create the trash", &e))?;
-    fs::set_permissions(&dirs.trash, fs::Permissions::from_mode(0o700)).ok();
+    let trash_fd = open(
+        &dirs.trash,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| r_io_err("Cannot open the trash", e))?;
+    let _ = fchmod(&trash_fd, Mode::from_raw_mode(0o700));
     let now = now_secs();
     let mut rnd = [0u8; 3];
     getrandom::fill(&mut rnd)
         .map_err(|_| err(PrivErrorCode::Internal, "random number generator failed"))?;
-    let name = p
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "item".into());
     let id = format!(
-        "{now}-{}-{name}",
+        "{now}-{}-{leaf}",
         rnd.iter().map(|b| format!("{b:02x}")).collect::<String>()
     );
-    let dest = dirs.trash.join(&id);
-    let meta = fs::symlink_metadata(p).map_err(|e| io_err("Cannot find it", &e))?;
-    match fs::rename(p, &dest) {
+    let st = statat(parent_fd.as_fd(), leaf, AtFlags::SYMLINK_NOFOLLOW)
+        .map_err(|e| r_io_err("Cannot find it", e))?;
+    match renameat(parent_fd.as_fd(), leaf, &trash_fd, &id) {
         Ok(()) => {}
-        Err(e) if e.raw_os_error() == Some(nix::errno::Errno::EXDEV as i32) => {
-            // A different disk: copy a file across, but not a whole folder tree.
-            if meta.is_dir() {
+        Err(Errno::XDEV) => {
+            if FileType::from_raw_mode(st.st_mode as _).is_dir() {
                 return Err(invalid(
                     "This folder is on a different disk from the trash, so it cannot be moved there. Delete it permanently instead.",
                 ));
             }
-            fs::copy(p, &dest).map_err(|e| io_err("Cannot copy to the trash", &e))?;
-            fs::remove_file(p).map_err(|e| io_err("Cannot remove the original", &e))?;
+            let src_fd = openat(
+                parent_fd.as_fd(),
+                leaf,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(|e| r_io_err("Cannot read the file", e))?;
+            let dst_fd = openat(
+                &trash_fd,
+                &id,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|e| r_io_err("Cannot copy to the trash", e))?;
+            let mut src_file = fs::File::from(src_fd);
+            let mut dst_file = fs::File::from(dst_fd);
+            std::io::copy(&mut src_file, &mut dst_file)
+                .map_err(|e| io_err("Cannot copy to the trash", &e))?;
+            unlinkat(parent_fd.as_fd(), leaf, AtFlags::empty())
+                .map_err(|e| r_io_err("Cannot remove the original", e))?;
         }
         Err(e) => {
-            return Err(io_err(
-                &format!("Cannot move {} to the trash", p.display()),
-                &e,
+            return Err(r_io_err(
+                &format!("Cannot move {} to the trash", display_path.display()),
+                e,
             ));
         }
     }
     let note =
-        serde_json::json!({ "original": p.to_string_lossy(), "deleted_at": now }).to_string();
-    let _ = fs::write(dirs.trash.join(format!("{id}.meta")), note);
+        serde_json::json!({ "original": display_path.to_string_lossy(), "deleted_at": now })
+            .to_string();
+    if let Ok(meta_fd) = openat(
+        &trash_fd,
+        format!("{id}.meta"),
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    ) {
+        let mut f = fs::File::from(meta_fd);
+        let _ = f.write_all(note.as_bytes());
+    }
     Ok(())
 }
 
@@ -605,44 +1267,74 @@ pub fn purge_trash(trash: &Path, now: i64) -> usize {
 
 // ------------------------------------------------------------- transfers
 
-fn check_staging(staging: &str, dirs: &Dirs) -> Result<PathBuf, PrivError> {
+fn check_staging_at(staging: &str, dirs: &Dirs) -> Result<(OwnedFd, String, OwnedFd), PrivError> {
     let lexical = normalize_lexical(staging)?;
-    let xfer = fs::canonicalize(&dirs.xfer).map_err(|_| {
+    let xfer_fd = open(
+        &dirs.xfer,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| {
         err(
             PrivErrorCode::Internal,
             "The transfer folder does not exist.",
         )
     })?;
-    // The folder part may reach the transfer folder through a symbolic link (for example
-    // /tmp -> /private/tmp), so compare real paths; the file itself must not be a link,
-    // which the check below enforces.
-    let name = lexical.file_name().ok_or_else(|| {
+    let xfer_st = fstat(&xfer_fd).map_err(|_| {
+        err(
+            PrivErrorCode::Internal,
+            "The transfer folder does not exist.",
+        )
+    })?;
+    let name = lexical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            err(
+                PrivErrorCode::Refused,
+                "That is not a file in the transfer folder.",
+            )
+        })?;
+    let parent = lexical.parent().unwrap_or(Path::new("/"));
+    let parent_fd = open(
+        parent,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| {
         err(
             PrivErrorCode::Refused,
             "That is not a file in the transfer folder.",
         )
     })?;
-    let parent = fs::canonicalize(lexical.parent().unwrap_or(Path::new("/"))).map_err(|_| {
+    let parent_st = fstat(&parent_fd).map_err(|_| {
         err(
             PrivErrorCode::Refused,
             "That is not a file in the transfer folder.",
         )
     })?;
-    let p = parent.join(name);
-    if p.parent() != Some(xfer.as_path()) {
+    if DevIno::from_stat(&parent_st) != DevIno::from_stat(&xfer_st) {
         return Err(err(
             PrivErrorCode::Refused,
             "That is not a file in the transfer folder.",
         ));
     }
-    let meta = fs::symlink_metadata(&p).map_err(|e| io_err("Cannot find the transfer file", &e))?;
-    if !meta.file_type().is_file() {
+    let file_fd = openat(
+        &xfer_fd,
+        &name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|e| r_io_err("Cannot find the transfer file", e))?;
+    let file_st = fstat(&file_fd).map_err(|e| r_io_err("Cannot find the transfer file", e))?;
+    if !FileType::from_raw_mode(file_st.st_mode as _).is_file() {
         return Err(err(
             PrivErrorCode::Refused,
             "The transfer file is not a regular file.",
         ));
     }
-    Ok(p)
+    Ok((xfer_fd, name, file_fd))
 }
 
 pub(super) fn stage_download(
@@ -650,46 +1342,58 @@ pub(super) fn stage_download(
     jail: Option<&str>,
     dirs: &Dirs,
 ) -> Result<Staged, PrivError> {
-    let src = resolve(path, jail, true)?;
-    let meta = fs::metadata(&src).map_err(|e| io_err("Cannot open the file", &e))?;
-    if !meta.is_file() {
+    let (ctx, rel) = RootCtx::open(path, jail)?;
+    let (src_fd, src_st, display_path) = ctx.resolve_open_file(&rel)?;
+    if !FileType::from_raw_mode(src_st.st_mode as _).is_file() {
         return Err(invalid("Only files can be downloaded (not folders)."));
     }
-    let xfer = fs::canonicalize(&dirs.xfer).map_err(|_| {
+    let xfer_fd = open(
+        &dirs.xfer,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|_| {
         err(
             PrivErrorCode::Internal,
             "The transfer folder does not exist.",
         )
     })?;
-    let xfer_meta =
-        fs::metadata(&xfer).map_err(|e| io_err("Cannot open the transfer folder", &e))?;
+    let xfer_st =
+        fstat(&xfer_fd).map_err(|e| r_io_err("Cannot open the transfer folder", e))?;
     let mut rnd = [0u8; 8];
     getrandom::fill(&mut rnd)
         .map_err(|_| err(PrivErrorCode::Internal, "random number generator failed"))?;
-    let staged = xfer.join(format!(
+    let dl_name = format!(
         "{}.dl",
         rnd.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    ));
-    // Copy, then hand the copy to the user that runs `serve` (the transfer folder's owner).
-    let mut input = fs::File::open(&src).map_err(|e| io_err("Cannot read the file", &e))?;
-    let mut out = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&staged)
-        .map_err(|e| io_err("Cannot create the transfer file", &e))?;
+    );
+    let out_fd = openat(
+        &xfer_fd,
+        &dl_name,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::from_raw_mode(0o600),
+    )
+    .map_err(|e| r_io_err("Cannot create the transfer file", e))?;
+    let mut input = fs::File::from(src_fd);
+    let mut out = fs::File::from(out_fd);
     if let Err(e) = std::io::copy(&mut input, &mut out).and_then(|_| out.sync_all()) {
-        let _ = fs::remove_file(&staged);
+        let _ = unlinkat(&xfer_fd, &dl_name, AtFlags::empty());
         return Err(io_err("Cannot copy the file", &e));
     }
-    chown_like(&staged, &xfer_meta)?;
+    fchown(
+        &out,
+        Some(Uid::from_raw(xfer_st.st_uid)),
+        Some(Gid::from_raw(xfer_st.st_gid)),
+    )
+    .map_err(|e| r_io_err("Cannot set the owner", e))?;
+    let xfer_real = fs::canonicalize(&dirs.xfer).unwrap_or_else(|_| dirs.xfer.clone());
     Ok(Staged {
-        staging: staged.to_string_lossy().into_owned(),
-        name: src
+        staging: xfer_real.join(&dl_name).to_string_lossy().into_owned(),
+        name: display_path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default(),
-        size: meta.len(),
+        size: src_st.st_size.max(0) as u64,
     })
 }
 
@@ -704,64 +1408,65 @@ pub(super) fn install_upload(
     if !valid_name(name) {
         return Err(invalid("That is not a valid file name."));
     }
-    let src = check_staging(staging, dirs)?;
-    let dest_dir = resolve(dir, jail, true)?;
-    check_modifiable(&dest_dir)?;
-    let dir_meta = fs::metadata(&dest_dir).map_err(|e| io_err("Cannot open the folder", &e))?;
-    if !dir_meta.is_dir() {
-        return Err(invalid("The destination is not a folder."));
-    }
-    let dest = dest_dir.join(name);
-    check_not_denied(&dest)?;
-    check_modifiable(&dest)?;
-    let (mode, owner_src) = match fs::symlink_metadata(&dest) {
-        Ok(m) if m.file_type().is_file() && overwrite => (m.mode(), m),
-        Ok(_) if !overwrite => {
-            return Err(err(
-                PrivErrorCode::Conflict,
-                format!("A file named {name} already exists here."),
-            ));
+    let (xfer_fd, staged_name, input_fd) = check_staging_at(staging, dirs)?;
+    let (ctx, mut rel) = RootCtx::open(dir, jail)?;
+    rel.push(name.to_owned());
+    let rp = ctx.resolve_parent_and_leaf(&rel, false)?;
+    check_unmodifiable_flag(rp.unmodifiable)?;
+    let dest_dir_st = fstat(&rp.parent_fd).map_err(|e| r_io_err("Cannot open the folder", e))?;
+    ctx.policy.check_not_denied(&dest_dir_st)?;
+    let (mode, uid, gid) = match statat(&rp.parent_fd, &rp.leaf, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(st) => {
+            ctx.policy.check_not_denied(&st)?;
+            ctx.policy.check_modifiable_stat(&st)?;
+            if FileType::from_raw_mode(st.st_mode as _).is_file() && overwrite {
+                (st.st_mode as u32, st.st_uid, st.st_gid)
+            } else if !overwrite {
+                return Err(err(
+                    PrivErrorCode::Conflict,
+                    format!("A file named {name} already exists here."),
+                ));
+            } else {
+                return Err(invalid(
+                    "Something that is not a regular file already has that name.",
+                ));
+            }
         }
-        Ok(_) => {
-            return Err(invalid(
-                "Something that is not a regular file already has that name.",
-            ));
-        }
-        Err(_) => (0o644, dir_meta),
+        Err(Errno::NOENT) => (0o644, dest_dir_st.st_uid, dest_dir_st.st_gid),
+        Err(e) => return Err(r_io_err("Cannot open the destination", e)),
     };
-    // Open the staged file without following a link someone swapped in after the check.
-    let mut input = OpenOptions::new()
-        .read(true)
-        .custom_flags(OFlag::O_NOFOLLOW.bits())
-        .open(&src)
-        .map_err(|e| io_err("Cannot read the upload", &e))?;
+    let mut input = fs::File::from(input_fd);
     let mut rnd = [0u8; 6];
     getrandom::fill(&mut rnd)
         .map_err(|_| err(PrivErrorCode::Internal, "random number generator failed"))?;
-    let tmp = dest_dir.join(format!(
+    let tmp_name = format!(
         ".{name}.opsbox-{}.tmp",
         rnd.iter().map(|b| format!("{b:02x}")).collect::<String>()
-    ));
+    );
     let result = (|| {
-        let mut out = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| io_err("Cannot create the file", &e))?;
+        let out_fd = openat(
+            &rp.parent_fd,
+            &tmp_name,
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::from_raw_mode(0o600),
+        )
+        .map_err(|e| r_io_err("Cannot create the file", e))?;
+        let mut out = fs::File::from(out_fd);
         std::io::copy(&mut input, &mut out).map_err(|e| io_err("Cannot write the file", &e))?;
         out.sync_all()
             .map_err(|e| io_err("Cannot flush the file", &e))?;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode & 0o7777))
-            .map_err(|e| io_err("Cannot set the permissions", &e))?;
-        chown_like(&tmp, &owner_src)?;
-        fs::rename(&tmp, &dest).map_err(|e| io_err("Cannot move the file into place", &e))
+        fchmod(&out, Mode::from_raw_mode((mode & 0o7777) as _))
+            .map_err(|e| r_io_err("Cannot set the permissions", e))?;
+        fchown(&out, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid)))
+            .map_err(|e| r_io_err("Cannot set the owner", e))?;
+        renameat(&rp.parent_fd, &tmp_name, &rp.parent_fd, &rp.leaf)
+            .map_err(|e| r_io_err("Cannot move the file into place", e))
     })();
     if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+        let _ = unlinkat(&rp.parent_fd, &tmp_name, AtFlags::empty());
     }
     result?;
-    let _ = fs::remove_file(&src);
+    let _ = unlinkat(&xfer_fd, &staged_name, AtFlags::empty());
     Ok(())
 }
 
@@ -769,7 +1474,7 @@ pub(super) fn install_upload(
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::sync::OnceLock;
 
     fn tmp() -> (tempfile::TempDir, PathBuf) {
@@ -1548,6 +2253,152 @@ mod tests {
         }
         for bad in ["", ".", "..", "a/b", "a\0", "a\nb", &"x".repeat(256)] {
             assert!(!valid_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn concurrent_parent_swap_during_read_write_and_delete_never_escapes_jail() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (_t, root) = tmp();
+        let d = dirs(&root);
+        let jail = root.join("jail");
+        let outside = root.join("outside");
+        let real_sub = jail.join("real_sub");
+        fs::create_dir_all(&real_sub).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(real_sub.join("secret"), "inside").unwrap();
+        fs::write(outside.join("secret"), "TOP_SECRET").unwrap();
+
+        let sub = jail.join("sub");
+        symlink(&real_sub, &sub).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_bg = Arc::clone(&stop);
+        let sub_bg = sub.clone();
+        let real_sub_bg = real_sub.clone();
+        let outside_bg = outside.clone();
+        let jail_bg = jail.clone();
+
+        let swapper = std::thread::spawn(move || {
+            let mut i = 0u64;
+            while !stop_bg.load(Ordering::Relaxed) {
+                let tmp_link = jail_bg.join(format!("swap-{i}.tmp"));
+                let target = if i % 2 == 0 { &outside_bg } else { &real_sub_bg };
+                let _ = symlink(target, &tmp_link);
+                let _ = fs::rename(&tmp_link, &sub_bg);
+                if !real_sub_bg.join("secret").exists() {
+                    let _ = fs::write(real_sub_bg.join("secret"), "inside");
+                }
+                i += 1;
+            }
+        });
+
+        let j = Some(s(&jail));
+        let target = s(&sub.join("secret"));
+        for i in 0..200 {
+            if let Ok(c) = read(&target, j.as_deref()) {
+                assert_ne!(c.content, "TOP_SECRET", "read escaped jail at iter {i}");
+            }
+            let _ = write(&target, "pwned", None, j.as_deref());
+            let _ = remove(std::slice::from_ref(&target), true, j.as_deref(), &d);
+        }
+
+        stop.store(true, Ordering::Relaxed);
+        swapper.join().unwrap();
+
+        assert_eq!(
+            fs::read_to_string(outside.join("secret")).unwrap(),
+            "TOP_SECRET",
+            "outside secret must never be modified or deleted"
+        );
+    }
+
+    #[test]
+    fn denied_paths_via_symlink_and_dot_dot_fail() {
+        let (_t, root) = tmp();
+        let d = dirs(&root);
+        symlink("/dev/null", root.join("to_dev_null")).unwrap();
+        symlink("/dev", root.join("to_dev")).unwrap();
+        let mut rel = String::new();
+        for _ in 0..16 {
+            rel.push_str("../");
+        }
+        rel.push_str("dev/null");
+        symlink(&rel, root.join("rel_dev_null")).unwrap();
+
+        for p in [
+            s(&root.join("to_dev_null")),
+            s(&root.join("to_dev/null")),
+            s(&root.join("rel_dev_null")),
+            "/tmp/../dev/null".to_owned(),
+        ] {
+            assert_eq!(read(&p, None).unwrap_err().code, PrivErrorCode::Refused, "read {p}");
+            assert_eq!(
+                write(&p, "x", None, None).unwrap_err().code,
+                PrivErrorCode::Refused,
+                "write {p}"
+            );
+            assert_eq!(
+                chmod(&p, "600", None).unwrap_err().code,
+                PrivErrorCode::Refused,
+                "chmod {p}"
+            );
+            assert_eq!(
+                stage_download(&p, None, &d).unwrap_err().code,
+                PrivErrorCode::Refused,
+                "stage_download {p}"
+            );
+        }
+        for p in [s(&root.join("to_dev/null")), "/tmp/../dev/null".to_owned()] {
+            assert_eq!(
+                remove(std::slice::from_ref(&p), true, None, &d)
+                    .unwrap_err()
+                    .code,
+                PrivErrorCode::Refused,
+                "remove {p}"
+            );
+        }
+        assert_eq!(
+            mkdir(&s(&root.join("to_dev/opsbox_nope")), None)
+                .unwrap_err()
+                .code,
+            PrivErrorCode::Refused
+        );
+    }
+
+    #[test]
+    fn staging_cannot_escape_xfer() {
+        let (_t, root) = tmp();
+        let d = dirs(&root);
+        let dest = root.join("dest");
+        let outside = root.join("outside");
+        let xfer_sibling = root.join("xfer_evil");
+        fs::create_dir_all(&dest).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&xfer_sibling).unwrap();
+        fs::create_dir_all(d.xfer.join("sub")).unwrap();
+
+        fs::write(outside.join("payload.part"), "secret").unwrap();
+        fs::write(xfer_sibling.join("payload.part"), "secret").unwrap();
+        symlink(outside.join("payload.part"), d.xfer.join("link_out.part")).unwrap();
+        symlink(&outside, d.xfer.join("dir_link")).unwrap();
+
+        let bad_stagings = [
+            format!("{}/../outside/payload.part", d.xfer.display()),
+            format!("{}/sub/../../outside/payload.part", d.xfer.display()),
+            s(&d.xfer.join("link_out.part")),
+            s(&d.xfer.join("dir_link/payload.part")),
+            s(&xfer_sibling.join("payload.part")),
+        ];
+        for staging in bad_stagings {
+            let res = install_upload(&staging, &s(&dest), "out.txt", false, None, &d);
+            assert!(res.is_err(), "staging {staging} must be refused");
+            assert!(
+                !dest.join("out.txt").exists(),
+                "staging {staging} must not create destination file"
+            );
         }
     }
 }
