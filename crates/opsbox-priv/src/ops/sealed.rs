@@ -1,4 +1,4 @@
-//! Namespaced secret sealing/opening for non-TOTP subsystems (such as proxy keys).
+//! Namespaced secret sealing/opening for non-TOTP subsystems (proxy keys and deploy secrets).
 //!
 //! `totp:*` contexts are unconditionally refused here so a compromised caller can
 //! never read TOTP secrets via generic `SecretOpen`.
@@ -7,7 +7,7 @@ use opsbox_proto::{PrivError, PrivErrorCode, PrivReply, Secret};
 
 use crate::secrets::{SecretError, Secrets};
 
-const ALLOWED_PREFIXES: &[&str] = &["proxy:"];
+const ALLOWED_PREFIXES: &[&str] = &["proxy:", "deploy:"];
 const MAX_PLAINTEXT_BYTES: usize = 64 * 1024;
 
 pub(crate) fn valid_context(context: &str) -> Result<(), PrivError> {
@@ -96,6 +96,38 @@ mod tests {
         }
         assert!(valid_context("proxy:acme_account:prod").is_ok());
         assert!(valid_context("proxy:cert:panel.example.com").is_ok());
+        assert!(valid_context("deploy:github_app:private_key").is_ok());
+        assert!(valid_context("deploy:github_app:webhook_secret").is_ok());
+        assert!(valid_context("deploy:deploy_key:01J9ABCDEFGHJKMNPQRSTVWXYZ").is_ok());
+        assert_eq!(
+            valid_context("deploy:").unwrap_err().code,
+            PrivErrorCode::Refused
+        );
+        assert_eq!(
+            valid_context("deploy:../totp").unwrap_err().code,
+            PrivErrorCode::Refused
+        );
+    }
+
+    #[test]
+    fn seals_and_opens_deploy_secrets_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = Secrets::new(dir.path().join("master.key"));
+        let PrivReply::Sealed { sealed } = seal(
+            &secrets,
+            "deploy:github_app:webhook_secret",
+            &Secret::new("whsec_test_secret"),
+        )
+        .unwrap() else {
+            panic!("expected Sealed");
+        };
+        let PrivReply::Opened { plaintext } =
+            open(&secrets, "deploy:github_app:webhook_secret", &sealed).unwrap()
+        else {
+            panic!("expected Opened");
+        };
+        assert_eq!(plaintext.expose(), "whsec_test_secret");
+        assert!(open(&secrets, "deploy:github_app:private_key", &sealed).is_err());
     }
 
     #[test]

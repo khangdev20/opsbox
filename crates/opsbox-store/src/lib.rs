@@ -5,6 +5,7 @@
 
 mod accounts;
 mod audit;
+mod github;
 mod invites;
 mod metrics;
 mod migrations;
@@ -21,6 +22,10 @@ use time::format_description::well_known::Rfc3339;
 pub use accounts::{Session, SessionKind, User};
 pub use audit::{
     ActorKind, AuditEntry, AuditError, AuditReport, AuditResult, GENESIS_HASH, NewAudit,
+};
+pub use github::{
+    DeployKeyInfo, DeployKeyRecord, GithubAppRecord, NewDeployKey, NewGithubApp,
+    NewWebhookDelivery, PendingManifestState, WebhookDelivery,
 };
 pub use invites::Invite;
 pub use metrics::{Granularity, MetricRow};

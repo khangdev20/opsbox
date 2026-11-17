@@ -30,6 +30,10 @@ fn migrates_an_empty_database() {
         [
             "api_tokens",
             "audit",
+            "deploy_keys",
+            "github_app",
+            "github_manifest_states",
+            "github_webhook_deliveries",
             "invites",
             "login_failures",
             "metrics_hour",
@@ -497,4 +501,119 @@ fn read_only_store_detects_corruption_and_missing_files() {
             .map_err(|e| opsbox_store::StoreError::Io(std::io::Error::other(e)))
     });
     assert!(check.is_err());
+}
+
+#[test]
+fn github_app_manifest_states_deploy_keys_and_webhooks_round_trip() {
+    use opsbox_store::{NewDeployKey, NewGithubApp, NewWebhookDelivery};
+
+    let store = Store::open_in_memory().unwrap();
+    store
+        .save_github_manifest_state("st-1", Some("acme-org"), "admin", 500, 100)
+        .unwrap();
+    // Expired state returns None.
+    assert!(
+        store
+            .consume_github_manifest_state("st-1", 600)
+            .unwrap()
+            .is_none()
+    );
+    // Live state consumes atomically once.
+    store
+        .save_github_manifest_state("st-2", None, "admin", 500, 100)
+        .unwrap();
+    let consumed = store
+        .consume_github_manifest_state("st-2", 200)
+        .unwrap()
+        .unwrap();
+    assert_eq!(consumed.created_by, "admin");
+    assert!(consumed.org.is_none());
+    assert!(
+        store
+            .consume_github_manifest_state("st-2", 200)
+            .unwrap()
+            .is_none()
+    );
+
+    store
+        .upsert_github_app(&NewGithubApp {
+            app_id: 4242,
+            slug: "opsbox-srv".into(),
+            name: "opsbox srv".into(),
+            owner_login: "acme".into(),
+            owner_type: "Organization".into(),
+            html_url: "https://github.com/organizations/acme/settings/apps/opsbox-srv".into(),
+            private_key_enc: "enc:v1:key".into(),
+            webhook_secret_enc: "enc:v1:wh".into(),
+            webhook_url: Some("https://panel.example.com/api/v1/github/webhook".into()),
+            webhook_active: true,
+            installation_id: None,
+            installation_account: None,
+            installation_html_url: None,
+            repository_selection: None,
+            created_by: "admin".into(),
+            now: 100,
+        })
+        .unwrap();
+
+    let app = store.get_github_app().unwrap().unwrap();
+    assert_eq!(app.app_id, 4242);
+    assert!(app.webhook_active);
+    let dbg = format!("{app:?}");
+    assert!(!dbg.contains("enc:v1:key") && !dbg.contains("enc:v1:wh"));
+
+    assert!(
+        store
+            .update_github_installation(
+                Some(999),
+                Some("acme"),
+                Some("https://github.com/organizations/acme/settings/installations/999"),
+                Some("selected"),
+                200
+            )
+            .unwrap()
+    );
+    let id = store
+        .record_github_webhook_delivery(&NewWebhookDelivery {
+            delivery_id: Some("deliv-1".into()),
+            event: "push".into(),
+            repo: Some("acme/shop".into()),
+            git_ref: Some("refs/heads/main".into()),
+            commit_sha: Some("abc1234".into()),
+            pusher: Some("alice".into()),
+            received_at: 300,
+        })
+        .unwrap();
+    assert!(!id.is_empty());
+    let app = store.get_github_app().unwrap().unwrap();
+    assert_eq!(app.installation_id, Some(999));
+    assert_eq!(app.last_webhook_at, Some(300));
+    assert_eq!(app.last_webhook_event.as_deref(), Some("push"));
+    assert_eq!(store.list_github_webhook_deliveries(10).unwrap().len(), 1);
+
+    store
+        .create_deploy_key(&NewDeployKey {
+            id: "dk-1".into(),
+            repo: "acme/secret".into(),
+            ssh_url: "git@github.com:acme/secret.git".into(),
+            public_key: "ssh-ed25519 AAAA test".into(),
+            fingerprint: "SHA256:abc".into(),
+            private_key_enc: "enc:v1:priv".into(),
+            created_by: "admin".into(),
+            created_at: 300,
+        })
+        .unwrap();
+    assert_eq!(store.list_deploy_keys().unwrap().len(), 1);
+    assert_eq!(
+        store
+            .get_deploy_key("dk-1")
+            .unwrap()
+            .unwrap()
+            .private_key_enc,
+        "enc:v1:priv"
+    );
+    assert!(store.delete_deploy_key("dk-1").unwrap());
+    assert!(store.list_deploy_keys().unwrap().is_empty());
+    assert!(store.delete_github_app().unwrap());
+    assert!(store.get_github_app().unwrap().is_none());
 }

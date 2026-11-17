@@ -32,6 +32,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "invites_tokens",
         sql: include_str!("../migrations/0004_invites_tokens.sql"),
     },
+    Migration {
+        version: 5,
+        name: "github_sources",
+        sql: include_str!("../migrations/0005_github_sources.sql"),
+    },
 ];
 
 /// Version of the newest migration this binary knows.
