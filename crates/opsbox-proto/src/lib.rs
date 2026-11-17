@@ -15,6 +15,7 @@ pub mod pty;
 pub mod role;
 pub mod security;
 pub mod system;
+pub mod watchdog;
 
 pub use access::{AccessState, AccessUser, AuthorizedKey, SshStatus};
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
@@ -33,3 +34,4 @@ pub use system::{
     CommandOutcome, FirewallChange, FirewallRule, FirewallState, JobInfo, JournalEntry, NewRule,
     PkgSelect, PkgState, PkgUpdate, UnitActionKind, UnitInfo,
 };
+pub use watchdog::{WatchdogCheck, WatchdogStatus};

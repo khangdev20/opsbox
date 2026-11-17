@@ -23,6 +23,7 @@ pub(crate) mod terminal;
 mod totp;
 mod units;
 mod update;
+mod watchdog;
 pub mod web;
 
 pub use firewall::{janitor_tick, restore_on_start};
@@ -203,6 +204,7 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             code: opsbox_proto::PrivErrorCode::Internal,
             message: "A terminal can only be opened on its own connection.".into(),
         }),
+        PrivOp::WatchdogStatus => Ok(PrivReply::WatchdogStatus(Box::new(watchdog::status()))),
         PrivOp::TotpNewSecret { context } => totp::new_secret(secrets, context),
         PrivOp::TotpVerify {
             sealed,

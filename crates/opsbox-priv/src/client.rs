@@ -9,7 +9,7 @@ use opsbox_proto::{
     FirewallChange, FirewallState, HostInfo, HostSettings, JobInfo, JournalEntry, NewRule,
     PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
     PtyFrame, RawSample, Secret, SecurityScan, Staged, SystemFacts, SystemUser, UnitActionKind,
-    UnitInfo,
+    UnitInfo, WatchdogStatus,
 };
 use tokio::net::{
     UnixStream,
@@ -997,5 +997,13 @@ impl PrivClient {
     ) -> Result<(), ClientError> {
         self.done(rid, actor, PrivOp::WebLocalOnly { local_only })
             .await
+    }
+
+    pub async fn watchdog_status(&self, rid: &str) -> Result<WatchdogStatus, ClientError> {
+        self.expect(rid, None, PrivOp::WatchdogStatus, |r| match r {
+            PrivReply::WatchdogStatus(s) => Ok(*s),
+            o => Err(o),
+        })
+        .await
     }
 }

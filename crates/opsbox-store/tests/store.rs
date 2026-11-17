@@ -451,3 +451,50 @@ fn api_tokens_are_stored_by_hash_with_a_unique_name() {
     assert_eq!(store.delete_api_token(&t.id).unwrap().unwrap().name, "ci");
     assert!(store.list_api_tokens().unwrap().is_empty());
 }
+
+#[test]
+fn read_only_store_reads_users_settings_and_checks_integrity() {
+    use opsbox_proto::Role;
+    use opsbox_store::ReadOnlyStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ro.db");
+    {
+        let store = Store::open(&path).unwrap();
+        store
+            .create_user("Alice", Role::Admin, "$argon2id$hash", 100)
+            .unwrap();
+        store
+            .set_setting("opsbox.panel.domain", &json!("panel.example.com"))
+            .unwrap();
+    }
+
+    let ro = ReadOnlyStore::open(&path).unwrap();
+    ro.check_integrity().unwrap();
+    assert_eq!(ro.schema_version().unwrap(), LATEST_VERSION);
+    let user = ro.user_by_name("alice").unwrap().unwrap();
+    assert_eq!(user.name, "Alice");
+    assert_eq!(user.role, Role::Admin);
+    assert_eq!(
+        ro.get_setting("opsbox.panel.domain").unwrap(),
+        Some(json!("panel.example.com"))
+    );
+    // Does not create -shm/-wal sidecars when closed cleanly.
+    assert!(!dir.path().join("ro.db-shm").exists());
+}
+
+#[test]
+fn read_only_store_detects_corruption_and_missing_files() {
+    use opsbox_store::ReadOnlyStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    assert!(ReadOnlyStore::open(&dir.path().join("missing.db")).is_err());
+
+    let corrupt = dir.path().join("corrupt.db");
+    std::fs::write(&corrupt, b"not a sqlite database at all").unwrap();
+    let check = ReadOnlyStore::open(&corrupt).and_then(|ro| {
+        ro.check_integrity()
+            .map_err(|e| opsbox_store::StoreError::Io(std::io::Error::other(e)))
+    });
+    assert!(check.is_err());
+}

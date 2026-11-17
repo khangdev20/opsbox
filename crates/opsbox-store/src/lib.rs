@@ -14,7 +14,7 @@ mod tokens;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -128,6 +128,130 @@ pub fn db_schema_version(path: &Path) -> Result<u32, StoreError> {
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     Ok(migrations::current_version(&conn)?)
+}
+
+/// Strictly read-only handle on the SQLite database for `opsbox-watchdog` (spec 7.16).
+///
+/// Never runs migrations, never writes, preserves `-shm` ownership when opened as root,
+/// and falls back to `immutable=1` when no live WAL exists or the disk is full.
+pub struct ReadOnlyStore {
+    conn: Connection,
+}
+
+impl ReadOnlyStore {
+    pub fn open(path: &Path) -> Result<Self, StoreError> {
+        let meta = std::fs::metadata(path)?;
+        let wal_path = sidecar_path(path, "-wal");
+        let shm_path = sidecar_path(path, "-shm");
+        let shm_existed = shm_path.exists();
+        let wal_non_empty = std::fs::metadata(&wal_path).is_ok_and(|m| m.len() > 0);
+
+        let conn = if !shm_existed && !wal_non_empty {
+            Connection::open_with_flags(
+                sqlite_immutable_uri(path),
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | OpenFlags::SQLITE_OPEN_URI
+                    | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )?
+        } else {
+            match Connection::open_with_flags(
+                path,
+                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            ) {
+                Ok(c) => {
+                    if !shm_existed && shm_path.exists() {
+                        preserve_owner_and_mode(&meta, &shm_path);
+                    }
+                    c
+                }
+                Err(_) => Connection::open_with_flags(
+                    sqlite_immutable_uri(path),
+                    OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | OpenFlags::SQLITE_OPEN_URI
+                        | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?,
+            }
+        };
+
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        let _ = conn.pragma_update(None, "query_only", true);
+        Ok(Self { conn })
+    }
+
+    pub fn schema_version(&self) -> Result<u32, StoreError> {
+        Ok(migrations::current_version(&self.conn)?)
+    }
+
+    /// Run `PRAGMA quick_check(1)` to confirm database integrity without modifying anything.
+    pub fn check_integrity(&self) -> Result<(), String> {
+        let res: String = self
+            .conn
+            .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
+            .map_err(|e| format!("database integrity check failed: {e}"))?;
+        if res.eq_ignore_ascii_case("ok") {
+            Ok(())
+        } else {
+            Err(format!("database integrity check failed: {res}"))
+        }
+    }
+
+    pub fn user_by_name(&self, name: &str) -> Result<Option<User>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {} FROM users WHERE name = ?1", accounts::USER_COLS),
+                [name],
+                |r| accounts::user_row_at(r, 0),
+            )
+            .optional()?)
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<serde_json::Value>, StoreError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        raw.map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(Into::into)
+    }
+}
+
+fn sidecar_path(base: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = base.as_os_str().to_os_string();
+    s.push(suffix);
+    std::path::PathBuf::from(s)
+}
+
+fn sqlite_immutable_uri(path: &Path) -> String {
+    let raw = path.to_string_lossy();
+    let mut esc = String::with_capacity(raw.len() + 20);
+    esc.push_str("file:");
+    for ch in raw.chars() {
+        match ch {
+            '%' => esc.push_str("%25"),
+            '?' => esc.push_str("%3F"),
+            '#' => esc.push_str("%23"),
+            _ => esc.push(ch),
+        }
+    }
+    esc.push_str("?immutable=1");
+    esc
+}
+
+fn preserve_owner_and_mode(source_meta: &std::fs::Metadata, target: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let _ = std::os::unix::fs::chown(target, Some(source_meta.uid()), Some(source_meta.gid()));
+        let _ = std::fs::set_permissions(target, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (source_meta, target);
+    }
 }
 
 /// Current time as RFC 3339 UTC with millisecond precision.

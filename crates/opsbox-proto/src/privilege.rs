@@ -271,6 +271,8 @@ pub enum PrivOp {
         cols: u16,
         rows: u16,
     },
+    /// Read the watchdog's latest health snapshot (read-only).
+    WatchdogStatus,
 }
 
 impl PrivOp {
@@ -333,6 +335,7 @@ impl PrivOp {
             Self::UserLock { .. } => "user_lock",
             Self::UserList => "user_list",
             Self::PtyOpen { .. } => "pty_open",
+            Self::WatchdogStatus => "watchdog_status",
         }
     }
 }
@@ -448,6 +451,8 @@ pub enum PrivReply {
         user: String,
         shell: String,
     },
+    /// Answer to [`PrivOp::WatchdogStatus`].
+    WatchdogStatus(Box<crate::watchdog::WatchdogStatus>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

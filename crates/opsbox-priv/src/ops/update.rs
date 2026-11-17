@@ -132,11 +132,15 @@ fn schedule_unit_restart() -> Result<(), PrivError> {
     Ok(())
 }
 
-fn schedule_rollback_check(layout: &SlotLayout, from: Option<&str>, to: &str) {
-    let checker_bin = from
-        .map(|v| layout.slot_path(v))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| layout.symlink.clone());
+fn watchdog_is_active() -> bool {
+    Path::new("/run/systemd/system").is_dir()
+        && Command::new("systemctl")
+            .args(["is-active", "--quiet", "opsbox-watchdog.service"])
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
+fn clear_transient_rollback_check() {
     let _ = Command::new("systemctl")
         .args([
             "stop",
@@ -147,6 +151,14 @@ fn schedule_rollback_check(layout: &SlotLayout, from: Option<&str>, to: &str) {
     let _ = Command::new("systemctl")
         .args(["reset-failed", "opsbox-rollback-check.service"])
         .output();
+}
+
+fn schedule_rollback_check(layout: &SlotLayout, from: Option<&str>, to: &str) {
+    clear_transient_rollback_check();
+    let checker_bin = from
+        .map(|v| layout.slot_path(v))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| layout.symlink.clone());
     let mut args = vec![
         "--unit=opsbox-rollback-check".to_owned(),
         "--on-active=120s".to_owned(),
@@ -204,18 +216,33 @@ pub(super) fn install(
 
     let clean_to = version.trim_start_matches('v').to_owned();
     let from_ver = prev.clone().unwrap_or_else(|| current_ver.to_owned());
+    let watchdog_active = watchdog_is_active();
     let mut state: UpdateState = layout.read_state();
     state.last_outcome = Some(UpdateOutcome {
         status: "pending".to_owned(),
         from_version: from_ver,
         to_version: clean_to.clone(),
-        message: format!("Switched to {clean_to}; health check scheduled in 2 minutes."),
+        message: if watchdog_active {
+            format!("Switched to {clean_to}; watchdog is monitoring health for automatic rollback.")
+        } else {
+            format!("Switched to {clean_to}; health check scheduled in 2 minutes.")
+        },
         at: now_secs(),
         audited: false,
     });
     let _ = layout.write_state(&state);
 
-    schedule_rollback_check(&layout, prev.as_deref(), &clean_to);
+    if watchdog_active {
+        // Watchdog owns post-update health checks and rollback once running.
+        clear_transient_rollback_check();
+        tracing::info!(
+            to = %clean_to,
+            from = ?prev,
+            "opsbox-watchdog.service is active; skipping transient opsbox-rollback-check unit"
+        );
+    } else {
+        schedule_rollback_check(&layout, prev.as_deref(), &clean_to);
+    }
     schedule_unit_restart()?;
     Ok(())
 }

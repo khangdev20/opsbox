@@ -54,6 +54,7 @@ pub(super) fn collect(master_key: &Path) -> DoctorReport {
             "opsbox.service",
             "opsbox-priv.service",
             "opsbox-proxy.service",
+            "opsbox-watchdog.service",
         ] {
             let active =
                 run(&ctl, &["is-active", unit], Duration::from_secs(3)).is_some_and(|o| o.ok());

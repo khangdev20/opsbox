@@ -151,7 +151,7 @@ pub(crate) fn set_local_only(config_path: &Path, local_only: bool) -> Result<(),
             "--description=Restart opsbox after listener change",
             "/bin/sh",
             "-c",
-            "sleep 0.5; systemctl restart opsbox.service",
+            "sleep 0.5; systemctl restart opsbox.service; systemctl try-restart opsbox-watchdog.service",
         ])
         .output()
         .map_err(|e| err(PrivErrorCode::Internal, format!("systemd-run failed: {e}")))?;
