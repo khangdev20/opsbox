@@ -272,7 +272,41 @@ mod bus {
                     UnitActionKind::Stop => "StopUnit",
                     _ => "RestartUnit",
                 };
-                let _: OwnedObjectPath = manager.call(method, &(name, "replace")).await?;
+                use futures_util::StreamExt;
+                let mut finished = manager.receive_signal("JobRemoved").await?;
+                manager.call::<_, _, ()>("Subscribe", &()).await?;
+                let job: OwnedObjectPath = manager.call(method, &(name, "replace")).await?;
+                while let Some(signal) = finished.next().await {
+                    let (_, path, unit, result): (u32, OwnedObjectPath, String, String) =
+                        signal.body().deserialize()?;
+                    if path != job {
+                        continue;
+                    }
+                    if result != "done" {
+                        let unit_path: OwnedObjectPath = manager.call("GetUnit", &(name,)).await?;
+                        let service = Proxy::new(
+                            &conn,
+                            SERVICE,
+                            unit_path,
+                            "org.freedesktop.systemd1.Service",
+                        )
+                        .await?;
+                        let reason = service
+                            .get_property::<String>("Result")
+                            .await
+                            .unwrap_or(result.clone());
+                        let code = service
+                            .get_property::<i32>("ExecMainStatus")
+                            .await
+                            .unwrap_or(-1);
+                        return Err(std::io::Error::other(format!("{method} {unit} failed: job={result}, unit={reason}, exit status={code}")).into());
+                    }
+                    return Ok(());
+                }
+                return Err(std::io::Error::other(
+                    "systemd job signal stream closed before completion",
+                )
+                .into());
             }
             UnitActionKind::Enable => {
                 let _: (bool, Vec<(String, String, String)>) = manager

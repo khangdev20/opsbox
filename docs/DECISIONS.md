@@ -266,3 +266,9 @@ Choices made while building the backend where `BACKEND_SPEC.md` left room or whe
 The network-facing serve process no longer opens `/dev/console`. A typed `ConsoleNotice` request carries a redacted `Secret`; priv bounds the notice to 4096 bytes, requires the setup-banner prefix and rejects control characters before writing the fixed console device. Console failure leaves the journal banner available.
 
 The binary configuration fixes file staging at `/var/lib/opsbox/xfer` by default. Alternate paths (including CLI/environment overrides) require `[files] allow_external_xfer_dir = true`. The isolated memory probe opts in explicitly. This configuration guard does not claim to solve staging-directory replacement races; descriptor-relative file and staging access remains a separate required part.
+
+### Phase 1 safety follow-up: systemd completion and firewalld sources
+
+Service start/stop/restart now register JobRemoved reception and subscribe before submitting the job, match the returned job object path and wait within the existing 20-second operation deadline. A non-done result returns the job result, service Result and ExecMainStatus to the API/UI; a closed signal stream is an error. Enable/disable retain their synchronous manager calls.
+
+Firewalld restricted-source rules use a single rich-rule argv value with an explicit IPv4/IPv6 family, validated source and port/protocol. Add, remove, listing and rollback share the same representation; general anywhere rules retain add-port/remove-port. Tests cover IPv4 addresses/CIDRs, IPv6 CIDRs, add/remove symmetry, listing round-trip and invalid-source rejection.

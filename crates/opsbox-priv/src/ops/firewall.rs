@@ -418,6 +418,12 @@ fn list_rules(b: Backend, saved: &Saved) -> Result<Vec<FirewallRule>, PrivError>
                 T,
             )
             .ok_or_else(|| err(PrivErrorCode::Internal, "firewalld did not answer"))?;
+            let rich = run(
+                &tool(&["/usr/bin/firewall-cmd", "/bin/firewall-cmd"])?,
+                &["--list-rich-rules"],
+                T,
+            )
+            .ok_or_else(|| err(PrivErrorCode::Internal, "firewalld did not answer"))?;
             Ok(o.stdout
                 .split_whitespace()
                 .filter_map(|t| {
@@ -431,6 +437,7 @@ fn list_rules(b: Backend, saved: &Saved) -> Result<Vec<FirewallRule>, PrivError>
                         note: String::new(),
                     })
                 })
+                .chain(rich.stdout.lines().filter_map(parse_rich_rule))
                 .collect())
         }
         Backend::Nft => Ok(if saved.nft_enabled {
@@ -482,6 +489,45 @@ fn apply_nft(saved: &Saved) -> Result<(), PrivError> {
     }
 }
 
+/// Each rich rule is one argv element; no shell sees the source string.
+fn firewalld_change(port: u16, proto: &str, src: &str, add: bool) -> Result<String, PrivError> {
+    check_rule(&NewRule {
+        port,
+        proto: proto.into(),
+        src: src.into(),
+        note: String::new(),
+    })
+    .map_err(|m| err(PrivErrorCode::Invalid, m))?;
+    let verb = if add { "add" } else { "remove" };
+    if src == "anywhere" {
+        return Ok(format!("--{verb}-port={port}/{proto}"));
+    }
+    let family = if src.contains(':') { "ipv6" } else { "ipv4" };
+    Ok(format!(
+        "--{verb}-rich-rule=rule family=\"{family}\" source address=\"{src}\" port port=\"{port}\" protocol=\"{proto}\" accept"
+    ))
+}
+
+fn parse_rich_rule(line: &str) -> Option<FirewallRule> {
+    fn field<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+        line.split_once(prefix)?.1.split('"').next()
+    }
+    if !line.starts_with("rule family=") || !line.ends_with(" accept") {
+        return None;
+    }
+    let src = field(line, "source address=\"")?;
+    let port = field(line, "port port=\"")?.parse().ok()?;
+    let proto = field(line, "protocol=\"")?;
+    firewalld_change(port, proto, src, true).ok()?;
+    Some(FirewallRule {
+        id: rule_id(proto, port, src),
+        port,
+        proto: proto.into(),
+        src: src.into(),
+        note: String::new(),
+    })
+}
+
 fn backend_add(b: Backend, r: &NewRule, saved: &mut Saved) -> Result<(), PrivError> {
     match b {
         Backend::Ufw => {
@@ -510,14 +556,8 @@ fn backend_add(b: Backend, r: &NewRule, saved: &mut Saved) -> Result<(), PrivErr
             check_ok(run(&ufw, &args, T), "ufw")
         }
         Backend::Firewalld => {
-            if r.src != "anywhere" {
-                return Err(err(
-                    PrivErrorCode::Invalid,
-                    "With firewalld, rules here open a port to everyone. For a limited source use firewall-cmd rich rules on the server.",
-                ));
-            }
             let fc = tool(&["/usr/bin/firewall-cmd", "/bin/firewall-cmd"])?;
-            let spec = format!("--add-port={}/{}", r.port, r.proto);
+            let spec = firewalld_change(r.port, &r.proto, &r.src, true)?;
             check_ok(run(&fc, &["--permanent", &spec], T), "firewalld")?;
             check_ok(run(&fc, &["--reload"], T), "firewalld")
         }
@@ -556,7 +596,7 @@ fn backend_remove(b: Backend, rule: &FirewallRule, saved: &mut Saved) -> Result<
         }
         Backend::Firewalld => {
             let fc = tool(&["/usr/bin/firewall-cmd", "/bin/firewall-cmd"])?;
-            let spec = format!("--remove-port={}/{}", rule.port, rule.proto);
+            let spec = firewalld_change(rule.port, &rule.proto, &rule.src, false)?;
             check_ok(run(&fc, &["--permanent", &spec], T), "firewalld")?;
             check_ok(run(&fc, &["--reload"], T), "firewalld")
         }
@@ -913,6 +953,24 @@ pub fn restore_on_start() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn restricted_firewalld_commands_round_trip() {
+        for src in ["192.0.2.10", "192.0.2.0/24", "2001:db8::/64"] {
+            let add = super::firewalld_change(8080, "tcp", src, true).unwrap();
+            let remove = super::firewalld_change(8080, "tcp", src, false).unwrap();
+            assert_eq!(add.replacen("--add-", "--remove-", 1), remove);
+            let rule =
+                super::parse_rich_rule(add.strip_prefix("--add-rich-rule=").unwrap()).unwrap();
+            assert_eq!(rule.src, src);
+            assert_eq!(rule.port, 8080);
+        }
+        assert!(super::firewalld_change(8080, "tcp", "x\" accept", true).is_err());
+        assert_eq!(
+            super::firewalld_change(22, "tcp", "anywhere", false).unwrap(),
+            "--remove-port=22/tcp"
+        );
+    }
+
     use super::*;
 
     fn rule(proto: &str, port: u16, src: &str) -> FirewallRule {
