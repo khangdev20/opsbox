@@ -1,17 +1,19 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/10-app-domains.md` (App domains)
+Last completed prompt: `docs/prompts/archive/11-templates-compose.md` (Templates and Compose)
 
 ## What works
-- `crates/opsbox-store` (`0007_app_domains.sql`, `deploy.rs`): `service_domains` table with multi-domain support, primary election/sync with `services.domain`, `redirect_to`, `force_https`, `hsts`, and `dns_status` persistence.
-- `crates/opsbox-proxy` (`proto.rs`, `proxy.rs`, `acme.rs`, `server.rs`, `domain.rs`): per-domain `redirect_to` HTTP/HTTPS permanent redirects, cert-gated `redirect_https` (plain HTTP until cert exists, `308` once active unless disabled), per-route `hsts`, and persisted ACME renewal failure/backoff tracking (`consecutive_failures`, `last_error`, `next_retry_at`).
-- `crates/opsbox-api` (`domains.rs`, `panel.rs`, `deploy.rs`, `metrics.rs`) & `crates/opsbox` (`cmd/web.rs`): `GET/POST /services/{id}/domains`, `POST /domains/{name}/check`, `POST /domains/{name}/certificate` (`202 {task}`), `PATCH/DELETE /domains/{name}`, `POST /domains/{name}/primary`; strict RBAC/owner/`deploy:<svc>` token enforcement, panel/app domain collision checks, `"tls"` renewal-failure items in `GET /attention`, and shared `build_routes_with_panel`.
-- `web/js` (`api.js`, `pages/apps.js`): `Domains & SSL` tab fully wired (`REAL`) with zero sample data badge, internal `<service>` project-network URL reference, live public IP DNS hints, www/redirect modes, Force HTTPS & HSTS switches, certificate issuance/renewal, and primary selection.
+- `crates/opsbox-deploy` (`templates/*.toml`, `templates.rs`, `compose.rs`): 10 compiled-in TOML templates (`postgres`, `mysql`, `mariadb`, `redis`, `mongo`, `minio`, `kuma`, `umami`, `n8n`, `grafana`), CSPRNG secret/connection-string generation, pure-Rust Compose YAML pre-validation (blocking `include` and escaping `env_file`/`extends`/`build`/`secrets`), elevated privilege/bind detection, and `depends_on` graph extraction.
+- `crates/opsbox-store` (`0008_templates_compose.sql`, `deploy.rs`) & `crates/opsbox-docker`: `compose_stacks` and `backup_jobs` tables, `services.{compose_stack_id,template_id,internal_only}`, named Docker volume creation, `internal_only` vs `127.0.0.1:0:<port>` container launch, network attach (`connect_container_to_network`), and Compose runtime inspection.
+- `crates/opsbox-priv` (`ops/templates_compose.rs`): `TemplateStart` (pull, volume create, secret open/scrubbing, `exec`/HTTP/TCP health checks) and `ComposeValidate`/`ComposeDeploy`/`ComposeDown`/`ComposeRemoveService` (`docker compose config` safety gates returning `ConfirmRequired`, `compose.yml` staging without plaintext `.env`, `up -d`, `opsbox-<project>` attachment).
+- `crates/opsbox-api` (`templates.rs`, `deploy.rs`, `domains.rs`, `files.rs`): `GET /api/v1/templates`, `POST /api/v1/templates/{id}/instances` (one-time `connectionUrl`, masked subsequent `GET`s, backup schedule persistence), `POST /api/v1/compose` (`409 confirmation_required`, `edges` in `GET /projects/{id}`), `DELETE /api/v1/compose/{stack}`, Compose/template redeploy and delete support.
+- `web/js` (`api.js`, `pages/templates.js`, `pages/apps.js`, `pages/newservice.js`, `main.js`): Templates/Compose wired to `REAL` (zero sample badge), real sample YAML (`nginx:1.27-alpine` + `redis:7-alpine`), one-time connection string dialog, Compose confirmation prompt, `proj.edges` topology rendering, and full `db`/`tool`/`compose` detail tabs.
 
 ## Partial / Found, not fixed
-- Linux-only runtime/CI checks (`tools/check-idle-memory.py`, `musl` static build, `cargo-deny`, real Docker Engine + public port 80/443 Let's Encrypt HTTP-01 on Ubuntu) cannot run natively on macOS and remain for Linux CI / `opsbox-vm`.
-- Wildcard app domains (`*.example.com`) require DNS-01 provider tokens (not part of prompt 10) and are explicitly rejected with a clear message.
+- Linux-only runtime/CI checks (`tools/check-idle-memory.py`, `musl` static build, `cargo-deny`, real Docker Engine template container startup and `docker compose` CLI on Ubuntu) cannot run natively on macOS and remain for Linux CI / `opsbox-vm`.
+- Backup schedules (`backup_jobs`) are persisted on template creation; automated execution, retention pruning, and restore arrive in prompts 13–14.
+- Linking database env references (`${{ db.DATABASE_URL }}`) into app services arrives in prompt 12.
 
 ## Next
-- Verify adding a public test domain, DNS check, Let's Encrypt certificate issuance, `www` redirect, Force HTTPS/HSTS toggles, and primary domain switching in `opsbox-vm`.
-- Next prompt: `docs/prompts/11-templates-compose.md`.
+- Verify deploying PostgreSQL (`postgres:16.4`), inspecting masked secrets, and deploying + deleting the two-service Compose file on `opsbox-vm`.
+- Next prompt: `docs/prompts/12-databases-link.md`.
