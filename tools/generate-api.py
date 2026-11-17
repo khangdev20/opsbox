@@ -30,7 +30,7 @@ def inventory():
         if not route:
             raise ValueError('Cannot parse route: ' + source[at:end-1])
         path, handlers = route.groups()
-        methods = re.findall(r'\b(get|post|put|delete)\((\w+::\w+)\)', handlers)
+        methods = re.findall(r'\b(get|post|put|patch|delete)\((\w+::\w+)\)', handlers)
         if not methods:
             raise ValueError('No handler for ' + path)
         for method, handler in methods:
