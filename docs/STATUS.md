@@ -1,17 +1,17 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/09-deploy-pipeline.md` (Deploy pipeline)
+Last completed prompt: `docs/prompts/archive/10-app-domains.md` (App domains)
 
 ## What works
-- `crates/opsbox-store` (`0006_deploy_pipeline.sql`), `crates/opsbox-proto` (`deploy.rs`), `crates/opsbox-deploy` (`pipeline.rs`), `crates/opsbox-docker`, `crates/opsbox-priv` (`ops/deploy.rs`): full single-service deploy pipeline (`clone -> detect -> BuildKit build with --secret mounts & secret scrubbing -> container start on opsbox-<proj> bridge with 127.0.0.1:0:<port> -> HTTP/TCP/worker health check -> atomic switch & drain -> retain 5 images & rollback without rebuild`).
-- Privilege split & isolation: `serve` never touches `/var/run/docker.sock`, `git`, `docker`, or `/var/lib/opsbox/apps`; `Role::Deployer` file access is strictly jailed per owned service directory, and `deploy:<service>` API tokens (`TokenScope::DeployService`) are enforced strictly on deploy, rollback, status, and build-log endpoints.
-- `crates/opsbox-proxy` (`proxy.rs`) & `crates/opsbox-api` (`deploy.rs`, `panel.rs`, `github.rs`, `metrics.rs`): `GET /projects/{id}`, `POST /services`, `GET/PATCH/DELETE /services/{id}`, `POST /services/{id}/deploys`, `POST /services/{id}/deploys/{deploy_id}/rollback`, `PUT/DELETE /services/{id}/vars/{key}`, `GET /deploys/{id}/log`, `WS /stream/deploys/{id}`, webhook `push` auto-deploys, failed-deploy `Attention` items, and proxy HTTP route switching.
-- `web/js` (`api.js`, `newservice.js`, `configure.js`, `apps.js`, `settings.js`): Configure and New service Docker image tab fully wired (`REAL`), Apps graph/deploys/live WS build log/rollback/vars/delete service wired live (`Domains & SSL` tab remains mock preview until prompt 10), and Settings supports `deploy:<service>` token creation.
+- `crates/opsbox-store` (`0007_app_domains.sql`, `deploy.rs`): `service_domains` table with multi-domain support, primary election/sync with `services.domain`, `redirect_to`, `force_https`, `hsts`, and `dns_status` persistence.
+- `crates/opsbox-proxy` (`proto.rs`, `proxy.rs`, `acme.rs`, `server.rs`, `domain.rs`): per-domain `redirect_to` HTTP/HTTPS permanent redirects, cert-gated `redirect_https` (plain HTTP until cert exists, `308` once active unless disabled), per-route `hsts`, and persisted ACME renewal failure/backoff tracking (`consecutive_failures`, `last_error`, `next_retry_at`).
+- `crates/opsbox-api` (`domains.rs`, `panel.rs`, `deploy.rs`, `metrics.rs`) & `crates/opsbox` (`cmd/web.rs`): `GET/POST /services/{id}/domains`, `POST /domains/{name}/check`, `POST /domains/{name}/certificate` (`202 {task}`), `PATCH/DELETE /domains/{name}`, `POST /domains/{name}/primary`; strict RBAC/owner/`deploy:<svc>` token enforcement, panel/app domain collision checks, `"tls"` renewal-failure items in `GET /attention`, and shared `build_routes_with_panel`.
+- `web/js` (`api.js`, `pages/apps.js`): `Domains & SSL` tab fully wired (`REAL`) with zero sample data badge, internal `<service>` project-network URL reference, live public IP DNS hints, www/redirect modes, Force HTTPS & HSTS switches, certificate issuance/renewal, and primary selection.
 
 ## Partial / Found, not fixed
-- Linux-only runtime/CI checks (`tools/check-idle-memory.py`, `musl` static build, `cargo-deny`, real Docker Engine daemon build/healthcheck/proxy traffic on Ubuntu) cannot run natively on macOS and remain for Linux CI / `opsbox-vm`.
-- Nixpacks builds require `nixpacks` installed on the host PATH; without it, opsbox builds `Dockerfile`s and static sites directly and surfaces installation guidance for non-Dockerfile apps.
+- Linux-only runtime/CI checks (`tools/check-idle-memory.py`, `musl` static build, `cargo-deny`, real Docker Engine + public port 80/443 Let's Encrypt HTTP-01 on Ubuntu) cannot run natively on macOS and remain for Linux CI / `opsbox-vm`.
+- Wildcard app domains (`*.example.com`) require DNS-01 provider tokens (not part of prompt 10) and are explicitly rejected with a clear message.
 
 ## Next
-- Verify full GitHub/URL/Docker-image deploys, live WS build logs, health check failure recovery, zero-downtime switching, rollback without rebuild, and `deploy:<svc>` CI token in `opsbox-vm`.
-- Next prompt: `docs/prompts/10-app-domains.md`.
+- Verify adding a public test domain, DNS check, Let's Encrypt certificate issuance, `www` redirect, Force HTTPS/HSTS toggles, and primary domain switching in `opsbox-vm`.
+- Next prompt: `docs/prompts/11-templates-compose.md`.
