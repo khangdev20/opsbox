@@ -11,7 +11,7 @@ pub const DISK_WARN_PCT: f64 = 75.0;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Attention {
-    /// `security`, `reboot`, `disk` or `units`.
+    /// `security`, `reboot`, `disk`, `units`, or `containers`.
     pub kind: &'static str,
     pub text: String,
     /// (label, route) in the UI's own terms.
@@ -88,6 +88,33 @@ pub fn compute(facts: &SystemFacts, disks: &[DiskView]) -> Vec<Attention> {
             link: link("View services →", "#/system"),
         });
     }
+    if !facts.restarting_containers.is_empty() {
+        let names = facts
+            .restarting_containers
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rest = facts.restarting_containers.len().saturating_sub(3);
+        let tail = if rest > 0 {
+            format!(" and {rest} more")
+        } else {
+            String::new()
+        };
+        out.push(Attention {
+            kind: "containers",
+            text: format!(
+                "{} restarting: {names}{tail}.",
+                plural(
+                    facts.restarting_containers.len(),
+                    "container is",
+                    "containers are"
+                )
+            ),
+            link: link("View containers →", "#/containers"),
+        });
+    }
     out
 }
 
@@ -120,10 +147,11 @@ mod tests {
             failed_units: vec!["snapd.service".into()],
             updates_total: Some(14),
             updates_security: Some(3),
+            restarting_containers: vec!["worker-1".into()],
         };
         let items = compute(&facts, &[disk("/", 82), disk("/data", 10)]);
         let kinds: Vec<_> = items.iter().map(|a| a.kind).collect();
-        assert_eq!(kinds, ["security", "reboot", "disk", "units"]);
+        assert_eq!(kinds, ["security", "reboot", "disk", "units", "containers"]);
         assert_eq!(
             items[0].text,
             "3 security updates are waiting, and 11 other updates"
@@ -135,6 +163,8 @@ mod tests {
         assert_eq!(items[2].text, "Disk / is at 82%.");
         assert_eq!(items[2].link.1, "#/cleanup");
         assert_eq!(items[3].text, "1 service has failed: snapd.service.");
+        assert_eq!(items[4].text, "1 container is restarting: worker-1.");
+        assert_eq!(items[4].link.1, "#/containers");
     }
 
     #[test]

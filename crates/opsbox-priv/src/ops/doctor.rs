@@ -46,7 +46,7 @@ pub(super) fn disk_check(path: &str, total: u64, available: u64) -> DoctorCheck 
     )
 }
 
-pub(super) fn collect(master_key: &Path) -> DoctorReport {
+pub(super) fn collect_with(master_key: &Path, dc: &opsbox_docker::DockerClient) -> DoctorReport {
     let mut checks = Vec::new();
     let systemctl = find(&["/usr/bin/systemctl", "/bin/systemctl"]);
     if let Some(ctl) = systemctl.filter(|_| Path::new("/run/systemd/system").is_dir()) {
@@ -128,32 +128,23 @@ pub(super) fn collect(master_key: &Path) -> DoctorReport {
         },
         Some("Inspect resolvectl status and /etc/resolv.conf; check outbound DNS access."),
     ));
-    let docker = find(&["/usr/bin/docker", "/usr/local/bin/docker"]);
-    checks.push(match docker {
-        None => check(
+    let docker = super::docker::status_with(dc);
+    checks.push(if !docker.installed {
+        check("docker", Skip, "Docker is not installed (optional)", None)
+    } else if docker.running {
+        let detail = docker
+            .version
+            .as_deref()
+            .map(|v| format!("Docker daemon answers ({v})"))
+            .unwrap_or_else(|| "Docker daemon answers".to_owned());
+        check("docker", Good, detail, None)
+    } else {
+        check(
             "docker",
-            Skip,
-            "Docker is not installed (optional in Phase 1)",
-            None,
-        ),
-        Some(bin) => {
-            let ok = run(
-                &bin,
-                &["info", "--format", "{{.ServerVersion}}"],
-                Duration::from_secs(5),
-            )
-            .is_some_and(|o| o.ok());
-            check(
-                "docker",
-                if ok { Good } else { Warn },
-                if ok {
-                    "Docker daemon answers"
-                } else {
-                    "Docker client exists but the daemon did not answer"
-                },
-                Some("sudo systemctl status docker"),
-            )
-        }
+            Warn,
+            "Docker is installed but the daemon did not answer",
+            Some("sudo systemctl status docker"),
+        )
     });
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     let private = std::fs::symlink_metadata(master_key).is_ok_and(|m| {

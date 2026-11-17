@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use opsbox_proto::{CpuTimes, RawSample};
+use opsbox_proto::{CpuTimes, DockerContainerStat, RawSample};
 use serde::Serialize;
 
 /// One second of the machine's state.
@@ -74,6 +74,8 @@ pub struct Snapshot {
     pub disks: Vec<DiskView>,
     /// Refreshed every other second; carried over in between.
     pub procs: Vec<ProcView>,
+    /// Running container CPU/memory stats polled in the background.
+    pub containers: Vec<DockerContainerStat>,
 }
 
 /// How many seconds of history the ring keeps.
@@ -218,6 +220,7 @@ impl Engine {
             point,
             disks,
             procs: self.procs.clone(),
+            containers: Vec::new(),
         })
     }
 

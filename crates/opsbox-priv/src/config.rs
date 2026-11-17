@@ -26,6 +26,8 @@ pub struct PrivConfig {
     pub trash_dir: PathBuf,
     /// Path to `config.toml` updated by `WebLocalOnly`.
     pub config_path: PathBuf,
+    /// Docker Engine Unix socket path (defaults to `/var/run/docker.sock`).
+    pub docker_socket: PathBuf,
 }
 
 impl PrivConfig {
@@ -39,6 +41,7 @@ impl PrivConfig {
             xfer_dir: DEFAULT_XFER_DIR.into(),
             trash_dir: DEFAULT_TRASH_DIR.into(),
             config_path: DEFAULT_CONFIG_PATH.into(),
+            docker_socket: opsbox_docker::DEFAULT_SOCKET_PATH.into(),
         }
     }
 }

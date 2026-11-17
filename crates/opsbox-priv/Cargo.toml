@@ -8,10 +8,12 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+opsbox-docker.workspace = true
 opsbox-proto.workspace = true
 opsbox-store.workspace = true
 opsbox-update.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+ureq = "3"
 base64 = "0.23"
 chacha20poly1305 = "0.11"
 getrandom = "0.4"

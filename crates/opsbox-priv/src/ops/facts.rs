@@ -8,9 +8,10 @@ use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
 
+use opsbox_docker::DockerClient;
 use opsbox_proto::SystemFacts;
 
-pub(super) fn collect() -> SystemFacts {
+pub(super) fn collect_with(dc: &DockerClient) -> SystemFacts {
     // Reuse the real apt/dnf implementation instead of depending on Ubuntu's
     // optional update-notifier/apt-check package being installed.
     let packages = super::pkg::list().ok();
@@ -32,6 +33,7 @@ pub(super) fn collect() -> SystemFacts {
         failed_units: failed_units(),
         updates_total,
         updates_security,
+        restarting_containers: super::docker::restarting_containers_with(dc),
     }
 }
 

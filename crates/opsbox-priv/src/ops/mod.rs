@@ -5,6 +5,7 @@
 mod access;
 pub mod cleanup;
 pub(crate) mod cron;
+pub mod docker;
 mod doctor;
 pub(crate) mod exec;
 mod facts;
@@ -40,6 +41,7 @@ pub(crate) struct Env {
     pub master_key: std::path::PathBuf,
     pub config_path: std::path::PathBuf,
     pub files: files::Dirs,
+    pub docker: opsbox_docker::DockerClient,
 }
 
 /// Blocking; the server runs it on a blocking thread.
@@ -77,9 +79,12 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         }
         PrivOp::Ping => Ok(ping::run()),
         PrivOp::HostInfo => host_info::run().map(PrivReply::HostInfo),
-        PrivOp::Doctor => Ok(PrivReply::Doctor(doctor::collect(&env.master_key))),
+        PrivOp::Doctor => Ok(PrivReply::Doctor(doctor::collect_with(
+            &env.master_key,
+            &env.docker,
+        ))),
         PrivOp::MetricsSample { procs } => metrics::run(*procs),
-        PrivOp::SystemFacts => Ok(PrivReply::SystemFacts(facts::collect())),
+        PrivOp::SystemFacts => Ok(PrivReply::SystemFacts(facts::collect_with(&env.docker))),
         PrivOp::PkgList => pkg::list().map(PrivReply::Pkgs),
         PrivOp::PkgInstall { which } => pkg::install(*which).map(PrivReply::Outcome),
         PrivOp::PkgInstallSelected { names } => {
@@ -169,11 +174,11 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             jail,
         } => files::install_upload(staging, dir, name, *overwrite, jail.as_deref(), &env.files)
             .map(|()| PrivReply::Done),
-        PrivOp::CleanupScan => Ok(cleanup::scan(false)),
-        PrivOp::CleanupScanFresh => Ok(cleanup::scan(true)),
-        PrivOp::CleanupVolumeSizes => cleanup::volume_sizes()
+        PrivOp::CleanupScan => Ok(cleanup::scan_with(false, &env.docker)),
+        PrivOp::CleanupScanFresh => Ok(cleanup::scan_with(true, &env.docker)),
+        PrivOp::CleanupVolumeSizes => cleanup::volume_sizes_with(&env.docker)
             .map(|(bytes, count)| PrivReply::CleanupVolumeSize { bytes, count }),
-        PrivOp::CleanupRun { ids } => cleanup::run_ids(ids),
+        PrivOp::CleanupRun { ids } => cleanup::run_ids_with(ids, &env.docker),
         PrivOp::CleanupAutoSet { on } => cleanup::set_auto(*on).map(|()| PrivReply::Done),
         PrivOp::SettingsGet => Ok(PrivReply::Settings(hostset::settings())),
         PrivOp::SelfUpdateInstall {
@@ -216,6 +221,35 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::SecretOpen { context, sealed } => sealed::open(secrets, context, sealed),
         PrivOp::WebLocalOnly { local_only } => {
             web::set_local_only(&env.config_path, *local_only).map(|()| PrivReply::Done)
+        }
+        PrivOp::DockerStatus => Ok(PrivReply::DockerStatus(docker::status_with(&env.docker))),
+        PrivOp::DockerInstall => docker::install().map(PrivReply::Outcome),
+        PrivOp::DockerListContainers => {
+            docker::list_containers_with(&env.docker).map(PrivReply::DockerContainers)
+        }
+        PrivOp::DockerInspect { id } => {
+            docker::inspect_with(&env.docker, id).map(|i| PrivReply::DockerInspect(Box::new(i)))
+        }
+        PrivOp::DockerContainerAction { id, action } => {
+            docker::action_with(&env.docker, id, *action).map(|()| PrivReply::Done)
+        }
+        PrivOp::DockerLogs { id, tail } => {
+            docker::logs_with(&env.docker, id, *tail).map(PrivReply::DockerLogs)
+        }
+        PrivOp::DockerLogsFollow { .. } => Err(PrivError {
+            code: opsbox_proto::PrivErrorCode::Internal,
+            message: "Container log streaming can only be opened on its own connection.".into(),
+        }),
+        PrivOp::DockerStats => docker::stats_with(&env.docker).map(PrivReply::DockerStats),
+        PrivOp::DockerExec(req) => docker::exec_with(&env.docker, req).map(PrivReply::DockerExec),
+        PrivOp::DockerListImages => {
+            docker::list_images_with(&env.docker).map(PrivReply::DockerImages)
+        }
+        PrivOp::DockerListVolumes => {
+            docker::list_volumes_with(&env.docker).map(PrivReply::DockerVolumes)
+        }
+        PrivOp::DockerListNetworks => {
+            docker::list_networks_with(&env.docker).map(PrivReply::DockerNetworks)
         }
     }
 }

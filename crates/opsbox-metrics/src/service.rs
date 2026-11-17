@@ -4,10 +4,10 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use opsbox_priv::PrivClient;
-use opsbox_proto::SystemFacts;
+use opsbox_priv::{ClientError, PrivClient};
+use opsbox_proto::{DockerContainerStat, SystemFacts};
 use opsbox_store::Store;
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast};
 use tracing::{debug, warn};
 
 use crate::attention::{self, Attention};
@@ -18,6 +18,11 @@ use crate::rollup::Rollup;
 const FACTS_EVERY: Duration = Duration::from_secs(300);
 /// Every n-th sample also scans the processes.
 const PROCS_EVERY: u64 = 2;
+/// Poll running containers every 2 s when Docker is active.
+const DOCKER_ACTIVE_EVERY: Duration = Duration::from_secs(2);
+/// Back off polling when Docker is not installed or stopped.
+const DOCKER_IDLE_EVERY: Duration = Duration::from_secs(15);
+const MAX_CONTAINER_STATS: usize = 8;
 
 struct State {
     engine: Engine,
@@ -25,6 +30,9 @@ struct State {
     latest: Option<Arc<Snapshot>>,
     facts: SystemFacts,
     facts_ok: bool,
+    containers: Vec<DockerContainerStat>,
+    restarting_containers: Vec<String>,
+    restarting_known: bool,
     /// Whether the last sample worked, for the "unavailable" answer.
     last_error: Option<String>,
 }
@@ -33,6 +41,7 @@ struct State {
 pub struct Metrics {
     state: Arc<Mutex<State>>,
     tx: broadcast::Sender<Arc<Snapshot>>,
+    docker_wake: Arc<Notify>,
 }
 
 impl Metrics {
@@ -46,13 +55,23 @@ impl Metrics {
                 latest: None,
                 facts: SystemFacts::default(),
                 facts_ok: false,
+                containers: Vec::new(),
+                restarting_containers: Vec::new(),
+                restarting_known: false,
                 last_error: None,
             })),
             tx,
+            docker_wake: Arc::new(Notify::new()),
         };
         tokio::spawn(me.clone().run(priv_client.clone(), store));
-        tokio::spawn(me.clone().refresh_facts(priv_client));
+        tokio::spawn(me.clone().refresh_facts(priv_client.clone()));
+        tokio::spawn(me.clone().refresh_docker(priv_client));
         me
+    }
+
+    /// Wake the Docker background poller immediately after an install or container action.
+    pub fn notify_docker(&self) {
+        self.docker_wake.notify_one();
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -87,7 +106,11 @@ impl Metrics {
             .as_ref()
             .map(|l| l.disks.as_slice())
             .unwrap_or_default();
-        attention::compute(&s.facts, disks)
+        let mut facts = s.facts.clone();
+        if s.restarting_known {
+            facts.restarting_containers = s.restarting_containers.clone();
+        }
+        attention::compute(&facts, disks)
     }
 
     async fn run(self, priv_client: PrivClient, store: Arc<Store>) {
@@ -125,9 +148,10 @@ impl Metrics {
             let (snapshot, rows) = {
                 let mut s = self.lock();
                 s.last_error = None;
-                let Some(snap) = s.engine.ingest(raw, now) else {
+                let Some(mut snap) = s.engine.ingest(raw, now) else {
                     continue;
                 };
+                snap.containers = s.containers.clone();
                 let rows = s.rollup.push(&snap.point, &snap.disks);
                 let snap = Arc::new(snap);
                 s.latest = Some(snap.clone());
@@ -168,6 +192,64 @@ impl Metrics {
                 other => debug!(?other, "could not refresh system facts"),
             }
             tokio::time::sleep(FACTS_EVERY).await;
+        }
+    }
+
+    async fn refresh_docker(self, priv_client: PrivClient) {
+        loop {
+            let delay = match tokio::time::timeout(
+                Duration::from_secs(4),
+                priv_client.docker_list_containers("docker-watch"),
+            )
+            .await
+            {
+                Ok(Ok(list)) => {
+                    let restarting: Vec<String> = list
+                        .iter()
+                        .filter(|c| c.state == "restarting")
+                        .map(|c| c.name.clone())
+                        .collect();
+                    let stats = if list.iter().any(|c| c.state == "running") {
+                        match tokio::time::timeout(
+                            Duration::from_secs(4),
+                            priv_client.docker_stats("docker-stats"),
+                        )
+                        .await
+                        {
+                            Ok(Ok(mut st)) => {
+                                st.sort_by(|a, b| b.cpu_pct.total_cmp(&a.cpu_pct));
+                                st.truncate(MAX_CONTAINER_STATS);
+                                Some(st)
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        Some(Vec::new())
+                    };
+                    let mut s = self.lock();
+                    s.restarting_containers = restarting;
+                    s.restarting_known = true;
+                    if let Some(st) = stats {
+                        s.containers = st;
+                    }
+                    DOCKER_ACTIVE_EVERY
+                }
+                Ok(Err(ClientError::Remote(_))) => {
+                    let mut s = self.lock();
+                    s.containers.clear();
+                    s.restarting_containers.clear();
+                    s.restarting_known = true;
+                    DOCKER_IDLE_EVERY
+                }
+                other => {
+                    debug!(?other, "docker metrics refresh skipped");
+                    Duration::from_secs(5)
+                }
+            };
+            tokio::select! {
+                () = tokio::time::sleep(delay) => {}
+                () = self.docker_wake.notified() => {}
+            }
         }
     }
 }

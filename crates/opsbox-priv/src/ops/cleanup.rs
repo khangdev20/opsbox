@@ -536,89 +536,16 @@ fn scan_coredumps() -> Option<CleanupItem> {
 
 // ------------------------------------------------------------------ docker
 
-fn docker_path() -> Option<String> {
-    find(&["/usr/bin/docker", "/usr/local/bin/docker"])
-}
-
-/// Docker is there and its daemon answers.
-fn docker_ready() -> Option<String> {
-    let d = docker_path()?;
-    run(&d, &["info", "--format", "{{.ServerVersion}}"], QUICK)
-        .filter(super::exec::Output::ok)
-        .map(|_| d)
-}
-
-fn docker_df(d: &str) -> Vec<DockerDf> {
-    run(d, &["system", "df", "--format", "{{json .}}"], TOOL)
-        .filter(super::exec::Output::ok)
-        .map(|o| parse_docker_df(&o.stdout))
-        .unwrap_or_default()
-}
-
-/// Total size of dangling images (untagged leftovers of builds).
-fn docker_dangling_images(d: &str) -> (u64, usize) {
-    let out = run(
-        d,
-        &[
-            "images",
-            "--filter",
-            "dangling=true",
-            "--format",
-            "{{.Size}}",
-        ],
-        QUICK,
-    );
-    let sizes: Vec<u64> = out
-        .filter(super::exec::Output::ok)
-        .map(|o| o.stdout.lines().filter_map(parse_size).collect())
-        .unwrap_or_default();
-    (sizes.iter().sum(), sizes.len())
-}
-
-fn docker_buildcache(d: &str) -> u64 {
-    run(d, &["builder", "du", "--format", "{{json .}}"], QUICK)
-        .filter(super::exec::Output::ok)
-        .map(|o| parse_builder_du(&o.stdout))
-        .unwrap_or(0)
-}
-
-fn docker_stopped_containers(d: &str) -> (u64, usize) {
-    let out = run(
-        d,
-        &[
-            "ps",
-            "-a",
-            "-s",
-            "--filter",
-            "status=exited",
-            "--filter",
-            "status=created",
-            "--format",
-            "{{.Size}}",
-        ],
-        QUICK,
-    );
-    out.filter(super::exec::Output::ok)
-        .map(|o| parse_container_sizes(&o.stdout))
-        .unwrap_or((0, 0))
-}
-
-fn docker_unused_volumes_count(d: &str) -> usize {
-    run(
-        d,
-        &["volume", "ls", "-q", "--filter", "dangling=true"],
-        QUICK,
-    )
-    .filter(super::exec::Output::ok)
-    .map_or(0, |o| {
-        o.stdout.lines().filter(|l| !l.trim().is_empty()).count()
-    })
-}
-
-fn scan_docker(d: &str) -> Vec<CleanupItem> {
+fn scan_docker(dc: &opsbox_docker::DockerClient) -> Vec<CleanupItem> {
+    if !dc.socket_path().exists() {
+        return Vec::new();
+    }
+    let Ok(Ok(scan)) = super::docker::block_on_fut(dc.scan_cleanup()) else {
+        return Vec::new();
+    };
     let mut items = Vec::new();
-    let (img_bytes, img_n) = docker_dangling_images(d);
-    if img_n > 0 {
+    if scan.dangling_images_count > 0 {
+        let img_n = scan.dangling_images_count;
         items.push(CleanupItem {
             id: "docker-images".into(),
             title: "Docker: unused image layers".into(),
@@ -626,28 +553,27 @@ fn scan_docker(d: &str) -> Vec<CleanupItem> {
                 "{img_n} untagged image{} · running containers and tagged images are kept",
                 if img_n == 1 { "" } else { "s" }
             ),
-            bytes: img_bytes,
+            bytes: scan.dangling_images_bytes,
             safe: true,
             warn: false,
             pending: false,
             duration_ms: None,
         });
     }
-    let cache = docker_buildcache(d);
-    if cache > 0 {
+    if scan.build_cache_bytes > 0 {
         items.push(CleanupItem {
             id: "docker-buildcache".into(),
             title: "Docker: build cache".into(),
             desc: "Layers kept to speed up builds · the next build may take longer".into(),
-            bytes: cache,
+            bytes: scan.build_cache_bytes,
             safe: true,
             warn: false,
             pending: false,
             duration_ms: None,
         });
     }
-    let (stopped_bytes, stopped_n) = docker_stopped_containers(d);
-    if stopped_n > 0 {
+    if scan.stopped_containers_count > 0 {
+        let stopped_n = scan.stopped_containers_count;
         items.push(CleanupItem {
             id: "docker-containers".into(),
             title: "Docker: stopped containers".into(),
@@ -655,15 +581,15 @@ fn scan_docker(d: &str) -> Vec<CleanupItem> {
                 "{stopped_n} stopped container{} · their writable layers are deleted",
                 if stopped_n == 1 { "" } else { "s" }
             ),
-            bytes: stopped_bytes,
+            bytes: scan.stopped_containers_bytes,
             safe: false,
             warn: false,
             pending: false,
             duration_ms: None,
         });
     }
-    let vol_n = docker_unused_volumes_count(d);
-    if vol_n > 0 {
+    if scan.dangling_volumes_count > 0 {
+        let vol_n = scan.dangling_volumes_count;
         items.push(CleanupItem {
             id: "docker-volumes".into(),
             title: "Docker volumes not used by any container".into(),
@@ -681,14 +607,15 @@ fn scan_docker(d: &str) -> Vec<CleanupItem> {
     items
 }
 
-pub(crate) fn volume_sizes() -> Result<(u64, usize), PrivError> {
-    let Some(d) = docker_ready() else {
+pub(crate) fn volume_sizes_with(
+    dc: &opsbox_docker::DockerClient,
+) -> Result<(u64, usize), PrivError> {
+    if !dc.socket_path().exists() {
+        return Ok((0, 0));
+    }
+    let Ok(Ok((bytes, count))) = super::docker::block_on_fut(dc.volume_sizes()) else {
         return Ok((0, 0));
     };
-    let df = docker_df(&d);
-    let vol = df.iter().find(|r| r.kind == "Local Volumes");
-    let bytes = vol.map_or(0, |v| v.reclaimable);
-    let count = vol.map_or(0, |v| v.total_count);
     if let Ok(mut cache) = scan_cache().mu.lock()
         && let Some(entry) = cache
             .items
@@ -866,7 +793,7 @@ pub(crate) fn auto_enabled() -> bool {
     .is_some_and(|o| o.stdout.trim() == "enabled")
 }
 
-fn spawn_scanner_group(group: &'static str, now: SystemTime) {
+fn spawn_scanner_group(group: &'static str, now: SystemTime, dc: opsbox_docker::DockerClient) {
     std::thread::spawn(move || {
         let span = tracing::info_span!("cleanup.scan", scanner = group);
         let _enter = span.enter();
@@ -881,10 +808,8 @@ fn spawn_scanner_group(group: &'static str, now: SystemTime) {
             "tmp" => results.push(("tmp".into(), scan_tmp(now))),
             "coredumps" => results.push(("coredumps".into(), scan_coredumps())),
             "docker" => {
-                if let Some(d) = docker_ready() {
-                    for item in scan_docker(&d) {
-                        results.push((item.id.clone(), Some(item)));
-                    }
+                for item in scan_docker(&dc) {
+                    results.push((item.id.clone(), Some(item)));
                 }
             }
             "auto" => auto_val = Some(auto_enabled()),
@@ -913,7 +838,11 @@ fn spawn_scanner_group(group: &'static str, now: SystemTime) {
     });
 }
 
-pub(crate) fn scan_with_wait(fresh: bool, wait: Duration) -> CleanupScan {
+pub(crate) fn scan_with_wait(
+    fresh: bool,
+    wait: Duration,
+    dc: &opsbox_docker::DockerClient,
+) -> CleanupScan {
     let cache = scan_cache();
     let mut g = cache.mu.lock().unwrap_or_else(|e| e.into_inner());
     let valid = !fresh && g.started_at.is_some_and(|t| t.elapsed() < SCAN_CACHE_TTL);
@@ -928,7 +857,7 @@ pub(crate) fn scan_with_wait(fresh: bool, wait: Duration) -> CleanupScan {
         }
         let now = SystemTime::now();
         for group in SCANNER_GROUPS {
-            spawn_scanner_group(group, now);
+            spawn_scanner_group(group, now, dc.clone());
         }
     }
 
@@ -950,14 +879,14 @@ pub(crate) fn scan_with_wait(fresh: bool, wait: Duration) -> CleanupScan {
     build_scan_snapshot(&g)
 }
 
-pub(crate) fn scan(fresh: bool) -> PrivReply {
-    PrivReply::Cleanup(scan_with_wait(fresh, API_WAIT_DEADLINE))
+pub(crate) fn scan_with(fresh: bool, dc: &opsbox_docker::DockerClient) -> PrivReply {
+    PrivReply::Cleanup(scan_with_wait(fresh, API_WAIT_DEADLINE, dc))
 }
 
 /// CLI helper: run a fresh scan waiting up to `LOCAL_DEADLINE` (or `TOOL` for Docker)
 /// and return `(CleanupScan, timings_ms)`.
 pub fn scan_with_timings() -> (CleanupScan, BTreeMap<String, u64>) {
-    let _ = scan_with_wait(true, Duration::from_secs(10));
+    let _ = scan_with_wait(true, Duration::from_secs(10), super::docker::client());
     let g = scan_cache().mu.lock().unwrap_or_else(|e| e.into_inner());
     (build_scan_snapshot(&g), g.timings_ms.clone())
 }
@@ -1010,7 +939,7 @@ fn run_scanners_with_deadline(
 // ------------------------------------------------------------------ run
 
 /// Run one scanner; the bytes it freed.
-fn run_one(id: &str) -> Result<u64, String> {
+fn run_one(id: &str, dc: &opsbox_docker::DockerClient) -> Result<u64, String> {
     let now = SystemTime::now();
     match id {
         "journal" => {
@@ -1059,36 +988,31 @@ fn run_one(id: &str) -> Result<u64, String> {
         "tmp" => Ok(delete_files(&tmp_files_bounded(now).files)),
         "coredumps" => Ok(delete_files(&coredump_files())),
         "docker-images" | "docker-buildcache" | "docker-containers" | "docker-volumes" => {
-            let d = docker_ready().ok_or("Docker is not running")?;
-            let args: &[&str] = match id {
-                "docker-images" => &["image", "prune", "-f"],
-                "docker-buildcache" => &["builder", "prune", "-f"],
-                "docker-containers" => &["container", "prune", "-f"],
-                _ => &["volume", "prune", "-f"],
-            };
-            let out = run(&d, args, TOOL).ok_or("docker did not run")?;
-            if !out.ok() {
-                return Err(out
-                    .combined()
-                    .trim()
-                    .lines()
-                    .last()
-                    .unwrap_or("failed")
-                    .to_owned());
+            if !dc.socket_path().exists() {
+                return Err("Docker is not running".into());
             }
-            // "Total reclaimed space: 1.2GB" is the tool's own answer.
-            let said = out
-                .stdout
-                .lines()
-                .find_map(|l| l.strip_prefix("Total reclaimed space:"))
-                .and_then(|s| parse_size(s.trim()));
-            Ok(said.unwrap_or(0))
+            let kind = match id {
+                "docker-images" => opsbox_docker::DockerPruneKind::Images,
+                "docker-buildcache" => opsbox_docker::DockerPruneKind::BuildCache,
+                "docker-containers" => opsbox_docker::DockerPruneKind::Containers,
+                _ => opsbox_docker::DockerPruneKind::Volumes,
+            };
+            super::docker::block_on_fut(dc.prune(kind))
+                .map_err(|e| e.message)?
+                .map_err(|e| e.to_string())
         }
         _ => Err("unknown".into()),
     }
 }
 
 pub fn run_ids(ids: &[String]) -> Result<PrivReply, PrivError> {
+    run_ids_with(ids, super::docker::client())
+}
+
+pub(crate) fn run_ids_with(
+    ids: &[String],
+    dc: &opsbox_docker::DockerClient,
+) -> Result<PrivReply, PrivError> {
     if ids.is_empty() {
         return Err(err(PrivErrorCode::Invalid, "Choose what to clean."));
     }
@@ -1103,7 +1027,7 @@ pub fn run_ids(ids: &[String]) -> Result<PrivReply, PrivError> {
     let freed = ALL_IDS
         .iter()
         .filter(|a| ids.iter().any(|i| i == **a))
-        .map(|id| match run_one(id) {
+        .map(|id| match run_one(id, dc) {
             Ok(bytes) => CleanupFreed {
                 id: (*id).into(),
                 bytes,
@@ -1402,7 +1326,11 @@ not json
                 }),
             );
         }
-        let cached = scan_with_wait(false, Duration::from_millis(10));
+        let cached = scan_with_wait(
+            false,
+            Duration::from_millis(10),
+            crate::ops::docker::client(),
+        );
         assert_eq!(cached.items.len(), 1);
         assert_eq!(cached.items[0].bytes, 42);
 

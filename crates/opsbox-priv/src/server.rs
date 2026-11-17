@@ -94,6 +94,7 @@ impl PrivServer {
                 xfer: self.config.xfer_dir.clone(),
                 trash: self.config.trash_dir.clone(),
             },
+            docker: opsbox_docker::DockerClient::new(&self.config.docker_socket),
         });
         let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         info!(
@@ -230,6 +231,10 @@ async fn handle_connection(mut stream: UnixStream, allowed: &[u32], env: &Arc<En
             open_terminal(stream, &request, user, *cols, *rows).await;
             return;
         }
+        if let PrivOp::DockerLogsFollow { id, tail } = &request.op {
+            follow_docker_logs(stream, env, &request, id, *tail).await;
+            return;
+        }
         let response = process(request, uid, env).await;
         if write_frame(&mut stream, &response).await.is_err() {
             return;
@@ -303,6 +308,26 @@ async fn open_terminal(
     }
     .instrument(span)
     .await;
+}
+
+/// Follow container logs: answer with `DockerLogStreamStarted`, then stream `DockerLogFrame`s
+/// on this connection until the container ends or the peer closes.
+async fn follow_docker_logs(
+    mut stream: UnixStream,
+    env: &Arc<Env>,
+    request: &PrivRequest,
+    id: &str,
+    tail: u32,
+) {
+    let span = info_span!(
+        "priv_request",
+        request_id = %request.id,
+        op = "docker_logs_follow",
+        actor = request.actor.as_deref().unwrap_or("-")
+    );
+    ops::docker::follow_logs_with(&env.docker, &mut stream, request, id, tail)
+        .instrument(span)
+        .await;
 }
 
 /// Run one request.

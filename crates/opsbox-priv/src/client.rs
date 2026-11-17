@@ -5,11 +5,13 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    AccessState, CleanupFreed, CleanupScan, CommandOutcome, DirListing, FileContent,
-    FirewallChange, FirewallState, HostInfo, HostSettings, JobInfo, JournalEntry, NewRule,
-    PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
-    PtyFrame, RawSample, Secret, SecurityScan, Staged, SystemFacts, SystemUser, UnitActionKind,
-    UnitInfo, WatchdogStatus,
+    AccessState, CleanupFreed, CleanupScan, CommandOutcome, DirListing, DockerContainer,
+    DockerContainerAction, DockerContainerInspect, DockerContainerStat, DockerExecOutput,
+    DockerExecRequest, DockerImage, DockerLogFrame, DockerLogLine, DockerNetwork, DockerStatus,
+    DockerVolume, FileContent, FirewallChange, FirewallState, HostInfo, HostSettings, JobInfo,
+    JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
+    PrivResponse, PrivResult, PtyFrame, RawSample, Secret, SecurityScan, Staged, SystemFacts,
+    SystemUser, UnitActionKind, UnitInfo, WatchdogStatus,
 };
 use tokio::net::{
     UnixStream,
@@ -78,6 +80,26 @@ pub struct InstallUpload<'a> {
     /// The file name there.
     pub name: &'a str,
     pub overwrite: bool,
+}
+
+/// Live container log follow stream returned by [`PrivClient::docker_logs_follow`].
+#[derive(Debug)]
+pub struct DockerLogSession {
+    pub id: String,
+    reader: OwnedReadHalf,
+    _writer: OwnedWriteHalf,
+}
+
+impl DockerLogSession {
+    /// Read the next [`DockerLogFrame`]; `Ok(None)` means the stream ended cleanly.
+    pub async fn recv(&mut self) -> Result<Option<DockerLogFrame>, ClientError> {
+        let Some(body) = read_body(&mut self.reader).await? else {
+            return Ok(None);
+        };
+        let frame: DockerLogFrame =
+            frame::decode(&body).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        Ok(Some(frame))
+    }
 }
 
 /// An open terminal: the shell's output arrives through `reader`, keystrokes go out through
@@ -1002,6 +1024,188 @@ impl PrivClient {
     pub async fn watchdog_status(&self, rid: &str) -> Result<WatchdogStatus, ClientError> {
         self.expect(rid, None, PrivOp::WatchdogStatus, |r| match r {
             PrivReply::WatchdogStatus(s) => Ok(*s),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn docker_status(&self, rid: &str) -> Result<DockerStatus, ClientError> {
+        self.expect(rid, None, PrivOp::DockerStatus, |r| match r {
+            PrivReply::DockerStatus(s) => Ok(s),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn docker_install(
+        &self,
+        rid: &str,
+        actor: &str,
+    ) -> Result<CommandOutcome, ClientError> {
+        self.expect(rid, Some(actor), PrivOp::DockerInstall, |r| match r {
+            PrivReply::Outcome(o) => Ok(o),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn docker_list_containers(
+        &self,
+        rid: &str,
+    ) -> Result<Vec<DockerContainer>, ClientError> {
+        self.expect(rid, None, PrivOp::DockerListContainers, |r| match r {
+            PrivReply::DockerContainers(c) => Ok(c),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn docker_inspect(
+        &self,
+        rid: &str,
+        id: &str,
+    ) -> Result<DockerContainerInspect, ClientError> {
+        self.expect(
+            rid,
+            None,
+            PrivOp::DockerInspect { id: id.to_owned() },
+            |r| match r {
+                PrivReply::DockerInspect(i) => Ok(*i),
+                o => Err(o),
+            },
+        )
+        .await
+    }
+
+    pub async fn docker_container_action(
+        &self,
+        rid: &str,
+        actor: &str,
+        id: &str,
+        action: DockerContainerAction,
+    ) -> Result<(), ClientError> {
+        self.done(
+            rid,
+            actor,
+            PrivOp::DockerContainerAction {
+                id: id.to_owned(),
+                action,
+            },
+        )
+        .await
+    }
+
+    pub async fn docker_logs(
+        &self,
+        rid: &str,
+        id: &str,
+        tail: u32,
+    ) -> Result<Vec<DockerLogLine>, ClientError> {
+        self.expect(
+            rid,
+            None,
+            PrivOp::DockerLogs {
+                id: id.to_owned(),
+                tail,
+            },
+            |r| match r {
+                PrivReply::DockerLogs(lines) => Ok(lines),
+                o => Err(o),
+            },
+        )
+        .await
+    }
+
+    pub async fn docker_logs_follow(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        id: &str,
+        tail: u32,
+    ) -> Result<DockerLogSession, ClientError> {
+        let handshake = async {
+            let mut stream = UnixStream::connect(&*self.socket_path)
+                .await
+                .map_err(|source| ClientError::Connect {
+                    path: self.socket_path.display().to_string(),
+                    source,
+                })?;
+            let request = PrivRequest {
+                id: rid.to_owned(),
+                actor: actor.map(str::to_owned),
+                op: PrivOp::DockerLogsFollow {
+                    id: id.to_owned(),
+                    tail,
+                },
+            };
+            write_frame(&mut stream, &request).await?;
+            let body = read_body(&mut stream).await?.ok_or_else(|| {
+                ClientError::Protocol("connection closed without an answer".into())
+            })?;
+            let response: PrivResponse =
+                frame::decode(&body).map_err(|e| ClientError::Protocol(e.to_string()))?;
+            match response.result {
+                PrivResult::Failure { error } => Err(ClientError::Remote(error)),
+                PrivResult::Success {
+                    reply: PrivReply::DockerLogStreamStarted { id },
+                } => {
+                    let (reader, _writer) = stream.into_split();
+                    Ok(DockerLogSession {
+                        id,
+                        reader,
+                        _writer,
+                    })
+                }
+                PrivResult::Success { reply } => {
+                    Err(ClientError::Protocol(format!("unexpected reply {reply:?}")))
+                }
+            }
+        };
+        tokio::time::timeout(self.timeout, handshake)
+            .await
+            .map_err(|_| ClientError::Timeout)?
+    }
+
+    pub async fn docker_stats(&self, rid: &str) -> Result<Vec<DockerContainerStat>, ClientError> {
+        self.expect(rid, None, PrivOp::DockerStats, |r| match r {
+            PrivReply::DockerStats(s) => Ok(s),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn docker_exec(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DockerExecRequest,
+    ) -> Result<DockerExecOutput, ClientError> {
+        self.expect(rid, Some(actor), PrivOp::DockerExec(req), |r| match r {
+            PrivReply::DockerExec(out) => Ok(out),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn docker_list_images(&self, rid: &str) -> Result<Vec<DockerImage>, ClientError> {
+        self.expect(rid, None, PrivOp::DockerListImages, |r| match r {
+            PrivReply::DockerImages(imgs) => Ok(imgs),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn docker_list_volumes(&self, rid: &str) -> Result<Vec<DockerVolume>, ClientError> {
+        self.expect(rid, None, PrivOp::DockerListVolumes, |r| match r {
+            PrivReply::DockerVolumes(vols) => Ok(vols),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn docker_list_networks(&self, rid: &str) -> Result<Vec<DockerNetwork>, ClientError> {
+        self.expect(rid, None, PrivOp::DockerListNetworks, |r| match r {
+            PrivReply::DockerNetworks(nets) => Ok(nets),
             o => Err(o),
         })
         .await
