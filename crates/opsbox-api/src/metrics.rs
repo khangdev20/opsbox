@@ -201,6 +201,66 @@ pub(crate) async fn get_attention(
             });
         }
     }
+    if let Some(ref proxy) = state.proxy
+        && let Ok(st) = proxy
+            .clone()
+            .with_timeout(Duration::from_millis(500))
+            .status("attention-certs")
+            .await
+    {
+        let cert_map: std::collections::HashMap<String, opsbox_proxy::CertInfo> = st
+            .certs
+            .into_iter()
+            .map(|c| (c.domain.to_ascii_lowercase(), c))
+            .collect();
+        if who.user.role == opsbox_proto::Role::Admin
+            && let Some(panel_dom) = crate::panel::active_panel_domain(&state)
+            && let Some(cert) = cert_map.get(&panel_dom.to_ascii_lowercase())
+            && crate::domains::cert_needs_attention(cert)
+        {
+            let reason = cert
+                .last_error
+                .as_deref()
+                .unwrap_or("Certificate is expired or unreadable");
+            items.push(opsbox_metrics::Attention {
+                kind: "tls",
+                text: format!("TLS certificate renewal failed for {panel_dom}: {reason}"),
+                link: ("Review in Settings →".to_owned(), "#/settings".to_owned()),
+            });
+        }
+        if let Ok(dom_svcs) = state.store.list_all_service_domains_with_services() {
+            for (dom, svc) in dom_svcs {
+                if !who.allows_service(&svc.name) {
+                    continue;
+                }
+                if who.user.role == opsbox_proto::Role::Deployer
+                    && !who.via_token
+                    && svc.owner_id.as_deref() != Some(who.user.id.as_str())
+                {
+                    continue;
+                }
+                if let Some(cert) = cert_map.get(&dom.domain.to_ascii_lowercase())
+                    && crate::domains::cert_needs_attention(cert)
+                {
+                    let reason = cert
+                        .last_error
+                        .as_deref()
+                        .unwrap_or("Certificate is expired or unreadable");
+                    items.push(opsbox_metrics::Attention {
+                        kind: "tls",
+                        text: format!(
+                            "TLS certificate renewal failed for {} ({}): {reason}",
+                            dom.domain, svc.name
+                        ),
+                        link: (
+                            "View domains →".to_owned(),
+                            format!("#/apps?s={}&tab=domains", svc.name),
+                        ),
+                    });
+                }
+            }
+        }
+    }
     Json(json!(items))
 }
 

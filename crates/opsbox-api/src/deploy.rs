@@ -186,7 +186,7 @@ impl DeployHub {
     }
 }
 
-fn now_secs() -> i64 {
+pub(crate) fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
@@ -207,7 +207,7 @@ pub(crate) fn var_seal_context(service_id: &str, key: &str) -> String {
     format!("deploy:var:{service_id}:{key}")
 }
 
-fn service_readable(who: &Principal, svc: &ServiceRecord) -> bool {
+pub(crate) fn service_readable(who: &Principal, svc: &ServiceRecord) -> bool {
     if !who.allows_service(&svc.name) {
         return false;
     }
@@ -217,7 +217,7 @@ fn service_readable(who: &Principal, svc: &ServiceRecord) -> bool {
     true
 }
 
-fn service_writable(who: &Principal, svc: &ServiceRecord) -> bool {
+pub(crate) fn service_writable(who: &Principal, svc: &ServiceRecord) -> bool {
     if !who.allows_service(&svc.name) {
         return false;
     }
@@ -249,7 +249,7 @@ fn service_deployable(who: &Principal, svc: &ServiceRecord) -> bool {
     false
 }
 
-fn audit_user(
+pub(crate) fn audit_user(
     state: &AppState,
     actor: &str,
     via_token: bool,
@@ -273,11 +273,35 @@ fn audit_user(
     });
 }
 
+async fn fetch_live_cert_domains(state: &AppState) -> HashSet<String> {
+    let mut set = HashSet::new();
+    let Some(ref proxy) = state.proxy else {
+        return set;
+    };
+    if let Ok(st) = proxy
+        .clone()
+        .with_timeout(Duration::from_secs(1))
+        .status("svc-certs")
+        .await
+    {
+        for c in st.certs {
+            if matches!(
+                c.status,
+                opsbox_proxy::CertState::Valid | opsbox_proxy::CertState::Expiring
+            ) {
+                set.insert(c.domain.to_ascii_lowercase());
+            }
+        }
+    }
+    set
+}
+
 async fn resolve_service_view(
     state: &AppState,
     rid: &str,
     actor: &str,
     svc: &ServiceRecord,
+    live_certs: &HashSet<String>,
 ) -> Result<Value, HttpError> {
     let store = state.store.clone();
     let svc_id = svc.id.clone();
@@ -328,6 +352,12 @@ async fn resolve_service_view(
         })
         .collect();
 
+    let domain_scheme = svc
+        .domain
+        .as_deref()
+        .filter(|d| live_certs.contains(&d.to_ascii_lowercase()))
+        .map_or("http", |_| "https");
+
     Ok(json!({
         "id": svc.name,
         "uid": svc.id,
@@ -344,6 +374,7 @@ async fn resolve_service_view(
         "hostPort": svc.active_host_port,
         "healthPath": svc.health_path,
         "domain": svc.domain,
+        "domainScheme": domain_scheme,
         "imageRef": svc.image_ref,
         "deployKeyId": svc.deploy_key_id,
         "autoDeploy": svc.auto_deploy,
@@ -384,10 +415,12 @@ pub(crate) async fn get_project(
         .map_err(|_| HttpError::internal())?
         .map_err(|_| HttpError::internal())?;
 
+    let live_certs = fetch_live_cert_domains(&state).await;
     let mut out_services = Vec::new();
     for svc in services {
         if service_readable(&who, &svc) {
-            out_services.push(resolve_service_view(&state, &rid, &who.user.name, &svc).await?);
+            out_services
+                .push(resolve_service_view(&state, &rid, &who.user.name, &svc, &live_certs).await?);
         }
     }
 
@@ -765,17 +798,24 @@ pub(crate) async fn create_service(
         .store
         .list_services(&proj.id, &env.id)
         .map_err(|_| HttpError::internal())?;
-    if let Some(ref dom) = domain
-        && existing.iter().any(|s| {
-            s.domain
-                .as_deref()
-                .is_some_and(|d| d.eq_ignore_ascii_case(dom))
-        })
-    {
-        return Err(invalid(
-            "domain",
-            format!("Domain '{dom}' is already attached to another service."),
-        ));
+    if let Some(ref dom) = domain {
+        if crate::panel::active_panel_domain(&state).is_some_and(|p| p.eq_ignore_ascii_case(dom)) {
+            return Err(invalid(
+                "domain",
+                format!("Domain '{dom}' is already used as the panel domain."),
+            ));
+        }
+        if state
+            .store
+            .get_service_domain(dom)
+            .map_err(|_| HttpError::internal())?
+            .is_some()
+        {
+            return Err(invalid(
+                "domain",
+                format!("Domain '{dom}' is already attached to another service."),
+            ));
+        }
     }
 
     let idx = existing.len();
@@ -860,7 +900,8 @@ pub(crate) async fn create_service(
         (None, None)
     };
 
-    let view = resolve_service_view(&state, &rid, &who.user.name, &svc).await?;
+    let live_certs = fetch_live_cert_domains(&state).await;
+    let view = resolve_service_view(&state, &rid, &who.user.name, &svc, &live_certs).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -888,8 +929,9 @@ pub(crate) async fn get_service(
     if !service_readable(&who, &svc) {
         return Err(forbidden("You do not have access to this service."));
     }
+    let live_certs = fetch_live_cert_domains(&state).await;
     Ok(Json(
-        resolve_service_view(&state, &rid, &who.user.name, &svc).await?,
+        resolve_service_view(&state, &rid, &who.user.name, &svc, &live_certs).await?,
     ))
 }
 
@@ -950,6 +992,17 @@ pub(crate) async fn update_service(
             "Health check path must start with '/' (or be 'tcp').",
         ));
     }
+    let old_domains: Vec<String> = if body.domain.is_some() {
+        state
+            .store
+            .list_service_domains(&svc.id)
+            .map_err(|_| HttpError::internal())?
+            .into_iter()
+            .map(|d| d.domain)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let domain_upd = match body.domain {
         Some(ref d) if d.trim().is_empty() => Some(None),
         Some(ref d) => {
@@ -957,13 +1010,19 @@ pub(crate) async fn update_service(
             if !valid_domain_name(&clean) {
                 return Err(invalid("domain", "Enter a valid domain name."));
             }
-            let existing = state
+            if crate::panel::active_panel_domain(&state)
+                .is_some_and(|p| p.eq_ignore_ascii_case(&clean))
+            {
+                return Err(invalid(
+                    "domain",
+                    format!("Domain '{clean}' is already used as the panel domain."),
+                ));
+            }
+            if let Some(other) = state
                 .store
-                .list_all_services()
-                .map_err(|_| HttpError::internal())?;
-            if existing
-                .iter()
-                .any(|other| other.id != svc.id && other.domain.as_deref() == Some(clean.as_str()))
+                .get_service_domain(&clean)
+                .map_err(|_| HttpError::internal())?
+                && other.service_id != svc.id
             {
                 return Err(invalid(
                     "domain",
@@ -1022,6 +1081,20 @@ pub(crate) async fn update_service(
         .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Service not found."))?;
 
     if body.domain.is_some() {
+        if let Some(ref proxy) = state.proxy {
+            let new_domains: HashSet<String> = state
+                .store
+                .list_service_domains(&svc.id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|d| d.domain.to_ascii_lowercase())
+                .collect();
+            for old in old_domains {
+                if !new_domains.contains(&old.to_ascii_lowercase()) {
+                    let _ = proxy.remove_cert(&rid, &old).await;
+                }
+            }
+        }
         let _ = crate::panel::sync_proxy_routes(&state).await;
     }
 
@@ -1035,8 +1108,9 @@ pub(crate) async fn update_service(
         json!({}),
     );
 
+    let live_certs = fetch_live_cert_domains(&state).await;
     Ok(Json(
-        resolve_service_view(&state, &rid, &who.user.name, &updated).await?,
+        resolve_service_view(&state, &rid, &who.user.name, &updated, &live_certs).await?,
     ))
 }
 
@@ -1089,6 +1163,11 @@ pub(crate) async fn delete_service(
     let mut seen_imgs = HashSet::new();
     imgs.retain(|i| seen_imgs.insert(i.clone()));
 
+    let svc_domains = state
+        .store
+        .list_service_domains(&svc.id)
+        .map_err(|_| HttpError::internal())?;
+
     state
         .priv_client
         .deploy_delete_service(&rid, &who.user.name, &svc.name, cids, imgs)
@@ -1098,6 +1177,11 @@ pub(crate) async fn delete_service(
         .store
         .delete_service(&svc.id)
         .map_err(|_| HttpError::internal())?;
+    if let Some(ref proxy) = state.proxy {
+        for d in svc_domains {
+            let _ = proxy.remove_cert(&rid, &d.domain).await;
+        }
+    }
     let _ = crate::panel::sync_proxy_routes(&state).await;
     state.metrics.notify_docker();
 

@@ -795,6 +795,7 @@ async fn webhook_is_reachable_through_panel_proxy_even_with_allow_list_active() 
         upstream: api_addr.to_string(),
         upstream_tls: UpstreamTls::Plain,
         redirect_www: false,
+        redirect_to: None,
         redirect_https: true,
         hsts: true,
         max_body_bytes: 1024 * 1024,

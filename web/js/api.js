@@ -52,6 +52,7 @@ const REAL = new Set([
   'getGithubStatus', 'startGithubManifest', 'completeGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook',
   'disconnectGithub', 'getRepos', 'inspectPublicRepo', 'listDeployKeys', 'createDeployKey', 'deleteDeployKey',
   'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'buildLog', 'addVar', 'removeVar', 'removeService',
+  'getDomains', 'addDomain', 'checkDns', 'issueDomainCert', 'updateDomain', 'removeDomain', 'makePrimary',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -68,7 +69,7 @@ export const PAGE_USES = {
   // (Keys opsbox uses to reach other servers arrive with the desktop app; the section is hidden until then.)
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
   alerts: ['connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
-  apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'getDomains', 'getProject', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'updateService'],
+  apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'updateDomain', 'updateService'],
   backupdest: ['PROVIDERS', 'saveDestination', 'testDestination'],
   backups: ['getBackups', 'restoreBackup', 'runBackup'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
@@ -1253,28 +1254,88 @@ export async function exportConfig() { sample('exportConfig'); await lag(400); a
 // ---------------------------------------------------------------- domains
 const DOM = {
   web: [
-    { name: 'shop.example.com', primary: true, redirect: '', dns: 'ok', cert: 'valid', renews: 61 },
-    { name: 'www.shop.example.com', primary: false, redirect: 'shop.example.com', dns: 'ok', cert: 'valid', renews: 61 },
-    { name: 'shop.acme.co', primary: false, redirect: '', dns: 'pending', cert: 'none', custom: true },
+    { name: 'shop.example.com', primary: true, redirect: '', forceHttps: true, hsts: true, dns: 'ok', cert: 'valid', renews: 61 },
+    { name: 'www.shop.example.com', primary: false, redirect: 'shop.example.com', forceHttps: true, hsts: true, dns: 'ok', cert: 'valid', renews: 61 },
+    { name: 'shop.acme.co', primary: false, redirect: '', forceHttps: true, hsts: true, dns: 'pending', cert: 'none', custom: true },
   ],
 };
 const DOMRE = /^(?=.{1,253}$)(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-export async function getDomains(svc) { sample('getDomains'); await lag(); return clone([...(DOM[svc] || []), { name: `${svc}.srv-sgn-01.opsbox.internal`, internal: true, dns: 'ok', cert: 'internal' }]); }
-export async function addDomain(svc, d) { sample('addDomain');
+export async function getDomains(svc) {
+  sample('getDomains');
+  if (real('getDomains')) return http(`/services/${encodeURIComponent(svc)}/domains`);
+  await lag();
+  const svcObj = S.project.services.find((s) => s.id === svc);
+  const port = svcObj?.port ?? 3000;
+  return {
+    service: svc,
+    project: 'default',
+    network: 'opsbox-default',
+    port,
+    internalHost: svc,
+    internalUrl: port > 0 ? `http://${svc}:${port}` : svc,
+    proxyReachable: true,
+    serverIps: ['203.0.113.10', '2001:db8::10'],
+    domains: clone((DOM[svc] || []).map((d) => ({ forceHttps: true, hsts: true, ...d }))),
+  };
+}
+export async function addDomain(svc, d) {
+  sample('addDomain');
+  if (real('addDomain')) {
+    return http(`/services/${encodeURIComponent(svc)}/domains`, {
+      method: 'POST',
+      body: {
+        domain: d.name,
+        www: d.www || 'none',
+        redirectTo: d.redirectTo || undefined,
+        forceHttps: d.force !== false,
+        hsts: d.hsts !== undefined ? !!d.hsts : d.force !== false,
+      },
+    });
+  }
   await lag(400); const name = (d.name || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   if (!DOMRE.test(name)) throw new Error('Enter a domain like app.acme.co (no https://, no path).');
-  if (name.startsWith('*.')) throw new Error('Wildcard domains need a DNS provider token. Add one in Settings first.');
+  if (name.startsWith('*.')) throw new Error('Wildcard domains require DNS-01 and are not supported yet.');
   const all = Object.values(DOM).flat(); if (all.some((x) => x.name === name)) throw new Error(`${name} is already used by a service.`);
-  (DOM[svc] = DOM[svc] || []).push({ name, primary: !(DOM[svc] || []).length, redirect: '', dns: 'pending', cert: 'none', custom: true, www: d.www, force: d.force });
+  const forceHttps = d.force !== false;
+  const hsts = d.hsts !== undefined ? !!d.hsts : forceHttps;
+  (DOM[svc] = DOM[svc] || []).push({ name, primary: !(DOM[svc] || []).length, redirect: d.redirectTo || '', forceHttps, hsts, dns: 'pending', cert: 'none', custom: true, www: d.www });
   audit(`add domain ${name} to ${svc}`); return { name };
 }
-export async function checkDns(svc, name) { sample('checkDns');
-  await lag(900); const x = (DOM[svc] || []).find((d) => d.name === name); if (!x) throw new Error('No such domain');
-  x.checks = (x.checks || 0) + 1; if (x.checks >= 2) { x.dns = 'ok'; x.cert = 'valid'; x.renews = 90; audit(`certificate issued for ${name}`); }
+export async function checkDns(svc, name) {
+  sample('checkDns');
+  if (real('checkDns')) return http(`/domains/${encodeURIComponent(name)}/check`, { method: 'POST' });
+  await lag(500); const x = (DOM[svc] || []).find((d) => d.name === name); if (!x) throw new Error('No such domain');
+  x.checks = (x.checks || 0) + 1; if (x.checks >= 2) { x.dns = 'ok'; }
+  return { ...clone(x), pointsHere: x.dns === 'ok', status: x.dns === 'ok' ? 'points_here' : 'waiting' };
+}
+export async function issueDomainCert(svc, name) {
+  sample('issueDomainCert');
+  if (real('issueDomainCert')) {
+    const { task } = await http(`/domains/${encodeURIComponent(name)}/certificate`, { method: 'POST' });
+    const t = await waitTask(task, { every: 1000, max: 3 * 60 * 1000 });
+    return t.result;
+  }
+  await lag(700); const x = (DOM[svc] || []).find((d) => d.name === name); if (!x) throw new Error('No such domain');
+  x.cert = 'valid'; x.renews = 90; x.certError = null; audit(`certificate issued for ${name}`);
   return clone(x);
 }
-export async function removeDomain(svc, name) { sample('removeDomain'); await lag(200); DOM[svc] = (DOM[svc] || []).filter((d) => d.name !== name); audit(`remove domain ${name}`); }
-export async function makePrimary(svc, name) { sample('makePrimary'); await lag(200); (DOM[svc] || []).forEach((d) => { d.primary = d.name === name; d.redirect = d.primary ? '' : d.redirect; }); audit(`primary domain ${name}`); }
+export async function updateDomain(svc, name, patch) {
+  sample('updateDomain');
+  if (real('updateDomain')) return http(`/domains/${encodeURIComponent(name)}`, { method: 'PATCH', body: patch });
+  await lag(200); const x = (DOM[svc] || []).find((d) => d.name === name); if (!x) throw new Error('No such domain');
+  Object.assign(x, patch); audit(`update domain ${name}`);
+  return clone(x);
+}
+export async function removeDomain(svc, name) {
+  sample('removeDomain');
+  if (real('removeDomain')) return http(`/domains/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  await lag(200); DOM[svc] = (DOM[svc] || []).filter((d) => d.name !== name); audit(`remove domain ${name}`);
+}
+export async function makePrimary(svc, name) {
+  sample('makePrimary');
+  if (real('makePrimary')) return http(`/domains/${encodeURIComponent(name)}/primary`, { method: 'POST' });
+  await lag(200); (DOM[svc] || []).forEach((d) => { d.primary = d.name === name; d.redirect = d.primary ? '' : d.redirect; }); audit(`primary domain ${name}`);
+}
 
 // ---------------------------------------------------------------- backup providers
 export const PROVIDERS = [

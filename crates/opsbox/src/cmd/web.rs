@@ -79,6 +79,15 @@ pub fn domain(config: &Config, name: &str, skip_dns_check: bool) -> Result<()> {
             config.db_path.display()
         )
     })?;
+    if store
+        .get_service_domain(&domain)
+        .context("cannot query service domains")?
+        .is_some()
+    {
+        bail!(
+            "Domain '{domain}' is already attached to a service. Remove it from the service first."
+        );
+    }
 
     let cert_sha256 = {
         let sys_cert = Path::new(opsbox_api::tls::DEFAULT_CERT_PATH);
@@ -98,30 +107,14 @@ pub fn domain(config: &Config, name: &str, skip_dns_check: bool) -> Result<()> {
         upstream,
         upstream_tls: UpstreamTls::Https { cert_sha256 },
         redirect_www: false,
+        redirect_to: None,
         redirect_https: true,
         hsts: true,
         max_body_bytes: config.max_upload_mb.saturating_mul(1 << 20),
         is_panel: true,
     };
 
-    let mut routes = vec![route];
-    if let Ok(svc_domains) = store.list_active_service_domains() {
-        for (svc_dom, host_port) in svc_domains {
-            if svc_dom.eq_ignore_ascii_case(&domain) {
-                continue;
-            }
-            routes.push(Route {
-                host: svc_dom,
-                upstream: format!("127.0.0.1:{host_port}"),
-                upstream_tls: UpstreamTls::Plain,
-                redirect_www: false,
-                redirect_https: false,
-                hsts: false,
-                max_body_bytes: 0,
-                is_panel: false,
-            });
-        }
-    }
+    let routes = opsbox_api::panel::build_routes_with_panel(&store, Some(route));
 
     let proxy = ProxyClient::new(&config.proxy_socket);
     rt.block_on(async {

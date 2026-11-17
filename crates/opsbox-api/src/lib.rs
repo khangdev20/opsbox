@@ -10,6 +10,7 @@ mod auth;
 mod cleanup;
 pub mod deploy;
 mod docker;
+mod domains;
 mod error;
 mod files;
 mod github;
@@ -41,7 +42,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::http::StatusCode;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use opsbox_auth::{Auth, AuthConfig};
 use opsbox_metrics::Metrics;
 use opsbox_priv::PrivClient;
@@ -68,6 +69,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const EDITOR_BODY_LIMIT: usize = 12 * 1024 * 1024;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 
+pub type PublicIpCache =
+    Arc<tokio::sync::Mutex<Option<(std::time::Instant, Vec<std::net::IpAddr>)>>>;
+
 /// Shared by every handler. Cheap to clone.
 #[derive(Clone)]
 pub struct AppState {
@@ -88,6 +92,8 @@ pub struct AppState {
     pub tls_cert_sha256: Option<String>,
     pub proxy: Option<opsbox_proxy::ProxyClient>,
     pub public_ips: Vec<std::net::IpAddr>,
+    pub dns_nameservers: Option<Vec<std::net::SocketAddr>>,
+    pub(crate) public_ip_cache: PublicIpCache,
     pub version: &'static str,
     pub updater: update::Updater,
     pub github: github::GithubService,
@@ -131,6 +137,8 @@ impl AppState {
             tls_cert_sha256: None,
             proxy: None,
             public_ips: Vec::new(),
+            dns_nameservers: None,
+            public_ip_cache: Arc::new(tokio::sync::Mutex::new(None)),
             version,
             updater,
             github: github::GithubService::default(),
@@ -205,6 +213,13 @@ impl AppState {
     #[must_use]
     pub fn with_github(mut self, config: opsbox_deploy::GitHubConfig) -> Self {
         self.github = github::GithubService::new(config);
+        self
+    }
+
+    /// Override DNS resolver nameservers (used in hermetic tests).
+    #[must_use]
+    pub fn with_dns_nameservers(mut self, servers: Vec<std::net::SocketAddr>) -> Self {
+        self.dns_nameservers = Some(servers);
         self
     }
 }
@@ -345,6 +360,23 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/services/{id}/vars/{key}",
             put(deploy::put_var).delete(deploy::delete_var),
+        )
+        .route(
+            "/api/v1/services/{id}/domains",
+            get(domains::get_domains).post(domains::add_domain),
+        )
+        .route(
+            "/api/v1/domains/{name}",
+            patch(domains::update_domain).delete(domains::remove_domain),
+        )
+        .route("/api/v1/domains/{name}/check", post(domains::check_dns))
+        .route(
+            "/api/v1/domains/{name}/certificate",
+            post(domains::issue_cert),
+        )
+        .route(
+            "/api/v1/domains/{name}/primary",
+            post(domains::make_primary),
         )
         .route("/api/v1/deploys/{id}/log", get(deploy::deploy_log))
         .route(

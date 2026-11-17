@@ -22,7 +22,7 @@ use crate::{AppState, HttpError, RequestId};
 pub const KEY_PANEL_DOMAIN: &str = "opsbox.panel.domain";
 pub const KEY_PANEL_DRAFT: &str = "opsbox.panel.draft";
 
-fn map_proxy_err(e: ProxyClientError) -> HttpError {
+pub(crate) fn map_proxy_err(e: ProxyClientError) -> HttpError {
     warn!(error = %e, "opsbox-proxy call failed");
     match e {
         ProxyClientError::Connect { .. } | ProxyClientError::Timeout => HttpError::new(
@@ -72,6 +72,7 @@ pub fn panel_route(state: &AppState, domain: &str) -> Route {
         upstream,
         upstream_tls,
         redirect_www: false,
+        redirect_to: None,
         redirect_https: true,
         hsts: true,
         max_body_bytes: state.files.max_upload,
@@ -99,34 +100,46 @@ fn draft_panel_domain(state: &AppState) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Build the complete proxy route table (panel domain plus active service domains).
-pub(crate) fn build_proxy_routes(state: &AppState) -> Vec<Route> {
+/// Build the complete proxy route table from an optional panel route and all active
+/// service domain rows in SQLite (shared by `serve` and `opsbox web domain`).
+pub fn build_routes_with_panel(
+    store: &opsbox_store::Store,
+    panel_route: Option<Route>,
+) -> Vec<Route> {
     let mut routes = Vec::new();
-    let panel_dom = active_panel_domain(state);
-    if let Some(ref domain) = panel_dom {
-        routes.push(panel_route(state, domain));
+    let panel_host = panel_route.as_ref().map(|r| r.host.clone());
+    if let Some(r) = panel_route {
+        routes.push(r);
     }
-    if let Ok(svc_domains) = state.store.list_active_service_domains() {
-        for (domain, host_port) in svc_domains {
-            if panel_dom
+    if let Ok(svc_routes) = store.list_active_service_routes() {
+        for sr in svc_routes {
+            if panel_host
                 .as_deref()
-                .is_some_and(|p| p.eq_ignore_ascii_case(&domain))
+                .is_some_and(|p| p.eq_ignore_ascii_case(&sr.domain))
             {
                 continue;
             }
+            let upstream_port = sr.host_port.unwrap_or(9);
             routes.push(Route {
-                host: domain,
-                upstream: format!("127.0.0.1:{host_port}"),
+                host: sr.domain,
+                upstream: format!("127.0.0.1:{upstream_port}"),
                 upstream_tls: UpstreamTls::Plain,
                 redirect_www: false,
-                redirect_https: false,
-                hsts: false,
+                redirect_to: sr.redirect_to,
+                redirect_https: sr.force_https,
+                hsts: sr.hsts,
                 max_body_bytes: 0,
                 is_panel: false,
             });
         }
     }
     routes
+}
+
+/// Build the complete proxy route table (panel domain plus active service domains).
+pub(crate) fn build_proxy_routes(state: &AppState) -> Vec<Route> {
+    let panel = active_panel_domain(state).map(|d| panel_route(state, &d));
+    build_routes_with_panel(&state.store, panel)
 }
 
 /// Push the current routing table (panel domain + active service routes) to `opsbox-proxy`.
@@ -142,7 +155,7 @@ pub async fn sync_proxy_routes(state: &AppState) -> Result<(), ProxyClientError>
         .await
 }
 
-fn cert_state_str(s: CertState) -> &'static str {
+pub(crate) fn cert_state_str(s: CertState) -> &'static str {
     match s {
         CertState::None => "none",
         CertState::Pending => "pending",
@@ -205,6 +218,58 @@ pub(crate) struct DomainBody {
     domain: String,
 }
 
+const PUBLIC_IP_CACHE_TTL: Duration = Duration::from_secs(300);
+
+pub(crate) async fn detect_server_public_ips(state: &AppState) -> Result<Vec<IpAddr>, HttpError> {
+    if !state.public_ips.is_empty() {
+        return Ok(state.public_ips.clone());
+    }
+    {
+        let guard = state.public_ip_cache.lock().await;
+        if let Some((at, ref ips)) = *guard
+            && at.elapsed() < PUBLIC_IP_CACHE_TTL
+        {
+            return Ok(ips.clone());
+        }
+    }
+    let overrides = state.public_ips.clone();
+    let ips = tokio::task::spawn_blocking(move || opsbox_proxy::detect_public_ips(&overrides))
+        .await
+        .map_err(|_| HttpError::internal())?;
+    let mut guard = state.public_ip_cache.lock().await;
+    *guard = Some((std::time::Instant::now(), ips.clone()));
+    Ok(ips)
+}
+
+pub(crate) async fn run_dns_check(
+    state: &AppState,
+    domain: &str,
+) -> Result<opsbox_proxy::DnsCheckResult, HttpError> {
+    let server_ips = detect_server_public_ips(state).await?;
+    opsbox_proxy::check_dns_with_nameservers(domain, &server_ips, state.dns_nameservers.as_deref())
+        .await
+        .map_err(|e| HttpError::new(ErrorCode::Unavailable, e))
+}
+
+fn ensure_not_service_domain(state: &AppState, domain: &str) -> Result<(), HttpError> {
+    if state
+        .store
+        .get_service_domain(domain)
+        .map_err(|_| HttpError::internal())?
+        .is_some()
+    {
+        return Err(HttpError(
+            opsbox_proto::ApiError::new(
+                ErrorCode::Conflict,
+                format!("Domain '{domain}' is already attached to a service. Remove it from the service first."),
+            )
+            .with_field("domain"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /api/v1/panel/dns-check`
 pub(crate) async fn check_dns(
     State(state): State<AppState>,
@@ -217,16 +282,10 @@ pub(crate) async fn check_dns(
             None,
         )
     })?;
+    ensure_not_service_domain(&state, &domain)?;
     let _ = state.store.set_setting(KEY_PANEL_DRAFT, &json!(domain));
 
-    let overrides = state.public_ips.clone();
-    let server_ips =
-        tokio::task::spawn_blocking(move || opsbox_proxy::detect_public_ips(&overrides))
-            .await
-            .map_err(|_| HttpError::internal())?;
-    let result = opsbox_proxy::check_dns(&domain, &server_ips)
-        .await
-        .map_err(|e| HttpError::new(ErrorCode::Unavailable, e))?;
+    let result = run_dns_check(&state, &domain).await?;
     Ok(Json(
         serde_json::to_value(result).map_err(|_| HttpError::internal())?,
     ))
@@ -246,6 +305,7 @@ pub(crate) async fn issue_cert(
             None,
         )
     })?;
+    ensure_not_service_domain(&state, &domain)?;
     let proxy = state.proxy.clone().ok_or_else(|| {
         HttpError::new(
             ErrorCode::Unavailable,
