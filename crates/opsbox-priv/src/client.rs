@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    CleanupFreed, CleanupScan, CommandOutcome, DirListing, FileContent, FirewallChange,
-    FirewallState, HostInfo, JobInfo, JournalEntry, NewRule, PkgSelect, PkgState, PrivError,
-    PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, PtyFrame, RawSample, Secret, Staged,
-    SystemFacts, SystemUser, UnitActionKind, UnitInfo,
+    AccessState, CleanupFreed, CleanupScan, CommandOutcome, DirListing, FileContent,
+    FirewallChange, FirewallState, HostInfo, JobInfo, JournalEntry, NewRule, PkgSelect, PkgState,
+    PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, PtyFrame, RawSample,
+    Secret, Staged, SystemFacts, SystemUser, UnitActionKind, UnitInfo,
 };
 use tokio::net::{
     UnixStream,
@@ -551,6 +551,64 @@ impl PrivClient {
         on: bool,
     ) -> Result<(), ClientError> {
         self.done(rid, actor, PrivOp::CleanupAutoSet { on }).await
+    }
+
+    pub async fn access_list(&self, rid: &str) -> Result<AccessState, ClientError> {
+        self.expect(rid, None, PrivOp::AccessList, |r| match r {
+            PrivReply::Access(a) => Ok(a),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn ssh_key_add(
+        &self,
+        rid: &str,
+        actor: &str,
+        user: &str,
+        key: &str,
+    ) -> Result<String, ClientError> {
+        let op = PrivOp::SshKeyAdd {
+            user: user.to_owned(),
+            key: key.to_owned(),
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::KeyAdded { fingerprint } => Ok(fingerprint),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn ssh_key_remove(
+        &self,
+        rid: &str,
+        actor: &str,
+        user: &str,
+        fingerprint: &str,
+    ) -> Result<u32, ClientError> {
+        let op = PrivOp::SshKeyRemove {
+            user: user.to_owned(),
+            fingerprint: fingerprint.to_owned(),
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::KeysRemoved(n) => Ok(n),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn user_lock(
+        &self,
+        rid: &str,
+        actor: &str,
+        name: &str,
+        lock: bool,
+    ) -> Result<(), ClientError> {
+        let op = PrivOp::UserLock {
+            name: name.to_owned(),
+            lock,
+        };
+        self.done(rid, actor, op).await
     }
 
     /// Local accounts.

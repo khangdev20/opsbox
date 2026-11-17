@@ -4,6 +4,7 @@
 //! Phase 0 has no authentication, so the server is meant to listen on loopback only
 //! and exposes nothing but non-secret host facts.
 
+mod access;
 mod auth;
 mod cleanup;
 mod error;
@@ -152,6 +153,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/metrics", get(metrics::get_metrics))
         .route("/api/v1/attention", get(metrics::get_attention))
         .route("/api/v1/stream/metrics", get(metrics::stream))
+        .route("/api/v1/access", get(access::get))
+        .route("/api/v1/access/keys", post(access::add_key))
+        .route("/api/v1/access/keys/remove", post(access::remove_key))
+        .route("/api/v1/access/users/{name}/lock", post(access::lock_user))
         .route("/api/v1/cleanup/scan", get(cleanup::scan))
         .route("/api/v1/cleanup/run", post(cleanup::run))
         .route("/api/v1/cleanup/auto", put(cleanup::set_auto))

@@ -42,6 +42,7 @@ const REAL = new Set([
   'listDir', 'readFile', 'writeFile', 'chmod', 'mkdir', 'removePaths', 'upload',
   'getTerminalUsers', 'openTerminal',
   'scanCleanup', 'runCleanup', 'setAutoCleanup',
+  'getAccess', 'addKey', 'removeKey', 'lockUser',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -55,7 +56,8 @@ function sample(name) { if (MODE === 'http' && !untracked && !REAL.has(name)) us
 // and static sample data). Generated from the pages' `api.*` references; the "sample
 // data" badge is the entries here that are not in REAL, plus anything used at run time.
 export const PAGE_USES = {
-  access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey', 'rotateOutKey'],
+  // (Keys opsbox uses to reach other servers arrive with the desktop app; the section is hidden until then.)
+  access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
   alerts: ['connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
   apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'getDomains', 'getProject', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback'],
   backupdest: ['PROVIDERS', 'saveDestination', 'testDestination'],
@@ -875,16 +877,18 @@ const AC = {
   ],
   out: [{ id: 'o1', name: 'db-primary', sub: 'deploy@10.0.1.12' }, { id: 'o2', name: 'edge-hn-02', sub: 'ubuntu@203.0.113.40:2222' }],
 };
-export async function getAccess() { sample('getAccess'); await lag(); return { ...clone(AC), sshOpen: S.sshOpenUntil > now() }; }
+export async function getAccess() { sample('getAccess'); if (real('getAccess')) return http('/access'); await lag(); return { ...clone(AC), sshOpen: S.sshOpenUntil > now() }; }
 export async function addKey(user, pub) { sample('addKey');
+  if (real('addKey')) { await http('/access/keys', { method: 'POST', body: { user, key: pub } }); return; }
   await lag(300);
   if (/PRIVATE KEY/.test(pub || '')) throw new Error('That is a private key. Never paste it here. Paste the .pub file instead.');
   const m = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+)\s+[A-Za-z0-9+/=]{20,}(\s+(.+))?$/.exec((pub || '').trim());
   if (!m) throw new Error('This is not a public key. It should start with ssh-ed25519 or ssh-rsa.');
   AC.keys.push({ id: 'a' + Date.now(), user, name: m[3] || 'unnamed key', type: m[1].replace('ssh-', ''), fp: 'SHA256:new…key', added: 'today', used: '' }); audit(`add ssh key for ${user}`);
 }
-export async function removeKey(id) { sample('removeKey'); await lag(200); AC.keys = AC.keys.filter((k) => k.id !== id); audit('remove ssh key'); }
+export async function removeKey(id) { sample('removeKey'); if (real('removeKey')) { await http('/access/keys/remove', { method: 'POST', body: { id } }); return; } await lag(200); AC.keys = AC.keys.filter((k) => k.id !== id); audit('remove ssh key'); }
 export async function lockUser(name, lock) { sample('lockUser');
+  if (real('lockUser')) { await http(`/access/users/${encodeURIComponent(name)}/lock`, { method: 'POST', body: { lock } }); return; }
   await lag(250); const u = AC.users.find((x) => x.name === name); if (!u) throw new Error('No such user');
   if (lock && name === 'deploy') throw new Error('deploy runs your apps. Locking it would stop deployments.');
   u.locked = lock; audit(`${lock ? 'lock' : 'unlock'} user ${name}`);

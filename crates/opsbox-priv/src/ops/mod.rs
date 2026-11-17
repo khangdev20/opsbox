@@ -2,6 +2,7 @@
 //! `PrivOp` variant in `opsbox-proto`, a module here, and one line in [`dispatch`];
 //! the compiler enforces the last two because the `match` is exhaustive.
 
+mod access;
 pub mod cleanup;
 pub(crate) mod cron;
 pub(crate) mod exec;
@@ -130,6 +131,14 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::CleanupScan => Ok(cleanup::scan()),
         PrivOp::CleanupRun { ids } => cleanup::run_ids(ids),
         PrivOp::CleanupAutoSet { on } => cleanup::set_auto(*on).map(|()| PrivReply::Done),
+        PrivOp::AccessList => access::list(),
+        PrivOp::SshKeyAdd { user, key } => {
+            access::add_key(user, key).map(|fingerprint| PrivReply::KeyAdded { fingerprint })
+        }
+        PrivOp::SshKeyRemove { user, fingerprint } => {
+            access::remove_key(user, fingerprint).map(PrivReply::KeysRemoved)
+        }
+        PrivOp::UserLock { name, lock } => access::set_lock(name, *lock).map(|()| PrivReply::Done),
         PrivOp::UserList => terminal::list(),
         // A PTY turns the whole connection into a stream, which only the server can do.
         PrivOp::PtyOpen { .. } => Err(PrivError {

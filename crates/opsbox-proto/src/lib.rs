@@ -3,6 +3,7 @@
 //! This crate has no I/O and no async runtime so the desktop app, `serve`, `priv`
 //! and (later) the watchdog can all depend on it.
 
+pub mod access;
 pub mod api;
 pub mod cleanup;
 pub mod files;
@@ -13,6 +14,7 @@ pub mod pty;
 pub mod role;
 pub mod system;
 
+pub use access::{AccessState, AccessUser, AuthorizedKey, SshStatus};
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
 pub use cleanup::{CleanupFreed, CleanupItem, CleanupScan};
 pub use files::{DirListing, FileContent, FileEntry, FileKind, Staged};

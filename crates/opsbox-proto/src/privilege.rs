@@ -194,6 +194,23 @@ pub enum PrivOp {
     CleanupAutoSet {
         on: bool,
     },
+    /// Accounts, their SSH keys and the SSH daemon's settings.
+    AccessList,
+    /// Add one public key to a user's `authorized_keys`.
+    SshKeyAdd {
+        user: String,
+        key: String,
+    },
+    /// Remove the key with this fingerprint from a user's `authorized_keys`.
+    SshKeyRemove {
+        user: String,
+        fingerprint: String,
+    },
+    /// Lock (expire) or unlock a Linux account.
+    UserLock {
+        name: String,
+        lock: bool,
+    },
     /// Local accounts, for the terminal and the Access page.
     UserList,
     /// Start a login shell on a new PTY as `user`. On success the connection becomes a
@@ -246,6 +263,10 @@ impl PrivOp {
             Self::CleanupScan => "cleanup_scan",
             Self::CleanupRun { .. } => "cleanup_run",
             Self::CleanupAutoSet { .. } => "cleanup_auto_set",
+            Self::AccessList => "access_list",
+            Self::SshKeyAdd { .. } => "ssh_key_add",
+            Self::SshKeyRemove { .. } => "ssh_key_remove",
+            Self::UserLock { .. } => "user_lock",
             Self::UserList => "user_list",
             Self::PtyOpen { .. } => "pty_open",
         }
@@ -334,6 +355,13 @@ pub enum PrivReply {
         mtime: i64,
     },
     Users(Vec<crate::pty::SystemUser>),
+    Access(crate::access::AccessState),
+    /// How many keys were removed.
+    KeysRemoved(u32),
+    /// A key was added; this is its fingerprint.
+    KeyAdded {
+        fingerprint: String,
+    },
     Cleanup(crate::cleanup::CleanupScan),
     CleanupFreed(Vec<crate::cleanup::CleanupFreed>),
     /// A shell is running; the connection now carries the PTY stream.
