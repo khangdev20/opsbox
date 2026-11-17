@@ -40,6 +40,7 @@ pub fn run() -> bool {
     report("database and audit chain", check_database());
     report("privileged protocol", check_protocol());
     report("reverse proxy checks", check_proxy());
+    report("watchdog recovery code", check_watchdog());
     report(
         "privileged socket and peer check",
         runtime.block_on(check_priv_roundtrip()),
@@ -108,6 +109,27 @@ fn check_proxy() -> Result<String> {
         bail!("proxy request changed in transit");
     }
     Ok("domain & protocol ok".into())
+}
+
+fn check_watchdog() -> Result<String> {
+    let dir = tempfile::Builder::new()
+        .prefix("opsbox-selftest-wd-")
+        .tempdir()
+        .context("cannot create a temporary directory")?;
+    let code = opsbox_watchdog::auth::generate_recovery_code(dir.path())
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let auth = opsbox_watchdog::auth::SafeAuth::new(
+        dir.path().join("missing.db"),
+        dir.path().join("master.key"),
+        dir.path().to_path_buf(),
+    );
+    let (_tok, _sess) = auth
+        .login_recovery_code(&code, "127.0.0.1")
+        .map_err(|e| anyhow::anyhow!("{}", e.message()))?;
+    if auth.login_recovery_code(&code, "127.0.0.1").is_ok() {
+        bail!("recovery code was accepted twice");
+    }
+    Ok("single-use recovery code ok".into())
 }
 
 /// Start a private helper on a temporary socket, call it as ourselves, and check

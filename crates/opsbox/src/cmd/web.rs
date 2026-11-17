@@ -35,7 +35,7 @@ pub fn local_only(config_path: Option<&Path>, mode: Toggle) -> Result<()> {
     }
 
     let _ = Command::new("systemctl")
-        .args(["try-restart", "opsbox.service"])
+        .args(["try-restart", "opsbox.service", "opsbox-watchdog.service"])
         .status();
 
     match mode {

@@ -71,7 +71,7 @@ Usage: install.sh [options]
 
 Development:
   --binary PATH       install this local binary instead of downloading a release
-  --units-dir DIR     directory with opsbox.service, opsbox-priv.service and opsbox-proxy.service
+  --units-dir DIR     directory with opsbox.service, opsbox-priv.service, opsbox-proxy.service and opsbox-watchdog.service
                       (default: packaging/systemd next to this script)
   --dev               skip signature verification. Required with --binary. Unsafe:
                       never use it for a server that matters.
@@ -245,7 +245,7 @@ else
   [ -f "$NEW_BIN" ] || die "the release archive does not contain opsbox"
 fi
 
-[ -f "$UNITS_DIR/opsbox.service" ] && [ -f "$UNITS_DIR/opsbox-priv.service" ] && [ -f "$UNITS_DIR/opsbox-proxy.service" ] ||
+[ -f "$UNITS_DIR/opsbox.service" ] && [ -f "$UNITS_DIR/opsbox-priv.service" ] && [ -f "$UNITS_DIR/opsbox-proxy.service" ] && [ -f "$UNITS_DIR/opsbox-watchdog.service" ] ||
   die "systemd unit files not found in $UNITS_DIR"
 
 # Check the binary runs on this machine before touching anything.
@@ -308,6 +308,10 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 # socket = "/run/opsbox-proxy/proxy.sock"
 # state_dir = "/var/lib/opsbox/proxy"
 
+# [watchdog]
+# listen = "0.0.0.0:8444"
+# runtime_dir = "/run/opsbox-watchdog"
+
 # [store]
 # db_path = "/var/lib/opsbox/opsbox.db"
 
@@ -323,12 +327,14 @@ if [ "$LOCAL_ONLY" -eq 1 ]; then
   run "$PREFIX_BIN" web local-only on
 fi
 
+run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-watchdog.service" "$UNIT_DIR/opsbox-watchdog.service"
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-priv.service" "$UNIT_DIR/opsbox-priv.service"
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-proxy.service" "$UNIT_DIR/opsbox-proxy.service"
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox.service" "$UNIT_DIR/opsbox.service"
 run systemctl daemon-reload
-run systemctl enable opsbox-priv.service opsbox-proxy.service opsbox.service
+run systemctl enable opsbox-watchdog.service opsbox-priv.service opsbox-proxy.service opsbox.service
 # restart (not start) so that re-running the installer upgrades a running install.
+run systemctl restart opsbox-watchdog.service
 run systemctl restart opsbox-priv.service
 run systemctl restart opsbox-proxy.service
 run systemctl restart opsbox.service
@@ -379,4 +385,4 @@ else
   say "and accept the self-signed certificate warning."
   say "To restrict to localhost only, run: sudo opsbox web local-only on"
 fi
-say "Logs: journalctl -u opsbox -u opsbox-priv -u opsbox-proxy"
+say "Logs: journalctl -u opsbox-watchdog -u opsbox -u opsbox-priv -u opsbox-proxy"

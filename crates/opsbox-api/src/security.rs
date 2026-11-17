@@ -53,6 +53,7 @@ pub struct Inputs {
     pub world_readable: Option<Vec<String>>,
     pub master_key_private: Option<bool>,
     pub panel_tls_self_signed: Option<bool>,
+    pub watchdog_running: Option<bool>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -250,6 +251,21 @@ pub fn build_checks(i: &Inputs) -> Vec<Check> {
         }
         v.push(c);
     }
+    if let Some(running) = i.watchdog_running {
+        let mut c = check(
+            "watchdog",
+            running,
+            if running {
+                "Watchdog is monitoring services and disk health"
+            } else {
+                "Watchdog service is not actively updating health status"
+            },
+        );
+        if !running {
+            c.link = Some("#/recovery");
+        }
+        v.push(c);
+    }
     v
 }
 
@@ -308,11 +324,12 @@ pub(crate) async fn get(
 ) -> Result<Json<Value>, HttpError> {
     let pc = patient(&state, 60);
     let apps = state.files.apps_dir.to_string_lossy().into_owned();
-    let (access, fw, pkgs, scan) = tokio::join!(
+    let (access, fw, pkgs, scan, wd) = tokio::join!(
         pc.access_list(&rid),
         pc.firewall_list(&rid),
         pc.pkg_list(&rid),
-        pc.security_scan(&rid, &apps)
+        pc.security_scan(&rid, &apps),
+        pc.watchdog_status(&rid)
     );
     let users = state
         .store
@@ -347,6 +364,7 @@ pub(crate) async fn get(
                 .and_then(|v| v.as_str().map(|s| !s.is_empty()))
                 != Some(true)
         }),
+        watchdog_running: wd.ok().map(|w| w.running),
     };
     let checks = build_checks(&inputs);
     let passing = checks.iter().filter(|c| c.ok).count();
@@ -539,6 +557,7 @@ mod tests {
             world_readable: Some(vec!["/var/lib/opsbox/apps/web/.env".into()]),
             master_key_private: Some(false),
             panel_tls_self_signed: Some(true),
+            watchdog_running: Some(false),
         });
         let by = |id: &str| c.iter().find(|c| c.id == id).unwrap();
         assert!(!by("2fa").ok && by("2fa").text.contains("dana, erin"));

@@ -53,6 +53,17 @@ pub enum ProxyState {
     Down(String),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum WatchdogState {
+    Ok {
+        version: String,
+        failed: bool,
+        degraded: bool,
+    },
+    NotConfigured,
+    Down(String),
+}
+
 #[derive(Debug)]
 pub struct Report {
     pub config_file: Option<PathBuf>,
@@ -62,6 +73,8 @@ pub struct Report {
     pub privileged: PrivState,
     pub proxy_socket: PathBuf,
     pub proxy: ProxyState,
+    pub watchdog_addr: SocketAddr,
+    pub watchdog: WatchdogState,
 }
 
 impl Report {
@@ -69,6 +82,7 @@ impl Report {
         matches!(self.serve, ServeState::Ready { .. })
             && matches!(self.privileged, PrivState::Ok { .. })
             && !matches!(self.proxy, ProxyState::Down(_))
+            && !matches!(self.watchdog, WatchdogState::Down(_))
     }
 
     pub fn render(&self) -> String {
@@ -125,6 +139,26 @@ impl Report {
             "proxy    {tag} {}  {text}",
             self.proxy_socket.display()
         );
+
+        let (tag, text) = match &self.watchdog {
+            WatchdogState::Ok {
+                version,
+                failed,
+                degraded,
+            } => {
+                if *failed || *degraded {
+                    ("degraded", format!("v{version}, safe mode alert active"))
+                } else {
+                    ("ok      ", format!("v{version}, monitoring"))
+                }
+            }
+            WatchdogState::NotConfigured => (
+                "off     ",
+                "not running (opsbox-watchdog.service not installed)".to_owned(),
+            ),
+            WatchdogState::Down(why) => ("DOWN    ", why.clone()),
+        };
+        let _ = writeln!(out, "watchdog {tag} https://{}  {text}", self.watchdog_addr);
         out
     }
 }
@@ -147,11 +181,14 @@ pub fn run(config: &Config) -> bool {
 
 pub async fn collect(config: &Config) -> Report {
     let serve_addr = config.listen;
+    let watchdog_addr = config.watchdog_listen;
     let proxy_expected = Path::new("/etc/systemd/system/opsbox-proxy.service").exists();
-    let (mut serve, privileged, proxy) = tokio::join!(
+    let watchdog_expected = Path::new("/etc/systemd/system/opsbox-watchdog.service").exists();
+    let (mut serve, privileged, proxy, watchdog) = tokio::join!(
         probe_serve(serve_addr),
         probe_priv(&config.priv_socket),
-        probe_proxy(&config.proxy_socket, proxy_expected)
+        probe_proxy(&config.proxy_socket, proxy_expected),
+        probe_watchdog(watchdog_addr, watchdog_expected),
     );
     if matches!(serve, ServeState::Degraded { ref detail, .. } if detail == "/readyz answered HTTP 403")
         && matches!(privileged, PrivState::Ok { .. })
@@ -167,6 +204,54 @@ pub async fn collect(config: &Config) -> Report {
         privileged,
         proxy_socket: config.proxy_socket.clone(),
         proxy,
+        watchdog_addr,
+        watchdog,
+    }
+}
+
+async fn probe_watchdog(listen: SocketAddr, expected: bool) -> WatchdogState {
+    let addr = if listen.ip().is_unspecified() {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), listen.port())
+    } else {
+        listen
+    };
+    match http_get(addr, "/healthz").await {
+        Ok(r) if r.status == 200 => {
+            let version = r
+                .json
+                .as_ref()
+                .and_then(|v| v["version"].as_str())
+                .unwrap_or("?")
+                .to_owned();
+            let failed = r
+                .json
+                .as_ref()
+                .and_then(|v| v["failed"].as_bool())
+                .unwrap_or(false);
+            let degraded = r
+                .json
+                .as_ref()
+                .and_then(|v| v["degraded"].as_bool())
+                .unwrap_or(false);
+            WatchdogState::Ok {
+                version,
+                failed,
+                degraded,
+            }
+        }
+        Ok(r) => WatchdogState::Down(format!("answered /healthz with HTTP {}", r.status)),
+        Err(e) => {
+            if !expected
+                && matches!(
+                    e.kind(),
+                    io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
+                )
+            {
+                WatchdogState::NotConfigured
+            } else {
+                WatchdogState::Down(describe_http_error(&e))
+            }
+        }
     }
 }
 
@@ -503,6 +588,8 @@ mod tests {
             },
             proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
             proxy: ProxyState::NotConfigured,
+            watchdog_addr: "127.0.0.1:8444".parse().unwrap(),
+            watchdog: WatchdogState::NotConfigured,
         };
         assert!(!report.healthy());
         let text = report.render();

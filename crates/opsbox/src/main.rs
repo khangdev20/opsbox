@@ -89,6 +89,16 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             logging::init(&config)?;
             cmd::proxy::run(config)?;
         }
+        Command::Watchdog(_) => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            logging::init(&config)?;
+            cmd::watchdog::run(config)?;
+        }
+        Command::WatchdogVerifyPw => return Ok(cmd::watchdog::verify_pw()),
+        Command::RecoveryCode => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            cmd::watchdog::recovery_code(&config)?;
+        }
         Command::Update { channel, version } => {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             cmd::update::run_update(&config, channel.as_deref(), version.as_deref())?;

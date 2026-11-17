@@ -17,6 +17,7 @@ mod json;
 mod limits;
 mod metrics;
 pub mod panel;
+mod recovery;
 mod request_id;
 mod security;
 pub mod session;
@@ -239,6 +240,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/updates/apply", post(update::apply))
         .route("/api/v1/updates/rollback", post(update::rollback))
         .route("/api/v1/updates/auto", put(update::set_auto))
+        .route("/api/v1/recovery", get(recovery::get))
         .route("/api/v1/tokens", post(tokens::create))
         .route("/api/v1/tokens/{id}", delete(tokens::revoke))
         .route("/api/v1/security", get(security::get))

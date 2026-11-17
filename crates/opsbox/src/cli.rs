@@ -124,7 +124,20 @@ pub enum Command {
     /// Run the reverse proxy (internal)
     Proxy(ProxyArgs),
     /// Run the watchdog (internal)
-    Watchdog,
+    Watchdog(WatchdogArgs),
+    /// Internal: verify one Argon2id PHC hash from stdin in a short-lived scope
+    #[command(hide = true)]
+    WatchdogVerifyPw,
+}
+
+#[derive(Debug, Args)]
+pub struct WatchdogArgs {
+    /// Safe Mode HTTPS listen address [default: <api.listen ip>:8444]
+    #[arg(long, env = "OPSBOX_WATCHDOG_LISTEN", value_name = "ADDR")]
+    pub listen: Option<SocketAddr>,
+    /// Runtime state directory for watchdog status and recovery codes
+    #[arg(long, env = "OPSBOX_WATCHDOG_RUNTIME_DIR", value_name = "PATH")]
+    pub runtime_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -329,6 +342,9 @@ impl Command {
             | Self::Rollback
             | Self::UpdateVerify { .. }
             | Self::Proxy(_)
+            | Self::Watchdog(_)
+            | Self::WatchdogVerifyPw
+            | Self::RecoveryCode
             | Self::Web {
                 action: WebAction::LocalOnly { .. } | WebAction::Domain { .. },
             } => return None,
@@ -339,7 +355,6 @@ impl Command {
             Self::Web {
                 action: WebAction::Disable,
             } => "web disable",
-            Self::RecoveryCode => "recovery-code",
             Self::Backup {
                 action: BackupAction::Now,
             } => "backup now",
@@ -348,7 +363,6 @@ impl Command {
             } => "backup list",
             Self::Restore { .. } => "restore",
             Self::Uninstall { .. } => "uninstall",
-            Self::Watchdog => "watchdog",
         })
     }
 }
@@ -430,6 +444,9 @@ mod tests {
             "user reset-2fa a",
             "user password a",
             "audit verify",
+            "watchdog",
+            "watchdog-verify-pw",
+            "recovery-code",
         ] {
             assert_eq!(parse(done).unimplemented_name(), None, "{done}");
         }

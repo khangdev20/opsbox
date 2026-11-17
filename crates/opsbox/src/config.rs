@@ -44,6 +44,7 @@ struct FileConfig {
     files: FilesSection,
     terminal: TerminalSection,
     proxy: ProxySection,
+    watchdog: WatchdogSection,
     #[serde(rename = "priv")]
     privileged: PrivSection,
     store: StoreSection,
@@ -183,6 +184,22 @@ impl Default for ProxySection {
 
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+struct WatchdogSection {
+    listen: Option<SocketAddr>,
+    runtime_dir: PathBuf,
+}
+
+impl Default for WatchdogSection {
+    fn default() -> Self {
+        Self {
+            listen: None,
+            runtime_dir: "/run/opsbox-watchdog".into(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct StoreSection {
     db_path: PathBuf,
 }
@@ -238,6 +255,8 @@ pub struct Config {
     pub acme_directory: Option<String>,
     pub acme_email: Option<String>,
     pub public_ips: Vec<IpAddr>,
+    pub watchdog_listen: SocketAddr,
+    pub watchdog_runtime_dir: PathBuf,
     pub db_path: PathBuf,
     pub log_level: String,
     pub log_format: LogFormat,
@@ -263,6 +282,8 @@ pub struct Overrides {
     pub proxy_socket: Option<PathBuf>,
     pub proxy_state_dir: Option<PathBuf>,
     pub acme_staging: bool,
+    pub watchdog_listen: Option<SocketAddr>,
+    pub watchdog_runtime_dir: Option<PathBuf>,
     pub log_level: Option<String>,
     pub log_format: Option<LogFormat>,
 }
@@ -305,6 +326,10 @@ impl Overrides {
                 o.priv_socket.clone_from(&a.socket);
                 o.proxy_socket.clone_from(&a.proxy_socket);
             }
+            Command::Watchdog(a) => {
+                o.watchdog_listen = a.listen;
+                o.watchdog_runtime_dir.clone_from(&a.runtime_dir);
+            }
             _ => {}
         }
         o
@@ -336,8 +361,13 @@ impl Config {
                 "files.xfer_dir is fixed at /var/lib/opsbox/xfer; set files.allow_external_xfer_dir = true explicitly for an alternate staging directory"
             );
         }
+        let listen = o.listen.unwrap_or(file.api.listen);
+        let watchdog_listen = o
+            .watchdog_listen
+            .or(file.watchdog.listen)
+            .unwrap_or_else(|| SocketAddr::new(listen.ip(), 8444));
         Ok(Self {
-            listen: o.listen.unwrap_or(file.api.listen),
+            listen,
             priv_socket: o.priv_socket.unwrap_or(file.privileged.socket),
             allowed_users,
             allowed_uids,
@@ -360,6 +390,8 @@ impl Config {
             acme_directory: file.proxy.acme_directory,
             acme_email: file.proxy.acme_email,
             public_ips: file.proxy.public_ips,
+            watchdog_listen,
+            watchdog_runtime_dir: o.watchdog_runtime_dir.unwrap_or(file.watchdog.runtime_dir),
             db_path: o.db_path.unwrap_or(file.store.db_path),
             log_level: o.log_level.unwrap_or(file.log.level),
             log_format: o.log_format.unwrap_or(file.log.format),
@@ -583,5 +615,22 @@ mod tests {
         assert_eq!(c2.proxy_listen_http.port(), 9080);
         assert_eq!(c2.proxy_socket, Path::new("/tmp/cli-proxy.sock"));
         assert!(c2.acme_staging);
+    }
+
+    #[test]
+    fn watchdog_config_follows_api_ip_and_allows_override() {
+        let public = load_str("[api]\nlisten = \"0.0.0.0:8443\"\n", Overrides::default()).unwrap();
+        assert_eq!(public.watchdog_listen, "0.0.0.0:8444".parse().unwrap());
+
+        let local = load_str("[api]\nlisten = \"127.0.0.1:8443\"\n", Overrides::default()).unwrap();
+        assert_eq!(local.watchdog_listen, "127.0.0.1:8444".parse().unwrap());
+
+        let custom = load_str(
+            "[watchdog]\nlisten = \"127.0.0.1:9444\"\nruntime_dir = \"/tmp/wd\"\n",
+            Overrides::default(),
+        )
+        .unwrap();
+        assert_eq!(custom.watchdog_listen, "127.0.0.1:9444".parse().unwrap());
+        assert_eq!(custom.watchdog_runtime_dir, Path::new("/tmp/wd"));
     }
 }

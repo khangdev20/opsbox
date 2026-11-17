@@ -83,7 +83,7 @@ jobs:
             mkdir -p "$stage/systemd"
             cp "target/${t}/release/opsbox" "$stage/opsbox"
             chmod 755 "$stage/opsbox"
-            cp packaging/systemd/opsbox.service packaging/systemd/opsbox-priv.service packaging/systemd/opsbox-proxy.service "$stage/systemd/"
+            cp packaging/systemd/opsbox.service packaging/systemd/opsbox-priv.service packaging/systemd/opsbox-proxy.service packaging/systemd/opsbox-watchdog.service "$stage/systemd/"
             tar -C "$RUNNER_TEMP" -czf "dist/${pkg}.tar.gz" "$pkg"
             (cd dist && sha256sum "${pkg}.tar.gz" > "${pkg}.tar.gz.sha256")
             if [ -n "${MINISIGN_PASSWORD:-}" ]; then

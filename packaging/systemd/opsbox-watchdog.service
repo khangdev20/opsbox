@@ -1,0 +1,30 @@
+[Unit]
+Description=opsbox watchdog and Safe Mode (:8444)
+Documentation=https://github.com/khangdev20/opsbox
+# Starts before all other opsbox units and never depends on them.
+Before=opsbox-priv.service opsbox-proxy.service opsbox.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/opsbox watchdog
+Restart=always
+RestartSec=2
+Nice=-5
+MemoryMax=32M
+
+# Runs as root to probe, restart/roll back opsbox units, clean system caches,
+# open emergency SSH, or schedule a reboot even when opsbox-priv is down.
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+
+# Creates /run/opsbox-watchdog (root:root 0700) for status.json and recovery-code.json.
+RuntimeDirectory=opsbox-watchdog
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=multi-user.target

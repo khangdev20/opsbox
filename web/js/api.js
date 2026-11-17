@@ -47,6 +47,7 @@ const REAL = new Set([
   'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap',
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
   'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
+  'getRecovery',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -75,7 +76,7 @@ export const PAGE_USES = {
   enroll: ['auth.enroll', 'auth.enrollConfirm'],
   newservice: ['getRepos'],
   overview: ['getAttention', 'getHost', 'getMetrics'],
-  recovery: ['getRecovery', 'recoveryAction', 'simulateFailure'],
+  recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
   settings: ['checkPanelDns', 'createToken', 'disconnectGithub', 'exportConfig', 'getSettings', 'growFs', 'issuePanelCert', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
@@ -702,7 +703,9 @@ export async function signOutAll() {
 }
 
 // ---------------------------------------------------------------- recovery
-export async function getRecovery() { sample('getRecovery');
+export async function getRecovery() {
+  if (real('getRecovery')) { if (!untracked) used.real.add('getRecovery'); return http('/recovery'); } // GET /api/v1/recovery
+  sample('getRecovery');
   await lag(100); const failed = S.recovery.failed;
   return { failed, checks: failed
     ? [['opsbox.service', 'fail', 'failed', 'exit code 101 · restarted 3 times'], ['Health endpoint /healthz', 'fail', 'no answer', 'timeout after 5 s'], ['Disk /', 'fail', '100% full', '0 B free · likely cause: opsbox cannot write its database'], ['Docker', 'ok', 'running', '4 containers still serving traffic'], ['Network and DNS', 'ok', 'ok', '443 reachable from outside']]

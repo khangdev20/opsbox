@@ -8,6 +8,7 @@ pub mod selftest;
 pub mod serve;
 pub mod status;
 pub mod update;
+pub mod watchdog;
 pub mod web;
 
 use tokio::signal::unix::{SignalKind, signal};
