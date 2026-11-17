@@ -366,6 +366,7 @@ pub(crate) async fn set_allow_ips(
     client: Client,
     crate::json::ApiJson(body): crate::json::ApiJson<AllowBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let list =
         allowlist::parse_list(&body.value).map_err(|m| HttpError::new(ErrorCode::Validation, m))?;
     if list.len() > 50 {

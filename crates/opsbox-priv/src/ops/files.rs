@@ -1094,6 +1094,8 @@ mod tests {
     fn reading_text_binary_and_big_files() {
         let (_d, t) = tmp();
         fs::write(t.join("a.txt"), "héllo\n").unwrap();
+        // The fixture's mode is independent of the runner's umask (Ubuntu uses 0002).
+        fs::set_permissions(t.join("a.txt"), fs::Permissions::from_mode(0o644)).unwrap();
         let r = read(&s(&t.join("a.txt")), None).unwrap();
         assert_eq!(
             (r.content.as_str(), r.size, r.mode.as_str()),

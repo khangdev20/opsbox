@@ -1085,3 +1085,114 @@ async fn removing_accounts_has_safeguards_and_is_audited() {
         "the chain verifies end to end"
     );
 }
+
+// ---- API tokens ----------------------------------------------------------------------
+
+#[tokio::test]
+async fn tokens_are_shown_once_stored_as_a_hash_and_act_with_their_scope() {
+    use opsbox_store::TokenScope;
+    let env = Env::new().await;
+    env.setup_admin().await;
+    let admin = env.store.user_by_name("admin").unwrap().unwrap();
+
+    let (token, secret) = env
+        .auth
+        .create_token(&admin, " CI-Deploy ", TokenScope::Deploy, Some(IP))
+        .unwrap();
+    assert_eq!(token.name, "ci-deploy");
+    assert!(secret.starts_with("ops_") && secret.len() > 40, "{secret}");
+    // Only the hash is kept: the secret is nowhere in what the database holds.
+    let stored = env
+        .store
+        .api_token_by_hash(&opsbox_auth::tokens::hash_token(&secret))
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.id, token.id);
+    assert!(env.store.api_token_by_hash(&secret).unwrap().is_none());
+    let listed = env.auth.list_tokens().unwrap();
+    assert!(listed.iter().all(|t| !format!("{t:?}").contains(&secret)));
+
+    let who = env.auth.authenticate_token(&secret).unwrap().unwrap();
+    assert!(who.via_token);
+    assert_eq!(
+        (who.user.role, who.user.name.as_str()),
+        (Role::Deployer, "token:ci-deploy")
+    );
+    assert!(env.auth.list_tokens().unwrap()[0].last_used_at.is_some());
+
+    let (_t, read_secret) = env
+        .auth
+        .create_token(&admin, "metrics", TokenScope::Read, None)
+        .unwrap();
+    assert_eq!(
+        env.auth
+            .authenticate_token(&read_secret)
+            .unwrap()
+            .unwrap()
+            .user
+            .role,
+        Role::Viewer
+    );
+    let (_t, full) = env
+        .auth
+        .create_token(&admin, "everything", TokenScope::Full, None)
+        .unwrap();
+    assert_eq!(
+        env.auth
+            .authenticate_token(&full)
+            .unwrap()
+            .unwrap()
+            .user
+            .role,
+        Role::Admin
+    );
+
+    // Not a token, or not a live one.
+    for bad in [
+        "",
+        "ops_",
+        "ops_nope",
+        "Bearer x",
+        &secret[..secret.len() - 1],
+        &"ops_".repeat(40),
+    ] {
+        assert!(
+            env.auth.authenticate_token(bad).unwrap().is_none(),
+            "{bad:?}"
+        );
+    }
+    // Names are checked and unique, ignoring case.
+    for bad in ["", "ab", "Has Space", "-dash", "9lives", &"x".repeat(33)] {
+        assert!(
+            env.auth
+                .create_token(&admin, bad, TokenScope::Read, None)
+                .is_err(),
+            "{bad:?}"
+        );
+    }
+    let dup = env
+        .auth
+        .create_token(&admin, "METRICS", TokenScope::Read, None)
+        .unwrap_err();
+    assert!(dup.to_string().contains("already exists"), "{dup}");
+
+    // Revoking works at once and is audited; revoking again says so.
+    env.auth.revoke_token(&admin, &token.id, Some(IP)).unwrap();
+    assert!(env.auth.authenticate_token(&secret).unwrap().is_none());
+    assert!(matches!(
+        env.auth.revoke_token(&admin, &token.id, None),
+        Err(AuthError::NotFound)
+    ));
+    let actions: Vec<_> = env
+        .store
+        .recent_audit(50)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.action)
+        .collect();
+    for a in ["token.create", "token.revoke"] {
+        assert!(actions.iter().any(|x| x == a), "{a}");
+    }
+    // A token is not a session cookie: the same string does not authenticate as one.
+    assert!(env.auth.authenticate(&read_secret).unwrap().is_none());
+}

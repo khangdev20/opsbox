@@ -194,6 +194,8 @@ pub enum PrivOp {
     CleanupAutoSet {
         on: bool,
     },
+    /// The time zone (and the zones available) and the swap in use.
+    SettingsGet,
     /// Look at the things the security checks need.
     SecurityScan {
         apps_dir: String,
@@ -272,6 +274,7 @@ impl PrivOp {
             Self::CleanupScan => "cleanup_scan",
             Self::CleanupRun { .. } => "cleanup_run",
             Self::CleanupAutoSet { .. } => "cleanup_auto_set",
+            Self::SettingsGet => "settings_get",
             Self::SecurityScan { .. } => "security_scan",
             Self::SecurityFix { .. } => "security_fix",
             Self::AccessList => "access_list",
@@ -368,6 +371,7 @@ pub enum PrivReply {
     Users(Vec<crate::pty::SystemUser>),
     Access(crate::access::AccessState),
     Security(crate::security::SecurityScan),
+    Settings(crate::security::HostSettings),
     /// How many keys were removed.
     KeysRemoved(u32),
     /// A key was added; this is its fingerprint.

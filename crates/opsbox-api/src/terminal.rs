@@ -93,10 +93,11 @@ fn login_users(all: Vec<SystemUser>) -> (Vec<SystemUser>, Option<String>) {
 
 /// `GET /terminal/users`
 pub(crate) async fn users(
-    Admin(_): Admin,
+    Admin(who): Admin,
     State(state): State<AppState>,
     rid: axum::Extension<RequestId>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let all = state.priv_client.users(&rid.0.0).await?;
     let (users, default) = login_users(all);
     Ok(Json(json!({
@@ -131,6 +132,7 @@ pub(crate) async fn stream(
     Query(q): Query<OpenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, HttpError> {
+    crate::session::deny_token(&who)?;
     if !origin_matches_host(&client.headers) {
         return Err(HttpError::new(
             ErrorCode::Forbidden,

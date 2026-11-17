@@ -75,6 +75,7 @@ pub(crate) async fn add_key(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(body): ApiJson<AddKey>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let fp = patient(&state, 30)
         .ssh_key_add(&rid, &who.user.name, &body.user, &body.key)
         .await?;
@@ -102,6 +103,7 @@ pub(crate) async fn remove_key(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(body): ApiJson<RemoveKey>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let Some((user, fp)) = body.id.split_once(':') else {
         return Err(HttpError::new(
             ErrorCode::Validation,
@@ -136,6 +138,7 @@ pub(crate) async fn lock_user(
     Path(name): Path<String>,
     ApiJson(body): ApiJson<LockBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     patient(&state, 30)
         .user_lock(&rid, &who.user.name, &name, body.lock)
         .await?;

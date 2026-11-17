@@ -12,5 +12,5 @@ pub mod tokens;
 
 pub use service::{
     Auth, AuthConfig, AuthError, Enrolment, InviteInfo, Issued, LoginOutcome, LoginRequest,
-    Principal, SessionKindView,
+    Principal, SessionKindView, TOKEN_PREFIX,
 };

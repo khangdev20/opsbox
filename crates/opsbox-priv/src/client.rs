@@ -6,9 +6,10 @@ use std::time::Duration;
 use opsbox_proto::frame;
 use opsbox_proto::{
     AccessState, CleanupFreed, CleanupScan, CommandOutcome, DirListing, FileContent,
-    FirewallChange, FirewallState, HostInfo, JobInfo, JournalEntry, NewRule, PkgSelect, PkgState,
-    PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, PtyFrame, RawSample,
-    Secret, SecurityScan, Staged, SystemFacts, SystemUser, UnitActionKind, UnitInfo,
+    FirewallChange, FirewallState, HostInfo, HostSettings, JobInfo, JournalEntry, NewRule,
+    PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
+    PtyFrame, RawSample, Secret, SecurityScan, Staged, SystemFacts, SystemUser, UnitActionKind,
+    UnitInfo,
 };
 use tokio::net::{
     UnixStream,
@@ -551,6 +552,14 @@ impl PrivClient {
         on: bool,
     ) -> Result<(), ClientError> {
         self.done(rid, actor, PrivOp::CleanupAutoSet { on }).await
+    }
+
+    pub async fn settings_get(&self, rid: &str) -> Result<HostSettings, ClientError> {
+        self.expect(rid, None, PrivOp::SettingsGet, |r| match r {
+            PrivReply::Settings(s) => Ok(s),
+            o => Err(o),
+        })
+        .await
     }
 
     pub async fn security_scan(

@@ -226,6 +226,16 @@ Choices made while building the backend where `BACKEND_SPEC.md` left room or whe
 
 **Other servers.** The "SSH to other servers" tabs are present but disabled with "needs the desktop app" (Phase 6). The page in http mode no longer uses the demo hosts or the demo shell, so it has no "sample data" badge; mock mode keeps the demo shell untouched.
 
+### M7: cleanup, access, security and settings
+
+**Cleanup and access.** Cleanup estimates journal, package cache, old release slots, temporary files and core dumps in `priv`. Docker scanners are available only when Docker is present; deployment sources wait for Phase 3. Automatic cleanup is a systemd timer running the safe set. SSH keys are parsed and fingerprinted, written atomically to each Linux user's `authorized_keys`, preserving ownership; locking expires an account rather than merely removing its password. Outgoing SSH keys wait for the desktop phase.
+
+**Security.** Checks use real machine facts and account state; automatic fixes are limited to secret-file permissions and SSH configuration drop-ins (validated before reload). Account invitations are single use, require password and TOTP enrolment and expire after 24 hours. The allowed-address list is checked on requests; changes cannot exclude the caller. Health probes remain accessible.
+
+**Settings.** Host name, system time zone list and active swap are read through the typed `SettingsGet` operation. Host name and time zone changes reuse the M4 operations; swap runs as a task. Panel domains, disk growth, GitHub, self-update, export and uninstall remain sample sections, explicitly labelled and disabled in HTTP mode. Real general settings and token sections have no sample badge.
+
+**API tokens.** `ops_` plus 256 random bits, only the SHA-256 stored, secret returned once. Names are unique, 3–32 lower-case letters, digits and dashes. Scopes in Phase 1 are `read` (host, metrics and attention), `deploy` (the same plus journal reads; no writes until Phase 3) and `full` (administrator operations except account, token, SSH-key and terminal management). Scope checks are endpoint capabilities in addition to role checks: deploy tokens cannot inherit deployer file access. Service-specific deployment scopes await Phase 3's service model. Tokens have no expiry in Phase 1; revoke them explicitly in Settings. Cookie authentication takes precedence over a bearer header, and a bearer secret cannot be used as a cookie. Non-ambient bearer requests require no CSRF token.
+
 ## Problems found in the spec
 
 1. **Privilege escalation in the file layout (section 4).** Root runs `/usr/local/bin/opsbox`, a symlink into `/var/lib/opsbox/bin/`, while the unprivileged `opsbox` user must own `/var/lib/opsbox` (database, `ReadWritePaths`). A compromised `serve` could rename `bin/` and put its own binary in its place; root would run it on the next restart. Mitigation implemented: sticky bit (mode 1770, root-owned) so `opsbox` cannot rename or delete entries it does not own. Phase 2 (self-update) should keep the slots out of any directory that `opsbox` can write, or this property must be tested.

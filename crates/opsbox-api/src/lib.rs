@@ -21,6 +21,7 @@ mod setup;
 mod system;
 mod tasks;
 mod terminal;
+mod tokens;
 mod ui;
 mod users;
 
@@ -176,6 +177,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/metrics", get(metrics::get_metrics))
         .route("/api/v1/attention", get(metrics::get_attention))
         .route("/api/v1/stream/metrics", get(metrics::stream))
+        .route("/api/v1/settings", get(tokens::get_settings))
+        .route("/api/v1/tokens", post(tokens::create))
+        .route("/api/v1/tokens/{id}", delete(tokens::revoke))
         .route("/api/v1/security", get(security::get))
         .route("/api/v1/security/allow-ips", put(security::set_allow_ips))
         .route("/api/v1/security/checks/{id}/fix", post(security::fix))

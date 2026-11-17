@@ -26,7 +26,7 @@ pub use privilege::{
 };
 pub use pty::{MAX_PTY_DIM, MAX_PTY_PAYLOAD, PtyFrame, PtyFrameError, SystemUser, clamp_size};
 pub use role::Role;
-pub use security::SecurityScan;
+pub use security::{HostSettings, SecurityScan};
 pub use system::{
     CommandOutcome, FirewallChange, FirewallRule, FirewallState, JobInfo, JournalEntry, NewRule,
     PkgSelect, PkgState, PkgUpdate, UnitActionKind, UnitInfo,

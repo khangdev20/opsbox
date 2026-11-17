@@ -44,6 +44,7 @@ const REAL = new Set([
   'scanCleanup', 'runCleanup', 'setAutoCleanup',
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
+  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -923,20 +924,40 @@ export async function rotateOutKey(id) { sample('rotateOutKey'); await lag(500);
 // ---------------------------------------------------------------- settings
 const ST = { hostname: 'srv-sgn-01', tz: 'Asia/Ho_Chi_Minh', panel: 'https://panel.example.com', swap: '2 GB', autoUpdate: true, channel: 'stable', github: true, fsGrown: false,
   tokens: [{ id: 't1', name: 'github-actions', can: 'deploy only, service web', last: '2 min ago' }, { id: 't2', name: 'uptime-check', can: 'read-only metrics', last: '1 min ago' }] };
-export async function getSettings() { sample('getSettings'); await lag(); return clone(ST); }
+// Swap as the page's choices: None, 1 GB, 2 GB, 4 GB (the system reports a little under the size).
+const swapLabel = (mb) => { if (!mb) return 'None'; const gb = Math.round(mb / 1024); return Math.abs(mb - gb * 1024) <= gb * 1024 * 0.02 ? `${gb} GB` : `${(mb / 1024).toFixed(1)} GB`; };
+let realSettings = null;
+export async function getSettings() { sample('getSettings');
+  if (real('getSettings')) {
+    // Host name, time zone, swap and tokens are the server's. Panel address, GitHub, updates
+    // and disk growth arrive with later phases and stay sample data (the page's badge says so).
+    const r = await http('/settings'); realSettings = r;
+    return { ...clone(ST), hostname: r.hostname, tz: r.tz, timezones: r.timezones, swap: swapLabel(r.swapMb), tokens: r.tokens.map((t) => ({ id: t.id, name: t.name, can: t.can, last: t.last })) };
+  }
+  await lag(); return clone(ST); }
 export async function saveSettings(v) { sample('saveSettings');
+  if (real('saveSettings')) {
+    // Only what changed is sent. The panel address belongs to a later phase and is ignored.
+    const cur = realSettings || await http('/settings');
+    if (v.hostname !== cur.hostname) { await http('/system/hostname', { method: 'PUT', body: { name: v.hostname } }); cur.hostname = v.hostname; S.host.name = v.hostname; }
+    if (v.tz !== cur.tz) { await http('/system/timezone', { method: 'PUT', body: { zone: v.tz } }); cur.tz = v.tz; }
+    return;
+  }
   await lag(300);
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(v.hostname || '')) throw new Error('Hostname: letters, numbers and dashes only.');
   if (!/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(v.panel || '')) throw new Error('Panel address must start with https:// and have no path.');
   Object.assign(ST, { hostname: v.hostname, tz: v.tz, panel: v.panel }); S.host.name = v.hostname; audit('update general settings');
 }
 export async function createToken(name, can) { sample('createToken');
+  if (real('createToken')) { const scope = { 'deploy only': 'deploy', 'read-only metrics': 'read', 'full access': 'full' }[can] || can; const r = await http('/tokens', { method: 'POST', body: { name, scope } }); return { secret: r.secret }; }
   await lag(300); if (!/^[a-z][a-z0-9-]{2,}$/.test(name || '')) throw new Error('Token name: at least 3 characters, lowercase, dashes allowed.');
   const secret = 'ops_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
   ST.tokens.push({ id: 't' + Date.now(), name, can, last: 'never' }); audit(`create api token ${name}`); return { secret };
 }
-export async function revokeToken(id) { sample('revokeToken'); await lag(200); ST.tokens = ST.tokens.filter((t) => t.id !== id); audit('revoke api token'); }
-export async function setSwap(v) { sample('setSwap'); await lag(400); ST.swap = v; audit(`swap ${v}`); }
+export async function revokeToken(id) { sample('revokeToken'); if (real('revokeToken')) return http('/tokens/' + encodeURIComponent(id), { method: 'DELETE' }); await lag(200); ST.tokens = ST.tokens.filter((t) => t.id !== id); audit('revoke api token'); }
+export async function setSwap(v) { sample('setSwap');
+  if (real('setSwap')) { const mb = v === 'None' ? 0 : Math.round(parseFloat(v) * 1024); const { task } = await http('/system/swap', { method: 'PUT', body: { sizeMb: mb } }); await waitTask(task, { every: 1000 }); return; }
+  await lag(400); ST.swap = v; audit(`swap ${v}`); }
 export async function growFs() { sample('growFs'); await lag(900); ST.fsGrown = true; audit('grow filesystem'); }
 export async function setOpsboxAutoUpdate(on) { sample('setOpsboxAutoUpdate'); await lag(150); ST.autoUpdate = on; }
 export async function disconnectGithub() { sample('disconnectGithub'); await lag(300); ST.github = false; audit('disconnect GitHub'); }

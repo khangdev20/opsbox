@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use opsbox_proto::{PrivError, PrivErrorCode};
+use opsbox_proto::{HostSettings, PrivError, PrivErrorCode};
 
 use super::exec::{find, run, tail};
 
@@ -259,6 +259,69 @@ pub(super) fn set_swap(size_mb: u64) -> Result<(), PrivError> {
     super::pkg::write_atomic("/etc/fstab", &fstab_with_swap(&fstab, true))
 }
 
+// ------------------------------------------------------------------ reading settings
+
+/// `SwapTotal` from `/proc/meminfo`, in megabytes.
+pub fn parse_swap_mb(meminfo: &str) -> u64 {
+    meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("SwapTotal:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|kb| kb.parse::<u64>().ok())
+        .map_or(0, |kb| kb / 1024)
+}
+
+/// The zone name from the `/etc/localtime` link target (`.../zoneinfo/Europe/Paris`).
+pub fn zone_from_link(target: &str) -> Option<String> {
+    target
+        .split_once("zoneinfo/")
+        .map(|(_, z)| z.trim().to_owned())
+        .filter(|z| !z.is_empty())
+}
+
+pub(crate) fn settings() -> HostSettings {
+    let timedatectl = find(&["/usr/bin/timedatectl", "/bin/timedatectl"]);
+    let timezone = timedatectl
+        .as_deref()
+        .and_then(|t| {
+            run(
+                t,
+                &["show", "-p", "Timezone", "--value"],
+                Duration::from_secs(5),
+            )
+        })
+        .filter(super::exec::Output::ok)
+        .map(|o| o.stdout.trim().to_owned())
+        .filter(|z| !z.is_empty())
+        .or_else(|| {
+            std::fs::read_link("/etc/localtime")
+                .ok()
+                .and_then(|p| zone_from_link(&p.to_string_lossy()))
+        })
+        .unwrap_or_else(|| "UTC".into());
+    let timezones = timedatectl
+        .as_deref()
+        .and_then(|t| run(t, &["list-timezones"], Duration::from_secs(5)))
+        .filter(super::exec::Output::ok)
+        .map(|o| {
+            o.stdout
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    let swap_mb = std::fs::read_to_string("/proc/meminfo")
+        .map(|t| parse_swap_mb(&t))
+        .unwrap_or(0);
+    HostSettings {
+        timezone,
+        timezones,
+        swap_mb,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +415,25 @@ mod tests {
     fn reboot_delay_is_bounded() {
         assert_eq!(reboot(0).unwrap_err().code, PrivErrorCode::Invalid);
         assert_eq!(reboot(61).unwrap_err().code, PrivErrorCode::Invalid);
+    }
+
+    #[test]
+    fn swap_and_zone_are_read_from_system_text() {
+        assert_eq!(
+            parse_swap_mb("MemTotal: 1 kB\nSwapTotal:       2097148 kB\nSwapFree: 1 kB\n"),
+            2047
+        );
+        assert_eq!(parse_swap_mb("SwapTotal: 0 kB\n"), 0);
+        assert_eq!(parse_swap_mb("nothing here"), 0);
+        assert_eq!(
+            zone_from_link("/usr/share/zoneinfo/Asia/Ho_Chi_Minh").as_deref(),
+            Some("Asia/Ho_Chi_Minh")
+        );
+        assert_eq!(
+            zone_from_link("../usr/share/zoneinfo/UTC").as_deref(),
+            Some("UTC")
+        );
+        assert_eq!(zone_from_link("/etc/other"), None);
+        assert_eq!(zone_from_link("/usr/share/zoneinfo/"), None);
     }
 }

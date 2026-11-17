@@ -9,7 +9,7 @@
 use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, FromRequestParts};
-use axum::http::header::{COOKIE, HOST, ORIGIN, SET_COOKIE};
+use axum::http::header::{AUTHORIZATION, COOKIE, HOST, ORIGIN, SET_COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method};
 use axum::response::{AppendHeaders, IntoResponseParts};
@@ -201,6 +201,27 @@ pub fn check_origin_if_present(headers: &HeaderMap) -> Result<(), HttpError> {
     Ok(())
 }
 
+/// The token in an `Authorization: Bearer <token>` header.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+}
+
+/// Refuse a caller that used an API token. Managing people, tokens, SSH keys and terminals
+/// needs a signed-in account.
+pub fn deny_token(who: &Principal) -> Result<(), HttpError> {
+    if who.via_token {
+        return Err(forbidden(
+            "API tokens cannot do this. Sign in with an account instead.",
+        ));
+    }
+    Ok(())
+}
+
 /// Authenticate the caller with `role` at least, applying CSRF rules to unsafe methods.
 async fn authorize(
     parts: &mut Parts,
@@ -208,6 +229,46 @@ async fn authorize(
     role: Role,
     allow_enrol: bool,
 ) -> Result<Principal, HttpError> {
+    // A script may use an API token instead of a session. Nothing about a token is ambient
+    // (a browser never adds it by itself), so CSRF and Origin checks do not apply to it.
+    if cookie_value(&parts.headers, SESSION_COOKIE).is_none()
+        && let Some(secret) = bearer(&parts.headers)
+    {
+        let auth = state.auth.clone();
+        let secret = secret.to_owned();
+        let who = tokio::task::spawn_blocking(move || auth.authenticate_token(&secret))
+            .await
+            .map_err(|_| HttpError::internal())??
+            .ok_or_else(unauthorized)?;
+        if !who.user.role.allows(role) {
+            return Err(forbidden("This token is not allowed to do this."));
+        }
+        // Scopes are capabilities, not just role ranks. In particular a deployment
+        // token must never inherit a deployer's write access to application files.
+        let path = parts.uri.path();
+        let metrics = matches!(
+            path,
+            "/api/v1/host" | "/api/v1/metrics" | "/api/v1/attention" | "/api/v1/stream/metrics"
+        );
+        let allowed = match who.user.role {
+            Role::Viewer => is_safe(&parts.method) && metrics,
+            // Service-scoped deployment endpoints arrive in Phase 3. Until then a
+            // deploy token can inspect metrics and logs, with no mutation capability.
+            Role::Deployer => {
+                is_safe(&parts.method)
+                    && (metrics
+                        || matches!(path, "/api/v1/system/journal" | "/api/v1/stream/journal"))
+            }
+            Role::Admin => true,
+        };
+        if !allowed {
+            return Err(forbidden("This endpoint is outside the token's scope."));
+        }
+        if allow_enrol {
+            return Err(forbidden("This needs a signed-in account, not a token."));
+        }
+        return Ok(who);
+    }
     let token = cookie_value(&parts.headers, SESSION_COOKIE)
         .ok_or_else(unauthorized)?
         .to_owned();

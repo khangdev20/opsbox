@@ -196,3 +196,26 @@ Two things only a real Linux machine can answer; please tell me what you see (th
 
 13. **Where does the shell live?** In the terminal run `cat /proc/self/cgroup` and `systemd-cgls --no-pager | head -30`. Good: the shell is in `user.slice/.../session-N.scope` (a login session). Not good: it is under `opsbox-priv.service`. Then try `tmux new -d -s t 'sleep 600'`, run `sudo systemctl restart opsbox-priv` from a normal SSH session, and `tmux ls` / `pgrep -a sleep`: the session should survive in the good case and be gone in the other.
 14. **Inherited restrictions.** `sudo tcpdump -i lo -c1` probably fails ("socket: Address family not supported") because the shell inherits the helper's socket-family limit. Everything else (`ping`, `curl`, `apt`, `docker`) should work.
+
+
+---
+
+## M7. Cleanup, Access, Security and Settings
+
+Build and reinstall with the preamble, then sign in as an administrator.
+
+1. **Cleanup**: compare the scanner list and disk totals with `journalctl --disk-usage`, `du -sh /var/cache/apt/archives` and `df -h /`. A server without Docker has no Docker rows. Select package cache only, run it, and check the task's result. Enable weekly cleanup, inspect `systemctl list-timers --all | grep opsbox`, then disable it again. Do not select volumes without reviewing the warning.
+2. **Access**: compare users with `getent passwd` and SSH status with `sudo sshd -T`. Add a disposable **public** SSH key to `ubuntu`, check `~ubuntu/.ssh/authorized_keys` and its mode/owner, then remove that exact key. Lock/unlock only a disposable test user, never the account used for the SSH tunnel.
+3. **Security**: checks describe the server's actual state. Inspect the audit rows after a safe fix. Invite a viewer, open the invitation link in a private window, choose a password and enrol TOTP. The viewer cannot make administrator changes. Revoking the invitation/account prevents reuse. Test an allowed-address list that includes the current caller; trying to exclude it must fail. Clear the list afterwards.
+4. **Settings**: General and API tokens are real; later-phase sections have their own sample-data badges and disabled controls. The time-zone menu comes from `timedatectl list-timezones` and includes the current zone. Save the existing hostname/zone first (no mutation); on the disposable VM change each and restore it. Compare with `hostnamectl` and `timedatectl`. The current swap matches `free -m`; creating swap runs a task and errors are shown.
+5. Create a `read` token, copy it once, reload Settings: its secret is gone. In the VM, read it without storing it in shell history:
+
+   ```sh
+   read -rs OPSBOX_TEST_TOKEN; echo
+   curl -i -H "Authorization: Bearer $OPSBOX_TEST_TOKEN" http://127.0.0.1:8443/api/v1/host
+   curl -i -X POST -H "Authorization: Bearer $OPSBOX_TEST_TOKEN" http://127.0.0.1:8443/api/v1/system/reboot
+   unset OPSBOX_TEST_TOKEN
+   ```
+
+   The first is 200, the second 403 (no reboot). Revoke the token; using it again is 401. A deploy token cannot read/write Files. Full tokens cannot manage people, keys, tokens or terminals.
+6. Run `sudo opsbox audit verify`. Expect `cleanup.*`, `access.*`, `security.*`, `token.create`, `token.revoke`, `system.hostname` and `system.timezone` entries for actions actually taken. No token secret, password, TOTP secret or private SSH key is logged.

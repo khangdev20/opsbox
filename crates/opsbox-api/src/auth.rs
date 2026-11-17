@@ -94,6 +94,7 @@ pub(crate) async fn logout(
     Viewer(who): Viewer,
     client: Client,
 ) -> Result<Response, HttpError> {
+    crate::session::deny_token(&who)?;
     state.auth.logout(&who, Some(&client.ip))?;
     Ok((
         clear_session_cookies(state.secure_cookies, &client.headers),
@@ -108,6 +109,7 @@ pub(crate) async fn revoke_all(
     Viewer(who): Viewer,
     client: Client,
 ) -> Result<Response, HttpError> {
+    crate::session::deny_token(&who)?;
     let n = state.auth.revoke_all(&who.user, Some(&client.ip))?;
     Ok((
         clear_session_cookies(state.secure_cookies, &client.headers),

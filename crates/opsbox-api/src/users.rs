@@ -31,6 +31,7 @@ pub(crate) async fn invite(
     client: Client,
     ApiJson(body): ApiJson<InviteBody>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let role = Role::parse(&body.role).ok_or_else(|| {
         HttpError::new(ErrorCode::Validation, "Choose admin, deployer or viewer.")
     })?;
@@ -93,6 +94,7 @@ pub(crate) async fn remove(
     client: Client,
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     state.auth.remove_user(&who.user, &name, Some(&client.ip))?;
     Ok(Json(json!({ "ok": true })))
 }

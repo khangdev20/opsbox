@@ -14,3 +14,13 @@ pub struct SecurityScan {
     /// without touching the main file.
     pub sshd_dropins: bool,
 }
+
+/// What the Settings page shows about the machine: the time zone and the swap in use.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostSettings {
+    pub timezone: String,
+    /// Every zone the system knows, when it can be listed (empty otherwise).
+    pub timezones: Vec<String>,
+    /// Swap that is switched on, in megabytes (0 when none).
+    pub swap_mb: u64,
+}

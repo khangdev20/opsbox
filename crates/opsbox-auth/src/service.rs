@@ -3,7 +3,8 @@ use std::sync::Arc;
 use opsbox_priv::{ClientError, PrivClient};
 use opsbox_proto::Role;
 use opsbox_store::{
-    ActorKind, AuditResult, NewAudit, Session, SessionKind, Store, StoreError, User,
+    ActorKind, ApiToken, AuditResult, NewAudit, Session, SessionKind, Store, StoreError,
+    TokenScope, User,
 };
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
@@ -133,6 +134,9 @@ pub struct Principal {
     pub user: User,
     pub session_id: String,
     pub kind: SessionKindView,
+    /// The caller used an API token, not a signed-in session. Such a caller has the token's
+    /// role but is never allowed to manage people, tokens, keys or terminals.
+    pub via_token: bool,
 }
 
 /// What the person needs to set up their authenticator app.
@@ -917,6 +921,7 @@ fn principal(session: Session, user: User) -> Principal {
             SessionKind::Web => SessionKindView::Web,
             SessionKind::Enroll => SessionKindView::Enroll,
         },
+        via_token: false,
     }
 }
 
@@ -1079,6 +1084,125 @@ impl Auth {
     /// Whether an account is an invitation that has not been claimed yet.
     pub fn is_pending(&self, user: &User) -> bool {
         user.password_hash.is_empty()
+    }
+}
+
+// ------------------------------------------------------------------ API tokens
+
+/// Every token starts with this, so a leaked one is recognisable (and scannable) in logs.
+pub const TOKEN_PREFIX: &str = "ops_";
+
+/// The role a token acts with.
+fn scope_role(scope: TokenScope) -> Role {
+    match scope {
+        TokenScope::Read => Role::Viewer,
+        TokenScope::Deploy => Role::Deployer,
+        TokenScope::Full => Role::Admin,
+    }
+}
+
+impl Auth {
+    /// Make a token. The secret is returned once and never stored (only its hash is).
+    pub fn create_token(
+        &self,
+        by: &User,
+        name: &str,
+        scope: TokenScope,
+        ip: Option<&str>,
+    ) -> Result<(ApiToken, String), AuthError> {
+        let name = name.trim().to_lowercase();
+        if !(3..=32).contains(&name.len())
+            || !name.starts_with(|c: char| c.is_ascii_lowercase())
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(invalid(
+                "name",
+                "Token name: 3 to 32 characters, lower-case letters, digits and dashes, starting with a letter.".to_owned(),
+            ));
+        }
+        if self
+            .inner
+            .store
+            .list_api_tokens()?
+            .iter()
+            .any(|t| t.name.eq_ignore_ascii_case(&name))
+        {
+            return Err(invalid(
+                "name",
+                "A token with that name already exists.".to_owned(),
+            ));
+        }
+        let secret = format!("{TOKEN_PREFIX}{}", new_token()?);
+        let token = self.inner.store.create_api_token(
+            &name,
+            &hash_token(&secret),
+            scope,
+            &by.name,
+            self.now(),
+        )?;
+        self.audit(
+            &by.name,
+            ActorKind::User,
+            ip,
+            "token.create",
+            Some(&name),
+            AuditResult::Ok,
+            json!({ "scope": scope.as_str() }),
+        );
+        Ok((token, secret))
+    }
+
+    pub fn list_tokens(&self) -> Result<Vec<ApiToken>, AuthError> {
+        Ok(self.inner.store.list_api_tokens()?)
+    }
+
+    pub fn revoke_token(&self, by: &User, id: &str, ip: Option<&str>) -> Result<(), AuthError> {
+        let gone = self
+            .inner
+            .store
+            .delete_api_token(id)?
+            .ok_or(AuthError::NotFound)?;
+        self.audit(
+            &by.name,
+            ActorKind::User,
+            ip,
+            "token.revoke",
+            Some(&gone.name),
+            AuditResult::Ok,
+            json!({}),
+        );
+        Ok(())
+    }
+
+    /// The caller for an `Authorization: Bearer` token, if it is a live one.
+    pub fn authenticate_token(&self, secret: &str) -> Result<Option<Principal>, AuthError> {
+        if !secret.starts_with(TOKEN_PREFIX) || secret.len() > 100 {
+            return Ok(None);
+        }
+        let Some(t) = self.inner.store.api_token_by_hash(&hash_token(secret))? else {
+            return Ok(None);
+        };
+        self.inner.store.touch_api_token(&t.id, self.now())?;
+        let user = User {
+            id: t.id.clone(),
+            name: format!("token:{}", t.name),
+            role: scope_role(t.scope),
+            password_hash: String::new(),
+            totp_secret: None,
+            totp_enabled: true,
+            totp_last_step: 0,
+            locked_until: None,
+            failed_count: 0,
+            created_at: t.created_at,
+        };
+        Ok(Some(Principal {
+            user,
+            session_id: t.id,
+            kind: SessionKindView::Web,
+            via_token: true,
+        }))
     }
 }
 
