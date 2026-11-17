@@ -1,33 +1,60 @@
 //! API tokens (migration 0004). Only the SHA-256 of a token is stored.
 
+use std::borrow::Cow;
+
 use rusqlite::{OptionalExtension, Row, params};
 
 use crate::{Store, StoreError};
 
+/// Validated service slug rule (lowercase ASCII alphanumeric and hyphens, 1..=63 chars).
+fn is_valid_service_slug(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 63
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
+        && b[0] != b'-'
+        && b[b.len() - 1] != b'-'
+}
+
 /// What a token may do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenScope {
     /// Read-only, like a viewer.
     Read,
-    /// Deploy and read logs, like a deployer.
+    /// Deploy any service and read logs, like a deployer.
     Deploy,
+    /// Deploy and read logs for a single named service only.
+    DeployService(String),
     /// Everything an administrator can do except the account and terminal endpoints.
     Full,
 }
 
 impl TokenScope {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> Cow<'_, str> {
         match self {
-            Self::Read => "read",
-            Self::Deploy => "deploy",
-            Self::Full => "full",
+            Self::Read => Cow::Borrowed("read"),
+            Self::Deploy => Cow::Borrowed("deploy"),
+            Self::DeployService(svc) => Cow::Owned(format!("deploy:{svc}")),
+            Self::Full => Cow::Borrowed("full"),
         }
     }
+
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "read" => Some(Self::Read),
             "deploy" => Some(Self::Deploy),
             "full" => Some(Self::Full),
+            _ => s
+                .strip_prefix("deploy:")
+                .filter(|svc| is_valid_service_slug(svc))
+                .map(|svc| Self::DeployService(svc.to_owned())),
+        }
+    }
+
+    pub fn service_name(&self) -> Option<&str> {
+        match self {
+            Self::DeployService(svc) => Some(svc),
             _ => None,
         }
     }
@@ -68,9 +95,10 @@ impl Store {
         now: i64,
     ) -> Result<ApiToken, StoreError> {
         let id = ulid::Ulid::generate().to_string();
+        let scope_str = scope.as_str().into_owned();
         self.lock().execute(
             "INSERT INTO api_tokens (id, name, token_hash, scope, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, name, token_hash, scope.as_str(), created_by, now],
+            params![id, name, token_hash, scope_str, created_by, now],
         )?;
         Ok(ApiToken {
             id,

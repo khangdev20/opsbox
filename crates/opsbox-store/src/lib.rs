@@ -5,6 +5,7 @@
 
 mod accounts;
 mod audit;
+mod deploy;
 mod github;
 mod invites;
 mod metrics;
@@ -22,6 +23,11 @@ use time::format_description::well_known::Rfc3339;
 pub use accounts::{Session, SessionKind, User};
 pub use audit::{
     ActorKind, AuditEntry, AuditError, AuditReport, AuditResult, GENESIS_HASH, NewAudit,
+};
+pub use deploy::{
+    DeployLogRow, DeployRecord, DeployStatus, DeployTrigger, EnvironmentRecord, NewService,
+    ProjectRecord, ServiceKind, ServiceRecord, ServiceState, ServiceVarRecord, SourceKind,
+    UpdateService,
 };
 pub use github::{
     DeployKeyInfo, DeployKeyRecord, GithubAppRecord, NewDeployKey, NewGithubApp,

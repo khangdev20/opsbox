@@ -308,6 +308,35 @@ pub enum PrivOp {
     DockerListVolumes,
     /// List Docker networks.
     DockerListNetworks,
+    /// Ensure `/var/lib/opsbox/apps/<service>` directory exists with safe ownership/mode.
+    DeployEnsureDir {
+        service: String,
+    },
+    /// Streaming clone/detect/build operation for a service deploy.
+    DeployBuild(crate::deploy::DeployBuildRequest),
+    /// Pull and retag a Docker image under `opsbox/<service>:<deploy_id>`.
+    DeployPullImage(crate::deploy::DeployPullRequest),
+    /// Start a release container on the project bridge network and verify HTTP/TCP health.
+    DeployStartAndCheck(crate::deploy::DeployStartRequest),
+    /// Stop and remove a container (used after zero-downtime drain).
+    DeployStopContainer {
+        container_id: String,
+    },
+    /// Check whether a retained local Docker image tag exists for rollback.
+    DeployImageExists {
+        image_ref: String,
+    },
+    /// Remove pruned image tags for a service while sparing any still in use.
+    DeployPruneImages {
+        service: String,
+        image_refs: Vec<String>,
+    },
+    /// Remove a service's containers, retained images, and app directory.
+    DeployDeleteService {
+        service: String,
+        container_ids: Vec<String>,
+        image_refs: Vec<String>,
+    },
 }
 
 impl PrivOp {
@@ -383,6 +412,14 @@ impl PrivOp {
             Self::DockerListImages => "docker_list_images",
             Self::DockerListVolumes => "docker_list_volumes",
             Self::DockerListNetworks => "docker_list_networks",
+            Self::DeployEnsureDir { .. } => "deploy_ensure_dir",
+            Self::DeployBuild { .. } => "deploy_build",
+            Self::DeployPullImage { .. } => "deploy_pull_image",
+            Self::DeployStartAndCheck { .. } => "deploy_start_and_check",
+            Self::DeployStopContainer { .. } => "deploy_stop_container",
+            Self::DeployImageExists { .. } => "deploy_image_exists",
+            Self::DeployPruneImages { .. } => "deploy_prune_images",
+            Self::DeployDeleteService { .. } => "deploy_delete_service",
         }
     }
 }
@@ -522,6 +559,16 @@ pub enum PrivReply {
     DockerVolumes(Vec<crate::docker::DockerVolume>),
     /// Answer to [`PrivOp::DockerListNetworks`].
     DockerNetworks(Vec<crate::docker::DockerNetwork>),
+    /// Answer to [`PrivOp::DeployBuild`]; stream transitions to [`crate::deploy::DeployBuildFrame`].
+    DeployBuildStreamStarted {
+        deploy_id: String,
+    },
+    /// Answer to [`PrivOp::DeployStartAndCheck`].
+    DeployStarted(crate::deploy::DeployStartResult),
+    /// Answer to [`PrivOp::DeployImageExists`].
+    Bool(bool),
+    /// Answer to [`PrivOp::DeployPruneImages`] (image refs actually removed).
+    PrunedImages(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

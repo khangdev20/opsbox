@@ -31,6 +31,9 @@ fn migrates_an_empty_database() {
             "api_tokens",
             "audit",
             "deploy_keys",
+            "deploy_logs",
+            "deploys",
+            "environments",
             "github_app",
             "github_manifest_states",
             "github_webhook_deliveries",
@@ -38,7 +41,10 @@ fn migrates_an_empty_database() {
             "login_failures",
             "metrics_hour",
             "metrics_minute",
+            "projects",
             "schema_migrations",
+            "service_vars",
+            "services",
             "sessions",
             "settings",
             "users"
@@ -616,4 +622,177 @@ fn github_app_manifest_states_deploy_keys_and_webhooks_round_trip() {
     assert!(store.list_deploy_keys().unwrap().is_empty());
     assert!(store.delete_github_app().unwrap());
     assert!(store.get_github_app().unwrap().is_none());
+}
+
+#[test]
+fn deploy_pipeline_tables_switch_fail_rollback_and_prune() {
+    use opsbox_proto::Role;
+    use opsbox_store::{
+        DeployStatus, DeployTrigger, NewService, ServiceKind, ServiceState, SourceKind, TokenScope,
+        UpdateService,
+    };
+
+    let store = Store::open_in_memory().unwrap();
+    let owner = store
+        .create_user("deployer1", Role::Deployer, "", 10)
+        .unwrap();
+    let (proj, env) = store.resolve_project("default", 100).unwrap().unwrap();
+    assert_eq!(proj.name, "default");
+    assert_eq!(env.name, "production");
+
+    // Per-service token scope round-trip works after migration 0006.
+    assert!(TokenScope::parse("deploy:Bad!").is_none());
+    assert!(TokenScope::parse("deploy:").is_none());
+    let tok = store
+        .create_api_token(
+            "ci-web",
+            "hash-web",
+            TokenScope::DeployService("web".into()),
+            "admin",
+            100,
+        )
+        .unwrap();
+    assert_eq!(
+        store.api_token_by_hash("hash-web").unwrap().unwrap().scope,
+        TokenScope::DeployService("web".into())
+    );
+    assert_eq!(tok.scope.service_name(), Some("web"));
+
+    let svc = store
+        .create_service(NewService {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "web",
+            kind: ServiceKind::App,
+            owner_id: Some(&owner.id),
+            source_kind: SourceKind::Github,
+            repo: "acme/web",
+            branch: "main",
+            build_method: "auto",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 3000,
+            health_path: "/healthz",
+            domain: Some("web.example.com"),
+            image_ref: None,
+            deploy_key_id: None,
+            auto_deploy: true,
+            memory_limit_mb: Some(512),
+            cpu_limit_millis: Some(1000),
+            graph_x: 10,
+            graph_y: 20,
+            note: None,
+            now: 100,
+        })
+        .unwrap();
+    assert_eq!(svc.state, ServiceState::Idle);
+    assert_eq!(store.get_service("web").unwrap().unwrap().id, svc.id);
+    assert_eq!(store.list_services_by_owner(&owner.id).unwrap().len(), 1);
+
+    let updated = store
+        .update_service(
+            &svc.id,
+            UpdateService {
+                port: Some(8080),
+                auto_deploy: Some(false),
+                now: 105,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.port, 8080);
+    assert!(!updated.auto_deploy);
+
+    store
+        .upsert_service_var(&svc.id, "DATABASE_URL", "enc:v1:abc", true, 110)
+        .unwrap();
+    store
+        .upsert_service_var(&svc.id, "DATABASE_URL", "enc:v1:xyz", true, 111)
+        .unwrap();
+    let vars = store.list_service_vars(&svc.id).unwrap();
+    assert_eq!(vars.len(), 1);
+    assert_eq!(vars[0].value_enc, "enc:v1:xyz");
+    assert!(vars[0].is_secret);
+
+    // Run 6 successful deploys and verify atomic switch + retention (keep = 5).
+    for i in 1..=6_i64 {
+        let dep = store
+            .create_deploy(
+                &svc.id,
+                Some(&format!("deadbeef{i}")),
+                &format!("deploy {i}"),
+                DeployTrigger::Manual,
+                "deployer1",
+                200 + i,
+            )
+            .unwrap();
+        store
+            .append_deploy_logs(&dep.id, &[(200 + i, format!("step {i}"))])
+            .unwrap();
+        let prev = store
+            .complete_deploy_switch(
+                &svc.id,
+                &dep.id,
+                &format!("opsbox/web:{i}"),
+                &format!("cid-{i}"),
+                u16::try_from(40000 + i).unwrap(),
+                Some("dockerfile"),
+                205 + i,
+            )
+            .unwrap();
+        if i == 1 {
+            assert_eq!(prev, None);
+        } else {
+            assert_eq!(prev.as_deref(), Some(format!("cid-{}", i - 1)).as_deref());
+        }
+    }
+
+    let svc_live = store.get_service(&svc.id).unwrap().unwrap();
+    assert_eq!(svc_live.state, ServiceState::Active);
+    assert_eq!(svc_live.active_container.as_deref(), Some("cid-6"));
+    assert_eq!(svc_live.active_host_port, Some(40006));
+    assert_eq!(svc_live.build_method, "dockerfile");
+    assert_eq!(
+        store.list_active_service_domains().unwrap(),
+        vec![("web.example.com".into(), 40006)]
+    );
+
+    let deploys = store.list_deploys(&svc.id, 20).unwrap();
+    assert_eq!(deploys.len(), 6);
+    assert_eq!(deploys[0].status, DeployStatus::Live);
+    assert!(
+        deploys[1..]
+            .iter()
+            .all(|d| d.status == DeployStatus::Replaced)
+    );
+    assert_eq!(store.list_deploy_logs(&deploys[0].id, 10).unwrap().len(), 1);
+
+    let prune = store.prune_old_deploy_image_refs(&svc.id, 5).unwrap();
+    assert_eq!(prune, vec!["opsbox/web:1".to_owned()]);
+
+    // A 7th deploy fails before switch -> old container cid-6 stays active & state remains Active!
+    let bad = store
+        .create_deploy(
+            &svc.id,
+            None,
+            "bad build",
+            DeployTrigger::Manual,
+            "deployer1",
+            300,
+        )
+        .unwrap();
+    store
+        .fail_deploy(&svc.id, &bad.id, "Docker build failed.", 305)
+        .unwrap();
+    let after_fail = store.get_service(&svc.id).unwrap().unwrap();
+    assert_eq!(after_fail.state, ServiceState::Active);
+    assert_eq!(after_fail.active_container.as_deref(), Some("cid-6"));
+    let failed_latest = store.list_failed_latest_deploys().unwrap();
+    assert_eq!(failed_latest.len(), 1);
+    assert_eq!(failed_latest[0].1.id, bad.id);
+
+    assert!(store.delete_service_var(&svc.id, "DATABASE_URL").unwrap());
+    assert!(store.delete_service(&svc.id).unwrap().is_some());
+    assert!(store.get_service("web").unwrap().is_none());
 }

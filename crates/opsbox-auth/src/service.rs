@@ -137,6 +137,18 @@ pub struct Principal {
     /// The caller used an API token, not a signed-in session. Such a caller has the token's
     /// role but is never allowed to manage people, tokens, keys or terminals.
     pub via_token: bool,
+    /// For `deploy:<service>` API tokens, the single service name this token may operate on.
+    pub scoped_service: Option<String>,
+}
+
+impl Principal {
+    /// Whether this principal's service scope (if any) permits acting on `service_name`.
+    pub fn allows_service(&self, service_name: &str) -> bool {
+        match &self.scoped_service {
+            Some(s) => s.eq_ignore_ascii_case(service_name),
+            None => true,
+        }
+    }
 }
 
 /// What the person needs to set up their authenticator app.
@@ -505,7 +517,10 @@ impl Auth {
                 .inner
                 .store
                 .api_token_by_id(&who.session_id)?
-                .is_some_and(|t| scope_role(t.scope) == who.user.role));
+                .is_some_and(|t| {
+                    scope_role(&t.scope) == who.user.role
+                        && t.scope.service_name() == who.scoped_service.as_deref()
+                }));
         }
         let Some((s, u)) = self.inner.store.session_by_id(&who.session_id)? else {
             return Ok(false);
@@ -943,6 +958,7 @@ fn principal(session: Session, user: User) -> Principal {
             SessionKind::Enroll => SessionKindView::Enroll,
         },
         via_token: false,
+        scoped_service: None,
     }
 }
 
@@ -1114,10 +1130,10 @@ impl Auth {
 pub const TOKEN_PREFIX: &str = "ops_";
 
 /// The role a token acts with.
-fn scope_role(scope: TokenScope) -> Role {
+fn scope_role(scope: &TokenScope) -> Role {
     match scope {
         TokenScope::Read => Role::Viewer,
-        TokenScope::Deploy => Role::Deployer,
+        TokenScope::Deploy | TokenScope::DeployService(_) => Role::Deployer,
         TokenScope::Full => Role::Admin,
     }
 }
@@ -1155,6 +1171,7 @@ impl Auth {
                 "A token with that name already exists.".to_owned(),
             ));
         }
+        let scope_str = scope.as_str().into_owned();
         let secret = format!("{TOKEN_PREFIX}{}", new_token()?);
         let token = self.inner.store.create_api_token(
             &name,
@@ -1170,7 +1187,7 @@ impl Auth {
             "token.create",
             Some(&name),
             AuditResult::Ok,
-            json!({ "scope": scope.as_str() }),
+            json!({ "scope": scope_str }),
         );
         Ok((token, secret))
     }
@@ -1206,10 +1223,11 @@ impl Auth {
             return Ok(None);
         };
         self.inner.store.touch_api_token(&t.id, self.now())?;
+        let scoped_service = t.scope.service_name().map(str::to_owned);
         let user = User {
             id: t.id.clone(),
             name: format!("token:{}", t.name),
-            role: scope_role(t.scope),
+            role: scope_role(&t.scope),
             password_hash: String::new(),
             totp_secret: None,
             totp_enabled: true,
@@ -1223,6 +1241,7 @@ impl Auth {
             session_id: t.id,
             kind: SessionKindView::Web,
             via_token: true,
+            scoped_service,
         }))
     }
 }

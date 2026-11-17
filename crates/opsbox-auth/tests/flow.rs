@@ -1195,4 +1195,20 @@ async fn tokens_are_shown_once_stored_as_a_hash_and_act_with_their_scope() {
     }
     // A token is not a session cookie: the same string does not authenticate as one.
     assert!(env.auth.authenticate(&read_secret).unwrap().is_none());
+
+    // Service-scoped deploy token enforces allows_service + stream_active.
+    let (_svc_tok, svc_secret) = env
+        .auth
+        .create_token(
+            &admin,
+            "ci-web",
+            TokenScope::DeployService("web".into()),
+            Some(IP),
+        )
+        .unwrap();
+    let svc_who = env.auth.authenticate_token(&svc_secret).unwrap().unwrap();
+    assert_eq!(svc_who.user.role, Role::Deployer);
+    assert!(svc_who.allows_service("web"));
+    assert!(!svc_who.allows_service("api"));
+    assert!(env.auth.stream_active(&svc_who).unwrap());
 }

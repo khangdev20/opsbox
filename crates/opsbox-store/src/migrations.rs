@@ -37,6 +37,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "github_sources",
         sql: include_str!("../migrations/0005_github_sources.sql"),
     },
+    Migration {
+        version: 6,
+        name: "deploy_pipeline",
+        sql: include_str!("../migrations/0006_deploy_pipeline.sql"),
+    },
 ];
 
 /// Version of the newest migration this binary knows.
