@@ -3,14 +3,17 @@ import * as api from '../api.js';
 
 export async function view({ query }) {
   const repo = query.repo || 'acme/shop'; const build = query.build || 'Dockerfile';
-  const def = repo.split('/')[1];
+  const branch = query.branch || 'main';
+  const def = repo.replace(/\.git$/, '').split('/').filter(Boolean).pop() || 'app';
+  const branches = [...new Set([branch, 'main', 'master', 'develop'])];
+  const builds = ['Dockerfile', 'Nixpacks', 'static site', 'Docker Compose'];
   return {
     nav: 'apps', title: 'Configure',
     html: html`<main class="narrow">${header(`Configure ${repo}`, 'Review the detected settings, then deploy.')}
       <form id="f">
         <div class="field"><label for="name">Service name</label><input class="input" id="name" name="name" value="${def}"></div>
-        <div class="field"><label for="branch">Branch</label><select class="select" id="branch" name="branch"><option>main</option><option>develop</option></select></div>
-        <div class="field"><label for="build">Build</label><select class="select" id="build" name="build">${['Dockerfile', 'Nixpacks', 'static site'].map((b) => html`<option${build.startsWith(b) ? ' selected' : ''}>${b}</option>`)}</select><span class="hint">Detected: ${build}</span></div>
+        <div class="field"><label for="branch">Branch</label><select class="select" id="branch" name="branch">${branches.map((b) => html`<option${b === branch ? ' selected' : ''}>${b}</option>`)}</select></div>
+        <div class="field"><label for="build">Build</label><select class="select" id="build" name="build">${builds.map((b) => html`<option${build.startsWith(b) ? ' selected' : ''}>${b}</option>`)}</select><span class="hint">Detected: ${build}</span></div>
         <div class="field"><label for="port">Port</label><input class="input" id="port" name="port" value="3000" inputmode="numeric"></div>
         <div class="field"><label for="domain">Subdomain</label><div class="row"><input class="input grow" id="domain" name="domain" value="${def.replace('shop-', '')}"><span class="muted mono">.example.com</span></div><span class="hint">HTTPS certificate is issued automatically.</span></div>
         <div class="field"><label for="vars">Environment variables</label><textarea class="input" id="vars" name="vars" rows="4" placeholder="KEY=value (one per line)" style="height:auto;font-family:var(--mono)"></textarea></div>

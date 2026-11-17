@@ -337,7 +337,13 @@ async fn authorize(
             Role::Deployer => {
                 is_safe(&parts.method)
                     && (metrics
-                        || matches!(path, "/api/v1/system/journal" | "/api/v1/stream/journal")
+                        || matches!(
+                            path,
+                            "/api/v1/system/journal"
+                                | "/api/v1/stream/journal"
+                                | "/api/v1/github"
+                                | "/api/v1/github/repos"
+                        )
                         || path.starts_with("/api/v1/docker/")
                         || path.starts_with("/api/v1/stream/containers/"))
             }

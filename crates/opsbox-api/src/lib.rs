@@ -11,6 +11,7 @@ mod cleanup;
 mod docker;
 mod error;
 mod files;
+mod github;
 mod hardening;
 mod health;
 mod host;
@@ -87,6 +88,7 @@ pub struct AppState {
     pub public_ips: Vec<std::net::IpAddr>,
     pub version: &'static str,
     pub updater: update::Updater,
+    pub github: github::GithubService,
 }
 
 impl AppState {
@@ -127,6 +129,7 @@ impl AppState {
             public_ips: Vec::new(),
             version,
             updater,
+            github: github::GithubService::default(),
         }
     }
 }
@@ -184,6 +187,13 @@ impl AppState {
         self.proxy = Some(client);
         self.tls_cert_sha256 = tls_cert_sha256;
         self.public_ips = public_ips;
+        self
+    }
+
+    /// Override GitHub API/web base URLs (used in tests).
+    #[must_use]
+    pub fn with_github(mut self, config: opsbox_deploy::GitHubConfig) -> Self {
+        self.github = github::GithubService::new(config);
         self
     }
 }
@@ -281,6 +291,33 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/docker/images", get(docker::list_images))
         .route("/api/v1/docker/volumes", get(docker::list_volumes))
         .route("/api/v1/docker/networks", get(docker::list_networks))
+        .route(
+            "/api/v1/github",
+            get(github::get_status).delete(github::disconnect),
+        )
+        .route("/api/v1/github/manifest", post(github::start_manifest))
+        .route("/api/v1/github/callback", get(github::manifest_callback))
+        .route("/api/v1/github/setup", get(github::setup_callback))
+        .route("/api/v1/github/complete", post(github::complete_manifest))
+        .route(
+            "/api/v1/github/installation",
+            post(github::sync_installation),
+        )
+        .route("/api/v1/github/webhook/sync", post(github::sync_webhook))
+        .route("/api/v1/github/webhook", post(github::webhook))
+        .route("/api/v1/github/repos", get(github::list_repos))
+        .route(
+            "/api/v1/github/public-repo",
+            post(github::inspect_public_repo),
+        )
+        .route(
+            "/api/v1/github/deploy-keys",
+            get(github::list_deploy_keys).post(github::create_deploy_key),
+        )
+        .route(
+            "/api/v1/github/deploy-keys/{id}",
+            delete(github::delete_deploy_key),
+        )
         .route("/api/v1/terminal/users", get(terminal::users))
         .route("/api/v1/stream/terminal", get(terminal::stream))
         .route("/api/v1/session", get(auth::session))
@@ -380,7 +417,7 @@ async fn setup_guard(
 }
 
 /// Refuse requests from addresses outside the allowed list (when there is one). The
-/// health endpoints stay open for monitoring.
+/// health endpoints and HMAC-verified GitHub webhook stay reachable.
 async fn allow_guard(
     axum::extract::State(allow): axum::extract::State<allowlist::AllowList>,
     req: axum::extract::Request,
@@ -388,7 +425,11 @@ async fn allow_guard(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let path = req.uri().path();
-    if path == "/healthz" || path == "/readyz" || allow.get().is_empty() {
+    if path == "/healthz"
+        || path == "/readyz"
+        || path == "/api/v1/github/webhook"
+        || allow.get().is_empty()
+    {
         return next.run(req).await;
     }
     let (parts, body) = req.into_parts();

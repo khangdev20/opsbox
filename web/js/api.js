@@ -49,6 +49,8 @@ const REAL = new Set([
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
   'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
   'getRecovery',
+  'getGithubStatus', 'startGithubManifest', 'completeGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook',
+  'disconnectGithub', 'getRepos', 'inspectPublicRepo', 'listDeployKeys', 'createDeployKey', 'deleteDeployKey',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -75,11 +77,11 @@ export const PAGE_USES = {
   login: ['auth.login'],
   invite: ['auth.inviteInfo', 'auth.claimInvite'],
   enroll: ['auth.enroll', 'auth.enrollConfirm'],
-  newservice: ['getRepos'],
+  newservice: ['createDeployKey', 'deleteDeployKey', 'getGithubStatus', 'getRepos', 'inspectPublicRepo', 'listDeployKeys'],
   overview: ['getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
-  settings: ['checkPanelDns', 'createToken', 'disconnectGithub', 'exportConfig', 'getSettings', 'growFs', 'issuePanelCert', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap'],
+  settings: ['checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['TEMPLATES', 'addTemplate', 'deployCompose'],
@@ -556,9 +558,88 @@ export function streamContainerLogs(id, { tail = 200 } = {}, onEntries, onEnd, o
   return () => { try { ws.close(); } catch { /* closed */ } };
 }
 
-// ---------------------------------------------------------------- apps
+// ---------------------------------------------------------------- apps & github
 export async function getProject() { sample('getProject'); await lag(); return clone(S.project); }
-export async function getRepos() { sample('getRepos'); await lag(250); return clone(S.repos); }
+export async function getGithubStatus(refresh = false) {
+  sample('getGithubStatus');
+  if (real('getGithubStatus')) return http('/github' + (refresh ? '?refresh=1' : ''));
+  await lag(60);
+  return clone(ST.github);
+}
+export async function startGithubManifest(org = '') {
+  sample('startGithubManifest');
+  if (real('startGithubManifest')) return http('/github/manifest', { method: 'POST', body: org ? { org } : {} });
+  await lag(180);
+  const owner = (org || '').trim() || 'acme-co';
+  ST.github = { connected: true, installed: true, appSlug: 'opsbox-demo', appName: 'opsbox demo', owner, account: owner, manageUrl: 'https://github.com/settings/installations', installUrl: 'https://github.com/apps/opsbox-demo/installations/new', repositorySelection: 'selected', webhookUrl: 'https://panel.example.com/api/v1/github/webhook', webhookActive: true, webhookConfigured: true, panelDomain: ST.panel || null, panelDomainSet: !!ST.panel };
+  audit(`connect GitHub (${owner})`);
+  return { demoConnected: true };
+}
+export async function completeGithubManifest(code, state) {
+  sample('completeGithubManifest');
+  if (real('completeGithubManifest')) return http('/github/complete', { method: 'POST', body: { code, state } });
+  await lag(180);
+  return clone(ST.github);
+}
+export async function syncGithubInstallation(installationId = null) {
+  sample('syncGithubInstallation');
+  if (real('syncGithubInstallation')) return http('/github/installation', { method: 'POST', body: installationId ? { installationId: Number(installationId) } : {} });
+  await lag(150);
+  return clone(ST.github);
+}
+export async function syncGithubWebhook() {
+  sample('syncGithubWebhook');
+  if (real('syncGithubWebhook')) return http('/github/webhook/sync', { method: 'POST' });
+  await lag(150);
+  ST.github.webhookConfigured = true; ST.github.webhookActive = true;
+  return clone(ST.github);
+}
+export async function getRepos(q = '', { refresh = false } = {}) {
+  sample('getRepos');
+  if (real('getRepos')) {
+    const p = new URLSearchParams();
+    if (q) p.set('q', q);
+    if (refresh) p.set('refresh', '1');
+    const qs = p.toString();
+    return http('/github/repos' + (qs ? '?' + qs : ''));
+  }
+  await lag(250);
+  const term = (q || '').trim().toLowerCase();
+  const repos = clone(S.repos).filter((r) => !term || r.name.toLowerCase().includes(term) || (r.lang || '').toLowerCase().includes(term) || (r.build || '').toLowerCase().includes(term));
+  return { connected: !!ST.github?.connected, installed: !!ST.github?.installed, account: ST.github?.account || null, installUrl: ST.github?.installUrl || null, manageUrl: ST.github?.manageUrl || null, repos };
+}
+export async function inspectPublicRepo(url) {
+  sample('inspectPublicRepo');
+  if (real('inspectPublicRepo')) return http('/github/public-repo', { method: 'POST', body: { url } });
+  await lag(250);
+  const m = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec((url || '').trim());
+  if (!m) throw new Error('Enter a public GitHub URL like https://github.com/owner/repo');
+  return { repo: `${m[1]}/${m[2]}`, url: `https://github.com/${m[1]}/${m[2]}`, provider: 'github', vis: 'public', lang: 'TypeScript', defaultBranch: 'main', build: 'Dockerfile', detected: true };
+}
+export async function listDeployKeys() {
+  sample('listDeployKeys');
+  if (real('listDeployKeys')) return http('/github/deploy-keys');
+  await lag(60);
+  return clone(ST.deployKeys || []);
+}
+export async function createDeployKey(repo) {
+  sample('createDeployKey');
+  if (real('createDeployKey')) return http('/github/deploy-keys', { method: 'POST', body: { repo } });
+  await lag(200);
+  const clean = (repo || '').trim().replace(/^https:\/\/github\.com\//, '').replace(/^git@github\.com:/, '').replace(/\.git$/, '');
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(clean)) throw new Error('Enter a repository like owner/repo');
+  const k = { id: 'dk' + Date.now(), repo: clean, sshUrl: `git@github.com:${clean}.git`, publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDemoDeployKeyPublicMaterial opsbox-deploy-demo', fingerprint: 'SHA256:demoKeyFingerprint12345', createdBy: 'admin', createdAt: Math.floor(Date.now() / 1000) };
+  ST.deployKeys.unshift(k);
+  audit(`create deploy key for ${clean}`);
+  return clone(k);
+}
+export async function deleteDeployKey(id) {
+  sample('deleteDeployKey');
+  if (real('deleteDeployKey')) return http('/github/deploy-keys/' + encodeURIComponent(id), { method: 'DELETE' });
+  await lag(150);
+  ST.deployKeys = ST.deployKeys.filter((k) => k.id !== id);
+  return { ok: true };
+}
 export async function createService(cfg) { sample('createService');
   await lag(500);
   const name = (cfg.name || '').trim();
@@ -988,7 +1069,15 @@ export async function rotateOutKey(id) { sample('rotateOutKey'); await lag(500);
 
 // ---------------------------------------------------------------- settings
 const ST = {
-  hostname: 'srv-sgn-01', tz: 'Asia/Ho_Chi_Minh', panel: 'panel.example.com', swap: '2 GB', autoUpdate: true, channel: 'stable', github: true, fsGrown: false,
+  hostname: 'srv-sgn-01', tz: 'Asia/Ho_Chi_Minh', panel: 'panel.example.com', swap: '2 GB', autoUpdate: true, channel: 'stable', fsGrown: false,
+  github: {
+    connected: true, installed: true, appSlug: 'opsbox-srv-sgn-01', appName: 'opsbox srv-sgn-01',
+    owner: 'acme-co', account: 'acme-co', manageUrl: 'https://github.com/settings/installations',
+    installUrl: 'https://github.com/apps/opsbox-srv-sgn-01/installations/new',
+    repositorySelection: 'selected', webhookUrl: 'https://panel.example.com/api/v1/github/webhook',
+    webhookActive: true, webhookConfigured: true, panelDomain: 'panel.example.com', panelDomainSet: true,
+  },
+  deployKeys: [],
   panelInfo: {
     domain: 'panel.example.com', activeDomain: 'panel.example.com', certStatus: 'valid',
     certExpiresAt: Math.floor(Date.now() / 1000) + 74 * 86400, certDaysRemaining: 74, certIssuer: "Let's Encrypt",
@@ -1006,8 +1095,8 @@ const normPanelDomain = (raw) => {
 let realSettings = null;
 export async function getSettings() { sample('getSettings');
   if (real('getSettings')) {
-    // Host name, time zone, swap, tokens, opsbox updates and panel domain are real;
-    // GitHub, disk growth and export/uninstall arrive with later phases.
+    // Host name, time zone, swap, tokens, opsbox updates, panel domain and GitHub are real;
+    // disk growth and export/uninstall arrive with later phases.
     const r = await http('/settings'); realSettings = r;
     return {
       ...clone(ST),
@@ -1019,6 +1108,8 @@ export async function getSettings() { sample('getSettings');
       swap: swapLabel(r.swapMb),
       tokens: r.tokens.map((t) => ({ id: t.id, name: t.name, can: t.can, last: t.last })),
       opsboxUpdate: r.opsboxUpdate,
+      github: r.github || { connected: false, installed: false },
+      deployKeys: r.deployKeys || [],
     };
   }
   await lag(); return clone(ST); }
@@ -1103,7 +1194,9 @@ export async function setOpsboxAutoUpdate(v) { sample('setOpsboxAutoUpdate');
   const body = typeof v === 'boolean' ? { auto: v } : v;
   if (real('setOpsboxAutoUpdate')) return http('/updates/auto', { method: 'PUT', body });
   await lag(150); if ('auto' in body) ST.autoUpdate = body.auto; if ('channel' in body) ST.channel = body.channel; }
-export async function disconnectGithub() { sample('disconnectGithub'); await lag(300); ST.github = false; audit('disconnect GitHub'); }
+export async function disconnectGithub() { sample('disconnectGithub');
+  if (real('disconnectGithub')) return http('/github', { method: 'DELETE' });
+  await lag(300); ST.github = { connected: false, installed: false }; audit('disconnect GitHub'); return { ok: true }; }
 export async function exportConfig() { sample('exportConfig'); await lag(400); audit('export configuration'); return JSON.stringify({ opsbox: '0.1.0', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel } }, null, 2); }
 
 // ---------------------------------------------------------------- domains

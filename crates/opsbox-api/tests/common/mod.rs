@@ -45,14 +45,23 @@ impl Harness {
 
     /// A fresh harness with no admin yet, for testing first-run setup gating.
     pub fn new_unclaimed(with_priv: bool) -> Self {
-        Self::build(with_priv, 2 << 20, false)
+        Self::build(with_priv, 2 << 20, false, None)
     }
 
     pub fn with_upload_limit(with_priv: bool, max_upload: u64) -> Self {
-        Self::build(with_priv, max_upload, true)
+        Self::build(with_priv, max_upload, true, None)
     }
 
-    fn build(with_priv: bool, max_upload: u64, seed_admin: bool) -> Self {
+    pub fn with_github(with_priv: bool, github: opsbox_deploy::GitHubConfig) -> Self {
+        Self::build(with_priv, 2 << 20, true, Some(github))
+    }
+
+    fn build(
+        with_priv: bool,
+        max_upload: u64,
+        seed_admin: bool,
+        github: Option<opsbox_deploy::GitHubConfig>,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::create_dir_all(root.join("apps")).unwrap();
@@ -82,7 +91,7 @@ impl Harness {
             store.set_pending_totp(&u.id, "unused", 0).unwrap();
             store.enable_totp(&u.id, 0, 0).unwrap();
         }
-        let state = AppState::new(
+        let mut state = AppState::new(
             store.clone(),
             PrivClient::new(&socket).with_timeout(Duration::from_secs(5)),
             "9.9.9-test",
@@ -101,6 +110,9 @@ impl Harness {
             xfer_dir: root.join("xfer"),
             max_upload,
         });
+        if let Some(gh) = github {
+            state = state.with_github(gh);
+        }
         Self {
             app: router(state.clone()),
             state,

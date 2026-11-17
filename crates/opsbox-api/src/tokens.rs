@@ -56,10 +56,12 @@ pub(crate) async fn get_settings(
     Extension(RequestId(rid)): Extension<RequestId>,
 ) -> Result<Json<Value>, HttpError> {
     let pc = patient(&state, 30);
-    let (host, settings, panel) = tokio::join!(
+    let (host, settings, panel, github, deploy_keys) = tokio::join!(
         pc.host_info(&rid, None),
         pc.settings_get(&rid),
         crate::panel::snapshot(&state),
+        crate::github::snapshot(&state),
+        crate::github::deploy_keys_snapshot(&state),
     );
     let host = host?;
     let s = settings?;
@@ -73,6 +75,8 @@ pub(crate) async fn get_settings(
         "tokens": tokens.iter().map(|k| token_json(k, t)).collect::<Vec<_>>(),
         "opsboxUpdate": state.updater.snapshot(),
         "panel": panel,
+        "github": github,
+        "deployKeys": deploy_keys,
     })))
 }
 

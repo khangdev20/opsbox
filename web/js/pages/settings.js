@@ -6,9 +6,29 @@ const SWAP = ['None', '1 GB', '2 GB', '4 GB'];
 const LIVE = api.MODE === 'http';
 const sampleBadge = () => LIVE ? html`<span class="tag-sm sample" style="align-self:flex-start">sample data</span>` : '';
 const normDom = (s) => String(s || '').trim().toLowerCase().replace(/^https:\/\//, '').replace(/\/$/, '');
-export async function view() {
+export async function view({ query = {} } = {}) {
+  let ghErr = '', ghOrg = '';
+  const clearHashQuery = () => {
+    try { history.replaceState(null, '', '#/settings'); } catch { /* ignore */ }
+  };
+  if (query.github_code && query.github_state) {
+    try {
+      await api.completeGithubManifest(query.github_code, query.github_state);
+      toast('GitHub App created. Choose repositories on GitHub to finish connecting.');
+    } catch (e) { ghErr = e.message; }
+    clearHashQuery();
+  } else if (query.github_installation_id) {
+    try {
+      await api.syncGithubInstallation(query.github_installation_id);
+      toast('GitHub repositories connected.');
+    } catch (e) { ghErr = e.message; }
+    clearHashQuery();
+  } else if (query.github_error) {
+    ghErr = query.github_error === 'cancelled' ? 'GitHub connection was cancelled.' : 'GitHub connection did not finish.';
+    clearHashQuery();
+  }
   let d = await api.getSettings(), root;
-  let dns = null, busy = '', panelErr = '';
+  let dns = null, busy = '', panelErr = '', ghBusy = false;
   const upd = () => d.opsboxUpdate || { current: '0.1.0', channel: d.channel || 'stable', auto: !!d.autoUpdate, window: 3, updateAvailable: false, latest: null, previousVersion: null, lastOutcome: null };
   const panelInfo = () => d.panelInfo || { domain: d.panel || null, activeDomain: null, certStatus: 'none', proxyReachable: true, rawPortOpen: true, listen: '0.0.0.0:8443' };
   const hours = Array.from({ length: 24 }, (_, i) => i);
@@ -40,6 +60,75 @@ export async function view() {
       return html`<div class="col gap6">${st('fail', 'Certificate error')}${pi.certError ? html`<span class="sm" style="color:var(--danger)">${pi.certError}</span>` : ''}</div>`;
     }
     return '';
+  };
+  const renderGithubSection = (pi) => {
+    const gh = d.github && typeof d.github === 'object'
+      ? d.github
+      : (d.github ? { connected: true, installed: true, account: 'acme-co', appSlug: 'opsbox-demo', manageUrl: 'https://github.com/settings/installations', webhookConfigured: true, webhookActive: true, webhookUrl: 'https://panel.example.com/api/v1/github/webhook' } : { connected: false, installed: false });
+    const keys = d.deployKeys || [];
+    const selNote = gh.repositorySelection === 'all'
+      ? 'all repositories'
+      : gh.repositorySelection === 'selected'
+        ? 'selected repositories'
+        : 'installed';
+    let mainBlock;
+    if (!gh.connected) {
+      mainBlock = html`<div class="col gap12">
+        <div class="row spread">
+          <div><b>Not connected</b><div class="sm muted">Create a private GitHub App owned by your account or organization via the manifest flow.</div></div>
+        </div>
+        <div class="row">
+          <input class="input grow" id="gh-org" placeholder="Organization name (optional — leave blank for personal account)" value="${ghOrg}"${ghBusy ? ' disabled' : ''}>
+          ${btn(ghBusy ? 'Connecting…' : 'Connect GitHub', { act: 'ghConnect', kind: 'primary', disabled: ghBusy })}
+        </div>
+        ${!pi.activeDomain ? html`<div class="note"><b>Note on webhooks:</b> No panel domain is configured yet. You can still connect GitHub to browse repositories, and set a panel domain above whenever you want automatic push webhooks.</div>` : ''}
+      </div>`;
+    } else if (!gh.installed) {
+      mainBlock = html`<div class="col gap12">
+        <div class="row spread">
+          <div>
+            <div class="row" style="gap:8px"><b>${gh.appName || gh.appSlug || 'GitHub App'}</b>${st('warn', 'Awaiting repository access')}</div>
+            <div class="sm muted mono">App: ${gh.appSlug} · owner: ${gh.owner} · install it on your account or organization to pick repositories</div>
+          </div>
+          <div class="row">
+            ${gh.installUrl ? html`<a class="btn primary" href="${gh.installUrl}" target="_blank" rel="noopener">Choose repositories on GitHub ↗</a>` : ''}
+            ${btn('Refresh', { act: 'ghRefresh', disabled: ghBusy })}
+            ${btn('Disconnect', { act: 'ghDisconnect', kind: 'danger', disabled: ghBusy })}
+          </div>
+        </div>
+        ${!pi.activeDomain ? html`<div class="note"><b>Push webhooks inactive:</b> Set a panel domain in <b>Panel address</b> above so GitHub can deliver push events to <span class="mono">https://&lt;your-domain&gt;/api/v1/github/webhook</span>.</div>` : ''}
+      </div>`;
+    } else {
+      mainBlock = html`<div class="col gap12">
+        <div class="row spread">
+          <div>
+            <div class="row" style="gap:8px"><b>github.com/${gh.account || gh.owner}</b>${st('ok', 'Connected')}</div>
+            <div class="sm muted mono">GitHub App (${gh.appSlug}) · read-only code access · ${selNote}</div>
+          </div>
+          <div class="row">
+            ${gh.manageUrl ? html`<a class="btn" href="${gh.manageUrl}" target="_blank" rel="noopener">Manage access ↗</a>` : ''}
+            ${btn('Refresh', { act: 'ghRefresh', disabled: ghBusy })}
+            ${btn('Disconnect', { act: 'ghDisconnect', kind: 'danger', disabled: ghBusy })}
+          </div>
+        </div>
+        ${gh.webhookConfigured
+          ? html`<div class="sm muted mono">Webhook: ${gh.webhookUrl} · push events (HMAC-SHA256)${gh.lastWebhookAt ? ` · last delivery: ${gh.lastWebhookEvent || 'ok'}` : ''}</div>`
+          : !pi.activeDomain
+            ? html`<div class="note"><b>Push webhooks inactive:</b> Set a panel domain in <b>Panel address</b> above so GitHub can deliver push events to <span class="mono">https://&lt;your-domain&gt;/api/v1/github/webhook</span>.</div>`
+            : html`<div class="note row spread"><span>Panel domain <b class="mono">${pi.activeDomain}</b> is active. Enable GitHub push webhooks now.</span>${btn('Enable push webhook', { act: 'ghSyncWebhook', kind: 'primary', disabled: ghBusy })}</div>`}
+      </div>`;
+    }
+    const keysBlock = keys.length
+      ? html`<div class="col gap6" style="border-top:1px solid var(--ls);padding-top:14px">
+          <div class="sm"><b>Per-repo SSH deploy keys</b></div>
+          ${table('Deploy keys', [['Repository'], ['Fingerprint'], ['', 'r']], keys.map((k) => [
+            html`<span class="mono">${k.repo}</span>`,
+            html`<span class="mono sm muted">${k.fingerprint}</span>`,
+            btn('Remove', { act: 'ghRmKey', data: { id: k.id }, kind: 'link' }),
+          ]))}
+        </div>`
+      : '';
+    return html`<div class="col gap12">${ghErr ? html`<p role="alert" style="color:var(--danger);font-size:13px">${ghErr}</p>` : ''}${mainBlock}${keysBlock}</div>`;
   };
   const body = () => {
     const u = upd();
@@ -87,7 +176,7 @@ export async function view() {
     ${section('Memory and disk', html`<div style="max-width:520px;display:flex;flex-direction:column;gap:16px"><p class="muted sm">Swap protects small instances from running out of memory. Disk growth needs the volume enlarged at your cloud provider first.</p>
       <div class="field"><label for="sw">Swap file</label><select class="select" id="sw" data-act="swap">${(SWAP.includes(d.swap) ? SWAP : [...SWAP, d.swap]).map((v) => html`<option${v === d.swap ? ' selected' : ''}>${v}</option>`)}</select></div>
       <div class="row">${sampleBadge()}${btn('Grow filesystem to fill disk', { act: 'grow', disabled: LIVE || d.fsGrown })}<span class="mono sm muted">disk 120 GB · filesystem ${d.fsGrown ? '120' : '100'} GB</span></div></div>`)}
-    ${section('GitHub', html`${sampleBadge()}<div class="row spread"><div><b>${d.github ? 'github.com/acme-co' : 'Not connected'}</b><div class="sm muted mono">${d.github ? 'GitHub App · read-only code access · 14 of 31 repositories' : 'Connect to deploy from your repositories'}</div></div>${d.github ? btn('Disconnect', { act: 'gh', kind: 'danger', disabled: LIVE }) : btn('Connect', { act: 'gh', kind: 'primary', disabled: LIVE })}</div>`)}
+    ${section('GitHub', renderGithubSection(pi))}
     ${section('opsbox updates', html`<div class="list-row"><span>${statusText}</span><div class="row">${btn('Check now', { act: 'check' })}${u.updateAvailable ? btn('Update now', { act: 'updateNow', kind: 'primary' }) : ''}${u.previousVersion ? btn(`Roll back to ${u.previousVersion}`, { act: 'rollback' }) : ''}</div></div>${u.lastOutcome ? html`<p class="sm muted">${u.lastOutcome.message}</p>` : ''}<div class="list-row"><span>Release channel</span><select class="select" id="uch" style="width:auto"><option value="stable"${u.channel === 'stable' ? ' selected' : ''}>stable</option><option value="beta"${u.channel === 'beta' ? ' selected' : ''}>beta</option></select></div><div class="list-row"><span>Update opsbox automatically</span><div class="row">${sw('Update opsbox automatically', u.auto, 'autoup')}<select class="select" id="uwin" aria-label="Daily update window" style="width:auto">${hours.map((h) => html`<option value="${h}"${h === (u.window ?? 3) ? ' selected' : ''}>${String(h).padStart(2, '0')}:00 UTC</option>`)}</select></div></div><p class="muted sm">If a new version fails its health check after 2 minutes, opsbox rolls back to the previous one by itself.</p>`)}
     ${section('Export and uninstall', html`${sampleBadge()}<p class="muted sm" style="max-width:620px">Export saves services and settings as a file you can import on a new server. Uninstall removes opsbox but leaves your apps and data running.</p><div class="row">${btn('Export configuration', { act: 'export', disabled: LIVE })}${btn('Uninstall opsbox', { act: 'uninstall', kind: 'danger', disabled: LIVE })}</div>`)}`;
   };
@@ -104,6 +193,7 @@ export async function view() {
           const b = root.querySelector('[data-act="issueCert"]');
           if (b) b.disabled = !canIssueFor(d.panel);
         }
+        if (e.target.id === 'gh-org') ghOrg = e.target.value;
       });
       root.addEventListener('change', async (e) => {
         if (e.target.id === 'sw') { toast('Changing swap. This can take a minute.'); try { await api.setSwap(e.target.value); toast('Swap updated.'); } catch (err) { toast(err.message, 'err'); } await reload(); }
@@ -178,7 +268,49 @@ export async function view() {
         token: async () => { const out = await askForm({ title: 'Create API token', fields: [{ name: 'n', label: 'Name', placeholder: 'ci-deploy' }, { name: 'c', label: 'Can do', options: ['deploy only', 'read-only metrics', 'full access'], value: 'deploy only' }], submit: 'Create' }, (o) => api.createToken(o.n.trim(), o.c)); if (out) { await confirmDialog({ title: 'Copy your token now', body: `${out.secret} — it is shown only once.`, confirm: 'I have copied it' }); await reload(); } },
         revoke: async (el) => { if (await confirmDialog({ title: 'Revoke this token?', body: 'Anything using it stops working.', confirm: 'Revoke', danger: true })) { await api.revokeToken(el.dataset.id); await reload(); } },
         grow: async () => { await api.growFs(); toast('Filesystem grown.'); await reload(); },
-        gh: async () => { if (d.github) { if (await confirmDialog({ title: 'Disconnect GitHub?', body: 'Existing services keep running but auto-deploy stops.', confirm: 'Disconnect', danger: true })) { await api.disconnectGithub(); await reload(); } } else toast('GitHub connection opens in the real build.'); },
+        ghConnect: async () => {
+          ghBusy = true; ghErr = '';
+          const org = (root.querySelector('#gh-org')?.value || ghOrg || '').trim();
+          paint();
+          try {
+            const res = await api.startGithubManifest(org);
+            if (res?.demoConnected) { ghBusy = false; await reload(); return; }
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = res.actionUrl;
+            const inp = document.createElement('input');
+            inp.type = 'hidden';
+            inp.name = 'manifest';
+            inp.value = res.manifest;
+            form.append(inp);
+            document.body.append(form);
+            form.submit();
+          } catch (e) { ghErr = e.message; ghBusy = false; paint(); }
+        },
+        ghRefresh: async () => {
+          ghBusy = true; ghErr = ''; paint();
+          try { d.github = await api.getGithubStatus(true); toast('GitHub status refreshed.'); }
+          catch (e) { ghErr = e.message; }
+          ghBusy = false; paint();
+        },
+        ghSyncWebhook: async () => {
+          ghBusy = true; ghErr = ''; paint();
+          try { d.github = await api.syncGithubWebhook(); toast('GitHub push webhook enabled.'); }
+          catch (e) { ghErr = e.message; }
+          ghBusy = false; paint();
+        },
+        ghDisconnect: async () => {
+          if (!await confirmDialog({ title: 'Disconnect GitHub?', body: 'Existing services keep running but new repository syncing and GitHub App webhooks stop.', confirm: 'Disconnect', danger: true })) return;
+          ghBusy = true; ghErr = ''; paint();
+          try { await api.disconnectGithub(); toast('GitHub disconnected.'); await reload(); }
+          catch (e) { ghErr = e.message; }
+          ghBusy = false; paint();
+        },
+        ghRmKey: async (el) => {
+          if (!await confirmDialog({ title: 'Remove this deploy key?', body: 'Future deploys for this repository using this key will fail until a new deploy key is added.', confirm: 'Remove', danger: true })) return;
+          try { await api.deleteDeployKey(el.dataset.id); toast('Deploy key removed.'); await reload(); }
+          catch (e) { ghErr = e.message; paint(); }
+        },
         check: async () => { try { const u = await api.checkOpsboxUpdate(); d.opsboxUpdate = u; paint(); toast(u.updateAvailable && u.latest ? `opsbox ${u.latest.version} is available.` : 'opsbox is up to date.'); } catch (e) { toast(e.message, 'err'); } },
         updateNow: async () => { const u = upd(); if (u.latest && await confirmDialog({ title: `Update to opsbox ${u.latest.version}?`, body: 'The panel will restart briefly. If the health check fails after 2 minutes, it rolls back automatically.', confirm: 'Update now' })) { toast('Downloading and verifying update...'); try { await api.applyOpsboxUpdate(u.latest.version); toast('Update started. Reconnecting...'); } catch (e) { toast(e.message, 'err'); } } },
         rollback: async () => { const u = upd(); if (u.previousVersion && await confirmDialog({ title: `Roll back to opsbox ${u.previousVersion}?`, body: 'The panel will restart with the previous version.', confirm: 'Roll back', danger: true })) { try { await api.rollbackOpsboxUpdate(u.previousVersion); toast('Rolling back...'); } catch (e) { toast(e.message, 'err'); } } },

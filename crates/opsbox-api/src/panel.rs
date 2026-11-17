@@ -279,6 +279,16 @@ pub(crate) async fn issue_cert(
                 }
                 let _ = state_clone.store.delete_setting(KEY_PANEL_DRAFT);
                 let _ = sync_proxy_routes(&state_clone).await;
+                if let Err(e) = crate::github::sync_webhook_on_domain_change(
+                    &state_clone,
+                    &rid,
+                    &actor_name,
+                    &domain,
+                )
+                .await
+                {
+                    warn!(error = %e, "could not sync GitHub App webhook after panel certificate issuance");
+                }
                 state_clone.auth.audit(
                     &actor_name,
                     actor_kind,
