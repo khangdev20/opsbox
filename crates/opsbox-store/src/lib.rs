@@ -5,6 +5,7 @@
 
 mod accounts;
 mod audit;
+mod metrics;
 mod migrations;
 mod settings;
 
@@ -19,6 +20,7 @@ pub use accounts::{Session, SessionKind, User};
 pub use audit::{
     ActorKind, AuditEntry, AuditError, AuditReport, AuditResult, GENESIS_HASH, NewAudit,
 };
+pub use metrics::{Granularity, MetricRow};
 pub use migrations::{LATEST_VERSION, MigrationError};
 
 #[derive(Debug, thiserror::Error)]

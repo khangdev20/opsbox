@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    HostInfo, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, Secret,
+    HostInfo, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, RawSample,
+    Secret, SystemFacts,
 };
 use tokio::net::UnixStream;
 
@@ -188,6 +189,28 @@ impl PrivClient {
         };
         match self.call(request_id, None, op).await? {
             PrivReply::TotpResult { matched_step } => Ok(matched_step),
+            other => Err(ClientError::Protocol(format!("unexpected reply {other:?}"))),
+        }
+    }
+
+    /// Cumulative machine counters. `procs` also scans every process.
+    pub async fn metrics_sample(
+        &self,
+        request_id: &str,
+        procs: bool,
+    ) -> Result<RawSample, ClientError> {
+        match self
+            .call(request_id, None, PrivOp::MetricsSample { procs })
+            .await?
+        {
+            PrivReply::Metrics(sample) => Ok(*sample),
+            other => Err(ClientError::Protocol(format!("unexpected reply {other:?}"))),
+        }
+    }
+
+    pub async fn system_facts(&self, request_id: &str) -> Result<SystemFacts, ClientError> {
+        match self.call(request_id, None, PrivOp::SystemFacts).await? {
+            PrivReply::SystemFacts(f) => Ok(f),
             other => Err(ClientError::Protocol(format!("unexpected reply {other:?}"))),
         }
     }

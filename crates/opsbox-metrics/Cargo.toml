@@ -1,11 +1,24 @@
 [package]
 name = "opsbox-metrics"
-description = "Sampling, ring buffers, downsampling and attention rules (Phase 1)."
+description = "Turns machine counters into rates, keeps the live ring, rolls up to SQLite and decides what needs attention."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+
+[dependencies]
+opsbox-proto.workspace = true
+opsbox-store.workspace = true
+opsbox-priv.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.54", features = ["rt", "sync", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.27"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "time"] }
 
 [lints]
 workspace = true

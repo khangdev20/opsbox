@@ -30,6 +30,8 @@ fn migrates_an_empty_database() {
         [
             "audit",
             "login_failures",
+            "metrics_hour",
+            "metrics_minute",
             "schema_migrations",
             "sessions",
             "settings",
@@ -282,4 +284,90 @@ fn failures_are_counted_per_user_and_per_address_inside_a_window() {
     store.clear_failures_for_user("alice").unwrap();
     assert_eq!(store.failures_for_user("alice", 0).unwrap().0, 0);
     assert_eq!(store.prune_failures(1000).unwrap(), 1);
+}
+
+// ------------------------------------------------------------ metric rollups (migration 0003)
+
+use opsbox_store::{Granularity, MetricRow};
+
+fn row(ts: i64, cpu: f64) -> MetricRow {
+    MetricRow {
+        ts,
+        cpu,
+        cpu_max: cpu + 10.0,
+        mem: 40.0,
+        disk: r#"[{"mount":"/","used":1,"total":2}]"#.into(),
+        net_in: 1.0,
+        net_out: 2.0,
+        load: 0.5,
+    }
+}
+
+#[test]
+fn rollups_round_trip_replace_and_come_back_in_order() {
+    let store = Store::open_in_memory().unwrap();
+    store
+        .put_metric(Granularity::Minute, &row(120, 20.0))
+        .unwrap();
+    store
+        .put_metric(Granularity::Minute, &row(60, 10.0))
+        .unwrap();
+    store
+        .put_metric(Granularity::Minute, &row(60, 11.0))
+        .unwrap(); // same period: replaced
+    store.put_metric(Granularity::Hour, &row(0, 5.0)).unwrap();
+    let rows = store.metrics_between(Granularity::Minute, 0, 1000).unwrap();
+    assert_eq!(
+        rows.iter().map(|r| (r.ts, r.cpu)).collect::<Vec<_>>(),
+        [(60, 11.0), (120, 20.0)]
+    );
+    assert_eq!(
+        store
+            .metrics_between(Granularity::Minute, 100, 200)
+            .unwrap()
+            .len(),
+        1,
+        "half-open range"
+    );
+    assert_eq!(
+        store
+            .metrics_between(Granularity::Hour, 0, 1)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(rows[0].disk, r#"[{"mount":"/","used":1,"total":2}]"#);
+}
+
+#[test]
+fn rollups_are_purged_by_their_own_retention() {
+    let store = Store::open_in_memory().unwrap();
+    let now = 100 * 86_400;
+    store
+        .put_metric(Granularity::Minute, &row(now - 8 * 86_400, 1.0))
+        .unwrap(); // older than 7 d
+    store
+        .put_metric(Granularity::Minute, &row(now - 6 * 86_400, 2.0))
+        .unwrap();
+    store
+        .put_metric(Granularity::Hour, &row(now - 80 * 86_400, 3.0))
+        .unwrap(); // inside 90 d
+    store
+        .put_metric(Granularity::Hour, &row(now - 91 * 86_400, 4.0))
+        .unwrap();
+    assert_eq!(store.purge_metrics(now).unwrap(), 2);
+    assert_eq!(
+        store
+            .metrics_between(Granularity::Minute, 0, now)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .metrics_between(Granularity::Hour, 0, now)
+            .unwrap()
+            .len(),
+        1
+    );
 }

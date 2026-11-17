@@ -9,6 +9,7 @@ mod error;
 mod health;
 mod host;
 mod json;
+mod metrics;
 mod request_id;
 pub mod session;
 mod setup;
@@ -23,6 +24,7 @@ use axum::Router;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use opsbox_auth::{Auth, AuthConfig};
+use opsbox_metrics::Metrics;
 use opsbox_priv::PrivClient;
 use opsbox_store::Store;
 use tokio::net::TcpListener;
@@ -46,6 +48,7 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub priv_client: PrivClient,
     pub auth: Auth,
+    pub metrics: Metrics,
     pub secure_cookies: SecureCookies,
     pub version: &'static str,
 }
@@ -59,10 +62,12 @@ impl AppState {
         auth: AuthConfig,
     ) -> Self {
         let auth = Auth::new(store.clone(), priv_client.clone(), auth);
+        let metrics = Metrics::spawn(priv_client.clone(), store.clone());
         Self {
             store,
             priv_client,
             auth,
+            metrics,
             secure_cookies,
             version,
         }
@@ -82,6 +87,9 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route("/api/v1/host", get(host::get_host))
+        .route("/api/v1/metrics", get(metrics::get_metrics))
+        .route("/api/v1/attention", get(metrics::get_attention))
+        .route("/api/v1/stream/metrics", get(metrics::stream))
         .route("/api/v1/session", get(auth::session))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))

@@ -15,6 +15,7 @@ opsbox-store = { path = "crates/opsbox-store" }
 opsbox-priv = { path = "crates/opsbox-priv" }
 opsbox-api = { path = "crates/opsbox-api" }
 opsbox-auth = { path = "crates/opsbox-auth" }
+opsbox-metrics = { path = "crates/opsbox-metrics" }
 
 [workspace.lints.rust]
 # No unsafe code anywhere. If a future change truly needs it, relax this per crate

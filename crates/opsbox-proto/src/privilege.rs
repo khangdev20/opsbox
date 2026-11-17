@@ -61,6 +61,11 @@ pub enum PrivOp {
         code: Secret,
         after_step: u64,
     },
+    /// Cumulative machine counters (CPU, memory, disks, network, ...). `procs` also
+    /// scans every process, which is the expensive part, so it is asked for less often.
+    MetricsSample { procs: bool },
+    /// Reboot-required flag, failed systemd units and pending package updates.
+    SystemFacts,
 }
 
 impl PrivOp {
@@ -71,19 +76,21 @@ impl PrivOp {
             Self::HostInfo => "host_info",
             Self::TotpNewSecret { .. } => "totp_new_secret",
             Self::TotpVerify { .. } => "totp_verify",
+            Self::MetricsSample { .. } => "metrics_sample",
+            Self::SystemFacts => "system_facts",
         }
     }
 }
 
 /// A response frame. `id` echoes the request id (empty when the request was too
 /// broken to carry one).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PrivResponse {
     pub id: String,
     pub result: PrivResult,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PrivResult {
     #[serde(rename = "ok")]
@@ -113,7 +120,7 @@ impl PrivResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum PrivReply {
     Pong {
@@ -132,6 +139,10 @@ pub enum PrivReply {
     TotpResult {
         matched_step: Option<u64>,
     },
+    /// Answer to [`PrivOp::MetricsSample`].
+    Metrics(Box<crate::metrics::RawSample>),
+    /// Answer to [`PrivOp::SystemFacts`].
+    SystemFacts(crate::metrics::SystemFacts),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
