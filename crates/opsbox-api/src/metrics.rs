@@ -96,6 +96,23 @@ pub fn view(snap: &Snapshot, history: &[Point], window_secs: usize) -> Value {
         .iter()
         .map(|q| json!({ "name": q.name, "pid": q.pid, "cpu": round1(f64::from(q.cpu)), "mem": (q.rss as f64 / MB).round(), "self": q.is_self }))
         .collect();
+    let containers: Vec<Value> = snap
+        .containers
+        .iter()
+        .map(|c| {
+            json!({
+                "id": c.id,
+                "name": c.name,
+                "image": c.image,
+                "cpu": round1(c.cpu_pct),
+                "mem": (c.mem_used_bytes as f64 / MB).round(),
+                "state": c.state,
+                "status": c.status,
+                "managed": c.managed,
+                "service": c.service,
+            })
+        })
+        .collect();
     json!({
         "ts": p.ts,
         "cpu": b.iter().map(|c| mean(c, |x| f64::from(x.cpu)).round()).collect::<Vec<_>>(),
@@ -118,6 +135,7 @@ pub fn view(snap: &Snapshot, history: &[Point], window_secs: usize) -> Value {
         "conns": p.conns,
         "load": p.load,
         "procs": procs,
+        "containers": containers,
     })
 }
 
@@ -275,6 +293,7 @@ mod tests {
             point: history.last().unwrap().clone(),
             disks: vec![],
             procs: vec![],
+            containers: vec![],
         };
         let v = view(&snap, &history[60 - 48..], 48);
         assert_eq!(v["cpu"].as_array().unwrap().len(), 24);
@@ -289,6 +308,7 @@ mod tests {
             point: history[3599].clone(),
             disks: vec![],
             procs: vec![],
+            containers: vec![],
         };
         let v = view(&snap, &history, 3600);
         assert_eq!(v["cpu"].as_array().unwrap().len(), 120);
@@ -314,6 +334,7 @@ mod tests {
                 },
             ],
             procs: vec![],
+            containers: vec![],
         };
         let v = view(&snap, std::slice::from_ref(&snap.point), 48);
         assert_eq!(
@@ -350,6 +371,7 @@ mod tests {
                 rss: 14 << 20,
                 is_self: true,
             }],
+            containers: vec![],
         };
         let v = view(&snap, std::slice::from_ref(&snap.point), 48);
         assert_eq!(

@@ -44,6 +44,7 @@ const REAL = new Set([
   'scanCleanup', 'runCleanup', 'setAutoCleanup', 'getCleanupVolumes',
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
+  'dockerStatus', 'installDocker', 'listContainers', 'listDocker', 'inspectContainer', 'containerAction', 'containerLogs',
   'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap',
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
   'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
@@ -69,7 +70,7 @@ export const PAGE_USES = {
   backups: ['getBackups', 'restoreBackup', 'runBackup'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
   configure: ['createService'],
-  containers: ['containerAction', 'containerLogs', 'listContainers', 'listDocker'],
+  containers: ['containerAction', 'containerLogs', 'dockerStatus', 'inspectContainer', 'installDocker', 'listContainers', 'listDocker'],
   files: ['chmod', 'listDir', 'mkdir', 'readFile', 'removePaths', 'upload', 'writeFile'],
   login: ['auth.login'],
   invite: ['auth.inviteInfo', 'auth.claimInvite'],
@@ -497,9 +498,34 @@ export async function getAttention() {
 
 // ---------------------------------------------------------------- containers
 const LOGS = ['INFO  GET /api/health 200 3ms', 'INFO  GET /api/items 200 21ms', 'WARN  slow query 412ms items.list', 'INFO  POST /api/login 200 88ms', 'ERROR upstream timeout cache:6379', 'INFO  retry 1/3 ok'];
-export async function listContainers() { sample('listContainers'); await lag(); return clone(S.containers); }
-export async function listDocker(kind) { sample('listDocker'); await lag(); return clone(S[kind]); }
+export async function dockerStatus() { sample('dockerStatus');
+  if (real('dockerStatus')) return http('/docker/status');
+  await lag(40);
+  return { installed: true, running: true, version: '27.3.1', apiVersion: '1.47', canInstall: false, installMethod: null, error: null };
+}
+export async function installDocker() { sample('installDocker');
+  if (real('installDocker')) {
+    const { task } = await http('/docker/install', { method: 'POST' });
+    return waitTask(task, { every: 2000, max: 25 * 60 * 1000 });
+  }
+  await lag(600); audit('install docker'); return { status: 'ok', result: { ok: true } };
+}
+export async function listContainers() { sample('listContainers');
+  if (real('listContainers')) return http('/docker/containers');
+  await lag(); return clone(S.containers);
+}
+export async function listDocker(kind) { sample('listDocker');
+  if (real('listDocker')) return http(`/docker/${encodeURIComponent(kind)}`);
+  await lag(); return clone(S[kind]);
+}
+export async function inspectContainer(id) { sample('inspectContainer');
+  if (real('inspectContainer')) return http(`/docker/containers/${encodeURIComponent(id)}`);
+  await lag();
+  const c = S.containers.find((x) => x.id === id || x.name === id); if (!c) throw new Error('No such container');
+  return { id: c.id, fullId: c.id, name: c.name, image: c.image, created: new Date(c.since).toISOString(), state: c.state, running: c.state === 'running', restarting: !!c.restarts, paused: false, oomKilled: false, exitCode: 0, startedAt: new Date(c.since).toISOString(), finishedAt: '', restartCount: c.restarts || 0, pid: c.state === 'running' ? 1024 : null, cmd: ['node', 'server.js'], entrypoint: [], workingDir: '/app', user: 'node', ports: [], mounts: [], networks: [], env: [{ key: 'NODE_ENV', value: 'production', masked: false }], labels: {}, managed: true, service: c.name, deploy: null };
+}
 export async function containerAction(id, action) { sample('containerAction');
+  if (real('containerAction')) return http(`/docker/containers/${encodeURIComponent(id)}/${encodeURIComponent(action)}`, { method: 'POST' });
   await lag(350);
   const c = S.containers.find((x) => x.id === id); if (!c) throw new Error('No such container');
   if (action === 'restart') { c.state = 'running'; c.since = now(); }
@@ -508,10 +534,26 @@ export async function containerAction(id, action) { sample('containerAction');
   if (action === 'delete') S.containers = S.containers.filter((x) => x.id !== id);
   audit(`${action} ${c.name}`); return { ok: true };
 }
-export async function containerLogs(id) { sample('containerLogs');
+export async function containerLogs(id, tail = 200) { sample('containerLogs');
+  if (real('containerLogs')) return http(`/docker/containers/${encodeURIComponent(id)}/logs?tail=${encodeURIComponent(tail)}`);
   await lag(80);
   const c = S.containers.find((x) => x.id === id); if (!c) return [];
-  const t = now(); return Array.from({ length: 9 }, (_, i) => `${hhmmss(t - (9 - i) * 7000)} ${LOGS[(i * 5 + id.length) % LOGS.length]}`);
+  const t = now();
+  return Array.from({ length: 9 }, (_, i) => ({ ts: new Date(t - (9 - i) * 7000).toISOString(), stream: i % 4 === 2 ? 'stderr' : 'stdout', text: LOGS[(i * 5 + id.length) % LOGS.length] }));
+}
+export function streamContainerLogs(id, { tail = 200 } = {}, onEntries, onEnd, onError) {
+  if (MODE !== 'http' || !REAL.has('containerLogs')) return () => {};
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/stream/containers/${encodeURIComponent(id)}/logs?${new URLSearchParams({ tail })}`);
+  ws.onmessage = (e) => {
+    try {
+      const m = JSON.parse(e.data);
+      if (m.type === 'logs') onEntries?.(m.entries || []);
+      else if (m.type === 'end') onEnd?.();
+      else if (m.type === 'error') onError?.(m.message || 'Log stream error');
+    } catch { /* ignore */ }
+  };
+  ws.onerror = () => onError?.('Log stream connection failed.');
+  return () => { try { ws.close(); } catch { /* closed */ } };
 }
 
 // ---------------------------------------------------------------- apps

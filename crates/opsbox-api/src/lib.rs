@@ -8,6 +8,7 @@ mod access;
 mod allowlist;
 mod auth;
 mod cleanup;
+mod docker;
 mod error;
 mod files;
 mod hardening;
@@ -258,6 +259,28 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/cleanup/volumes", get(cleanup::volume_sizes))
         .route("/api/v1/cleanup/run", post(cleanup::run))
         .route("/api/v1/cleanup/auto", put(cleanup::set_auto))
+        .route("/api/v1/docker/status", get(docker::status))
+        .route("/api/v1/docker/install", post(docker::install))
+        .route("/api/v1/docker/containers", get(docker::list_containers))
+        .route(
+            "/api/v1/docker/containers/{id}",
+            get(docker::inspect_container),
+        )
+        .route(
+            "/api/v1/docker/containers/{id}/{action}",
+            post(docker::container_action),
+        )
+        .route(
+            "/api/v1/docker/containers/{id}/logs",
+            get(docker::container_logs),
+        )
+        .route(
+            "/api/v1/stream/containers/{id}/logs",
+            get(docker::stream_logs),
+        )
+        .route("/api/v1/docker/images", get(docker::list_images))
+        .route("/api/v1/docker/volumes", get(docker::list_volumes))
+        .route("/api/v1/docker/networks", get(docker::list_networks))
         .route("/api/v1/terminal/users", get(terminal::users))
         .route("/api/v1/stream/terminal", get(terminal::stream))
         .route("/api/v1/session", get(auth::session))
