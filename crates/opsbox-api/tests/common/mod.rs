@@ -43,7 +43,16 @@ impl Harness {
         Self::with_upload_limit(with_priv, 2 << 20)
     }
 
+    /// A fresh harness with no admin yet, for testing first-run setup gating.
+    pub fn new_unclaimed(with_priv: bool) -> Self {
+        Self::build(with_priv, 2 << 20, false)
+    }
+
     pub fn with_upload_limit(with_priv: bool, max_upload: u64) -> Self {
+        Self::build(with_priv, max_upload, true)
+    }
+
+    fn build(with_priv: bool, max_upload: u64, seed_admin: bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::create_dir_all(root.join("apps")).unwrap();
@@ -66,6 +75,13 @@ impl Harness {
             stop = Some(tx);
         }
         let store = Arc::new(Store::open_in_memory().unwrap());
+        if seed_admin {
+            let u = store
+                .create_user("__seed_admin", Role::Admin, "unused-hash", 0)
+                .unwrap();
+            store.set_pending_totp(&u.id, "unused", 0).unwrap();
+            store.enable_totp(&u.id, 0, 0).unwrap();
+        }
         let state = AppState::new(
             store.clone(),
             PrivClient::new(&socket).with_timeout(Duration::from_secs(5)),

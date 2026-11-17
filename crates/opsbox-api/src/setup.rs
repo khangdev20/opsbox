@@ -31,6 +31,14 @@ pub(crate) struct ClaimBody {
     token: String,
 }
 
+/// `GET /api/v1/setup/status`: tells the UI whether first-run setup is still open.
+pub(crate) async fn status(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    ensure_open(&state)?;
+    Ok(Json(json!({ "setupRequired": true })))
+}
+
 /// `POST /api/v1/setup/claim`: trade the console token for a short setup session.
 pub(crate) async fn claim(
     State(state): State<AppState>,

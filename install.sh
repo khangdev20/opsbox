@@ -28,6 +28,7 @@ LOCAL_BINARY=""
 UNITS_DIR=""
 DEV=0
 DRY_RUN=0
+LOCAL_ONLY=0
 PAIR=""
 WEB=0
 
@@ -66,6 +67,7 @@ Usage: install.sh [options]
   --channel NAME      stable or beta, passed on to opsbox
   --pair SECRET       pairing secret from the desktop app, passed on to opsbox
   --web               turn the web panel on, passed on to opsbox
+  --local-only        listen on 127.0.0.1 only (requires an SSH tunnel to reach the UI)
 
 Development:
   --binary PATH       install this local binary instead of downloading a release
@@ -86,6 +88,7 @@ while [ $# -gt 0 ]; do
     --channel) [ $# -ge 2 ] || die "--channel needs a value"; CHANNEL="$2"; shift 2 ;;
     --pair) [ $# -ge 2 ] || die "--pair needs a value"; PAIR="$2"; shift 2 ;;
     --web) WEB=1; shift ;;
+    --local-only) LOCAL_ONLY=1; shift ;;
     --binary) [ $# -ge 2 ] || die "--binary needs a path"; LOCAL_BINARY="$2"; shift 2 ;;
     --units-dir) [ $# -ge 2 ] || die "--units-dir needs a path"; UNITS_DIR="$2"; shift 2 ;;
     --dev) DEV=1; shift ;;
@@ -292,7 +295,7 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 # defaults. See docs/CONFIG.md.
 
 # [api]
-# listen = "127.0.0.1:8443"
+# listen = "0.0.0.0:8443"
 
 # [priv]
 # socket = "/run/opsbox/priv.sock"
@@ -307,6 +310,10 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 EOF
     chmod 0644 "$CONF_DIR/config.toml"
   fi
+fi
+
+if [ "$LOCAL_ONLY" -eq 1 ]; then
+  run "$PREFIX_BIN" web local-only on
 fi
 
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-priv.service" "$UNIT_DIR/opsbox-priv.service"
@@ -354,7 +361,13 @@ else
   say "An admin account already exists; first-run setup is closed."
 fi
 say ""
-say "It listens on 127.0.0.1:8443 only. To open the UI from your computer:"
-say "    ssh -L 8443:127.0.0.1:8443 <user>@<this-server>"
-say "then browse to http://127.0.0.1:8443/?mode=http"
+if [ "$LOCAL_ONLY" -eq 1 ]; then
+  say "It listens on 127.0.0.1:8443 only. To open the UI from your computer:"
+  say "    ssh -L 8443:127.0.0.1:8443 <user>@<this-server>"
+  say "then browse to https://127.0.0.1:8443/#/setup (accept the self-signed certificate warning)."
+else
+  say "Open port 8443/tcp in your cloud firewall, then open the setup URL above in your browser"
+  say "and accept the self-signed certificate warning."
+  say "To restrict to localhost only, run: sudo opsbox web local-only on"
+fi
 say "Logs: journalctl -u opsbox -u opsbox-priv"

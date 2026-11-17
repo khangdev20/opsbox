@@ -14,7 +14,7 @@ use serde::Deserialize;
 use crate::cli::{Cli, Command};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/opsbox/config.toml";
-pub const DEFAULT_LISTEN: &str = "127.0.0.1:8443";
+pub const DEFAULT_LISTEN: &str = "0.0.0.0:8443";
 pub const DEFAULT_DB_PATH: &str = "/var/lib/opsbox/opsbox.db";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn defaults_match_the_documentation() {
         let c = load_str("", Overrides::default()).unwrap();
-        assert_eq!(c.listen, "127.0.0.1:8443".parse().unwrap());
+        assert_eq!(c.listen, "0.0.0.0:8443".parse().unwrap());
         assert_eq!(c.priv_socket, Path::new("/run/opsbox/priv.sock"));
         assert_eq!(c.db_path, Path::new("/var/lib/opsbox/opsbox.db"));
         assert_eq!(c.allowed_users, ["opsbox", "root"]);

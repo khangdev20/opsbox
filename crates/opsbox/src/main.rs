@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 
-use crate::cli::{AuditAction, Cli, Command};
+use crate::cli::{AuditAction, Cli, Command, WebAction};
 use crate::config::{Config, Overrides};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -94,6 +94,11 @@ fn run(cli: &Cli) -> Result<ExitCode> {
                 from.as_deref(),
                 to,
             )));
+        }
+        Command::Web {
+            action: WebAction::LocalOnly { mode },
+        } => {
+            cmd::web::local_only(cli.config.as_deref(), *mode)?;
         }
         // Handled above; listed so adding a command forces a decision here.
         _ => unreachable!("unimplemented commands return before this match"),

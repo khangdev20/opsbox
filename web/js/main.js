@@ -94,7 +94,13 @@ async function boot() {
       server.setupRequired = !!s.setupRequired; server.role = s.role || '';
       if (s.authenticated) session.set(s.user); else session.clear();
       if (s.enrollRequired && !/^#\/enroll/.test(location.hash)) location.hash = '#/enroll';
-    } catch { session.clear(); }
+    } catch {
+      session.clear();
+      try {
+        const st = await api.auth.setupStatus();
+        server.setupRequired = !!st.setupRequired;
+      } catch { /* signed-in or offline */ }
+    }
   }
   navigate();
 }

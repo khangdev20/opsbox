@@ -323,3 +323,25 @@ async fn es_modules_are_served_with_a_javascript_type() {
         assert!(ct.contains("javascript"), "{path}: {ct}");
     }
 }
+
+#[tokio::test]
+async fn before_claim_any_api_route_returns_403() {
+    let h = Harness::new_unclaimed(false);
+    // Health, setup status, and static assets still answer before claim.
+    assert_eq!(h.get("/healthz").await.status(), StatusCode::OK);
+    assert_eq!(h.get("/api/v1/setup/status").await.status(), StatusCode::OK);
+    assert_eq!(h.get("/").await.status(), StatusCode::OK);
+
+    // Every other API route returns 403 before an admin is enrolled.
+    for path in [
+        "/api/v1/session",
+        "/api/v1/host",
+        "/api/v1/metrics",
+        "/api/v1/attention",
+        "/api/v1/settings",
+        "/api/v1/files?path=/",
+    ] {
+        let resp = h.get(path).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN, "{path}");
+    }
+}

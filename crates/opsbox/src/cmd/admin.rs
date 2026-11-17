@@ -92,11 +92,20 @@ pub fn setup_token(config: &Config) -> Result<()> {
 
 /// The text shown at install time, on the console and in the journal.
 pub fn setup_banner(config: &Config, token: &str) -> String {
-    let url = format!("http://{}/#/setup", config.listen);
-    format!(
-        "opsbox first-run setup\n  setup url    {url}\n  setup token  {token}   (single use, valid for 1 hour)\n  The server listens on this machine only. From your computer: ssh -L {port}:127.0.0.1:{port} <user>@<server>\n",
-        port = config.listen.port()
-    )
+    let port = config.listen.port();
+    if config.listen.ip().is_loopback() {
+        let url = format!("https://{}/#/setup", config.listen);
+        format!(
+            "opsbox first-run setup\n  setup url    {url}\n  setup token  {token}   (single use, valid for 1 hour)\n  The server listens on this machine only. From your computer: ssh -L {port}:127.0.0.1:{port} <user>@<server>\n"
+        )
+    } else {
+        let host = opsbox_api::tls::detect_public_ip()
+            .map_or_else(|| "<your-server-ip>".to_owned(), |ip| ip.to_string());
+        let url = format!("https://{host}:{port}/#/setup");
+        format!(
+            "opsbox first-run setup\n  setup url    {url}\n  setup token  {token}   (single use, valid for 1 hour)\n  Open port {port}/tcp in your cloud firewall and accept the self-signed certificate warning in your browser.\n"
+        )
+    }
 }
 
 fn print_setup_banner(config: &Config, token: &str) {

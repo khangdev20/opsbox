@@ -40,7 +40,12 @@ async fn the_security_page_data_has_checks_users_and_an_audit_trail() {
             "{c}"
         );
     }
-    let me = &v["users"][0];
+    let me = v["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["name"] == "boss")
+        .unwrap();
     assert_eq!(
         (me["name"].as_str(), me["you"].as_bool()),
         (Some("boss"), Some(true))

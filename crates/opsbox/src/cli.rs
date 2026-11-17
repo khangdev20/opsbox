@@ -202,6 +202,12 @@ pub struct InstallArgs {
     pub channel: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum Toggle {
+    On,
+    Off,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum WebAction {
     Enable {
@@ -210,6 +216,12 @@ pub enum WebAction {
         domain: Option<String>,
     },
     Disable,
+    /// Keep all listeners on 127.0.0.1 only (`on`) or listen publicly on 0.0.0.0 (`off`)
+    #[command(name = "local-only")]
+    LocalOnly {
+        #[arg(value_enum)]
+        mode: Toggle,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -255,7 +267,10 @@ impl Command {
             | Self::Audit { .. }
             | Self::Update { .. }
             | Self::Rollback
-            | Self::UpdateVerify { .. } => return None,
+            | Self::UpdateVerify { .. }
+            | Self::Web {
+                action: WebAction::LocalOnly { .. },
+            } => return None,
             Self::Pair => "pair",
             Self::Web {
                 action: WebAction::Enable { .. },
@@ -298,6 +313,8 @@ mod tests {
             "web enable",
             "web enable --domain panel.example.com",
             "web disable",
+            "web local-only on",
+            "web local-only off",
             "setup-token",
             "recovery-code",
             "user reset-2fa alice",

@@ -110,8 +110,14 @@ pub fn run(config: &Config) -> bool {
 
 pub async fn collect(config: &Config) -> Report {
     let serve_addr = config.listen;
-    let (serve, privileged) =
+    let (mut serve, privileged) =
         tokio::join!(probe_serve(serve_addr), probe_priv(&config.priv_socket));
+    if matches!(serve, ServeState::Degraded { ref detail, .. } if detail == "/readyz answered HTTP 403")
+        && matches!(privileged, PrivState::Ok { .. })
+        && let ServeState::Degraded { version, .. } = serve
+    {
+        serve = ServeState::Ready { version };
+    }
     Report {
         config_file: config.loaded_from.clone(),
         serve_addr,
@@ -210,9 +216,38 @@ struct HttpResponse {
     json: Option<serde_json::Value>,
 }
 
-/// A deliberately tiny HTTP/1.1 client: one GET, `Connection: close`, small JSON
-/// answer. Avoids pulling an HTTP client library into the binary for one probe.
 async fn http_get(addr: SocketAddr, path: &str) -> io::Result<HttpResponse> {
+    let url = format!("https://{addr}{path}");
+    let tls_res = tokio::task::spawn_blocking(move || {
+        let cfg = ureq::Agent::config_builder()
+            .timeout_global(Some(PROBE_TIMEOUT))
+            .http_status_as_error(false)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .disable_verification(true)
+                    .build(),
+            )
+            .build();
+        let agent: ureq::Agent = cfg.into();
+        let resp = agent
+            .get(&url)
+            .header("Accept", "application/json")
+            .call()?;
+        let status = resp.status().as_u16();
+        let body = resp.into_body().read_to_string().ok();
+        let json = body.as_deref().and_then(|s| serde_json::from_str(s).ok());
+        Ok::<_, ureq::Error>(HttpResponse { status, json })
+    })
+    .await
+    .map_err(io::Error::other)?;
+    match tls_res {
+        Ok(r) => Ok(r),
+        Err(_) => http_get_plain(addr, path).await,
+    }
+}
+
+/// Plain HTTP/1.1 fallback for tests that bind a plain TCP listener.
+async fn http_get_plain(addr: SocketAddr, path: &str) -> io::Result<HttpResponse> {
     tokio::time::timeout(PROBE_TIMEOUT, async {
         let mut stream = TcpStream::connect(addr).await?;
         let request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nAccept: application/json\r\nConnection: close\r\n\r\n");

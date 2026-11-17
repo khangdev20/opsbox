@@ -84,6 +84,7 @@ Streams revalidate their session/token, role and allowed address every five seco
 | `GET` | `/api/v1/settings` | [tokens::get_settings](../crates/opsbox-api/src/tokens.rs) |
 | `POST` | `/api/v1/setup/admin` | [setup::admin](../crates/opsbox-api/src/setup.rs) |
 | `POST` | `/api/v1/setup/claim` | [setup::claim](../crates/opsbox-api/src/setup.rs) |
+| `GET` | `/api/v1/setup/status` | [setup::status](../crates/opsbox-api/src/setup.rs) |
 | `POST` | `/api/v1/setup/totp/confirm` | [setup::confirm](../crates/opsbox-api/src/setup.rs) |
 | `POST` | `/api/v1/ssh/emergency` | [system::ssh_emergency](../crates/opsbox-api/src/system.rs) |
 | `GET` | `/api/v1/stream/journal` | [system::stream_journal](../crates/opsbox-api/src/system.rs) |

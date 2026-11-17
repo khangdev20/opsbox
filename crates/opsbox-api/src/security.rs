@@ -52,6 +52,7 @@ pub struct Inputs {
     pub auto_updates: Option<bool>,
     pub world_readable: Option<Vec<String>>,
     pub master_key_private: Option<bool>,
+    pub panel_tls_self_signed: Option<bool>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -234,6 +235,21 @@ pub fn build_checks(i: &Inputs) -> Vec<Check> {
             },
         ));
     }
+    if let Some(self_signed) = i.panel_tls_self_signed {
+        let mut c = check(
+            "panel-tls",
+            !self_signed,
+            if self_signed {
+                "The panel uses a self-signed certificate and has no domain yet"
+            } else {
+                "The panel is served over HTTPS with a domain certificate"
+            },
+        );
+        if self_signed {
+            c.link = Some("#/settings");
+        }
+        v.push(c);
+    }
     v
 }
 
@@ -322,6 +338,15 @@ pub(crate) async fn get(
         auto_updates: pkgs.ok().and_then(|p| p.auto_security),
         world_readable: scan.as_ref().map(|s| s.world_readable.clone()),
         master_key_private: scan.as_ref().map(|s| s.master_key_private),
+        panel_tls_self_signed: state.tls.then(|| {
+            state
+                .store
+                .get_setting("opsbox.panel.domain")
+                .ok()
+                .flatten()
+                .and_then(|v| v.as_str().map(|s| !s.is_empty()))
+                != Some(true)
+        }),
     };
     let checks = build_checks(&inputs);
     let passing = checks.iter().filter(|c| c.ok).count();
@@ -513,6 +538,7 @@ mod tests {
             auto_updates: Some(false),
             world_readable: Some(vec!["/var/lib/opsbox/apps/web/.env".into()]),
             master_key_private: Some(false),
+            panel_tls_self_signed: Some(true),
         });
         let by = |id: &str| c.iter().find(|c| c.id == id).unwrap();
         assert!(!by("2fa").ok && by("2fa").text.contains("dana, erin"));

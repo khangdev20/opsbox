@@ -25,6 +25,7 @@ toml = { version = "1.2", default-features = false, features = ["parse", "serde"
 tokio = { version = "1.54", features = ["rt", "rt-multi-thread", "net", "time", "io-util", "signal", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json", "std"] }
+ureq = "3"
 
 [lints]
 workspace = true

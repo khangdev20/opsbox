@@ -23,6 +23,7 @@ mod setup;
 mod system;
 mod tasks;
 mod terminal;
+pub mod tls;
 mod tokens;
 mod ui;
 mod update;
@@ -76,6 +77,7 @@ pub struct AppState {
     pub listen: std::net::SocketAddr,
     pub allow: allowlist::AllowList,
     pub secure_cookies: SecureCookies,
+    pub tls: bool,
     pub version: &'static str,
     pub updater: update::Updater,
 }
@@ -112,6 +114,7 @@ impl AppState {
             listen: std::net::SocketAddr::from(([127, 0, 0, 1], 8443)),
             allow,
             secure_cookies,
+            tls: false,
             version,
             updater,
         }
@@ -125,6 +128,15 @@ pub fn check_embedded_ui() -> Result<usize, String> {
 }
 
 impl AppState {
+    /// Mark whether `serve` is terminating native TLS (forces `Secure` cookies in Auto mode).
+    #[must_use]
+    pub fn with_tls(mut self, tls: bool) -> Self {
+        self.tls = tls;
+        if tls && self.secure_cookies == SecureCookies::Auto {
+            self.secure_cookies = SecureCookies::Always;
+        }
+        self
+    }
     /// Use these file-transfer settings instead of the defaults.
     #[must_use]
     pub fn with_files(mut self, files: FilesSettings) -> Self {
@@ -224,6 +236,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/sessions/revoke-all", post(auth::revoke_all))
         .route("/api/v1/auth/totp/enroll", post(auth::totp_enroll))
         .route("/api/v1/auth/totp/confirm", post(auth::totp_confirm))
+        .route("/api/v1/setup/status", get(setup::status))
         .route("/api/v1/setup/claim", post(setup::claim))
         .route("/api/v1/setup/admin", post(setup::admin))
         .route("/api/v1/setup/totp/confirm", post(setup::confirm))
@@ -258,6 +271,7 @@ pub fn router(state: AppState) -> Router {
             TRANSFER_TIMEOUT,
         ));
 
+    let setup_guard_state = state.auth.clone();
     Router::new()
         .merge(ordinary)
         .merge(editor)
@@ -276,6 +290,10 @@ pub fn router(state: AppState) -> Router {
             ),
         )
         .layer(axum::middleware::from_fn_with_state(
+            setup_guard_state,
+            setup_guard,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
             allow_guard_state,
             allow_guard,
         ))
@@ -285,6 +303,27 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(axum::middleware::from_fn(hardening::middleware))
         .layer(axum::middleware::from_fn(request_id::middleware))
+}
+
+async fn setup_guard(
+    axum::extract::State(auth): axum::extract::State<Auth>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let path = req.uri().path();
+    let allowed_unclaimed = path == "/healthz"
+        || path == "/readyz"
+        || path.starts_with("/api/v1/setup/")
+        || !path.starts_with("/api/");
+    if !allowed_unclaimed && auth.setup_required().unwrap_or(false) {
+        return HttpError::new(
+            opsbox_proto::ErrorCode::Forbidden,
+            "Complete first-run setup first.",
+        )
+        .into_response();
+    }
+    next.run(req).await
 }
 
 /// Refuse requests from addresses outside the allowed list (when there is one). The

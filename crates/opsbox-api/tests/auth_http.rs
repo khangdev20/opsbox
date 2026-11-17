@@ -108,12 +108,12 @@ async fn api_responses_are_never_cached() {
 
 #[tokio::test]
 async fn session_endpoint_tells_the_page_what_to_show() {
-    let h = Harness::new(true);
+    let h = Harness::new_unclaimed(true);
     let mut b = h.browser();
-    let v = b.get("/api/v1/session").await.json();
+    assert_eq!(b.get("/api/v1/session").await.status, StatusCode::FORBIDDEN);
     assert_eq!(
-        v,
-        json!({"authenticated": false, "enrollRequired": false, "setupRequired": true})
+        b.get("/api/v1/setup/status").await.json(),
+        json!({"setupRequired": true})
     );
 
     let (mut admin, _) = setup(&h).await;
@@ -139,7 +139,7 @@ async fn session_endpoint_tells_the_page_what_to_show() {
 
 #[tokio::test]
 async fn setup_over_http_ends_with_a_signed_in_admin_and_closed_endpoints() {
-    let h = Harness::new(true);
+    let h = Harness::new_unclaimed(true);
     let token = h.state.auth.issue_setup_token().unwrap();
     let mut b = h.browser();
 
@@ -250,7 +250,7 @@ async fn setup_over_http_ends_with_a_signed_in_admin_and_closed_endpoints() {
 
 #[tokio::test]
 async fn session_cookies_have_the_required_attributes() {
-    let h = Harness::new(true);
+    let h = Harness::new_unclaimed(true);
     let (b, _) = setup(&h).await;
     let session = b
         .set_cookies
@@ -289,7 +289,7 @@ async fn session_cookies_have_the_required_attributes() {
 
 #[tokio::test]
 async fn cookies_are_marked_secure_behind_an_https_proxy() {
-    let h = Harness::new(true);
+    let h = Harness::new_unclaimed(true);
     let (mut b, secret) = setup(&h).await;
     b.send(Method::POST, "/api/v1/auth/logout", None, Opts::default())
         .await;
@@ -409,7 +409,7 @@ async fn reads_do_not_need_csrf() {
 
 #[tokio::test]
 async fn sign_in_from_another_site_is_refused_before_anything_is_checked() {
-    let h = Harness::new(true);
+    let h = Harness::new_unclaimed(true);
     let (_, secret) = setup(&h).await;
     let mut b = h.browser();
     let evil = Opts {
@@ -454,7 +454,7 @@ async fn sign_in_from_another_site_is_refused_before_anything_is_checked() {
 
 #[tokio::test]
 async fn sign_in_logout_and_sign_out_everywhere() {
-    let h = Harness::new(true);
+    let h = Harness::new_unclaimed(true);
     let (mut first, secret) = setup(&h).await;
 
     // Signing in from a second browser.
@@ -519,7 +519,7 @@ async fn sign_in_logout_and_sign_out_everywhere() {
 
 #[tokio::test]
 async fn wrong_credentials_all_look_the_same_and_repeated_failures_lock_out() {
-    let h = Harness::new(true);
+    let h = Harness::new_unclaimed(true);
     let (_, secret) = setup(&h).await;
     let mut b = h.browser();
     let mut messages = Vec::new();
@@ -611,7 +611,7 @@ async fn bad_request_bodies_get_validation_errors_not_plain_text() {
 
 #[tokio::test]
 async fn after_reset_2fa_the_password_alone_opens_only_the_enrolment_endpoints() {
-    let h = Harness::new(true);
+    let h = Harness::new_unclaimed(true);
     let (_, secret) = setup(&h).await;
     h.state.auth.reset_2fa("admin", "cli:root").unwrap();
 

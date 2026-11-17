@@ -22,6 +22,7 @@ function pickMode() {
   try {
     const wanted = new URLSearchParams(location.search).get('mode');
     if (wanted === 'http' || wanted === 'mock') return wanted;
+    if (location.protocol === 'https:' || location.port === '8443') return 'http';
   } catch { /* no location (tests, workers): use the default */ }
   return DEFAULT_MODE;
 }
@@ -358,6 +359,10 @@ function audit(action, user = 'admin', warn = false) { S.audit.unshift({ t: now(
 
 // ---------------------------------------------------------------- auth
 export const auth = {
+  async setupStatus() {
+    if (MODE === 'http') return http('/setup/status');
+    return { setupRequired: false };
+  },
   // GET /api/v1/session -> { authenticated, enrollRequired, setupRequired, user?, role? }
   async session() {
     if (real('auth.session')) return http('/session');

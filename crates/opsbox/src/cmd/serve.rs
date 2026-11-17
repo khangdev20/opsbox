@@ -43,13 +43,35 @@ async fn serve(config: Config) -> Result<()> {
         .await
         .with_context(|| format!("cannot listen on {}", config.listen))?;
     let addr = listener.local_addr()?;
-    if !addr.ip().is_loopback() {
-        warn!(%addr, "listening on a non-loopback address without native TLS; use a trusted HTTPS proxy or an SSH tunnel");
-    }
+
+    let (cert_path, key_path) = {
+        let sys_cert = std::path::Path::new(opsbox_api::tls::DEFAULT_CERT_PATH);
+        let sys_key = std::path::Path::new(opsbox_api::tls::DEFAULT_KEY_PATH);
+        if sys_cert.exists() && sys_key.exists() {
+            (sys_cert.to_path_buf(), sys_key.to_path_buf())
+        } else if let Ok(pair) = opsbox_api::tls::ensure_self_signed_cert(sys_cert, sys_key) {
+            pair
+        } else {
+            let db_dir = config
+                .db_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("/var/lib/opsbox"));
+            opsbox_api::tls::ensure_self_signed_cert(
+                &db_dir.join("panel-selfsigned.crt"),
+                &db_dir.join("panel-selfsigned.key"),
+            )
+            .context("cannot generate self-signed TLS certificate")?
+        }
+    };
+    let acceptor = opsbox_api::tls::load_tls_acceptor(&cert_path, &key_path)
+        .context("cannot load TLS certificate")?;
 
     info!(
         version = VERSION,
         %addr,
+        tls = true,
+        cert = %cert_path.display(),
         db = %config.db_path.display(),
         schema_version = schema,
         priv_socket = %config.priv_socket.display(),
@@ -78,6 +100,7 @@ async fn serve(config: Config) -> Result<()> {
         max_upload: config.max_upload_mb.saturating_mul(1 << 20),
     })
     .with_listen(config.listen)
+    .with_tls(true)
     .with_terminal_idle(std::time::Duration::from_secs(
         config.terminal_idle_min * 60,
     ));
@@ -92,9 +115,9 @@ async fn serve(config: Config) -> Result<()> {
         announce_setup_token(&config, &token).await;
     }
 
-    opsbox_api::serve(listener, state, super::shutdown_signal())
+    opsbox_api::tls::serve_tls(listener, acceptor, state, super::shutdown_signal())
         .await
-        .context("the HTTP server failed")?;
+        .context("the HTTPS server failed")?;
     info!("opsbox serve stopped");
     Ok(())
 }
