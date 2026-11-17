@@ -216,6 +216,19 @@ impl Store {
         &self,
         token_hash: &str,
     ) -> Result<Option<(Session, User)>, StoreError> {
+        self.session_with_user("s.token_hash", token_hash)
+    }
+
+    /// Revalidate an open stream without retaining its secret or extending idle expiry.
+    pub fn session_by_id(&self, id: &str) -> Result<Option<(Session, User)>, StoreError> {
+        self.session_with_user("s.id", id)
+    }
+
+    fn session_with_user(
+        &self,
+        column: &str,
+        value: &str,
+    ) -> Result<Option<(Session, User)>, StoreError> {
         let conn = self.lock();
         let cols: String = USER_COLS
             .split(", ")
@@ -223,10 +236,10 @@ impl Store {
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "SELECT s.id, s.user_id, s.kind, s.ip, s.created_at, s.last_seen, {cols} FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?1"
+            "SELECT s.id, s.user_id, s.kind, s.ip, s.created_at, s.last_seen, {cols} FROM sessions s JOIN users u ON u.id = s.user_id WHERE {column} = ?1"
         );
         Ok(conn
-            .query_row(&sql, [token_hash], |r| {
+            .query_row(&sql, [value], |r| {
                 let kind: String = r.get(2)?;
                 let session = Session {
                     id: r.get(0)?,

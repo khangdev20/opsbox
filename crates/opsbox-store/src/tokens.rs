@@ -101,6 +101,17 @@ impl Store {
             .optional()?)
     }
 
+    pub fn api_token_by_id(&self, id: &str) -> Result<Option<ApiToken>, StoreError> {
+        Ok(self
+            .lock()
+            .query_row(
+                &format!("SELECT {COLS} FROM api_tokens WHERE id = ?1"),
+                [id],
+                row,
+            )
+            .optional()?)
+    }
+
     /// Remember when a token was last used (at most once a minute per token).
     pub fn touch_api_token(&self, id: &str, now: i64) -> Result<(), StoreError> {
         self.lock().execute(

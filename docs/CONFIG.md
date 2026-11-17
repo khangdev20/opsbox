@@ -79,7 +79,7 @@ format = "json"
 
 ## Listening address
 
-`serve` has no authentication in Phase 0. Keep `listen` on a loopback address. If you set another one, `serve` logs a warning at startup. Reach a remote server through an SSH tunnel:
+`serve` requires authentication for machine APIs. It has no native TLS in Phase 1; keep `listen` on a loopback address. If you set another one, `serve` logs a warning at startup. Reach a remote server through an SSH tunnel:
 
 ```sh
 ssh -L 8443:127.0.0.1:8443 you@server
@@ -96,9 +96,10 @@ ssh -L 8443:127.0.0.1:8443 you@server
 | `opsbox setup-token` | Prints a one-time token while no admin exists. Run as root, it switches to the `opsbox` user before opening the database. |
 | `opsbox user reset-2fa\|unlock\|password NAME` | Account recovery over SSH. `password` asks twice on a terminal and reads one line from standard input when piped. |
 | `opsbox audit verify` | Walks the hash chain of the audit log; exit status 1 and the first bad entry if it was altered. |
+| `opsbox doctor` | Read-only diagnostics through the helper: service/port health, DNS resolution, free disk space, clock synchronization, optional Docker and master-key permissions. Exit 1 for failed checks or unavailable helpers; warnings include suggested fixes. |
 | `opsbox selftest` | Ignores the configuration; uses a temporary directory. Exit status 0 if every check passes. |
 
-Commands that exist but are not built yet (`pair`, `web`, `doctor`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.
+Commands that exist but are not built yet (`pair`, `web`, `update`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.
 
 ## Running on a development machine
 
@@ -129,3 +130,14 @@ macOS or any machine without root (no `sudo`; the socket path must stay under ab
 ```
 
 `*.db` files are git-ignored.
+
+
+## HTTP hardening and tokens (Phase 1)
+
+Rate limits are fixed in this release: per IP burst 120/refill 2 per second; login, setup, invitation and TOTP routes share a stricter burst 20/refill 1 per 3 seconds; authenticated sessions/API tokens have burst 120/refill 4 per second. They return JSON 429 with `Retry-After`. At most 4096 active keys are tracked per bucket table. Persisted sign-in lockout remains five failures in 15 minutes with exponential backoff.
+
+Ordinary API requests: 1 MiB body, 30 seconds; editor: 12 MiB JSON body/5 MiB text content, 60 seconds; upload: `files.max_upload_mb`, two-hour handler deadline. Package installs, automatic-update setup, job runs, cleanup and swap run as background tasks so a dropped HTTP request does not abandon the operation. Task history is in memory (up to 24 hours, capped at 256 entries) and disappears when serve restarts. At most 64 WebSocket streams/eight terminals, 64 KiB incoming messages, 256 KiB queued writes. Streams check revocation, expiry, role and allowed address every five seconds; output alone does not refresh the 12-hour session idle timer.
+
+API responses are `no-store`; responses include request IDs, MIME-sniffing/frame protection and a same-origin referrer policy. CSP limits framing, base URLs and embedded objects while allowing the existing self-hosted Monaco/xterm runtime. Command output captured in priv is capped at 8 MiB per pipe; command timeouts kill the process group. Accepted authenticated mutations must be recorded in the audit chain before dispatch.
+
+In Settings, host name/time zone/swap and API tokens are real. Tokens use `read`, `deploy`, or `full` scopes and are hashed at rest; copy the secret at creation. They have no expiry setting in Phase 1; revoke them explicitly. See [API.md](API.md) for exact capabilities. Host name/time zone changes use hostnamectl/timedatectl through priv and persist in the operating system; they are not duplicated in config.toml. Panel domains, disk growth, GitHub, self-update and export/uninstall remain labelled samples.

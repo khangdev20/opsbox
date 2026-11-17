@@ -2,12 +2,12 @@
 
 Self-hosted all-in-one server panel in the spirit of Railway / Render, installed once on any Linux instance. Goal: never SSH into the instance again.
 
-**Status: alpha, UI complete on mock data, backend not started.**
+**Status: alpha. Phase 1 server management is implemented and tested on Ubuntu 24.04 arm64; later-phase screens retain labelled sample data.** See [verification](docs/VERIFY.md) and [current status](docs/PHASE1_STATUS.md).
 
 ## Layout
-- `web/` the whole interface: plain HTML, CSS and ES modules, no build step. `web/js/api.js` is the mock backend; each export maps to one REST endpoint (see `docs/API.md`).
+- `web/` the whole interface: plain HTML, CSS and ES modules, no build step. `web/js/api.js` selects real or sample data; each export maps to one REST endpoint (see `docs/API.md`).
 - `web/vendor/monaco/` the file editor (VS Code's editor core), self-hosted, loaded on first use.
-- `src/` Rust backend, placeholder. Phase 1 embeds `web/` into one binary and implements the API.
+- `crates/` Rust workspace: server, privileged helper, auth, metrics, storage and shared protocol. The release binary embeds `web/`.
 - `docs/ROADMAP.md` what is built and what comes next.
 - `docs/ARCHITECTURE.md` the decisions; `docs/BACKEND_SPEC.md` the full backend spec and implementation plan.
 
@@ -17,4 +17,4 @@ Self-hosted all-in-one server panel in the spirit of Railway / Render, installed
 ## Principles
 Binds to localhost by default, no telemetry, single static binary, UI embedded, panel meant to sit behind a VPN or IP allowlist while alpha.
 
-License: Apache-2.0. Monaco is MIT, IBM Plex is OFL (see `web/fonts`, `web/vendor/monaco`).
+License: Apache-2.0. Bundled libraries and fonts retain their licences under `web/vendor` and `web/fonts`.

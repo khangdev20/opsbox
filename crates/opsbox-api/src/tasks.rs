@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::HttpError;
 
 const KEEP_SECS: i64 = 24 * 3600;
+const MAX_TASKS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,6 +82,21 @@ impl Tasks {
                     ),
                 ));
             }
+            if tasks.len() >= MAX_TASKS {
+                if let Some(oldest) = tasks
+                    .values()
+                    .filter(|v| v.finished.is_some())
+                    .min_by_key(|v| (v.started, v.id.clone()))
+                    .map(|v| v.id.clone())
+                {
+                    tasks.remove(&oldest);
+                } else {
+                    return Err(HttpError::new(
+                        ErrorCode::RateLimited,
+                        "Too many operations are running. Wait for one to finish.",
+                    ));
+                }
+            }
             tasks.insert(
                 id.clone(),
                 Task {
@@ -105,7 +121,12 @@ impl Tasks {
                 match outcome {
                     Ok(o) => {
                         task.status = Status::Ok;
-                        task.log = o.log;
+                        task.log = o
+                            .log
+                            .into_iter()
+                            .take(100)
+                            .map(|l| l.chars().take(8192).collect())
+                            .collect();
                         task.result = Some(o.result);
                     }
                     Err(e) => {

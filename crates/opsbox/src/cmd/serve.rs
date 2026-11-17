@@ -44,8 +44,7 @@ async fn serve(config: Config) -> Result<()> {
         .with_context(|| format!("cannot listen on {}", config.listen))?;
     let addr = listener.local_addr()?;
     if !addr.ip().is_loopback() {
-        // Phase 0 has no authentication.
-        warn!(%addr, "listening on a non-loopback address: there is no authentication yet, anyone who can reach this port can read host facts");
+        warn!(%addr, "listening on a non-loopback address without native TLS; use a trusted HTTPS proxy or an SSH tunnel");
     }
 
     info!(

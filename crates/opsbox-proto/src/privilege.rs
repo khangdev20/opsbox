@@ -48,6 +48,8 @@ pub enum PrivOp {
     Ping,
     /// Facts about the machine. Answered with [`PrivReply::HostInfo`].
     HostInfo,
+    /// Read-only diagnostics for `opsbox doctor`.
+    Doctor,
     /// Create a TOTP secret. `priv` keeps the plaintext only long enough to return it
     /// once (for the QR code) and as a sealed value to store. `context` binds the
     /// sealed value to its owner, e.g. `totp:<user id>`.
@@ -76,6 +78,10 @@ pub enum PrivOp {
     /// pending itself and installs the security subset or everything.
     PkgInstall {
         which: crate::system::PkgSelect,
+    },
+    /// Install only these currently pending package names, revalidated in `priv`.
+    PkgInstallSelected {
+        names: Vec<String>,
     },
     /// Turn automatic security updates on or off.
     AutoUpdatesSet {
@@ -239,12 +245,14 @@ impl PrivOp {
         match self {
             Self::Ping => "ping",
             Self::HostInfo => "host_info",
+            Self::Doctor => "doctor",
             Self::TotpNewSecret { .. } => "totp_new_secret",
             Self::TotpVerify { .. } => "totp_verify",
             Self::MetricsSample { .. } => "metrics_sample",
             Self::SystemFacts => "system_facts",
             Self::PkgList => "pkg_list",
             Self::PkgInstall { .. } => "pkg_install",
+            Self::PkgInstallSelected { .. } => "pkg_install_selected",
             Self::AutoUpdatesSet { .. } => "auto_updates_set",
             Self::UnitList => "unit_list",
             Self::UnitAction { .. } => "unit_action",
@@ -333,6 +341,7 @@ pub enum PrivReply {
         version: String,
     },
     HostInfo(HostInfo),
+    Doctor(crate::doctor::DoctorReport),
     /// Answer to [`PrivOp::TotpNewSecret`].
     TotpSecret {
         /// Encrypted with the master key; store this.

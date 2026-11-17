@@ -237,6 +237,7 @@ impl Command {
             | Self::Install(_)
             | Self::Selftest
             | Self::Cleanup { .. }
+            | Self::Doctor
             | Self::SetupToken
             | Self::User { .. }
             | Self::Audit { .. } => return None,
@@ -257,7 +258,6 @@ impl Command {
                 action: BackupAction::List,
             } => "backup list",
             Self::Restore { .. } => "restore",
-            Self::Doctor => "doctor",
             Self::Uninstall { .. } => "uninstall",
             Self::Proxy => "proxy",
             Self::Watchdog => "watchdog",
@@ -328,7 +328,7 @@ mod tests {
                 "{implemented}"
             );
         }
-        assert_eq!(parse("doctor").unimplemented_name(), Some("doctor"));
+        assert_eq!(parse("doctor").unimplemented_name(), None);
         assert_eq!(parse("web enable").unimplemented_name(), Some("web enable"));
         for done in [
             "setup-token",

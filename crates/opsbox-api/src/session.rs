@@ -190,6 +190,44 @@ fn is_safe(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
+/// Persist acceptance before dispatching an authenticated mutation. If the audit
+/// store is unavailable, no system command is started. Handlers add the detailed
+/// outcome under their domain-specific action names afterwards.
+async fn audit_acceptance(
+    parts: &Parts,
+    state: &AppState,
+    who: &Principal,
+) -> Result<(), HttpError> {
+    if is_safe(&parts.method) {
+        return Ok(());
+    }
+    let store = state.store.clone();
+    let entry = opsbox_store::NewAudit {
+        actor: who.user.name.clone(),
+        actor_kind: if who.via_token {
+            opsbox_store::ActorKind::Token
+        } else {
+            opsbox_store::ActorKind::User
+        },
+        ip: Some(client_ip(parts)),
+        action: "request.accepted".into(),
+        target: Some(parts.uri.path().chars().take(512).collect()),
+        result: opsbox_store::AuditResult::Ok,
+        detail: serde_json::json!({ "method": parts.method.as_str(), "phase": "accepted" }),
+    };
+    if !tokio::task::spawn_blocking(move || store.append_audit(entry))
+        .await
+        .is_ok_and(|r| r.is_ok())
+    {
+        tracing::error!("refused a mutation because its acceptance could not be audited");
+        return Err(HttpError::new(
+            ErrorCode::Unavailable,
+            "The audit log could not be written. No change was started. Check disk space and database permissions.",
+        ));
+    }
+    Ok(())
+}
+
 /// Pre-login requests (sign in, setup) have no session to protect, but a page on
 /// another site must not be able to submit them from a visitor's browser.
 pub fn check_origin_if_present(headers: &HeaderMap) -> Result<(), HttpError> {
@@ -222,6 +260,47 @@ pub fn deny_token(who: &Principal) -> Result<(), HttpError> {
     Ok(())
 }
 
+/// Cancel streams within five seconds of revocation, expiry or an allow-list change.
+/// No plaintext credential is kept by the upgraded connection.
+pub(crate) async fn stream_ended(state: AppState, who: Principal, ip: String) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        if !state.allow.get().is_empty()
+            && !ip.parse::<IpAddr>().is_ok_and(|a| state.allow.permits(a))
+        {
+            return;
+        }
+        let auth = state.auth.clone();
+        let principal = who.clone();
+        if !tokio::task::spawn_blocking(move || auth.stream_active(&principal))
+            .await
+            .is_ok_and(|r| r.unwrap_or(false))
+        {
+            return;
+        }
+    }
+}
+
+pub(crate) fn stream_slot(
+    state: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, HttpError> {
+    state.stream_slots.clone().try_acquire_owned().map_err(|_| {
+        HttpError::new(
+            ErrorCode::RateLimited,
+            "Too many streams are open. Close a tab and try again.",
+        )
+    })
+}
+
+pub(crate) fn bounded_socket(
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> axum::extract::ws::WebSocketUpgrade {
+    ws.max_message_size(64 * 1024)
+        .max_frame_size(64 * 1024)
+        .write_buffer_size(16 * 1024)
+        .max_write_buffer_size(256 * 1024)
+}
+
 /// Authenticate the caller with `role` at least, applying CSRF rules to unsafe methods.
 async fn authorize(
     parts: &mut Parts,
@@ -240,6 +319,7 @@ async fn authorize(
             .await
             .map_err(|_| HttpError::internal())??
             .ok_or_else(unauthorized)?;
+        state.limits.session(&who.session_id)?;
         if !who.user.role.allows(role) {
             return Err(forbidden("This token is not allowed to do this."));
         }
@@ -267,6 +347,7 @@ async fn authorize(
         if allow_enrol {
             return Err(forbidden("This needs a signed-in account, not a token."));
         }
+        audit_acceptance(parts, state, &who).await?;
         return Ok(who);
     }
     let token = cookie_value(&parts.headers, SESSION_COOKIE)
@@ -280,6 +361,8 @@ async fn authorize(
             .map_err(|_| HttpError::internal())??
     }
     .ok_or_else(unauthorized)?;
+
+    state.limits.session(&who.session_id)?;
 
     if who.kind == SessionKindView::Enroll && !allow_enrol {
         return Err(forbidden(
@@ -301,6 +384,7 @@ async fn authorize(
             ));
         }
     }
+    audit_acceptance(parts, state, &who).await?;
     Ok(who)
 }
 

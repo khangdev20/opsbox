@@ -160,7 +160,7 @@ pub(crate) async fn get_attention(State(state): State<AppState>, Viewer(_): View
 /// where `data` is the same object `GET /metrics` returns for the default window.
 pub(crate) async fn stream(
     // Extractors run in this order: authenticate before looking at the upgrade headers.
-    Viewer(_): Viewer,
+    Viewer(who): Viewer,
     client: Client,
     State(state): State<AppState>,
     ws: WebSocketUpgrade,
@@ -173,7 +173,16 @@ pub(crate) async fn stream(
             "This request came from another site and was refused.",
         ));
     }
-    Ok(ws.on_upgrade(move |socket| pump(socket, state.metrics)))
+    let slot = crate::session::stream_slot(&state)?;
+    Ok(
+        crate::session::bounded_socket(ws).on_upgrade(move |socket| async move {
+            let _slot = slot;
+            tokio::select! {
+                () = crate::session::stream_ended(state.clone(), who, client.ip) => {},
+                () = pump(socket, state.metrics) => {},
+            }
+        }),
+    )
 }
 
 fn frame(snap: &Snapshot, m: &Metrics) -> Message {

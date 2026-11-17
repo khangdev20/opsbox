@@ -21,6 +21,8 @@ pub enum ErrorCode {
     RateLimited,
     /// The request body is larger than this endpoint accepts.
     TooLarge,
+    /// The request exceeded the endpoint's time budget.
+    Timeout,
     /// A dependency (for example the privileged helper) is not reachable.
     Unavailable,
     Internal,
@@ -39,6 +41,7 @@ impl ErrorCode {
             Self::Unsupported => 501,
             Self::RateLimited => 429,
             Self::TooLarge => 413,
+            Self::Timeout => 408,
             Self::Unavailable => 503,
             Self::Internal => 500,
         }

@@ -1,22 +1,18 @@
 import { html, raw, esc, bytes, table, btn, header, bindActions, confirmDialog, askForm, toast } from '../ui.js';
 import * as api from '../api.js';
 import { server } from '../store.js';
+import { loadAmd } from '../vendor-loader.js';
 
 // Monaco (the VS Code editor core), self-hosted and loaded on first use.
 let monacoP;
 function loadMonaco() {
   if (monacoP) return monacoP;
-  monacoP = new Promise((resolve, reject) => {
+  monacoP = loadAmd().then((require) => new Promise((resolve, reject) => {
     const base = new URL('../../vendor/monaco/vs', import.meta.url).href;
-    const sc = document.createElement('script'); sc.src = base + '/loader.js';
-    sc.onerror = () => reject(new Error('Could not load the editor.'));
-    sc.onload = () => {
       window.MonacoEnvironment = { getWorkerUrl: () => `data:text/javascript;charset=utf-8,${encodeURIComponent(`self.MonacoEnvironment={baseUrl:'${base}/'};importScripts('${base}/base/worker/workerMain.js');`)}` };
-      window.require.config({ paths: { vs: base } });
-      window.require(['vs/editor/editor.main'], () => resolve(window.monaco), reject);
-    };
-    document.head.append(sc);
-  });
+      require.config({ paths: { vs: base } });
+      require(['vs/editor/editor.main'], () => resolve(window.monaco), reject);
+  })).catch((e) => { monacoP = null; throw e; });
   return monacoP;
 }
 const LANG = { js: 'javascript', mjs: 'javascript', ts: 'typescript', json: 'json', yml: 'yaml', yaml: 'yaml', md: 'markdown', py: 'python', sh: 'shell', css: 'css', html: 'html', xml: 'xml', toml: 'ini', conf: 'ini', ini: 'ini', env: 'ini', sql: 'sql', go: 'go', rs: 'rust', php: 'php', rb: 'ruby', log: 'plaintext' };

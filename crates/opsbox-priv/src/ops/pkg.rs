@@ -243,6 +243,33 @@ fn reboot_required() -> bool {
 // ------------------------------------------------------------------ install
 
 pub(super) fn install(which: PkgSelect) -> Result<CommandOutcome, PrivError> {
+    install_inner(which, &[])
+}
+
+pub(super) fn install_selected(names: &[String]) -> Result<CommandOutcome, PrivError> {
+    if names.is_empty() || names.len() > 200 || names.iter().any(|n| !valid_package_name(n)) {
+        return Err(err(
+            PrivErrorCode::Invalid,
+            "Select 1 to 200 valid pending package names.",
+        ));
+    }
+    install_inner(PkgSelect::All, names)
+}
+
+fn selected_pending(pending: &[PkgUpdate], names: &[String]) -> Result<(), PrivError> {
+    if let Some(n) = names
+        .iter()
+        .find(|n| !pending.iter().any(|p| &p.name == *n))
+    {
+        return Err(err(
+            PrivErrorCode::Invalid,
+            format!("{n} is no longer a pending update. Refresh the list and choose again."),
+        ));
+    }
+    Ok(())
+}
+
+fn install_inner(which: PkgSelect, selected: &[String]) -> Result<CommandOutcome, PrivError> {
     let m = manager().ok_or_else(|| {
         err(
             PrivErrorCode::Unsupported,
@@ -271,9 +298,11 @@ pub(super) fn install(which: PkgSelect) -> Result<CommandOutcome, PrivError> {
                 ));
             }
             let pending = list_updates(Manager::Apt)?;
+            selected_pending(&pending, selected)?;
             let names: Vec<&str> = pending
                 .iter()
                 .filter(|u| which == PkgSelect::All || u.security)
+                .filter(|u| selected.is_empty() || selected.contains(&u.name))
                 .map(|u| u.name.as_str())
                 .collect();
             if names.is_empty() {
@@ -308,9 +337,11 @@ pub(super) fn install(which: PkgSelect) -> Result<CommandOutcome, PrivError> {
         }
         Manager::Dnf => {
             let pending = list_updates(Manager::Dnf)?;
+            selected_pending(&pending, selected)?;
             let n = pending
                 .iter()
                 .filter(|u| which == PkgSelect::All || u.security)
+                .filter(|u| selected.is_empty() || selected.contains(&u.name))
                 .count();
             if n == 0 {
                 return Ok(CommandOutcome {
@@ -319,11 +350,12 @@ pub(super) fn install(which: PkgSelect) -> Result<CommandOutcome, PrivError> {
                     count: 0,
                 });
             }
-            let args: Vec<&str> = if which == PkgSelect::Security {
+            let mut args: Vec<&str> = if which == PkgSelect::Security {
                 vec!["-q", "-y", "upgrade", "--security"]
             } else {
                 vec!["-q", "-y", "upgrade"]
             };
+            args.extend(selected.iter().map(String::as_str));
             let o = run_with("/usr/bin/dnf", &args, limit, None, &[]).ok_or_else(|| {
                 err(
                     PrivErrorCode::Internal,
@@ -518,6 +550,24 @@ pub(super) fn write_atomic(path: &str, content: &str) -> Result<(), PrivError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_packages_must_be_valid_and_currently_pending() {
+        for names in [
+            vec![],
+            vec!["--reinstall".into()],
+            vec!["a;b".into()],
+            vec!["../bad".into()],
+        ] {
+            assert_eq!(
+                install_selected(&names).unwrap_err().code,
+                PrivErrorCode::Invalid
+            );
+        }
+        let pending = parse_apt_upgradable("curl/noble-security 2 arm64 [upgradable from: 1]\n");
+        assert!(selected_pending(&pending, &["curl".into()]).is_ok());
+        assert!(selected_pending(&pending, &["not-pending".into()]).is_err());
+    }
 
     const APT: &str = "Listing...\nopenssl/noble-updates,noble-security 3.0.13-0ubuntu3.5 amd64 [upgradable from: 3.0.13-0ubuntu3.4]\nlibc6/noble-updates,noble-security 2.39-0ubuntu8.3 amd64 [upgradable from: 2.39-0ubuntu8.2]\nlinux-image-generic/noble-updates,noble-security 6.8.0-52.53 amd64 [upgradable from: 6.8.0-48.48]\ncurl/noble-updates 8.5.0-2ubuntu10.5 amd64 [upgradable from: 8.5.0-2ubuntu10.4]\nbash/bookworm-security 5.2.15-2+deb12u2 amd64 [upgradable from: 5.2.15-2+deb12u1]\n";
 

@@ -219,3 +219,46 @@ Build and reinstall with the preamble, then sign in as an administrator.
 
    The first is 200, the second 403 (no reboot). Revoke the token; using it again is 401. A deploy token cannot read/write Files. Full tokens cannot manage people, keys, tokens or terminals.
 6. Run `sudo opsbox audit verify`. Expect `cleanup.*`, `access.*`, `security.*`, `token.create`, `token.revoke`, `system.hostname` and `system.timezone` entries for actions actually taken. No token secret, password, TOTP secret or private SSH key is logged.
+
+
+---
+
+## M8. Hardening and final verification
+
+In the VM:
+
+```sh
+cd /home/ubuntu/opsbox
+export PATH="$HOME/.cargo/bin:$PATH"
+export CARGO_TARGET_DIR="$HOME/target"
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+python3 tools/generate-api.py --check
+shellcheck --shell=sh --severity=warning install.sh
+cargo build --release --locked
+python3 tools/check-idle-memory.py --binary ~/target/release/opsbox
+sudo sh install.sh --dev --binary ~/target/release/opsbox
+sudo opsbox status
+sudo opsbox doctor
+sudo opsbox audit verify
+```
+
+`doctor` changes nothing. It prints service/port health, disk space, NTP, DNS, optional Docker and key permissions, with fixes to run manually. A machine that has not completed setup may warn that the master key is absent; it is generated on enrolment. Failed checks/helper errors exit 1; warnings/skips alone do not.
+
+1. **Scopes and limits**: open a private browser, send 21 malformed login requests within a few seconds. The first 20 are validation errors, the next is JSON 429 with `Retry-After`. Setup/invitation/enrolment requests share this auth budget; health probes still work. Wait for refill. Five actual incorrect passwords still invoke the persisted lockout policy.
+2. **Body limits**: send over 1 MiB to a normal API endpoint: JSON 413 `too_large`. A stalled body expires as JSON 408 `timeout`. Editor/transfer limits remain distinct; normal editor saves and upload/download still work.
+3. **Live revocation**: open Overview, Journal Live and Terminal in separate tabs; sign out all sessions from Security in another. Existing streams close within five seconds and the PTY is ended; `terminal.end` records `revoked`. API-token revocation also ends its existing streams. A removed account or changed role has the same effect.
+4. **Services** now use zbus/D-Bus. Test start/restart/stop/enable/disable only on a disposable service; compare systemctl state. Refusal tests for opsbox/SSH/network units must still pass. **Updates** has checkboxes and Install selected; choose only packages you intend to upgrade. Unknown, malformed or no-longer-pending selections are refused by priv. Auto-update setup and Run job return tasks and the UI waits for completion.
+5. **Editor → Terminal regression**: open Files, edit a disposable UTF-8 file in Monaco, save and verify the content. Then navigate to Terminal in the same tab, run `whoami`, resize and `exit`. Repeat in the opposite order. Both libraries load locally; no JavaScript errors or failed vendor requests.
+6. Inspect response headers: API `Cache-Control: no-store`, `X-Request-Id`, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`. Setup/token secrets must not appear in caches or request logs. Authenticated mutations add `request.accepted` before their detailed completion row. Audit verification must pass.
+7. Run the memory probe above on a release binary. It launches isolated temporary serve/priv processes, waits for readiness, measures Linux `/proc` RSS and fails at 40 MiB; both processes and the temporary database are removed afterwards. For the installed service, close browser tabs for a minute, then measure RSS with `ps -p "$(systemctl show opsbox -p MainPID --value)" -o pid,rss,pcpu,args`.
+
+### Observed on opsbox-vm (Ubuntu 24.04 arm64, 17 November 2026)
+
+- 391 workspace tests passed, including TOTP/lockout/audit, canonicalization property tests, command output/descendant timeouts, rate limits, body/deadline errors, metrics and terminal live revocation. fmt, Clippy with denied warnings and shellcheck passed.
+- Release build/reinstall and both status probes passed. Doctor confirmed services, disk, NTP and DNS. Docker was absent; the installed database had not completed enrolment, so the missing-key warning was expected.
+- Chromium: real setup and TOTP, Settings save, token creation/scope/use/revocation, real D-Bus services, selected-update controls, Cleanup/Access/Security, Monaco save followed by a real PTY shell all passed without page errors, using an isolated QA database.
+- Typed root-helper operations enabled, started, restarted, stopped and disabled a disposable service. A disposable systemd timer/job ran and was removed. The real root-helper `runuser` PTY was in `/user.slice/user-1000.slice/session-c1.scope`, rather than the helper's service cgroup. Fixtures were removed.
+- Installed serve RSS: 7072 KiB (6.91 MiB), idle CPU reported 0.1%. Isolated serve after real setup/login and UI activity: 14368 KiB (14.03 MiB). The automated fresh-process budget probe measured 6.82 MiB after 15 seconds. These are RSS, not systemd `MemoryCurrent`.
+- Not exercised destructively in this review: actual package upgrades, reboot, firewall activation/revert on a live connection, one-hour emergency-SSH expiration, changing the current SSH account, or a seven-day soak. Their tests and manual steps above remain relevant. dnf/firewalld still need their own distribution VM.

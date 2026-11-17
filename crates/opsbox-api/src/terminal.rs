@@ -140,7 +140,9 @@ pub(crate) async fn stream(
         ));
     }
     let idle = state.terminal.idle;
-    Ok(ws.on_upgrade(move |mut socket| async move {
+    let stream_slot = crate::session::stream_slot(&state)?;
+    Ok(crate::session::bounded_socket(ws).on_upgrade(move |mut socket| async move {
+        let _stream_slot = stream_slot;
         let opened = prepare(&state, &who.user.name, &rid.0.0, &q).await;
         let (session, slot) = match opened {
             Ok(v) => v,
@@ -169,7 +171,10 @@ pub(crate) async fn stream(
         };
         audit.record("terminal.start", json!({}));
         let started = Instant::now();
-        let reason = relay(socket, session, idle).await;
+        let reason = tokio::select! {
+            () = crate::session::stream_ended(state.clone(), who, client.ip) => EndReason::Revoked,
+            reason = relay(socket, session, idle) => reason,
+        };
         audit.record(
             "terminal.end",
             json!({ "seconds": started.elapsed().as_secs(), "reason": reason.as_str() }),
@@ -256,6 +261,8 @@ pub(crate) enum EndReason {
     Idle,
     /// The helper went away.
     Error,
+    /// The account/session expired or was revoked while the shell was open.
+    Revoked,
 }
 
 impl EndReason {
@@ -265,6 +272,7 @@ impl EndReason {
             Self::Closed => "closed",
             Self::Idle => "idle",
             Self::Error => "error",
+            Self::Revoked => "revoked",
         }
     }
 }

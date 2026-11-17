@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod cleanup;
+pub mod doctor;
 pub mod install;
 pub mod privileged;
 pub mod selftest;

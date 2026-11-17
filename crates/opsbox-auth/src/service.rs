@@ -497,6 +497,27 @@ impl Auth {
         Ok(())
     }
 
+    /// A WebSocket must end when its session/token expires, is revoked, or its role
+    /// changes. Merely receiving streamed output does not keep a session alive.
+    pub fn stream_active(&self, who: &Principal) -> Result<bool, AuthError> {
+        if who.via_token {
+            return Ok(self
+                .inner
+                .store
+                .api_token_by_id(&who.session_id)?
+                .is_some_and(|t| scope_role(t.scope) == who.user.role));
+        }
+        let Some((s, u)) = self.inner.store.session_by_id(&who.session_id)? else {
+            return Ok(false);
+        };
+        let now = self.now();
+        Ok(s.kind == SessionKind::Web
+            && u.id == who.user.id
+            && u.role == who.user.role
+            && now - s.last_seen <= self.inner.cfg.idle_secs
+            && now - s.created_at <= self.inner.cfg.absolute_secs)
+    }
+
     /// Sign the user out on every device. Returns how many sessions ended.
     pub fn revoke_all(&self, user: &User, ip: Option<&str>) -> Result<usize, AuthError> {
         let n = self.inner.store.delete_user_sessions(&user.id)?;

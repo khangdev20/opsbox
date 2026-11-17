@@ -6,6 +6,7 @@
 pub mod access;
 pub mod api;
 pub mod cleanup;
+pub mod doctor;
 pub mod files;
 pub mod frame;
 pub mod metrics;
@@ -18,6 +19,7 @@ pub mod system;
 pub use access::{AccessState, AccessUser, AuthorizedKey, SshStatus};
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
 pub use cleanup::{CleanupFreed, CleanupItem, CleanupScan};
+pub use doctor::{CheckStatus, DoctorCheck, DoctorReport};
 pub use files::{DirListing, FileContent, FileEntry, FileKind, Staged};
 pub use metrics::{CpuTimes, DiskIo, DiskUsage, MemInfo, NetIf, RawProc, RawSample, SystemFacts};
 pub use privilege::{

@@ -1,8 +1,8 @@
 //! The HTTP server: router, request ids, the error format, health endpoints and the
 //! embedded web UI.
 //!
-//! Phase 0 has no authentication, so the server is meant to listen on loopback only
-//! and exposes nothing but non-secret host facts.
+//! Phase 1 authenticates machine APIs and delegates system access to `priv`.
+//! Listen on loopback or use a trusted HTTPS proxy; native TLS arrives later.
 
 mod access;
 mod allowlist;
@@ -10,9 +10,11 @@ mod auth;
 mod cleanup;
 mod error;
 mod files;
+mod hardening;
 mod health;
 mod host;
 mod json;
+mod limits;
 mod metrics;
 mod request_id;
 mod security;
@@ -50,7 +52,7 @@ pub use session::SecureCookies;
 pub use terminal::{DEFAULT_IDLE as DEFAULT_TERMINAL_IDLE, TerminalSettings};
 
 /// Request bodies above this are rejected (docs/BACKEND_SPEC.md section 6.1). The
-/// streamed upload endpoint will get its own, larger limit in a later phase.
+/// streamed upload and editor endpoints have separate limits below.
 const BODY_LIMIT: usize = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The editor sends whole files: 5 MB of text can be more than 10 MB once JSON-escaped.
@@ -67,6 +69,8 @@ pub struct AppState {
     pub tasks: tasks::Tasks,
     pub files: FilesSettings,
     pub terminal: TerminalSettings,
+    pub(crate) limits: limits::RateLimits,
+    pub(crate) stream_slots: Arc<tokio::sync::Semaphore>,
     /// The panel's own address, for the Security checks.
     pub listen: std::net::SocketAddr,
     pub allow: allowlist::AllowList,
@@ -94,6 +98,8 @@ impl AppState {
             tasks: tasks::Tasks::default(),
             files: FilesSettings::default(),
             terminal: TerminalSettings::default(),
+            limits: limits::RateLimits::default(),
+            stream_slots: Arc::new(tokio::sync::Semaphore::new(64)),
             listen: std::net::SocketAddr::from(([127, 0, 0, 1], 8443)),
             allow,
             secure_cookies,
@@ -140,6 +146,7 @@ impl AppState {
 /// middleware stack.
 pub fn router(state: AppState) -> Router {
     let allow_guard_state = state.allow.clone();
+    let limits = state.limits.clone();
     let max_upload = usize::try_from(state.files.max_upload).unwrap_or(usize::MAX);
 
     // Ordinary API calls: small bodies, short time.
@@ -257,6 +264,11 @@ pub fn router(state: AppState) -> Router {
             allow_guard_state,
             allow_guard,
         ))
+        .layer(axum::middleware::from_fn_with_state(
+            limits,
+            limits::middleware,
+        ))
+        .layer(axum::middleware::from_fn(hardening::middleware))
         .layer(axum::middleware::from_fn(request_id::middleware))
 }
 

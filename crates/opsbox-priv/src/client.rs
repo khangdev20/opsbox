@@ -121,6 +121,32 @@ pub struct PrivClient {
 }
 
 impl PrivClient {
+    pub async fn pkg_install_selected(
+        &self,
+        rid: &str,
+        actor: &str,
+        names: &[String],
+    ) -> Result<CommandOutcome, ClientError> {
+        self.expect(
+            rid,
+            Some(actor),
+            PrivOp::PkgInstallSelected {
+                names: names.to_vec(),
+            },
+            |r| match r {
+                PrivReply::Outcome(outcome) => Ok(outcome),
+                other => Err(other),
+            },
+        )
+        .await
+    }
+    pub async fn doctor(&self, rid: &str) -> Result<opsbox_proto::DoctorReport, ClientError> {
+        self.expect(rid, None, PrivOp::Doctor, |r| match r {
+            PrivReply::Doctor(report) => Ok(report),
+            other => Err(other),
+        })
+        .await
+    }
     pub fn new(socket_path: impl Into<PathBuf>) -> Self {
         Self {
             socket_path: Arc::new(socket_path.into()),

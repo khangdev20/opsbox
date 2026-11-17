@@ -137,6 +137,38 @@ fn audit_actions(h: &Harness) -> Vec<(String, Value)> {
         .collect()
 }
 
+#[tokio::test]
+async fn revoking_a_session_ends_its_open_shell_and_records_the_reason() {
+    let h = Harness::new(true);
+    let mut b = h.signed_in("revoked-admin", Role::Admin);
+    let user = own_user(&mut b, &h).await;
+    let addr = serve(&h, Duration::from_secs(60)).await;
+    let mut ws = open(addr, &b, &user).await;
+    assert_eq!(first_text(&mut ws).await["type"], "ready");
+    let account = h.store.user_by_name("revoked-admin").unwrap().unwrap();
+    h.store.delete_user_sessions(&account.id).unwrap();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while let Some(Ok(m)) = ws.next().await {
+            if matches!(m, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("a revoked session's terminal must close");
+    for _ in 0..30 {
+        if audit_actions(&h)
+            .iter()
+            .any(|(action, detail)| action == "terminal.end" && detail["reason"] == "revoked")
+        {
+            h.shutdown().await;
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("terminal.end must explain revocation");
+}
+
 async fn wait_for_audit(h: &Harness, action: &str) -> Value {
     for _ in 0..100 {
         if let Some((_, d)) = audit_actions(h).into_iter().find(|(a, _)| a == action) {

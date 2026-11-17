@@ -50,7 +50,11 @@ pub(crate) fn audit(
 ) {
     state.auth.audit(
         &who.user.name,
-        ActorKind::User,
+        if who.via_token {
+            ActorKind::Token
+        } else {
+            ActorKind::User
+        },
         Some(ip),
         action,
         target,
@@ -103,6 +107,8 @@ pub(crate) async fn get_updates(
 #[derive(Deserialize)]
 pub(crate) struct InstallBody {
     which: String,
+    #[serde(default)]
+    packages: Vec<String>,
 }
 
 pub(crate) async fn install_updates(
@@ -115,6 +121,7 @@ pub(crate) async fn install_updates(
     let which = match body.which.as_str() {
         "security" => PkgSelect::Security,
         "all" => PkgSelect::All,
+        "selected" if !body.packages.is_empty() && body.packages.len() <= 200 => PkgSelect::All,
         _ => return Err(invalid("which", "Choose security or all.")),
     };
     let (pc, name, ip, s) = (
@@ -124,7 +131,11 @@ pub(crate) async fn install_updates(
         state.clone(),
     );
     let task = state.tasks.start("updates.install", async move {
-        let out = pc.pkg_install(&rid, &name, which).await?;
+        let out = if body.which == "selected" {
+            pc.pkg_install_selected(&rid, &name, &body.packages).await?
+        } else {
+            pc.pkg_install(&rid, &name, which).await?
+        };
         audit(
             &s,
             &who,
@@ -165,19 +176,28 @@ pub(crate) async fn set_auto_updates(
     client: Client,
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(body): ApiJson<OnBody>,
-) -> Result<Json<Value>, HttpError> {
-    patient(&state, 700)
-        .auto_updates_set(&rid, &who.user.name, body.on)
-        .await?;
-    audit(
-        &state,
-        &who,
-        &client.ip,
-        "system.updates.auto",
-        None,
-        json!({ "on": body.on }),
-    );
-    Ok(Json(json!({ "ok": true })))
+) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    let pc = patient(&state, 700);
+    let s = state.clone();
+    let task = state.tasks.start("updates.auto", async move {
+        pc.auto_updates_set(&rid, &who.user.name, body.on).await?;
+        audit(
+            &s,
+            &who,
+            &client.ip,
+            "system.updates.auto",
+            None,
+            json!({ "on": body.on }),
+        );
+        Ok(Outcome {
+            log: vec![],
+            result: json!({ "on": body.on }),
+        })
+    })?;
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "task": task })),
+    ))
 }
 
 pub(crate) async fn get_task(
@@ -329,7 +349,7 @@ pub(crate) async fn get_journal(
 /// `WS /api/v1/stream/journal?unit=&prio=&q=`: the last lines at once, then new ones as
 /// they appear, `{ "type": "journal", "entries": [...] }`.
 pub(crate) async fn stream_journal(
-    Viewer(_): Viewer,
+    Viewer(who): Viewer,
     client: Client,
     State(state): State<AppState>,
     Query(q): Query<JournalQuery>,
@@ -341,7 +361,16 @@ pub(crate) async fn stream_journal(
             "This request came from another site and was refused.",
         ));
     }
-    Ok(ws.on_upgrade(move |socket| follow_journal(socket, state, q)))
+    let slot = crate::session::stream_slot(&state)?;
+    Ok(
+        crate::session::bounded_socket(ws).on_upgrade(move |socket| async move {
+            let _slot = slot;
+            tokio::select! {
+                () = crate::session::stream_ended(state.clone(), who, client.ip) => {},
+                () = follow_journal(socket, state.clone(), q) => {},
+            }
+        }),
+    )
 }
 
 async fn follow_journal(mut socket: WebSocket, state: AppState, q: JournalQuery) {
@@ -457,19 +486,24 @@ pub(crate) async fn run_job(
     client: Client,
     Extension(RequestId(rid)): Extension<RequestId>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, HttpError> {
-    patient(&state, 16 * 60)
-        .job_run(&rid, &who.user.name, &id)
-        .await?;
-    audit(
-        &state,
-        &who,
-        &client.ip,
-        "system.job.run",
-        Some(&id),
-        json!({}),
-    );
-    Ok(Json(json!({ "ok": true })))
+) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    if id.len() != 8 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid("id", "That is not a job id."));
+    }
+    let pc = patient(&state, 16 * 60);
+    let s = state.clone();
+    let task = state.tasks.start(&format!("job.run:{id}"), async move {
+        pc.job_run(&rid, &who.user.name, &id).await?;
+        audit(&s, &who, &client.ip, "system.job.run", Some(&id), json!({}));
+        Ok(Outcome {
+            log: vec![],
+            result: json!({ "ok": true }),
+        })
+    })?;
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "task": task })),
+    ))
 }
 
 pub(crate) async fn remove_job(
@@ -673,7 +707,7 @@ pub(crate) async fn ssh_emergency(
         Some(&client.ip),
         "system.ssh.emergency",
         Some(&ip),
-        AuditResult::Denied,
+        AuditResult::Ok,
         json!({ "until": until }),
     );
     Ok(Json(json!({ "until": until * 1000, "ip": ip })))

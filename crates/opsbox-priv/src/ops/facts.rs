@@ -3,19 +3,32 @@
 //! Replaced by proper package and systemd operations in M4; until then these use the
 //! standard tools with absolute paths, no shell, a clean environment and a timeout.
 
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(test)]
+use std::time::Instant;
 
 use opsbox_proto::SystemFacts;
 
 pub(super) fn collect() -> SystemFacts {
-    let (updates_total, updates_security) = apt_updates().unzip();
+    // Reuse the real apt/dnf implementation instead of depending on Ubuntu's
+    // optional update-notifier/apt-check package being installed.
+    let packages = super::pkg::list().ok();
+    let counts = packages
+        .as_ref()
+        .map(|p| {
+            (
+                u32::try_from(p.updates.len()).unwrap_or(u32::MAX),
+                u32::try_from(p.updates.iter().filter(|u| u.security).count()).unwrap_or(u32::MAX),
+            )
+        })
+        .or_else(apt_updates);
+    let (updates_total, updates_security) = counts.unzip();
     SystemFacts {
         reboot_required: ["/run/reboot-required", "/var/run/reboot-required"]
             .iter()
-            .any(|p| Path::new(p).exists()),
+            .any(|p| Path::new(p).exists())
+            || packages.is_some_and(|p| p.reboot_required),
         failed_units: failed_units(),
         updates_total,
         updates_security,
@@ -24,39 +37,9 @@ pub(super) fn collect() -> SystemFacts {
 
 /// Run `program args...` and return its combined output, or `None` on any failure.
 fn run(program: &str, args: &[&str], limit: Duration) -> Option<String> {
-    if !Path::new(program).exists() {
-        return None;
-    }
-    let mut child = Command::new(program)
-        .args(args)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .ok()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait().ok()? {
-            Some(_) => break,
-            None if started.elapsed() > limit => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            None => std::thread::sleep(Duration::from_millis(25)),
-        }
-    }
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    let mut err = String::new();
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut err);
-    }
-    out.push_str(&err);
-    Some(out)
+    super::exec::run(program, args, limit)
+        .filter(|o| o.ok())
+        .map(|o| o.combined())
 }
 
 pub fn parse_failed_units(output: &str) -> Vec<String> {

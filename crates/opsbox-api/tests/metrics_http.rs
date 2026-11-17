@@ -295,3 +295,30 @@ async fn the_stream_refuses_other_sites_and_anonymous_callers() {
     let _ = ORIGIN;
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn revoking_a_session_ends_an_already_open_metrics_stream() {
+    let h = Harness::new(true);
+    let b = h.signed_in("reader", Role::Viewer);
+    let user = h.store.user_by_name("reader").unwrap().unwrap();
+    let addr = serve(&h).await;
+    let (mut ws, _) = tokio_tungstenite::connect_async(ws_request(
+        addr,
+        Some(&cookie_of(&b)),
+        Some(&format!("http://{addr}")),
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(ws.next().await, Some(Ok(Message::Text(_)))));
+    h.store.delete_user_sessions(&user.id).unwrap();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        while let Some(Ok(msg)) = ws.next().await {
+            if matches!(msg, Message::Close(_)) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("an open stream ends after its session is revoked");
+    h.shutdown().await;
+}

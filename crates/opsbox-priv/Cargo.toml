@@ -26,6 +26,9 @@ tracing = "0.1"
 zeroize = "1.9"
 pty-process = { version = "0.5", features = ["async"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "6.3", default-features = false, features = ["tokio", "proxy"] }
+
 [dev-dependencies]
 proptest = "1.12"
 tempfile = "3.27"

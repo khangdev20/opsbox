@@ -2,6 +2,7 @@
 //! absolute paths and a time limit.
 
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -10,6 +11,24 @@ pub struct Output {
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+}
+
+const MAX_OUTPUT: usize = 8 * 1024 * 1024;
+
+/// Keep draining a chatty child's pipe, retaining only a bounded prefix.
+fn capture(mut pipe: impl Read) -> (String, bool) {
+    let mut kept = Vec::new();
+    let mut buf = [0u8; 8192];
+    let mut truncated = false;
+    while let Ok(n) = pipe.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        let keep = n.min(MAX_OUTPUT.saturating_sub(kept.len()));
+        kept.extend_from_slice(&buf[..keep]);
+        truncated |= keep < n;
+    }
+    (String::from_utf8_lossy(&kept).into_owned(), truncated)
 }
 
 impl Output {
@@ -47,6 +66,9 @@ pub fn run_with(
         return None;
     }
     let mut cmd = Command::new(program);
+    // A timed-out apt/journal/helper command may have children holding its pipes.
+    // Give it its own group so the timeout can end the whole command tree safely.
+    cmd.process_group(0);
     cmd.args(args)
         .env_clear()
         .env(
@@ -70,23 +92,19 @@ pub fn run_with(
         let _ = stdin.write_all(text.as_bytes());
     }
     // Read both pipes on threads so a chatty tool cannot fill a pipe and stall.
-    let mut out = child.stdout.take()?;
-    let mut err = child.stderr.take()?;
-    let t_out = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = out.read_to_string(&mut s);
-        s
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = err.read_to_string(&mut s);
-        s
-    });
+    let out = child.stdout.take()?;
+    let err = child.stderr.take()?;
+    let t_out = std::thread::spawn(move || capture(out));
+    let t_err = std::thread::spawn(move || capture(err));
     let started = Instant::now();
     let status = loop {
         match child.try_wait().ok()? {
             Some(st) => break st,
             None if started.elapsed() > limit => {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(child.id() as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = (t_out.join(), t_err.join());
@@ -95,10 +113,19 @@ pub fn run_with(
             None => std::thread::sleep(Duration::from_millis(20)),
         }
     };
+    let (stdout, out_large) = t_out.join().unwrap_or_default();
+    let (mut stderr, err_large) = t_err.join().unwrap_or_default();
+    if out_large || err_large {
+        stderr.push_str("\nCommand output exceeded the 8 MiB capture limit.\n");
+    }
     Some(Output {
-        code: status.code(),
-        stdout: t_out.join().unwrap_or_default(),
-        stderr: t_err.join().unwrap_or_default(),
+        code: if out_large || err_large {
+            None
+        } else {
+            status.code()
+        },
+        stdout,
+        stderr,
     })
 }
 
@@ -169,6 +196,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(o.stdout.len(), 3_000_000);
+    }
+
+    #[test]
+    fn command_output_is_bounded_and_timeout_ends_descendants() {
+        let o = run(
+            "/bin/sh",
+            &["-c", "head -c 10000000 /dev/zero"],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(!o.ok());
+        assert_eq!(o.stdout.len(), MAX_OUTPUT);
+        let started = Instant::now();
+        assert!(
+            run(
+                "/bin/sh",
+                &["-c", "sleep 5 & wait"],
+                Duration::from_millis(100)
+            )
+            .is_none()
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

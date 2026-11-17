@@ -1,27 +1,16 @@
 //! systemd services (docs/BACKEND_SPEC.md 7.8): list, start, stop, restart, enable,
 //! disable, with a refusal list for units opsbox must not take down.
 
+#[cfg(test)]
 use std::collections::HashMap;
-use std::time::Duration;
 
 use opsbox_proto::{PrivError, PrivErrorCode, UnitActionKind, UnitInfo};
-
-use super::exec::{find, run, tail};
 
 fn err(code: PrivErrorCode, msg: impl Into<String>) -> PrivError {
     PrivError {
         code,
         message: msg.into(),
     }
-}
-
-fn systemctl() -> Result<String, PrivError> {
-    find(&["/usr/bin/systemctl", "/bin/systemctl"]).ok_or_else(|| {
-        err(
-            PrivErrorCode::Unsupported,
-            "systemd is not available on this machine.",
-        )
-    })
 }
 
 /// `ssh.service`, `docker.service`, `getty@tty1.service`, ...
@@ -71,6 +60,7 @@ pub fn refusal(name: &str, action: UnitActionKind) -> Option<String> {
 }
 
 /// `systemctl list-units --type=service --all --output=json`
+#[cfg(test)]
 pub fn parse_units_json(text: &str) -> Vec<(String, String, String)> {
     let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(text)
     else {
@@ -90,6 +80,7 @@ pub fn parse_units_json(text: &str) -> Vec<(String, String, String)> {
 
 /// Text form (older systemd): `unit load active sub description...`, with an optional
 /// leading marker for failed units.
+#[cfg(test)]
 pub fn parse_units_text(text: &str) -> Vec<(String, String, String)> {
     text.lines()
         .filter_map(|l| {
@@ -104,6 +95,7 @@ pub fn parse_units_text(text: &str) -> Vec<(String, String, String)> {
 }
 
 /// `systemctl list-unit-files --type=service --no-legend`: `ssh.service enabled enabled`.
+#[cfg(test)]
 pub fn parse_unit_files(text: &str) -> HashMap<String, String> {
     text.lines()
         .filter_map(|l| {
@@ -116,6 +108,7 @@ pub fn parse_unit_files(text: &str) -> HashMap<String, String> {
 }
 
 /// `systemctl show --type=service -p Id,MemoryCurrent`: blocks of `Key=Value`.
+#[cfg(test)]
 pub fn parse_memory(text: &str) -> HashMap<String, u64> {
     let mut out = HashMap::new();
     for block in text.split("\n\n") {
@@ -136,88 +129,43 @@ pub fn parse_memory(text: &str) -> HashMap<String, u64> {
     out
 }
 
-pub(super) fn list() -> Result<Vec<UnitInfo>, PrivError> {
-    let ctl = systemctl()?;
-    let t = Duration::from_secs(20);
-    let base = [
-        "list-units",
-        "--type=service",
-        "--all",
-        "--no-pager",
-        "--plain",
-    ];
-    let mut args = base.to_vec();
-    args.push("--output=json");
-    let loaded = run(&ctl, &args, t)
-        .filter(|o| o.ok())
-        .map(|o| parse_units_json(&o.stdout))
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            let mut a = base.to_vec();
-            a.push("--no-legend");
-            run(&ctl, &a, t)
-                .filter(|o| o.ok())
-                .map(|o| parse_units_text(&o.stdout))
-        })
-        .ok_or_else(|| {
-            err(
+/// All machine access stays in `priv`. `dispatch` runs on a Tokio blocking
+/// thread; its handle drives the async D-Bus request on the helper's runtime.
+#[cfg(target_os = "linux")]
+fn dbus<T>(work: impl std::future::Future<Output = zbus::Result<T>>) -> Result<T, PrivError> {
+    let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+        err(
+            PrivErrorCode::Internal,
+            "The helper runtime is unavailable.",
+        )
+    })?;
+    runtime.block_on(async {
+        match tokio::time::timeout(std::time::Duration::from_secs(20), work).await {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(err(
                 PrivErrorCode::Internal,
-                "Could not read the list of services from systemd.",
-            )
-        })?;
-    let files = run(
-        &ctl,
-        &[
-            "list-unit-files",
-            "--type=service",
-            "--no-legend",
-            "--no-pager",
-        ],
-        t,
-    )
-    .map(|o| parse_unit_files(&o.stdout))
-    .unwrap_or_default();
-    let mem = run(
-        &ctl,
-        &[
-            "show",
-            "--type=service",
-            "-p",
-            "Id",
-            "-p",
-            "MemoryCurrent",
-            "--no-pager",
-        ],
-        t,
-    )
-    .map(|o| parse_memory(&o.stdout))
-    .unwrap_or_default();
+                format!("systemd D-Bus request failed: {e}"),
+            )),
+            Err(_) => Err(err(
+                PrivErrorCode::Internal,
+                "systemd did not answer within 20 seconds.",
+            )),
+        }
+    })
+}
 
-    let mut out: Vec<UnitInfo> = loaded
-        .into_iter()
-        .filter(|(name, _, _)| !name.starts_with("opsbox-job-") && valid_service_name(name))
-        .map(|(name, state, description)| {
-            let boot = files.get(&name).cloned().unwrap_or_else(|| "static".into());
-            UnitInfo {
-                mem_bytes: mem.get(&name).copied(),
-                name,
-                state,
-                boot,
-                description,
-            }
-        })
-        // Quiet, uninteresting ones (static helpers that are not running) stay out of the list.
-        .filter(|u| u.state != "inactive" || u.boot == "enabled" || u.boot == "enabled-runtime")
-        .collect();
-    out.sort_by(|a, b| {
-        let rank = |u: &UnitInfo| match u.state.as_str() {
-            "failed" => 0,
-            "active" | "activating" | "reloading" => 1,
-            _ => 2,
-        };
-        rank(a).cmp(&rank(b)).then_with(|| a.name.cmp(&b.name))
-    });
-    Ok(out)
+pub(super) fn list() -> Result<Vec<UnitInfo>, PrivError> {
+    #[cfg(target_os = "linux")]
+    {
+        dbus(bus::list())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(err(
+            PrivErrorCode::Unsupported,
+            "systemd is not available on this machine.",
+        ))
+    }
 }
 
 pub(super) fn action(name: &str, action: UnitActionKind) -> Result<(), PrivError> {
@@ -230,37 +178,116 @@ pub(super) fn action(name: &str, action: UnitActionKind) -> Result<(), PrivError
     if let Some(why) = refusal(name, action) {
         return Err(err(PrivErrorCode::Refused, why));
     }
-    let ctl = systemctl()?;
-    let o = run(
-        &ctl,
-        &[action.as_str(), "--no-pager", name],
-        Duration::from_secs(90),
-    )
-    .ok_or_else(|| {
-        err(
-            PrivErrorCode::Internal,
-            format!(
-                "systemd did not finish the {} of {name} in time.",
-                action.as_str()
-            ),
-        )
-    })?;
-    if o.ok() {
-        Ok(())
-    } else {
-        let why = tail(&o.stderr, 2).join(" ");
+    #[cfg(target_os = "linux")]
+    {
+        dbus(bus::action(name, action))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
         Err(err(
-            PrivErrorCode::Internal,
-            format!(
-                "Could not {} {name}: {}",
-                action.as_str(),
-                if why.is_empty() {
-                    "systemd refused"
-                } else {
-                    &why
-                }
-            ),
+            PrivErrorCode::Unsupported,
+            "systemd is not available on this machine.",
         ))
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod bus {
+    use super::*;
+    use std::collections::HashMap;
+    use zbus::{Connection, OwnedObjectPath, Proxy};
+
+    // systemd's ListUnits signature: a(ssssssouso).
+    type ListedUnit = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        OwnedObjectPath,
+        u32,
+        String,
+        OwnedObjectPath,
+    );
+    const SERVICE: &str = "org.freedesktop.systemd1";
+    const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
+    const MANAGER: &str = "org.freedesktop.systemd1.Manager";
+
+    pub(super) async fn list() -> zbus::Result<Vec<UnitInfo>> {
+        let conn = Connection::system().await?;
+        let manager = Proxy::new(&conn, SERVICE, MANAGER_PATH, MANAGER).await?;
+        let loaded: Vec<ListedUnit> = manager.call("ListUnits", &()).await?;
+        let files: Vec<(String, String)> = manager.call("ListUnitFiles", &()).await?;
+        let files: HashMap<String, String> = files
+            .into_iter()
+            .filter_map(|(path, state)| {
+                std::path::Path::new(&path)
+                    .file_name()
+                    .map(|n| (n.to_string_lossy().into_owned(), state))
+            })
+            .collect();
+        let mut out = Vec::new();
+        for (name, description, _, state, _, _, path, _, _, _) in loaded {
+            if !valid_service_name(&name) || name.starts_with("opsbox-job-") {
+                continue;
+            }
+            let boot = files.get(&name).cloned().unwrap_or_else(|| "static".into());
+            if state == "inactive" && !matches!(boot.as_str(), "enabled" | "enabled-runtime") {
+                continue;
+            }
+            let service =
+                Proxy::new(&conn, SERVICE, path, "org.freedesktop.systemd1.Service").await?;
+            let mem_bytes = service
+                .get_property::<u64>("MemoryCurrent")
+                .await
+                .ok()
+                .filter(|v| *v != u64::MAX);
+            out.push(UnitInfo {
+                name,
+                description,
+                state,
+                boot,
+                mem_bytes,
+            });
+        }
+        out.sort_by(|a, b| {
+            let rank = |u: &UnitInfo| match u.state.as_str() {
+                "failed" => 0,
+                "active" | "activating" | "reloading" => 1,
+                _ => 2,
+            };
+            rank(a).cmp(&rank(b)).then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(out)
+    }
+
+    pub(super) async fn action(name: &str, action: UnitActionKind) -> zbus::Result<()> {
+        let conn = Connection::system().await?;
+        let manager = Proxy::new(&conn, SERVICE, MANAGER_PATH, MANAGER).await?;
+        match action {
+            UnitActionKind::Start | UnitActionKind::Stop | UnitActionKind::Restart => {
+                let method = match action {
+                    UnitActionKind::Start => "StartUnit",
+                    UnitActionKind::Stop => "StopUnit",
+                    _ => "RestartUnit",
+                };
+                let _: OwnedObjectPath = manager.call(method, &(name, "replace")).await?;
+            }
+            UnitActionKind::Enable => {
+                let _: (bool, Vec<(String, String, String)>) = manager
+                    .call("EnableUnitFiles", &(vec![name], false, false))
+                    .await?;
+                manager.call::<_, _, ()>("Reload", &()).await?;
+            }
+            UnitActionKind::Disable => {
+                let _: Vec<(String, String, String)> = manager
+                    .call("DisableUnitFiles", &(vec![name], false))
+                    .await?;
+                manager.call::<_, _, ()>("Reload", &()).await?;
+            }
+        }
+        Ok(())
     }
 }
 

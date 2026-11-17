@@ -8,6 +8,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use axum::Json;
 use axum::extract::{Extension, Path, State};
+use axum::response::{IntoResponse, Response};
 use opsbox_proto::{ErrorCode, Role, SecurityScan, SshStatus};
 use opsbox_store::{Store, User};
 use serde::Deserialize;
@@ -410,10 +411,20 @@ pub(crate) async fn fix(
     client: Client,
     Extension(RequestId(rid)): Extension<RequestId>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, HttpError> {
+) -> Result<Response, HttpError> {
+    if id == "autoupdates" {
+        return crate::system::set_auto_updates(
+            State(state),
+            Admin(who),
+            client,
+            Extension(RequestId(rid)),
+            crate::json::ApiJson(crate::system::OnBody { on: true }),
+        )
+        .await
+        .map(IntoResponse::into_response);
+    }
     let pc = patient(&state, 700);
     match id.as_str() {
-        "autoupdates" => pc.auto_updates_set(&rid, &who.user.name, true).await?,
         "secrets" | "ssh-password" | "ssh-root" => {
             let apps = state.files.apps_dir.to_string_lossy().into_owned();
             pc.security_fix(&rid, &who.user.name, &id, &apps).await?;
@@ -433,7 +444,7 @@ pub(crate) async fn fix(
         Some(&id),
         json!({}),
     );
-    Ok(Json(json!({ "ok": true })))
+    Ok(Json(json!({ "ok": true })).into_response())
 }
 
 #[cfg(test)]

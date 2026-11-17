@@ -1,6 +1,6 @@
-// Mock backend. Every function here maps 1:1 to a REST endpoint the Rust server
-// will expose later (see docs/API.md). Swap this file for a fetch() client and the
-// UI keeps working. All state lives in memory and resets on reload.
+// Shared API boundary: real Phase 1 endpoints in HTTP mode, sample data for later
+// phases and the standalone demo. REAL below is the capability switch; docs/API.md
+// documents the server contract.
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lag = (ms = 120) => sleep(ms + Math.random() * 120);
@@ -12,8 +12,7 @@ const MIN = 60000, HOUR = 3600000, DAY = 86400000;
 
 // How this module gets its data.
 //   'mock'  in-memory demo data (default; works from any static file server).
-//   'http'  the opsbox agent on the same origin. Phase 0: only getHost() is real,
-//           everything else keeps using the mock until its endpoint exists.
+//   'http'  the opsbox agent on the same origin; functions in REAL use the API.
 // To try http mode without editing this file, open the UI with ?mode=http
 // (and ?mode=mock to go back).
 const DEFAULT_MODE = 'mock';
@@ -552,16 +551,17 @@ export async function getUpdates() { sample('getUpdates');
   await lag();
   return { list: clone(S.updates), total: S.updates.length + S.extraUpdates, security: S.updates.filter((u) => u.sec).length, reboot: S.rebootRequired, auto: S.autoUpdates, running: S.host.kernel, checked: '03:30' };
 }
-export async function installUpdates(which) { sample('installUpdates');
-  if (real('installUpdates')) { const { task } = await http('/system/updates/install', { method: 'POST', body: { which } }); return { installed: (await waitTask(task)).result?.installed ?? 0 }; }
+export async function installUpdates(which, packages = []) { sample('installUpdates');
+  if (real('installUpdates')) { const { task } = await http('/system/updates/install', { method: 'POST', body: { which, packages } }); return { installed: (await waitTask(task)).result?.installed ?? 0 }; }
   await lag(1400);
   const before = S.updates.length;
   if (which === 'security') { S.updates.some((u) => u.sec && u.kernel) && (S.rebootRequired = true, S.host.kernelNew = '6.8.0-52'); S.updates = S.updates.filter((u) => !u.sec); }
+  else if (which === 'selected') { S.updates = S.updates.filter((u) => !packages.includes(u.pkg)); }
   else { if (S.updates.some((u) => u.kernel)) S.rebootRequired = true; S.updates = []; S.extraUpdates = 0; }
   audit(`install ${which} updates (${before - S.updates.length})`); return { installed: before - S.updates.length };
 }
 export async function setAutoUpdates(on) { sample('setAutoUpdates');
-  if (real('setAutoUpdates')) return http('/system/updates/auto', { method: 'PUT', body: { on } }); await lag(150); S.autoUpdates = on; audit(`auto security updates ${on ? 'on' : 'off'}`); }
+  if (real('setAutoUpdates')) { const { task } = await http('/system/updates/auto', { method: 'PUT', body: { on } }); return waitTask(task); } await lag(150); S.autoUpdates = on; audit(`auto security updates ${on ? 'on' : 'off'}`); }
 export async function reboot() { sample('reboot');
   if (real('reboot')) return http('/system/reboot', { method: 'POST' }); await lag(500); S.rebootRequired = false; S.host.kernel = S.host.kernelNew || S.host.kernel; S.host.upDays = 0; audit('reboot instance'); return { ok: true }; }
 export async function getUnits() { sample('getUnits');
@@ -589,7 +589,7 @@ export async function getJournal({ unit = '', prio = 6, q = '' } = {}) { sample(
 export async function getJobs() { sample('getJobs');
   if (real('getJobs')) return (await http('/jobs')).map((j) => ({ ...j, last: when(j.lastRun) })); await lag(); return clone(S.jobs); }
 export async function runJob(id) { sample('runJob');
-  if (real('runJob')) return http(`/jobs/${encodeURIComponent(id)}/run`, { method: 'POST' }); await lag(700); const j = S.jobs.find((x) => x.id === id); if (!j) throw new Error('No such job'); j.last = `today ${hhmm()}`; audit(`run job: ${j.name}`); return { ok: true }; }
+  if (real('runJob')) { const { task } = await http(`/jobs/${encodeURIComponent(id)}/run`, { method: 'POST' }); return waitTask(task); } await lag(700); const j = S.jobs.find((x) => x.id === id); if (!j) throw new Error('No such job'); j.last = `today ${hhmm()}`; audit(`run job: ${j.name}`); return { ok: true }; }
 export async function addJob(job) { sample('addJob');
   if (real('addJob')) return http('/jobs', { method: 'POST', body: { name: job.name, cron: job.cron, command: job.command } });
   await lag(250);
@@ -659,7 +659,7 @@ export async function getSecurity() { sample('getSecurity');
   const checks = clone(S.checks).map((c) => (c.id === 'sshd' ? { ...c, ok: !sshOpen, label: sshOpen ? 'on' : 'off', warn: sshOpen } : c));
   return { checks, users: clone(S.users), audit: clone(S.audit).slice(0, 12), allowIps: S.allowIps, passing: checks.filter((c) => c.ok).length, total: checks.length };
 }
-export async function toggleCheck(id) { sample('toggleCheck'); if (real('toggleCheck')) return http(`/security/checks/${encodeURIComponent(id)}/fix`, { method: 'POST' }); await lag(200); const c = S.checks.find((x) => x.id === id); if (c) { c.ok = true; delete c.action; } audit(`enable ${id}`); }
+export async function toggleCheck(id) { sample('toggleCheck'); if (real('toggleCheck')) { if (id === 'autoupdates') return setAutoUpdates(true); return http(`/security/checks/${encodeURIComponent(id)}/fix`, { method: 'POST' }); } await lag(200); const c = S.checks.find((x) => x.id === id); if (c) { c.ok = true; delete c.action; } audit(`enable ${id}`); }
 export async function setAllowIps(v, confirm = false) { sample('setAllowIps');
   if (real('setAllowIps')) {
     try { return await http('/security/allow-ips', { method: 'PUT', body: { value: v, confirm } }); }

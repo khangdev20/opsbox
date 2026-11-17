@@ -5,6 +5,7 @@
 mod access;
 pub mod cleanup;
 pub(crate) mod cron;
+mod doctor;
 pub(crate) mod exec;
 mod facts;
 pub(crate) mod files;
@@ -42,10 +43,14 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
     match op {
         PrivOp::Ping => Ok(ping::run()),
         PrivOp::HostInfo => host_info::run().map(PrivReply::HostInfo),
+        PrivOp::Doctor => Ok(PrivReply::Doctor(doctor::collect(&env.master_key))),
         PrivOp::MetricsSample { procs } => metrics::run(*procs),
         PrivOp::SystemFacts => Ok(PrivReply::SystemFacts(facts::collect())),
         PrivOp::PkgList => pkg::list().map(PrivReply::Pkgs),
         PrivOp::PkgInstall { which } => pkg::install(*which).map(PrivReply::Outcome),
+        PrivOp::PkgInstallSelected { names } => {
+            pkg::install_selected(names).map(PrivReply::Outcome)
+        }
         PrivOp::AutoUpdatesSet { on } => pkg::set_auto(*on).map(|()| PrivReply::Done),
         PrivOp::UnitList => units::list().map(PrivReply::Units),
         PrivOp::UnitAction { name, action } => {

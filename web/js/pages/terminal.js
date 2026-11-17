@@ -1,6 +1,7 @@
 import { html, esc, btn, bindActions, confirmDialog, toast } from '../ui.js';
 import * as api from '../api.js';
 import { server } from '../store.js';
+import { loadAmd } from '../vendor-loader.js';
 
 export async function view() { return api.MODE === 'http' ? realView() : mockView(); }
 
@@ -11,11 +12,11 @@ function loadXterm() {
   if (xtermP) return xtermP;
   const base = new URL('../../vendor/xterm/', import.meta.url).href;
   const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = base + 'xterm.css'; document.head.append(link);
-  const script = (src) => new Promise((resolve, reject) => {
-    const el = document.createElement('script'); el.src = base + src; el.onload = resolve;
-    el.onerror = () => reject(new Error('Could not load the terminal.')); document.head.append(el);
-  });
-  xtermP = script('xterm.js').then(() => script('addon-fit.js')).catch((e) => { xtermP = null; throw e; });
+  xtermP = loadAmd().then((require) => new Promise((resolve, reject) => {
+    require([base + 'xterm.js', base + 'addon-fit.js'], (xterm, fit) => {
+      window.Terminal = xterm.Terminal; window.FitAddon = fit; resolve();
+    }, reject);
+  })).catch((e) => { xtermP = null; throw e; });
   return xtermP;
 }
 
@@ -24,7 +25,7 @@ function loadXterm() {
 async function realView() {
   const isAdmin = server.role === 'admin';
   let users = null, loadError = '', hostName = 'this server';
-  try { hostName = (await api.getHost()).hostname || hostName; } catch { /* keep the generic name */ }
+  try { hostName = (await api.getHost()).name || hostName; } catch { /* keep the generic name */ }
   if (isAdmin) { try { users = await api.getTerminalUsers(); } catch (e) { loadError = e.message; } }
   let root, term = null, fit = null, conn = null, ro = null, state = 'idle';
   const status = (text, kind = '') => { const el = root?.querySelector('#stat'); if (el) { el.textContent = text; el.className = `sm ${kind}`.trim(); } };
