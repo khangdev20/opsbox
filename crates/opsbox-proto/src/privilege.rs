@@ -194,6 +194,15 @@ pub enum PrivOp {
     CleanupAutoSet {
         on: bool,
     },
+    /// Look at the things the security checks need.
+    SecurityScan {
+        apps_dir: String,
+    },
+    /// Apply the automatic fix of one check: `secrets`, `ssh-password` or `ssh-root`.
+    SecurityFix {
+        id: String,
+        apps_dir: String,
+    },
     /// Accounts, their SSH keys and the SSH daemon's settings.
     AccessList,
     /// Add one public key to a user's `authorized_keys`.
@@ -263,6 +272,8 @@ impl PrivOp {
             Self::CleanupScan => "cleanup_scan",
             Self::CleanupRun { .. } => "cleanup_run",
             Self::CleanupAutoSet { .. } => "cleanup_auto_set",
+            Self::SecurityScan { .. } => "security_scan",
+            Self::SecurityFix { .. } => "security_fix",
             Self::AccessList => "access_list",
             Self::SshKeyAdd { .. } => "ssh_key_add",
             Self::SshKeyRemove { .. } => "ssh_key_remove",
@@ -356,6 +367,7 @@ pub enum PrivReply {
     },
     Users(Vec<crate::pty::SystemUser>),
     Access(crate::access::AccessState),
+    Security(crate::security::SecurityScan),
     /// How many keys were removed.
     KeysRemoved(u32),
     /// A key was added; this is its fingerprint.

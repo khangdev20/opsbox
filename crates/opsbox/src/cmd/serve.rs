@@ -78,6 +78,7 @@ async fn serve(config: Config) -> Result<()> {
         xfer_dir: config.xfer_dir.clone(),
         max_upload: config.max_upload_mb.saturating_mul(1 << 20),
     })
+    .with_listen(config.listen)
     .with_terminal_idle(std::time::Duration::from_secs(
         config.terminal_idle_min * 60,
     ));

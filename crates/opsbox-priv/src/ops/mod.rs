@@ -16,6 +16,7 @@ mod journal;
 mod metrics;
 mod ping;
 mod pkg;
+mod security;
 pub(crate) mod terminal;
 mod totp;
 mod units;
@@ -31,6 +32,7 @@ use crate::secrets::Secrets;
 /// What operations need besides their arguments.
 pub(crate) struct Env {
     pub secrets: Secrets,
+    pub master_key: std::path::PathBuf,
     pub files: files::Dirs,
 }
 
@@ -131,6 +133,10 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::CleanupScan => Ok(cleanup::scan()),
         PrivOp::CleanupRun { ids } => cleanup::run_ids(ids),
         PrivOp::CleanupAutoSet { on } => cleanup::set_auto(*on).map(|()| PrivReply::Done),
+        PrivOp::SecurityScan { apps_dir } => Ok(security::scan(apps_dir, &env.master_key)),
+        PrivOp::SecurityFix { id, apps_dir } => {
+            security::fix(id, apps_dir).map(|()| PrivReply::Done)
+        }
         PrivOp::AccessList => access::list(),
         PrivOp::SshKeyAdd { user, key } => {
             access::add_key(user, key).map(|fingerprint| PrivReply::KeyAdded { fingerprint })

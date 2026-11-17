@@ -25,7 +25,7 @@ export async function view() {
         try {
           const r = await api.auth.login(f.u.value, f.p.value, f.c.value);
           if (r.enrollRequired) { location.hash = '#/enroll'; return; }
-          session.set(r.user); let next = '#/'; try { next = sessionStorage.getItem('opsbox.next') || '#/'; sessionStorage.removeItem('opsbox.next'); } catch {}
+          session.set(r.user); server.role = r.role || ''; let next = '#/'; try { next = sessionStorage.getItem('opsbox.next') || '#/'; sessionStorage.removeItem('opsbox.next'); } catch {}
           location.hash = /^#\/(login|setup|enroll)/.test(next) ? '#/' : next;
         } catch (err) { root.querySelector('#err').textContent = err.message; b.disabled = false; f.c.value = ''; f.c.focus(); }
       });

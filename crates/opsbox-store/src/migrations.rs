@@ -27,6 +27,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "metrics",
         sql: include_str!("../migrations/0003_metrics.sql"),
     },
+    Migration {
+        version: 4,
+        name: "invites_tokens",
+        sql: include_str!("../migrations/0004_invites_tokens.sql"),
+    },
 ];
 
 /// Version of the newest migration this binary knows.

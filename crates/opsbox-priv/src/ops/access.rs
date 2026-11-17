@@ -350,7 +350,7 @@ fn all_users() -> Result<Vec<SystemUser>, PrivError> {
 }
 
 /// Accounts that can log in: root and ordinary users with a real shell.
-fn login_users() -> Result<Vec<SystemUser>, PrivError> {
+pub(crate) fn login_users() -> Result<Vec<SystemUser>, PrivError> {
     Ok(all_users()?
         .into_iter()
         .filter(|u| u.login && (u.uid == 0 || u.uid >= FIRST_USER_UID) && u.uid < 60000)
@@ -424,7 +424,7 @@ fn run_as(user: &SystemUser, script: &str, stdin: Option<&str>) -> Result<Output
     out.ok_or_else(|| internal("The shell did not run."))
 }
 
-fn read_key_file(user: &SystemUser) -> Result<String, PrivError> {
+pub(crate) fn read_key_file(user: &SystemUser) -> Result<String, PrivError> {
     // A missing file is just "no keys".
     let out = run_as(
         user,
@@ -548,7 +548,7 @@ pub(crate) fn set_lock(name: &str, lock: bool) -> Result<(), PrivError> {
 
 // ------------------------------------------------------------------ listing
 
-fn collect_users() -> Result<Vec<AccessUser>, PrivError> {
+pub(crate) fn collect_users() -> Result<Vec<AccessUser>, PrivError> {
     let users = login_users()?;
     let groups = std::fs::read_to_string("/etc/group")
         .map(|t| parse_groups(&t))

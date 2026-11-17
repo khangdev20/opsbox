@@ -11,6 +11,6 @@ pub mod setup_token;
 pub mod tokens;
 
 pub use service::{
-    Auth, AuthConfig, AuthError, Enrolment, Issued, LoginOutcome, LoginRequest, Principal,
-    SessionKindView,
+    Auth, AuthConfig, AuthError, Enrolment, InviteInfo, Issued, LoginOutcome, LoginRequest,
+    Principal, SessionKindView,
 };

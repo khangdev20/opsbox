@@ -67,7 +67,7 @@ export async function view() {
         } else {
           submit(async (f) => {
             const r = await api.auth.setupConfirm(f.c.value);
-            session.set(r.user); server.setupRequired = false; location.hash = '#/';
+            session.set(r.user); server.role = r.role || ''; server.setupRequired = false; location.hash = '#/';
           });
         }
       }

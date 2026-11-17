@@ -12,6 +12,7 @@ pub mod metrics;
 pub mod privilege;
 pub mod pty;
 pub mod role;
+pub mod security;
 pub mod system;
 
 pub use access::{AccessState, AccessUser, AuthorizedKey, SshStatus};
@@ -25,6 +26,7 @@ pub use privilege::{
 };
 pub use pty::{MAX_PTY_DIM, MAX_PTY_PAYLOAD, PtyFrame, PtyFrameError, SystemUser, clamp_size};
 pub use role::Role;
+pub use security::SecurityScan;
 pub use system::{
     CommandOutcome, FirewallChange, FirewallRule, FirewallState, JobInfo, JournalEntry, NewRule,
     PkgSelect, PkgState, PkgUpdate, UnitActionKind, UnitInfo,

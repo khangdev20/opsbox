@@ -13,11 +13,11 @@ api.setUiHooks({
   revert: (at, keep) => keepOrUndoDialog({ title: 'Keep this firewall change?', body: 'Check that you can still reach this machine (open a second SSH session or reload this page). If you do nothing, the change is undone.', until: at, keep }),
 });
 
-const BARE = new Set(['login', 'setup', 'enroll', 'recovery']);
+const BARE = new Set(['login', 'setup', 'enroll', 'invite', 'recovery']);
 const ROUTES = [
   [/^\/?$/, 'overview'], [/^\/apps\/?$/, 'apps'], [/^\/apps\/new\/?$/, 'newservice'], [/^\/apps\/new\/configure\/?$/, 'configure'],
   [/^\/containers\/?$/, 'containers'], [/^\/system\/?$/, 'system'], [/^\/cleanup\/?$/, 'cleanup'], [/^\/terminal\/?$/, 'terminal'],
-  [/^\/files\/?$/, 'files'], [/^\/backups\/?$/, 'backups'], [/^\/backups\/new\/?$/, 'backupdest'], [/^\/alerts\/?$/, 'alerts'], [/^\/apps\/new\/templates\/?$/, 'templates'], [/^\/security\/access\/?$/, 'access'], [/^\/settings\/?$/, 'settings'], [/^\/security\/?$/, 'security'], [/^\/login\/?$/, 'login'], [/^\/setup\/?$/, 'setup'], [/^\/enroll\/?$/, 'enroll'], [/^\/recovery\/?$/, 'recovery'],
+  [/^\/files\/?$/, 'files'], [/^\/backups\/?$/, 'backups'], [/^\/backups\/new\/?$/, 'backupdest'], [/^\/alerts\/?$/, 'alerts'], [/^\/apps\/new\/templates\/?$/, 'templates'], [/^\/security\/access\/?$/, 'access'], [/^\/settings\/?$/, 'settings'], [/^\/security\/?$/, 'security'], [/^\/login\/?$/, 'login'], [/^\/setup\/?$/, 'setup'], [/^\/enroll\/?$/, 'enroll'], [/^\/invite\/?$/, 'invite'], [/^\/recovery\/?$/, 'recovery'],
 ];
 const app = document.getElementById('app');
 let current = null, shellUp = false, gen = 0;

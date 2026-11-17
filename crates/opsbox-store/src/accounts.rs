@@ -47,7 +47,7 @@ pub struct Session {
     pub last_seen: i64,
 }
 
-const USER_COLS: &str = "id, name, role, password_hash, totp_secret, totp_enabled, totp_last_step, locked_until, failed_count, created_at";
+pub(crate) const USER_COLS: &str = "id, name, role, password_hash, totp_secret, totp_enabled, totp_last_step, locked_until, failed_count, created_at";
 
 fn user_row(r: &Row<'_>) -> rusqlite::Result<User> {
     user_row_at(r, 0)
@@ -346,7 +346,7 @@ impl Store {
     }
 }
 
-fn user_row_at(r: &Row<'_>, base: usize) -> rusqlite::Result<User> {
+pub(crate) fn user_row_at(r: &Row<'_>, base: usize) -> rusqlite::Result<User> {
     let role: String = r.get(base + 2)?;
     Ok(User {
         id: r.get(base)?,

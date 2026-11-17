@@ -8,7 +8,7 @@ use opsbox_proto::{
     AccessState, CleanupFreed, CleanupScan, CommandOutcome, DirListing, FileContent,
     FirewallChange, FirewallState, HostInfo, JobInfo, JournalEntry, NewRule, PkgSelect, PkgState,
     PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, PtyFrame, RawSample,
-    Secret, Staged, SystemFacts, SystemUser, UnitActionKind, UnitInfo,
+    Secret, SecurityScan, Staged, SystemFacts, SystemUser, UnitActionKind, UnitInfo,
 };
 use tokio::net::{
     UnixStream,
@@ -551,6 +551,35 @@ impl PrivClient {
         on: bool,
     ) -> Result<(), ClientError> {
         self.done(rid, actor, PrivOp::CleanupAutoSet { on }).await
+    }
+
+    pub async fn security_scan(
+        &self,
+        rid: &str,
+        apps_dir: &str,
+    ) -> Result<SecurityScan, ClientError> {
+        let op = PrivOp::SecurityScan {
+            apps_dir: apps_dir.to_owned(),
+        };
+        self.expect(rid, None, op, |r| match r {
+            PrivReply::Security(s) => Ok(s),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn security_fix(
+        &self,
+        rid: &str,
+        actor: &str,
+        id: &str,
+        apps_dir: &str,
+    ) -> Result<(), ClientError> {
+        let op = PrivOp::SecurityFix {
+            id: id.to_owned(),
+            apps_dir: apps_dir.to_owned(),
+        };
+        self.done(rid, actor, op).await
     }
 
     pub async fn access_list(&self, rid: &str) -> Result<AccessState, ClientError> {

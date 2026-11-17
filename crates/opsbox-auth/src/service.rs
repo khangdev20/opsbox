@@ -514,6 +514,7 @@ impl Auth {
             now - self.inner.cfg.absolute_secs,
         )?;
         self.inner.store.prune_failures(now - 24 * 3600)?;
+        self.inner.store.purge_invites(now)?;
         Ok(())
     }
 
@@ -930,6 +931,155 @@ fn pct(s: &str) -> String {
         }
     }
     out
+}
+
+// ------------------------------------------------------------------ invitations
+
+/// How long an invitation link works.
+const INVITE_TTL: i64 = 3 * 24 * 3600;
+
+/// What an invitation says, for the page that opens it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InviteInfo {
+    pub name: String,
+    pub role: Role,
+}
+
+impl Auth {
+    fn invite_error() -> AuthError {
+        invalid(
+            "token",
+            "This invitation is not valid, or it has expired. Ask for a new one.",
+        )
+    }
+
+    /// Invite someone: make their account (without a password) and a one-time link token.
+    /// Inviting a name that is still waiting replaces the old link and the role. Returns the
+    /// token (shown once, never stored) and when it expires.
+    pub fn invite_user(
+        &self,
+        by: &User,
+        name: &str,
+        role: Role,
+        ip: Option<&str>,
+    ) -> Result<(String, i64), AuthError> {
+        let name = name.trim().to_lowercase();
+        check_username(&name).map_err(|m| invalid("name", m))?;
+        let store = &self.inner.store;
+        let now = self.now();
+        let user = match store.user_by_name(&name)? {
+            Some(existing)
+                if existing.password_hash.is_empty() && store.has_invite(&existing.id)? =>
+            {
+                if existing.role != role {
+                    // The role of a pending invitation can still be changed: replace the account.
+                    store.delete_user(&existing.id)?;
+                    store.create_user(&name, role, "", now)?
+                } else {
+                    existing
+                }
+            }
+            Some(_) => return Err(invalid("name", "That name is already taken.")),
+            None => store.create_user(&name, role, "", now)?,
+        };
+        let token = new_token()?;
+        let expires = now + INVITE_TTL;
+        store.put_invite(&user.id, &hash_token(&token), expires, &by.name, now)?;
+        self.audit(
+            &by.name,
+            ActorKind::User,
+            ip,
+            "user.invite",
+            Some(&name),
+            AuditResult::Ok,
+            json!({ "role": role.as_str() }),
+        );
+        Ok((token, expires))
+    }
+
+    /// Who an invitation is for, without using it up.
+    pub fn invite_info(&self, token: &str, ip: &str) -> Result<InviteInfo, AuthError> {
+        self.check_locked(&format!("invite:{ip}"), ip)?;
+        let found = self.inner.store.invite_by_token_hash(&hash_token(token))?;
+        match found {
+            Some((inv, user)) if inv.expires_at > self.now() => Ok(InviteInfo {
+                name: user.name,
+                role: user.role,
+            }),
+            _ => {
+                // Guessing links counts like guessing passwords.
+                self.record_failure(&format!("invite:{ip}"), ip, None);
+                Err(Self::invite_error())
+            }
+        }
+    }
+
+    /// Use an invitation: choose a password. The new account continues to two-factor
+    /// enrolment through the returned (short-lived) enrolment session.
+    pub async fn claim_invite(
+        &self,
+        token: &str,
+        password: &str,
+        ip: &str,
+        ua: Option<&str>,
+    ) -> Result<Issued, AuthError> {
+        self.check_locked(&format!("invite:{ip}"), ip)?;
+        let found = self.inner.store.invite_by_token_hash(&hash_token(token))?;
+        let Some((inv, user)) = found.filter(|(inv, _)| inv.expires_at > self.now()) else {
+            self.record_failure(&format!("invite:{ip}"), ip, None);
+            return Err(Self::invite_error());
+        };
+        check_new_password(password, &user.name).map_err(|m| invalid("password", m))?;
+        let hash = self.hash_password(password).await?;
+        // Use the link up first: two people racing with the same link cannot both win.
+        self.inner.store.delete_invite(&inv.id)?;
+        self.inner
+            .store
+            .set_password_hash(&user.id, &hash, self.now())?;
+        let issued = self.issue(&user, SessionKind::Enroll, Some(ip), ua)?;
+        self.audit_user(
+            &user,
+            Some(ip),
+            "user.invite.claim",
+            AuditResult::Ok,
+            json!({}),
+        );
+        Ok(issued)
+    }
+
+    /// Remove a panel account and end its sessions. Not yourself, and never the last
+    /// administrator who finished enrolment.
+    pub fn remove_user(&self, by: &User, name: &str, ip: Option<&str>) -> Result<(), AuthError> {
+        let store = &self.inner.store;
+        let target = store
+            .user_by_name(name.trim())?
+            .ok_or(AuthError::NotFound)?;
+        if target.id == by.id {
+            return Err(invalid("name", "You cannot remove your own account."));
+        }
+        if target.role == Role::Admin && target.totp_enabled && store.enrolled_admin_count()? <= 1 {
+            return Err(invalid(
+                "name",
+                "This is the only administrator. Invite another one first.",
+            ));
+        }
+        store.delete_user(&target.id)?;
+        self.audit(
+            &by.name,
+            ActorKind::User,
+            ip,
+            "user.remove",
+            Some(&target.name),
+            AuditResult::Ok,
+            json!({ "role": target.role.as_str() }),
+        );
+        Ok(())
+    }
+
+    /// Whether an account is an invitation that has not been claimed yet.
+    pub fn is_pending(&self, user: &User) -> bool {
+        user.password_hash.is_empty()
+    }
 }
 
 #[cfg(test)]

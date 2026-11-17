@@ -2,17 +2,18 @@
 // `opsbox user reset-2fa`): the password was right, but a code app must be set up first.
 import { html, raw, esc } from '../ui.js';
 import * as api from '../api.js';
-import { session } from '../store.js';
+import { session, server } from '../store.js';
 import { qrSvg, groupSecret } from '../qr.js';
 
-export async function view() {
+export async function view({ query = {} } = {}) {
+  const fresh = !!query.new;
   const e = await api.auth.enroll();
   const qr = await qrSvg(e.otpauthUri);
   return {
     nav: null, title: 'Set up two-factor',
     html: html`<div class="split-page">
       <div class="l"><div><a class="logo" href="#/login">opsbox<i>_</i></a></div>
-        <div><h1>Set up two-factor<br>authentication</h1><p class="muted" style="max-width:420px;margin-top:16px">Your authenticator was reset by an administrator. Scan the new code, then enter the first 6 digits it shows.</p></div><p></p></div>
+        <div><h1>Set up two-factor<br>authentication</h1><p class="muted" style="max-width:420px;margin-top:16px">${fresh ? 'One last step. Scan the code with an authenticator app, then enter the first 6 digits it shows.' : 'Your authenticator was reset by an administrator. Scan the new code, then enter the first 6 digits it shows.'}</p></div><p></p></div>
       <form class="r" id="f" autocomplete="off">
         <h2 style="font-size:22px">Scan this code</h2>
         <div id="qr" style="width:200px;border-radius:8px;overflow:hidden">${raw(qr)}</div>
@@ -25,7 +26,7 @@ export async function view() {
       const f = root.querySelector('#f');
       f.addEventListener('submit', async (ev) => {
         ev.preventDefault(); const b = f.querySelector('button'); b.disabled = true;
-        try { const r = await api.auth.enrollConfirm(f.c.value); session.set(r.user); location.hash = '#/'; }
+        try { const r = await api.auth.enrollConfirm(f.c.value); session.set(r.user); server.role = r.role || ''; location.hash = '#/'; }
         catch (err) { root.querySelector('#err').textContent = err.message; b.disabled = false; }
       });
       root.querySelector('#c').focus();

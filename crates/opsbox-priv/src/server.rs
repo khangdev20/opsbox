@@ -88,6 +88,7 @@ impl PrivServer {
         let allowed: Arc<[u32]> = self.config.allowed_uids.clone().into();
         let env = Arc::new(Env {
             secrets: Secrets::new(&self.config.master_key_path),
+            master_key: self.config.master_key_path.clone(),
             files: Dirs {
                 xfer: self.config.xfer_dir.clone(),
                 trash: self.config.trash_dir.clone(),

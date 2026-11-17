@@ -879,3 +879,209 @@ async fn losing_the_second_factor_never_reopens_first_run_setup() {
         "the admin was not replaced"
     );
 }
+
+// ---- invitations ---------------------------------------------------------------------
+
+#[tokio::test]
+async fn an_invitation_leads_from_a_link_to_a_signed_in_second_person() {
+    let env = Env::new().await;
+    env.setup_admin().await;
+    let admin = env.store.user_by_name("admin").unwrap().unwrap();
+
+    let (token, expires) = env
+        .auth
+        .invite_user(&admin, " Dana ", Role::Deployer, Some(IP))
+        .unwrap();
+    assert!(expires > real_now() + 2 * 24 * 3600, "valid for days");
+    let pending = env.store.user_by_name("dana").unwrap().unwrap();
+    assert_eq!(
+        (pending.role, pending.password_hash.as_str()),
+        (Role::Deployer, "")
+    );
+    // Until the link is used the account cannot sign in, whatever is typed.
+    for guess in ["", "x", PASSWORD] {
+        assert!(
+            env.auth
+                .login("r", env.req("dana", guess, "000000"))
+                .await
+                .is_err()
+        );
+    }
+
+    let info = env.auth.invite_info(&token, IP).unwrap();
+    assert_eq!((info.name.as_str(), info.role), ("dana", Role::Deployer));
+    // Looking does not use it up; a weak password is refused and the link still works.
+    let weak = env
+        .auth
+        .claim_invite(&token, "short", IP, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            weak,
+            AuthError::Invalid {
+                field: "password",
+                ..
+            }
+        ),
+        "{weak:?}"
+    );
+    assert!(env.auth.invite_info(&token, IP).is_ok());
+
+    let issued = env
+        .auth
+        .claim_invite(&token, "a long enough passphrase", IP, None)
+        .await
+        .unwrap();
+    // The result is an enrolment session, which can only finish two-factor setup.
+    let who = env.auth.authenticate(&issued.token).unwrap().unwrap();
+    assert!(matches!(who.kind, SessionKindView::Enroll));
+    assert_eq!(who.user.name, "dana");
+    // Single use.
+    assert!(
+        env.auth
+            .claim_invite(&token, "another long passphrase", IP, None)
+            .await
+            .is_err()
+    );
+    assert!(env.auth.invite_info(&token, IP).is_err());
+    // Now the password works and, as for the first admin, leads to enrolment.
+    let out = env
+        .auth
+        .login("r", env.req("dana", "a long enough passphrase", ""))
+        .await
+        .unwrap();
+    assert!(matches!(out, LoginOutcome::EnrollRequired(_)), "{out:?}");
+}
+
+#[tokio::test]
+async fn invitations_expire_and_can_be_replaced() {
+    let env = Env::new().await;
+    env.setup_admin().await;
+    let admin = env.store.user_by_name("admin").unwrap().unwrap();
+    let (old, _) = env
+        .auth
+        .invite_user(&admin, "erin", Role::Viewer, None)
+        .unwrap();
+    let (fresh, _) = env
+        .auth
+        .invite_user(&admin, "erin", Role::Viewer, None)
+        .unwrap();
+    assert!(
+        env.auth.invite_info(&old, IP).is_err(),
+        "a new link replaces the old one"
+    );
+    assert!(env.auth.invite_info(&fresh, IP).is_ok());
+    // Asking again with another role changes the role of the waiting account.
+    let (admin_link, _) = env
+        .auth
+        .invite_user(&admin, "erin", Role::Admin, None)
+        .unwrap();
+    assert_eq!(
+        env.auth.invite_info(&admin_link, IP).unwrap().role,
+        Role::Admin
+    );
+    assert!(env.auth.invite_info(&fresh, IP).is_err());
+    env.advance(4 * 24 * 3600);
+    let err = env.auth.invite_info(&admin_link, IP).unwrap_err();
+    assert!(err.to_string().contains("expired"), "{err}");
+    assert!(
+        env.auth
+            .claim_invite(&admin_link, "a long enough passphrase", IP, None)
+            .await
+            .is_err()
+    );
+    // Housekeeping removes the account that never got past its invitation.
+    env.auth.purge_expired().unwrap();
+    assert!(env.store.user_by_name("erin").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn names_in_use_cannot_be_invited_and_guessing_links_is_limited() {
+    let env = Env::new().await;
+    env.setup_admin().await;
+    let admin = env.store.user_by_name("admin").unwrap().unwrap();
+    let err = env
+        .auth
+        .invite_user(&admin, "admin", Role::Viewer, None)
+        .unwrap_err();
+    assert!(err.to_string().contains("already taken"), "{err}");
+    assert!(
+        env.auth
+            .invite_user(&admin, "A", Role::Viewer, None)
+            .is_err(),
+        "names need 3+ characters"
+    );
+    // Wrong links from one address run into the same lockout as wrong passwords.
+    let mut locked = false;
+    for i in 0..12 {
+        match env.auth.invite_info(&format!("guess-{i}"), "198.51.100.9") {
+            Err(AuthError::Locked(_)) => {
+                locked = true;
+                break;
+            }
+            Err(_) => {}
+            Ok(_) => panic!("a guess worked"),
+        }
+    }
+    assert!(locked, "repeated bad links lock that address out");
+    // Another address is not affected.
+    let (token, _) = env
+        .auth
+        .invite_user(&admin, "frank", Role::Viewer, None)
+        .unwrap();
+    assert!(env.auth.invite_info(&token, IP).is_ok());
+}
+
+#[tokio::test]
+async fn removing_accounts_has_safeguards_and_is_audited() {
+    let env = Env::new().await;
+    env.setup_admin().await;
+    let admin = env.store.user_by_name("admin").unwrap().unwrap();
+    assert!(
+        env.auth.remove_user(&admin, "admin", None).is_err(),
+        "not yourself"
+    );
+    let (_t, _) = env
+        .auth
+        .invite_user(&admin, "gina", Role::Viewer, None)
+        .unwrap();
+    env.auth.remove_user(&admin, "gina", Some(IP)).unwrap();
+    assert!(env.store.user_by_name("gina").unwrap().is_none());
+    assert!(matches!(
+        env.auth.remove_user(&admin, "gina", None),
+        Err(AuthError::NotFound)
+    ));
+    // A second enrolled administrator can remove the first, but nobody can remove the last.
+    let other = env
+        .store
+        .create_user("other", Role::Admin, "$argon2id$x", 0)
+        .unwrap();
+    env.store
+        .set_pending_totp(&other.id, "enc:v1:x", 0)
+        .unwrap();
+    env.store.enable_totp(&other.id, 1, 0).unwrap();
+    let err = env.auth.remove_user(&other, "admin", None);
+    assert!(err.is_ok(), "{err:?}");
+    let last = env.auth.remove_user(&admin, "other", None).unwrap_err();
+    assert!(
+        last.to_string().contains("yourself") || last.to_string().contains("only administrator"),
+        "{last}"
+    );
+    let actions: Vec<_> = env
+        .store
+        .recent_audit(50)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.action)
+        .collect();
+    for a in ["user.invite", "user.remove"] {
+        assert!(actions.iter().any(|x| x == a), "{a} in {actions:?}");
+    }
+    let entries = env.store.recent_audit(500).unwrap().len();
+    assert_eq!(
+        env.store.verify_audit().unwrap().entries as usize,
+        entries,
+        "the chain verifies end to end"
+    );
+}

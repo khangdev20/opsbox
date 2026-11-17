@@ -28,7 +28,9 @@ fn migrates_an_empty_database() {
     assert_eq!(
         table_names(&path),
         [
+            "api_tokens",
             "audit",
+            "invites",
             "login_failures",
             "metrics_hour",
             "metrics_minute",
@@ -370,4 +372,82 @@ fn rollups_are_purged_by_their_own_retention() {
             .len(),
         1
     );
+}
+
+#[test]
+fn invitations_belong_to_a_user_and_go_with_them() {
+    use opsbox_proto::Role;
+    let store = Store::open_in_memory().unwrap();
+    let u = store
+        .create_user("newcomer", Role::Viewer, "", 100)
+        .unwrap();
+    store
+        .put_invite(&u.id, "hash-1", 1000, "admin", 100)
+        .unwrap();
+    assert!(store.has_invite(&u.id).unwrap());
+    let (inv, user) = store.invite_by_token_hash("hash-1").unwrap().unwrap();
+    assert_eq!(
+        (
+            inv.expires_at,
+            user.name.as_str(),
+            user.password_hash.as_str()
+        ),
+        (1000, "newcomer", "")
+    );
+    // A new invitation replaces the old one: the old link stops working.
+    store
+        .put_invite(&u.id, "hash-2", 2000, "admin", 150)
+        .unwrap();
+    assert!(store.invite_by_token_hash("hash-1").unwrap().is_none());
+    assert!(store.invite_by_token_hash("hash-2").unwrap().is_some());
+    // Purging removes expired invitations and the accounts that never got past them,
+    // but not an account that has a password.
+    let kept = store
+        .create_user("kept", Role::Viewer, "$argon2id$x", 100)
+        .unwrap();
+    store
+        .put_invite(&kept.id, "hash-3", 500, "admin", 100)
+        .unwrap();
+    store
+        .put_invite(&u.id, "hash-4", 500, "admin", 100)
+        .unwrap();
+    assert_eq!(store.purge_invites(600).unwrap(), 1);
+    assert!(store.user_by_name("newcomer").unwrap().is_none());
+    assert!(store.user_by_name("kept").unwrap().is_some());
+    assert!(!store.has_invite(&kept.id).unwrap());
+    // Deleting a user takes the invitation with it.
+    let again = store.create_user("again", Role::Viewer, "", 100).unwrap();
+    store
+        .put_invite(&again.id, "hash-5", 9999, "admin", 100)
+        .unwrap();
+    assert!(store.delete_user(&again.id).unwrap());
+    assert!(store.invite_by_token_hash("hash-5").unwrap().is_none());
+}
+
+#[test]
+fn api_tokens_are_stored_by_hash_with_a_unique_name() {
+    use opsbox_store::TokenScope;
+    let store = Store::open_in_memory().unwrap();
+    let t = store
+        .create_api_token("ci", "h1", TokenScope::Deploy, "admin", 100)
+        .unwrap();
+    assert!(
+        store
+            .create_api_token("CI", "h2", TokenScope::Read, "admin", 100)
+            .is_err(),
+        "names are unique, ignoring case"
+    );
+    assert_eq!(
+        store.api_token_by_hash("h1").unwrap().unwrap().scope,
+        TokenScope::Deploy
+    );
+    assert!(
+        store.api_token_by_hash("ci").unwrap().is_none(),
+        "the token itself is never a key"
+    );
+    store.touch_api_token(&t.id, 200).unwrap();
+    store.touch_api_token(&t.id, 230).unwrap(); // within a minute: not rewritten
+    assert_eq!(store.list_api_tokens().unwrap()[0].last_used_at, Some(200));
+    assert_eq!(store.delete_api_token(&t.id).unwrap().unwrap().name, "ci");
+    assert!(store.list_api_tokens().unwrap().is_empty());
 }

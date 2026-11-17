@@ -5,6 +5,7 @@
 //! and exposes nothing but non-secret host facts.
 
 mod access;
+mod allowlist;
 mod auth;
 mod cleanup;
 mod error;
@@ -14,12 +15,14 @@ mod host;
 mod json;
 mod metrics;
 mod request_id;
+mod security;
 pub mod session;
 mod setup;
 mod system;
 mod tasks;
 mod terminal;
 mod ui;
+mod users;
 
 use std::future::Future;
 use std::io;
@@ -63,6 +66,9 @@ pub struct AppState {
     pub tasks: tasks::Tasks,
     pub files: FilesSettings,
     pub terminal: TerminalSettings,
+    /// The panel's own address, for the Security checks.
+    pub listen: std::net::SocketAddr,
+    pub allow: allowlist::AllowList,
     pub secure_cookies: SecureCookies,
     pub version: &'static str,
 }
@@ -77,6 +83,8 @@ impl AppState {
     ) -> Self {
         let auth = Auth::new(store.clone(), priv_client.clone(), auth);
         let metrics = Metrics::spawn(priv_client.clone(), store.clone());
+        let allow = allowlist::AllowList::default();
+        allow.set(security::stored_allow_list(&store));
         Self {
             store,
             priv_client,
@@ -85,6 +93,8 @@ impl AppState {
             tasks: tasks::Tasks::default(),
             files: FilesSettings::default(),
             terminal: TerminalSettings::default(),
+            listen: std::net::SocketAddr::from(([127, 0, 0, 1], 8443)),
+            allow,
             secure_cookies,
             version,
         }
@@ -105,6 +115,18 @@ impl AppState {
         self
     }
 
+    /// The allowed-address list as text (empty when there is none).
+    pub fn allow_list_text(&self) -> String {
+        allowlist::render(&self.allow.get())
+    }
+
+    /// The address the panel listens on (for the Security checks).
+    #[must_use]
+    pub fn with_listen(mut self, listen: std::net::SocketAddr) -> Self {
+        self.listen = listen;
+        self
+    }
+
     /// Close a terminal nobody has typed in for this long.
     #[must_use]
     pub fn with_terminal_idle(mut self, idle: Duration) -> Self {
@@ -116,6 +138,7 @@ impl AppState {
 /// Build the full application: API routes, the embedded UI as the fallback, and the
 /// middleware stack.
 pub fn router(state: AppState) -> Router {
+    let allow_guard_state = state.allow.clone();
     let max_upload = usize::try_from(state.files.max_upload).unwrap_or(usize::MAX);
 
     // Ordinary API calls: small bodies, short time.
@@ -153,6 +176,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/metrics", get(metrics::get_metrics))
         .route("/api/v1/attention", get(metrics::get_attention))
         .route("/api/v1/stream/metrics", get(metrics::stream))
+        .route("/api/v1/security", get(security::get))
+        .route("/api/v1/security/allow-ips", put(security::set_allow_ips))
+        .route("/api/v1/security/checks/{id}/fix", post(security::fix))
+        .route("/api/v1/users/invites", post(users::invite))
+        .route("/api/v1/users/{name}", delete(users::remove))
+        .route("/api/v1/invites/claim", post(users::claim))
+        .route("/api/v1/invites/{token}", get(users::info))
         .route("/api/v1/access", get(access::get))
         .route("/api/v1/access/keys", post(access::add_key))
         .route("/api/v1/access/keys/remove", post(access::remove_key))
@@ -219,7 +249,40 @@ pub fn router(state: AppState) -> Router {
                     .and(NotForContentType::new("application/octet-stream")),
             ),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            allow_guard_state,
+            allow_guard,
+        ))
         .layer(axum::middleware::from_fn(request_id::middleware))
+}
+
+/// Refuse requests from addresses outside the allowed list (when there is one). The
+/// health endpoints stay open for monitoring.
+async fn allow_guard(
+    axum::extract::State(allow): axum::extract::State<allowlist::AllowList>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let path = req.uri().path();
+    if path == "/healthz" || path == "/readyz" || allow.get().is_empty() {
+        return next.run(req).await;
+    }
+    let (parts, body) = req.into_parts();
+    // Fail closed: with a list set, an address that cannot be read is not allowed.
+    let permitted = session::client_ip(&parts)
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| allow.permits(ip));
+    let req = axum::extract::Request::from_parts(parts, body);
+    if permitted {
+        next.run(req).await
+    } else {
+        HttpError::new(
+            opsbox_proto::ErrorCode::Forbidden,
+            "This address is not allowed to use the panel.",
+        )
+        .into_response()
+    }
 }
 
 /// Serve `router(state)` on `listener` until `shutdown` completes.

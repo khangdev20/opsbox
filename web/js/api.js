@@ -43,6 +43,7 @@ const REAL = new Set([
   'getTerminalUsers', 'openTerminal',
   'scanCleanup', 'runCleanup', 'setAutoCleanup',
   'getAccess', 'addKey', 'removeKey', 'lockUser',
+  'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -67,11 +68,12 @@ export const PAGE_USES = {
   containers: ['containerAction', 'containerLogs', 'listContainers', 'listDocker'],
   files: ['chmod', 'listDir', 'mkdir', 'readFile', 'removePaths', 'upload', 'writeFile'],
   login: ['auth.login'],
+  invite: ['auth.inviteInfo', 'auth.claimInvite'],
   enroll: ['auth.enroll', 'auth.enrollConfirm'],
   newservice: ['getRepos'],
   overview: ['getAttention', 'getHost', 'getMetrics'],
   recovery: ['getRecovery', 'recoveryAction', 'simulateFailure'],
-  security: ['getSecurity', 'inviteUser', 'openSsh', 'setAllowIps', 'signOutAll', 'toggleCheck'],
+  security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
   settings: ['createToken', 'disconnectGithub', 'exportConfig', 'getSettings', 'growFs', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setSwap'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
@@ -368,6 +370,18 @@ export const auth = {
     if (!/^\d{6}$/.test(code || '')) throw new Error('Enter the 6-digit authentication code.');
     audit('sign-in', user); return { user, role: 'admin', enrollRequired: false };
   },
+  // GET /api/v1/invites/{token} -> { name, role }
+  async inviteInfo(token) {
+    if (real('auth.inviteInfo')) return http('/invites/' + encodeURIComponent(token));
+    sample('auth.inviteInfo'); await lag(150); return { name: 'dana', role: 'deployer' };
+  },
+  // POST /api/v1/invites/claim -> { user, role, enrollRequired: true } (a short enrolment session)
+  async claimInvite(token, password) {
+    if (real('auth.claimInvite')) return http('/invites/claim', { method: 'POST', body: { token, password } });
+    sample('auth.claimInvite'); await lag(300);
+    if ((password || '').length < 12) throw new Error('Use at least 12 characters for the password.');
+    return { user: 'dana', role: 'deployer', enrollRequired: true };
+  },
   // POST /api/v1/auth/logout
   async logout() {
     if (real('auth.logout')) return http('/auth/logout', { method: 'POST' });
@@ -639,17 +653,28 @@ export async function upload(dir, file) { sample('upload');
 
 // ---------------------------------------------------------------- security
 export async function getSecurity() { sample('getSecurity');
+  if (real('getSecurity')) return http('/security');
   await lag(); const sshOpen = S.sshOpenUntil > now();
   const checks = clone(S.checks).map((c) => (c.id === 'sshd' ? { ...c, ok: !sshOpen, label: sshOpen ? 'on' : 'off', warn: sshOpen } : c));
   return { checks, users: clone(S.users), audit: clone(S.audit).slice(0, 12), allowIps: S.allowIps, passing: checks.filter((c) => c.ok).length, total: checks.length };
 }
-export async function toggleCheck(id) { sample('toggleCheck'); await lag(200); const c = S.checks.find((x) => x.id === id); if (c) { c.ok = true; delete c.action; } audit(`enable ${id}`); }
-export async function setAllowIps(v) { sample('setAllowIps');
+export async function toggleCheck(id) { sample('toggleCheck'); if (real('toggleCheck')) return http(`/security/checks/${encodeURIComponent(id)}/fix`, { method: 'POST' }); await lag(200); const c = S.checks.find((x) => x.id === id); if (c) { c.ok = true; delete c.action; } audit(`enable ${id}`); }
+export async function setAllowIps(v, confirm = false) { sample('setAllowIps');
+  if (real('setAllowIps')) {
+    try { return await http('/security/allow-ips', { method: 'PUT', body: { value: v, confirm } }); }
+    catch (e) { if (e.code === 'confirmation_required' && !confirm && hooks.confirm && await hooks.confirm(e.message)) return setAllowIps(v, true); throw e; }
+  }
   await lag(200);
   const bad = v.split(',').map((s) => s.trim()).filter(Boolean).find((s) => !/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(s));
   if (bad) throw new Error(`"${bad}" is not a valid IP or CIDR.`); S.allowIps = v; audit('update allowed IPs');
 }
-export async function inviteUser(name) { sample('inviteUser'); await lag(250); if (!/^[a-z][a-z0-9._-]{2,}$/.test(name)) throw new Error('Username: at least 3 characters, lowercase.'); S.users.push({ name, role: 'Deploy and view logs, no terminal', tfa: false }); audit(`invite ${name}`); }
+// An invitation: the new account's one-time link, shown once. `role` is viewer, deployer or admin.
+export async function inviteUser(name, role = 'viewer') { sample('inviteUser');
+  if (real('inviteUser')) { const r = await http('/users/invites', { method: 'POST', body: { name, role } }); return { ...r, link: `${location.origin}${location.pathname}#/invite?token=${r.token}` }; }
+  await lag(250); if (!/^[a-z][a-z0-9._-]{2,}$/.test(name)) throw new Error('Username: at least 3 characters, lowercase.'); S.users.push({ name, role: 'Deploy and view logs, no terminal', tfa: false }); audit(`invite ${name}`); return { name, role, link: `${location.origin}${location.pathname}#/invite?token=demo-token` }; }
+export async function removeUser(name) { sample('removeUser');
+  if (real('removeUser')) return http('/users/' + encodeURIComponent(name), { method: 'DELETE' });
+  await lag(200); S.users = S.users.filter((u) => u.name !== name); audit(`remove ${name}`); }
 export async function signOutAll() {
   if (real('signOutAll')) return http('/auth/sessions/revoke-all', { method: 'POST' }); // POST /api/v1/auth/sessions/revoke-all
   sample('signOutAll'); await lag(300); audit('sign out all sessions');
