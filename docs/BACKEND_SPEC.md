@@ -4,6 +4,8 @@ Status: draft, not implemented. Companion to `ARCHITECTURE.md` (the decisions) a
 
 This document says what the Rust backend must do and how to build it. It does not contain code.
 
+> **Scope change, 2026-11-17.** The web panel on one instance is the product and is on by default (see `ARCHITECTURE.md`). The desktop app, WireGuard, pairing and multi-server features are a separate, later product ("opsbox Desktop"). Sections that describe them (6.2 device auth, 7.17, 8, Phase 6) are kept for reference but are out of scope for the opsbox MVP.
+
 ---
 
 ## 1. Goals and non-goals
@@ -12,14 +14,14 @@ This document says what the Rust backend must do and how to build it. It does no
 
 1. One static binary, `opsbox`, installed by one command on any systemd Linux (x86_64, aarch64).
 2. After install, nothing about the server needs SSH: apps, containers, system, files, terminal, backups, alerts, security.
-3. Safe by default: nothing listens on the public internet unless the user turns on the web panel or an app domain.
+3. Safe by default for people who do not know security: the panel is reachable from the browser, but only after a claim with the setup token, with mandatory 2FA, lockout and audit; the first-run flow pushes the user to attach a domain with HTTPS. `--local-only` keeps it on localhost for users who prefer an SSH tunnel.
 4. Small: idle RSS target under 40 MB for the agent, under 10 MB for the watchdog. CPU near zero when idle.
 5. Survives its own failure: apps keep running if opsbox dies; a watchdog restores opsbox.
 6. The existing UI in `web/` works unchanged; only `web/js/api.js` swaps its mock for real calls.
 
 **Non-goals for v1**
 
-- Kubernetes, Swarm, or scheduling across servers. Each server runs its own workloads.
+- Kubernetes, Swarm, or scheduling across servers. Each server runs its own workloads. (Multi-instance belongs to opsbox Desktop, later.)
 - High availability of the control plane.
 - Windows or macOS servers.
 - Cloud provider APIs (EC2 snapshots, resize). Possible later behind a plugin boundary.
@@ -186,7 +188,9 @@ Roles for v1: `admin` (everything), `deployer` (apps, logs, no terminal, no file
 
 - Install generates a single-use setup token, prints it to the console and the boot log (`/dev/console` and journald), valid 1 hour. That is how the UI's Setup screen works.
 - `POST /setup/claim {token}` then `POST /setup/admin {username, password}` then `POST /setup/totp/confirm {code}`. Setup endpoints exist only until an admin exists.
-- With the desktop app, pairing replaces the claim (section 8).
+- Until claimed, the panel listens on the public address, port 8443, with a self-signed certificate, and only `/setup/*` and static assets answer. After the admin exists, the listener stays on (the panel is the product) and Settings offers attaching a domain with Let's Encrypt in one step; an optional IP allow-list can restrict it.
+- `--local-only` at install keeps every listener on localhost (current Phase 0/1 behaviour).
+- (opsbox Desktop, later: pairing adds a second first-run path.)
 
 ### 6.4 Endpoint map
 
@@ -371,7 +375,7 @@ Preview environments per pull request are a later phase; the data model already 
 - **Safe mode** server: tiny HTTP server inside the watchdog on `127.0.0.1:8444` and the WireGuard address, with its own minimal HTML (not the full UI). Auth with the same users table read-only (password + TOTP), or a one-time recovery code printed by `opsbox recovery-code` over SSH. Actions: show status and last logs, free disk space, restart opsbox, roll back version, open SSH for 1 hour, reboot. This is the `Recovery` screen.
 - The watchdog shares no code paths with `serve` beyond `opsbox-proto` and `opsbox-store` read functions, to avoid one bug breaking both.
 
-### 7.17 Private network and pairing
+### 7.17 Private network and pairing (opsbox Desktop, later; not in the MVP)
 
 - Interface `wg-opsbox`, UDP port 51820 by default, address space `100.96.0.0/16` (one /32 per peer, assigned by the device that adds the server).
 - Kernel WireGuard via netlink when available; userspace `boringtun` otherwise.
@@ -379,9 +383,10 @@ Preview environments per pull request are a later phase; the data model already 
 - **Network rules**: stored centrally on each server as `net_rules`; applied as nftables rules on `wg-opsbox` (source peer, destination port, allow/deny, default deny). Server-to-server rules need both servers paired to the same desktop app, which distributes peer configs.
 - The agent's API listens only on the WireGuard address and on localhost. The public interface sees only UDP 51820 (silent without a valid key), plus 80/443 if any domain is configured.
 
-### 7.18 Web panel (optional)
+### 7.18 Web panel (the product, on by default)
 
-- Off by default. `opsbox web enable [--domain panel.example.com]` or Settings. When on, `serve` exposes the UI and API on localhost, and the proxy routes the domain to it with TLS. Forces 2FA for every account and suggests an IP allow-list.
+- On by default. First run as in 6.3. `opsbox web domain panel.example.com` or Settings attaches a domain: the proxy routes it to `serve` with a Let's Encrypt certificate and the raw :8443 listener can then be closed. 2FA is mandatory for every account; an IP allow-list is offered.
+- `opsbox web local-only on|off` switches between public and localhost-only listeners.
 - The panel manages only its own server; the server switcher is hidden (the UI already knows from `GET /host` whether it runs as panel or desktop).
 
 ### 7.19 Static UI embedding
@@ -392,7 +397,7 @@ Preview environments per pull request are a later phase; the data model already 
 
 ---
 
-## 8. Desktop app protocol (agent side only)
+## 8. Desktop app protocol (agent side only; opsbox Desktop, later)
 
 - The agent treats the desktop app as an API client over WireGuard with device authentication (6.2).
 - Server list, health and versions come from each agent's `GET /host` and `/stream/events`; the desktop app aggregates.
@@ -439,7 +444,7 @@ Assets: root on the server, app secrets, backup data, the user's panel accounts.
 
 | Threat | Mitigation |
 |---|---|
-| Internet scanning the panel | Nothing listens publicly by default; WireGuard is silent without a key. |
+| Internet scanning the panel | Before claim only `/setup/*` answers and needs the single-use token (expires in 1 h); after claim every route needs a session with 2FA; lockout and rate limits; security checks push a domain with HTTPS and offer an IP allow-list; `--local-only` for users who want nothing public. |
 | Stolen session cookie | `HttpOnly`, `Secure`, `SameSite=Strict`, short idle timeout, bound to IP range optional, revoke-all. |
 | Password guessing | Argon2id, TOTP required, lockout, alert. |
 | Bug in request handling | `serve` is unprivileged; `priv` accepts only typed ops and re-validates. |
@@ -492,9 +497,10 @@ Each phase ends with something usable on a real server.
 | 1. Own the server | Auth (password, TOTP, sessions, lockout, audit), first-run claim, metrics and Overview, system (updates, units, journal, jobs, firewall with lockout guard, emergency SSH, reboot), files, terminal, cleanup, security checks, access (SSH keys, Linux users), settings. | A server can be managed for a week without SSH. |
 | 2. Recover | Watchdog, safe mode, self-update with signatures and rollback, CLI recovery commands. | Killing or corrupting `serve`, and a bad update, both recover without SSH. |
 | 3. Containers and deploy | Docker integration, GitHub App, deploy pipeline, variables, rollback, templates, Compose, resource limits. | Push to main deploys; failed build leaves old version live. |
-| 4. Proxy and domains | `opsbox proxy`, ACME, DNS checks, redirects, panel domain, web panel toggle. | Custom domain with HTTPS in under 5 minutes after DNS. |
+| 4. Proxy and domains | `opsbox proxy`, ACME, DNS checks, redirects, panel domain (priority: it is how small users secure the panel), public/local-only toggle. | Custom domain with HTTPS in under 5 minutes after DNS, for both apps and the panel. |
 | 5. Backups and alerts | restic, providers, schedules, restore to copy, restore tests, alert rules and channels. | Database restored from R2 onto a fresh server. |
-| 6. Desktop and private network | WireGuard, pairing, device auth, network rules, Tauri app shell with `MODE=tauri`. | Two servers managed from the desktop app, no public ports except 51820/udp. |
+| 5b. Databases | See ROADMAP.md "Databases" part B. | A Postgres created, linked to an app and restored without SSH. |
+| Desktop (separate product) | WireGuard, pairing, device auth, network rules, multi-instance, apps across instances on an existing orchestrator, Tauri app with `MODE=tauri`. Own spec. | Not part of the opsbox MVP. |
 | Later | Preview environments, Nixpacks, DNS-01 wildcards, relay for double NAT, multi-user roles beyond three, compliance recording, cloud provider integrations. | |
 
 ---

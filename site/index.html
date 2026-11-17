@@ -61,9 +61,7 @@
     </div>
 
     <div class="cta-row">
-      <a class="btn primary" href="https://github.com/khangdev20/opsbox/releases">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/></svg>Download the desktop app
-      </a>
+      <a class="btn primary" href="#how">See how it works</a>
       <a class="btn" href="https://github.com/khangdev20/opsbox">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9L12 3z"/></svg>Star on GitHub
       </a>
@@ -227,8 +225,8 @@
     </div>
     <div class="grid">
       <article class="card"><span class="num">1</span><h3>Install the agent</h3><p>Run one command, or paste it into your cloud provider's user data when you launch the instance.</p><code class="cmd">curl -fsSL …/install.sh | sh</code></article>
-      <article class="card"><span class="num">2</span><h3>Pair the desktop app</h3><p>The agent prints a pairing code. Enter it in the app and the server joins your private network.</p><code class="cmd">pairing code  K7QX-29MD</code></article>
-      <article class="card"><span class="num">3</span><h3>Ship your first app</h3><p>Connect GitHub, pick a repo, add a domain. Every push to main deploys by itself.</p></article>
+      <article class="card"><span class="num">2</span><h3>Open your panel</h3><p>The install prints a setup link and a one-time token. Open it in your browser, create your account and turn on 2FA.</p><code class="cmd">https://203.0.113.10:8443  token 7QK2-9XMD-4TFA</code></article>
+      <article class="card"><span class="num">3</span><h3>Ship your first app</h3><p>Connect GitHub, pick a repo, add a domain with HTTPS. Every push to main deploys by itself.</p></article>
     </div>
   </div>
 </section>
@@ -236,22 +234,22 @@
 <section class="block reveal" id="ways">
   <div class="wrap">
     <div class="head">
-      <span class="eyebrow">Two ways in</span>
-      <h2>A desktop app for your fleet. A web panel when you want one.</h2>
-      <p>Both use the same interface and the same agent on each server.</p>
+      <span class="eyebrow">Grows with you</span>
+      <h2>Start with one server. Add more when you need them.</h2>
+      <p>opsbox runs on the server you install it on. Bigger systems get a separate upgrade later.</p>
     </div>
     <div class="two">
       <article class="card">
-        <span class="ico neutral"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/></svg></span>
-        <h3>Desktop app</h3>
-        <p>The main way in. Manage every server from one window, over a private encrypted network.</p>
-        <ul class="ticks"><li>All your servers, one switcher</li><li>Reaches servers over WireGuard, nothing exposed to the internet</li><li>Network rules like a cloud security group</li><li>macOS, Windows and Linux</li></ul>
+        <span class="ico neutral"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg></span>
+        <h3>opsbox</h3>
+        <p>Free and open source. Install it on a server and manage that server from your browser.</p>
+        <ul class="ticks"><li>Everything on this page, for one server</li><li>As many apps and databases as the machine can hold</li><li>Your own domain for the panel, with automatic HTTPS</li><li>No account, no cloud service, no usage fees</li></ul>
       </article>
       <article class="card">
-        <span class="ico neutral"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg></span>
-        <h3>Web panel (optional)</h3>
-        <p>Turn it on for a single server when you want to reach it from any browser.</p>
-        <ul class="ticks"><li>Manages only the server it runs on</li><li>Your own domain with automatic HTTPS</li><li>Two-factor sign-in and IP allowlist</li><li>Off by default</li></ul>
+        <span class="ico neutral"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="M2 19h20"/></svg></span>
+        <h3>opsbox Desktop (planned)</h3>
+        <p>For when one server is not enough. Not available yet.</p>
+        <ul class="ticks"><li>Many servers in one window</li><li>One app or microservices spread across servers</li><li>Add machines to scale out</li><li>Private network between your servers</li></ul>
       </article>
     </div>
   </div>
@@ -262,10 +260,10 @@
     <div class="head">
       <span class="eyebrow">Security</span>
       <h2>A panel with root access should be hard to reach.</h2>
-      <p>So by default, it is not reachable from the internet at all.</p>
+      <p>So it is locked down from the first minute, without you having to know how.</p>
     </div>
     <div class="sec-list">
-      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Private network by default</b><span>The agent only listens on an encrypted WireGuard network between your devices and servers.</span></div></div>
+      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Locked until you claim it</b><span>Before setup only the claim page answers, and it needs a one-time token from your server's boot log.</span></div></div>
       <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Safe mode</b><span>A separate watchdog restarts opsbox, rolls back a bad update and can open SSH for an hour if you need it.</span></div></div>
       <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Two-factor and lockout</b><span>TOTP on every account, sign-in lockout after repeated failures, every action in an audit log.</span></div></div>
       <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>No telemetry</b><span>opsbox sends nothing home. Your servers talk only to you.</span></div></div>
@@ -287,8 +285,8 @@
       <details><summary>Is it really free?</summary><p>Yes. opsbox is open source under Apache-2.0. There is no paid tier and no account to create. You pay only for your own servers.</p></details>
       <details><summary>Is it ready for production?</summary><p>Not yet. opsbox is in alpha. Use it for side projects and staging first, and keep backups somewhere off the server.</p></details>
       <details><summary>Which servers does it run on?</summary><p>Any recent Linux with systemd: Ubuntu, Debian, Amazon Linux, Fedora and similar, on x86_64 or arm64. Any cloud, or a box under your desk.</p></details>
-      <details><summary>How is it different from Coolify or Dokploy?</summary><p>opsbox manages the server itself as well as your apps (updates, firewall, users, disk, files) and keeps the panel off the public internet by default.</p></details>
-      <details><summary>Can I manage more than one server?</summary><p>Yes, with the desktop app. Each server runs a small agent and joins your private network.</p></details>
+      <details><summary>How is it different from Coolify or Dokploy?</summary><p>opsbox manages the server itself as well as your apps (updates, firewall, users, disk, files) and is locked behind a one-time setup token and 2FA from the first minute.</p></details>
+      <details><summary>Can I manage more than one server?</summary><p>Each install manages the server it runs on. opsbox Desktop, planned for later, will manage many servers and spread apps across them.</p></details>
       <details><summary>What happens if opsbox itself breaks?</summary><p>Your apps keep running. A watchdog restarts or rolls back opsbox, and the command line on the server can repair it.</p></details>
     </div>
 
@@ -303,7 +301,7 @@
         </button>
       </div>
       <div class="cta-row">
-        <a class="btn primary" href="https://github.com/khangdev20/opsbox/releases">Download the desktop app</a>
+        <a class="btn primary" href="https://github.com/khangdev20/opsbox">Star on GitHub</a>
         <a class="btn" href="https://github.com/khangdev20/opsbox/tree/main/docs">Read the docs</a>
       </div>
     </div>

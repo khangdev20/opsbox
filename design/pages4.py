@@ -65,7 +65,7 @@ preview=f'''<figure role="img" aria-label="opsbox panel showing services and ser
 <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px">{mini_kpi('CPU','25','%',25)}{mini_kpi('Memory','3.1',' / 8 GB',39)}{mini_kpi('Disk','98',' / 120 GB',82)}{mini_kpi('Network','4.2',' MB/s',30)}</div>
 <div aria-label="Service topology" style="position: relative; height: 318px; min-width: 850px; margin-top: 14px">
 {TOPO}
-</div><div aria-hidden="true" style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--hl)">{ACT}</div></div></div></div></figure>'''
+</div><div aria-hidden="true" style="display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--hl)">{ACT}</div></div></div></figure>'''
 
 install_box=f'''<div id="install" style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 8px 8px 8px 18px; border-radius: 14px; background: #111113; border: 1px solid #2E2E33; color: #DADADF; max-width: 640px; width: 100%; box-sizing: border-box; text-align: left">
 <span style="color: #8A8A92; {FM}; font-size: 14px">$</span><code style="flex: 1 1 360px; {FM}; font-size: 14px; white-space: nowrap; overflow-x: auto">curl -fsSL [INSTALL URL]/install.sh | sh</code>
@@ -78,7 +78,7 @@ hero=f'''<section id="top" style="position: relative; overflow: hidden; padding:
 <h1 style="margin: 0; max-width: 900px; font-size: 68px; line-height: 1.02; font-weight: 600; letter-spacing: -0.05em">Your own Railway,<br>on any Linux server.</h1>
 <p style="margin: 0; max-width: 640px; font-size: 19px; line-height: 1.6; color: var(--muted)">Install once. Deploy from GitHub, watch the machine, open a terminal, back up your data. After that, you never need to SSH into it again.</p>
 {install_box}
-<div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 12px">{L_btn('Download the desktop app','primary',icon='laptop')}{L_btn('Star on GitHub',icon='gh')}</div>
+<div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 12px">{L_btn('See how it works','primary',href='#how')}{L_btn('Star on GitHub',icon='gh')}</div>
 <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 10px; font-size: 13.5px; color: var(--muted)"><span style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); font-weight: 500"><span style="color: var(--accent); display: flex"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></span>Written in Rust</span><span style="padding: 5px 12px; border-radius: 99px; background: var(--fill)">One binary, no runtime</span><span style="padding: 5px 12px; border-radius: 99px; background: var(--fill)">About [RAM] MB of RAM idle</span><span style="padding: 5px 12px; border-radius: 99px; background: var(--fill)">x86_64 and arm64</span></div><p style="margin: 0; font-size: 13px; color: var(--muted)">Ubuntu, Debian, Amazon Linux, Fedora and any Linux with systemd</p>
 <div style="width: 100%; display: flex; justify-content: center; padding-top: 28px; overflow-x: auto">{preview}</div>
 </div></section>'''
@@ -150,22 +150,22 @@ def step(n,t,txt,codeline=''):
 how=L_sec('HOW IT WORKS','From a fresh instance to a live app in minutes.','No Kubernetes, no YAML to learn, no separate control server to pay for.',
  '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px">'+
  step('1','Install the agent','Run one command, or paste it into your cloud provider\'s user data when you launch the instance.','curl -fsSL [INSTALL URL]/install.sh | sh')+
- step('2','Pair the desktop app','The agent prints a pairing code. Enter it in the app and the server joins your private network.','pairing code  K7QX-29MD')+
- step('3','Ship your first app','Connect GitHub, pick a repo, add a domain. Every push to main deploys by itself.')+'</div>','how')
+ step('2','Open your panel','The install prints a setup link and a one-time token. Open it in your browser, create your account and turn on 2FA.','https://203.0.113.10:8443  token 7QK2-9XMD-4TFA')+
+ step('3','Ship your first app','Connect GitHub, pick a repo, add a domain with HTTPS. Every push to main deploys by itself.')+'</div>','how')
 
 def two_col(icon,t,txt,points):
     li=''.join(f'<li style="display: flex; gap: 10px; align-items: flex-start"><span style="color: var(--ok); font-weight: 700">✓</span><span>{p}</span></li>' for p in points)
     return f'<div style="flex: 1 1 420px; padding: 30px; border-radius: 20px; background: var(--hl); border: 1px solid var(--line); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 14px"><span style="width: 44px; height: 44px; border-radius: 12px; background: var(--fill2); display: flex; align-items: center; justify-content: center">{ic(I[icon],22)}</span><h3 style="margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.03em">{t}</h3><p style="margin: 0; font-size: 15px; line-height: 1.6; color: var(--muted)">{txt}</p><ul style="margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; font-size: 14.5px">{li}</ul></div>'
-ways=L_sec('TWO WAYS IN','A desktop app for your fleet. A web panel when you want one.','Both use the same interface and the same agent on each server.',
+ways=L_sec('GROWS WITH YOU','Start with one server. Add more when you need them.','opsbox runs on the server you install it on. Bigger systems get a separate upgrade later.',
  '<div style="display: flex; flex-wrap: wrap; gap: 16px">'+
- two_col('laptop','Desktop app','The main way in. Manage every server from one window, over a private encrypted network.',['All your servers, one switcher','Reaches servers over WireGuard, nothing exposed to the internet','Network rules like a cloud security group','macOS, Windows and Linux'])+
- two_col('globe','Web panel (optional)','Turn it on for a single server when you want to reach it from any browser.',['Manages only the server it runs on','Your own domain with automatic HTTPS','Two-factor sign-in and IP allowlist','Off by default'])+'</div>','ways')
+ two_col('globe','opsbox','Free and open source. Install it on a server and manage that server from your browser.',['Everything on this page, for one server','As many apps and databases as the machine can hold','Your own domain for the panel, with automatic HTTPS','No account, no cloud service, no usage fees'])+
+ two_col('laptop','opsbox Desktop (planned)','For when one server is not enough. Not available yet.',['Many servers in one window','One app or microservices spread across servers','Add machines to scale out','Private network between your servers'])+'</div>','ways')
 
 def sec_item(t,txt):
     return f'<div style="display: flex; gap: 14px; padding: 20px 0; border-bottom: 1px solid var(--line)"><span style="flex: none; width: 24px; height: 24px; border-radius: 50%; background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700">✓</span><div style="display: flex; flex-direction: column; gap: 4px"><b style="font-size: 15.5px; font-weight: 600">{t}</b><span style="font-size: 14.5px; line-height: 1.6; color: var(--muted)">{txt}</span></div></div>'
-security=L_sec('SECURITY','A panel with root access should be hard to reach.','So by default, it is not reachable from the internet at all.',
+security=L_sec('SECURITY','A panel with root access should be hard to reach.','So it is locked down from the first minute, without you having to know how.',
  '<div style="display: flex; flex-wrap: wrap; gap: 48px"><div style="flex: 1 1 460px">'+
- sec_item('Private network by default','The agent only listens on an encrypted WireGuard network between your devices and servers.')+
+ sec_item('Locked until you claim it','Before setup only the claim page answers, and it needs a one-time token from your server boot log.')+
  sec_item('Two-factor and lockout','TOTP on every account, sign-in lockout after repeated failures, every action in an audit log.')+
  sec_item('Signed releases','The installer verifies checksums and signatures before anything runs.')+
  sec_item('Memory-safe by design','The agent is written in Rust: no garbage-collected runtime to install, and a whole class of memory bugs ruled out by the compiler.')+
@@ -182,8 +182,8 @@ faqs=L_sec('FAQ','Questions, answered.','',
  faq('Is it really free?','Yes. opsbox is open source under Apache-2.0. There is no paid tier and no account to create. You pay only for your own servers.')+
  faq('Is it ready for production?','Not yet. opsbox is in alpha. Use it for side projects and staging first, and keep backups somewhere off the server.')+
  faq('Which servers does it run on?','Any recent Linux with systemd: Ubuntu, Debian, Amazon Linux, Fedora and similar, on x86_64 or arm64. Any cloud or a box under your desk.')+
- faq('How is it different from Coolify or Dokploy?','opsbox manages the server itself as well as your apps (updates, firewall, users, disk, files) and keeps the panel off the public internet by default.')+
- faq('Can I manage more than one server?','Yes, with the desktop app. Each server runs a small agent and joins your private network.')+
+ faq('How is it different from Coolify or Dokploy?','opsbox manages the server itself as well as your apps (updates, firewall, users, disk, files) and is locked behind a one-time setup token and 2FA from the first minute.')+
+ faq('Can I manage more than one server?','Each install manages the server it runs on. opsbox Desktop, planned for later, will manage many servers and spread apps across them.')+
  faq('What happens if opsbox itself breaks?','Your apps keep running. A watchdog restarts or rolls back opsbox, and the command line on the server can repair it.')+
  '</div>','faq')
 
@@ -192,7 +192,7 @@ cta=f'''<section style="max-width: 1160px; margin: 96px auto 0; padding: 0 32px;
 <h2 style="position: relative; margin: 0; font-size: 44px; line-height: 1.08; font-weight: 600; letter-spacing: -0.04em">Stop SSHing into your servers.</h2>
 <p style="position: relative; margin: 0; font-size: 17px; color: var(--muted)">One command, then everything else from a window.</p>
 <div style="position: relative; width: 100%; display: flex; justify-content: center">{install_box.replace(' id="install"','')}</div>
-<div style="position: relative; display: flex; flex-wrap: wrap; justify-content: center; gap: 12px">{L_btn('Download the desktop app','primary',icon='laptop')}{L_btn('Read the docs')}</div></div></section>'''
+<div style="position: relative; display: flex; flex-wrap: wrap; justify-content: center; gap: 12px">{L_btn('Star on GitHub','primary',icon='gh')}{L_btn('Read the docs')}</div></div></section>'''
 
 foot=f'''<footer style="max-width: 1160px; margin: 96px auto 0; padding: 32px 32px 48px; box-sizing: border-box; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 24px 48px; align-items: flex-start; font-size: 14px">
 <div style="flex: 1 1 260px; display: flex; flex-direction: column; gap: 10px"><span style="font: 700 18px 'Geist', sans-serif; letter-spacing: -0.04em">opsbox<span style="color: var(--accent)">_</span></span><span style="color: var(--muted)">Self-hosted server management. Apache-2.0.</span></div>
