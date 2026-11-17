@@ -104,4 +104,7 @@ pub struct SystemFacts {
     /// Package updates waiting, when the package manager could be asked.
     pub updates_total: Option<u32>,
     pub updates_security: Option<u32>,
+    /// Containers currently in Docker's `restarting` state.
+    #[serde(default)]
+    pub restarting_containers: Vec<String>,
 }

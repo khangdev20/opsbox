@@ -273,6 +273,41 @@ pub enum PrivOp {
     },
     /// Read the watchdog's latest health snapshot (read-only).
     WatchdogStatus,
+    /// Docker daemon installation/running status.
+    DockerStatus,
+    /// Install Docker Engine from signed distribution or Docker repositories (never convenience script).
+    DockerInstall,
+    /// List containers (running and stopped).
+    DockerListContainers,
+    /// Inspect one container in detail.
+    DockerInspect {
+        id: String,
+    },
+    /// Start, stop, restart, or remove a container.
+    DockerContainerAction {
+        id: String,
+        action: crate::docker::DockerContainerAction,
+    },
+    /// Fetch the last `tail` container log lines.
+    DockerLogs {
+        id: String,
+        tail: u32,
+    },
+    /// Follow container logs live on this socket connection.
+    DockerLogsFollow {
+        id: String,
+        tail: u32,
+    },
+    /// Sample CPU, memory, network, and PID counters for running containers.
+    DockerStats,
+    /// Run a command inside a running container.
+    DockerExec(crate::docker::DockerExecRequest),
+    /// List Docker images.
+    DockerListImages,
+    /// List Docker volumes.
+    DockerListVolumes,
+    /// List Docker networks.
+    DockerListNetworks,
 }
 
 impl PrivOp {
@@ -336,6 +371,18 @@ impl PrivOp {
             Self::UserList => "user_list",
             Self::PtyOpen { .. } => "pty_open",
             Self::WatchdogStatus => "watchdog_status",
+            Self::DockerStatus => "docker_status",
+            Self::DockerInstall => "docker_install",
+            Self::DockerListContainers => "docker_list_containers",
+            Self::DockerInspect { .. } => "docker_inspect",
+            Self::DockerContainerAction { .. } => "docker_container_action",
+            Self::DockerLogs { .. } => "docker_logs",
+            Self::DockerLogsFollow { .. } => "docker_logs_follow",
+            Self::DockerStats => "docker_stats",
+            Self::DockerExec { .. } => "docker_exec",
+            Self::DockerListImages => "docker_list_images",
+            Self::DockerListVolumes => "docker_list_volumes",
+            Self::DockerListNetworks => "docker_list_networks",
         }
     }
 }
@@ -453,6 +500,28 @@ pub enum PrivReply {
     },
     /// Answer to [`PrivOp::WatchdogStatus`].
     WatchdogStatus(Box<crate::watchdog::WatchdogStatus>),
+    /// Answer to [`PrivOp::DockerStatus`].
+    DockerStatus(crate::docker::DockerStatus),
+    /// Answer to [`PrivOp::DockerListContainers`].
+    DockerContainers(Vec<crate::docker::DockerContainer>),
+    /// Answer to [`PrivOp::DockerInspect`].
+    DockerInspect(Box<crate::docker::DockerContainerInspect>),
+    /// Answer to [`PrivOp::DockerLogs`].
+    DockerLogs(Vec<crate::docker::DockerLogLine>),
+    /// Answer to [`PrivOp::DockerLogsFollow`]; the connection now streams [`crate::docker::DockerLogFrame`]s.
+    DockerLogStreamStarted {
+        id: String,
+    },
+    /// Answer to [`PrivOp::DockerStats`].
+    DockerStats(Vec<crate::docker::DockerContainerStat>),
+    /// Answer to [`PrivOp::DockerExec`].
+    DockerExec(crate::docker::DockerExecOutput),
+    /// Answer to [`PrivOp::DockerListImages`].
+    DockerImages(Vec<crate::docker::DockerImage>),
+    /// Answer to [`PrivOp::DockerListVolumes`].
+    DockerVolumes(Vec<crate::docker::DockerVolume>),
+    /// Answer to [`PrivOp::DockerListNetworks`].
+    DockerNetworks(Vec<crate::docker::DockerNetwork>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

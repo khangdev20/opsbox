@@ -11,6 +11,7 @@ repository = "https://github.com/khangdev20/opsbox"
 [workspace.dependencies]
 # internal
 opsbox-proto = { path = "crates/opsbox-proto" }
+opsbox-docker = { path = "crates/opsbox-docker" }
 opsbox-store = { path = "crates/opsbox-store" }
 opsbox-priv = { path = "crates/opsbox-priv" }
 opsbox-api = { path = "crates/opsbox-api" }
