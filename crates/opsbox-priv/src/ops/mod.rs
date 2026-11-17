@@ -17,11 +17,13 @@ mod journal;
 mod metrics;
 mod ping;
 mod pkg;
+mod sealed;
 mod security;
 pub(crate) mod terminal;
 mod totp;
 mod units;
 mod update;
+pub mod web;
 
 pub use firewall::{janitor_tick, restore_on_start};
 
@@ -35,6 +37,7 @@ use crate::secrets::Secrets;
 pub(crate) struct Env {
     pub secrets: Secrets,
     pub master_key: std::path::PathBuf,
+    pub config_path: std::path::PathBuf,
     pub files: files::Dirs,
 }
 
@@ -207,5 +210,10 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             code,
             after_step,
         } => totp::verify(secrets, sealed, context, code.expose(), *after_step),
+        PrivOp::SecretSeal { context, plaintext } => sealed::seal(secrets, context, plaintext),
+        PrivOp::SecretOpen { context, sealed } => sealed::open(secrets, context, sealed),
+        PrivOp::WebLocalOnly { local_only } => {
+            web::set_local_only(&env.config_path, *local_only).map(|()| PrivReply::Done)
+        }
     }
 }

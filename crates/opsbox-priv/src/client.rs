@@ -952,4 +952,50 @@ impl PrivClient {
         };
         self.done(rid, actor, op).await
     }
+
+    pub async fn secret_seal(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        context: &str,
+        plaintext: Secret,
+    ) -> Result<String, ClientError> {
+        let op = PrivOp::SecretSeal {
+            context: context.to_owned(),
+            plaintext,
+        };
+        self.expect(rid, actor, op, |r| match r {
+            PrivReply::Sealed { sealed } => Ok(sealed),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn secret_open(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        context: &str,
+        sealed: &str,
+    ) -> Result<Secret, ClientError> {
+        let op = PrivOp::SecretOpen {
+            context: context.to_owned(),
+            sealed: sealed.to_owned(),
+        };
+        self.expect(rid, actor, op, |r| match r {
+            PrivReply::Opened { plaintext } => Ok(plaintext),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn web_local_only(
+        &self,
+        rid: &str,
+        actor: &str,
+        local_only: bool,
+    ) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::WebLocalOnly { local_only })
+            .await
+    }
 }

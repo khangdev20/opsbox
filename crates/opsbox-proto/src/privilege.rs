@@ -69,6 +69,22 @@ pub enum PrivOp {
         code: Secret,
         after_step: u64,
     },
+    /// Seal a secret with the master key under a namespaced `context` (for proxy keys).
+    /// `priv` refuses `totp:*` contexts so callers cannot access TOTP secrets generically.
+    SecretSeal {
+        context: String,
+        plaintext: Secret,
+    },
+    /// Open a secret sealed with [`PrivOp::SecretSeal`] for the same `context`.
+    SecretOpen {
+        context: String,
+        sealed: String,
+    },
+    /// Switch `[api] listen` in `config.toml` between `127.0.0.1` (local-only) and
+    /// `0.0.0.0` (public) and schedule a brief restart of `opsbox.service`.
+    WebLocalOnly {
+        local_only: bool,
+    },
     /// Cumulative machine counters (CPU, memory, disks, network, ...). `procs` also
     /// scans every process, which is the expensive part, so it is asked for less often.
     MetricsSample {
@@ -267,6 +283,9 @@ impl PrivOp {
             Self::Doctor => "doctor",
             Self::TotpNewSecret { .. } => "totp_new_secret",
             Self::TotpVerify { .. } => "totp_verify",
+            Self::SecretSeal { .. } => "secret_seal",
+            Self::SecretOpen { .. } => "secret_open",
+            Self::WebLocalOnly { .. } => "web_local_only",
             Self::MetricsSample { .. } => "metrics_sample",
             Self::SystemFacts => "system_facts",
             Self::PkgList => "pkg_list",
@@ -375,6 +394,14 @@ pub enum PrivReply {
     /// Answer to [`PrivOp::TotpVerify`]: the time step that matched, if any.
     TotpResult {
         matched_step: Option<u64>,
+    },
+    /// Answer to [`PrivOp::SecretSeal`].
+    Sealed {
+        sealed: String,
+    },
+    /// Answer to [`PrivOp::SecretOpen`].
+    Opened {
+        plaintext: Secret,
     },
     /// Answer to [`PrivOp::MetricsSample`].
     Metrics(Box<crate::metrics::RawSample>),

@@ -116,7 +116,7 @@ fn schedule_unit_restart() -> Result<(), PrivError> {
             "--description=Restart opsbox after update",
             "/bin/sh",
             "-c",
-            "sleep 0.5; systemctl restart opsbox-priv.service; systemctl restart opsbox.service",
+            "sleep 0.5; systemctl restart opsbox-priv.service; if systemctl cat opsbox-proxy.service >/dev/null 2>&1; then systemctl restart opsbox-proxy.service; fi; systemctl restart opsbox.service",
         ])
         .output()
         .map_err(|e| err(PrivErrorCode::Internal, format!("systemd-run failed: {e}")))?;

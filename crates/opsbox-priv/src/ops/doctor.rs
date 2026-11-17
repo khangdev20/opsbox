@@ -50,7 +50,11 @@ pub(super) fn collect(master_key: &Path) -> DoctorReport {
     let mut checks = Vec::new();
     let systemctl = find(&["/usr/bin/systemctl", "/bin/systemctl"]);
     if let Some(ctl) = systemctl.filter(|_| Path::new("/run/systemd/system").is_dir()) {
-        for unit in ["opsbox.service", "opsbox-priv.service"] {
+        for unit in [
+            "opsbox.service",
+            "opsbox-priv.service",
+            "opsbox-proxy.service",
+        ] {
             let active =
                 run(&ctl, &["is-active", unit], Duration::from_secs(3)).is_some_and(|o| o.ok());
             checks.push(check(

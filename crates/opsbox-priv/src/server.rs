@@ -89,6 +89,7 @@ impl PrivServer {
         let env = Arc::new(Env {
             secrets: Secrets::new(&self.config.master_key_path),
             master_key: self.config.master_key_path.clone(),
+            config_path: self.config.config_path.clone(),
             files: Dirs {
                 xfer: self.config.xfer_dir.clone(),
                 trash: self.config.trash_dir.clone(),

@@ -6,6 +6,7 @@ pub const DEFAULT_SOCKET_PATH: &str = "/run/opsbox/priv.sock";
 pub const DEFAULT_MASTER_KEY_PATH: &str = "/etc/opsbox/master.key";
 pub const DEFAULT_XFER_DIR: &str = "/var/lib/opsbox/xfer";
 pub const DEFAULT_TRASH_DIR: &str = "/var/lib/opsbox/trash";
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/opsbox/config.toml";
 
 /// Everything the server needs, already resolved (no user names left).
 #[derive(Debug, Clone)]
@@ -23,6 +24,8 @@ pub struct PrivConfig {
     pub xfer_dir: PathBuf,
     /// Where deleted files wait for seven days.
     pub trash_dir: PathBuf,
+    /// Path to `config.toml` updated by `WebLocalOnly`.
+    pub config_path: PathBuf,
 }
 
 impl PrivConfig {
@@ -35,6 +38,7 @@ impl PrivConfig {
             master_key_path: DEFAULT_MASTER_KEY_PATH.into(),
             xfer_dir: DEFAULT_XFER_DIR.into(),
             trash_dir: DEFAULT_TRASH_DIR.into(),
+            config_path: DEFAULT_CONFIG_PATH.into(),
         }
     }
 }
