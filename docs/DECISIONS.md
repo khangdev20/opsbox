@@ -260,3 +260,9 @@ Choices made while building the backend where `BACKEND_SPEC.md` left room or whe
 
 1. **Privilege escalation in the file layout (section 4).** Root runs `/usr/local/bin/opsbox`, a symlink into `/var/lib/opsbox/bin/`, while the unprivileged `opsbox` user must own `/var/lib/opsbox` (database, `ReadWritePaths`). A compromised `serve` could rename `bin/` and put its own binary in its place; root would run it on the next restart. Mitigation implemented: sticky bit (mode 1770, root-owned) so `opsbox` cannot rename or delete entries it does not own. Phase 2 (self-update) should keep the slots out of any directory that `opsbox` can write, or this property must be tested.
 2. **`RestrictAddressFamilies=AF_UNIX` on `priv` (section 2) will not survive Phase 1.** Child processes inherit it, and `nft`, `ip` and `wg` talk netlink (`AF_NETLINK`). M4 added `AF_NETLINK AF_INET AF_INET6` so package tools and firewall operations work; priv itself still opens no network listener.
+
+### Phase 1 safety follow-up: console and staging configuration
+
+The network-facing serve process no longer opens `/dev/console`. A typed `ConsoleNotice` request carries a redacted `Secret`; priv bounds the notice to 4096 bytes, requires the setup-banner prefix and rejects control characters before writing the fixed console device. Console failure leaves the journal banner available.
+
+The binary configuration fixes file staging at `/var/lib/opsbox/xfer` by default. Alternate paths (including CLI/environment overrides) require `[files] allow_external_xfer_dir = true`. The isolated memory probe opts in explicitly. This configuration guard does not claim to solve staging-directory replacement races; descriptor-relative file and staging access remains a separate required part.

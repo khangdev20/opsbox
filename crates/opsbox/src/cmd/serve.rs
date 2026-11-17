@@ -89,7 +89,7 @@ async fn serve(config: Config) -> Result<()> {
         .ensure_setup_token()
         .context("cannot create the setup token")?
     {
-        announce_setup_token(&config, &token);
+        announce_setup_token(&config, &token).await;
     }
 
     opsbox_api::serve(listener, state, super::shutdown_signal())
@@ -101,11 +101,19 @@ async fn serve(config: Config) -> Result<()> {
 
 /// Write the setup banner to standard error (the journal) and, if possible, to the
 /// system console, as docs/BACKEND_SPEC.md 6.3 asks.
-fn announce_setup_token(config: &Config, token: &str) {
+async fn announce_setup_token(config: &Config, token: &str) {
     let banner = super::admin::setup_banner(config, token);
     eprint!("{banner}");
-    if let Ok(mut console) = std::fs::OpenOptions::new().write(true).open("/dev/console") {
-        use std::io::Write;
-        let _ = console.write_all(banner.as_bytes());
+    if let Err(e) = PrivClient::new(&config.priv_socket)
+        .call(
+            "setup-console",
+            None,
+            opsbox_proto::PrivOp::ConsoleNotice {
+                text: opsbox_proto::Secret::new(banner),
+            },
+        )
+        .await
+    {
+        warn!(error = %e, "setup notice remains available in the service journal");
     }
 }

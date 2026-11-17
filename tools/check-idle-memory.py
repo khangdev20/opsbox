@@ -37,6 +37,7 @@ master_key = "{root}/master.key"
 [store]
 db_path = "{root}/opsbox.db"
 [files]
+allow_external_xfer_dir = true
 xfer_dir = "{root}/xfer"
 trash_dir = "{root}/trash"
 apps_dir = "{root}/apps"

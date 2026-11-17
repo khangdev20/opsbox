@@ -48,6 +48,10 @@ pub enum PrivOp {
     Ping,
     /// Facts about the machine. Answered with [`PrivReply::HostInfo`].
     HostInfo,
+    /// Bounded setup notice written by the privileged helper only.
+    ConsoleNotice {
+        text: Secret,
+    },
     /// Read-only diagnostics for `opsbox doctor`.
     Doctor,
     /// Create a TOTP secret. `priv` keeps the plaintext only long enough to return it
@@ -245,6 +249,7 @@ impl PrivOp {
         match self {
             Self::Ping => "ping",
             Self::HostInfo => "host_info",
+            Self::ConsoleNotice { .. } => "console_notice",
             Self::Doctor => "doctor",
             Self::TotpNewSecret { .. } => "totp_new_secret",
             Self::TotpVerify { .. } => "totp_verify",

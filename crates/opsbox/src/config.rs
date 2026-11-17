@@ -112,6 +112,7 @@ impl Default for AuthSection {
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct FilesSection {
+    allow_external_xfer_dir: bool,
     xfer_dir: PathBuf,
     trash_dir: PathBuf,
     apps_dir: PathBuf,
@@ -121,6 +122,7 @@ struct FilesSection {
 impl Default for FilesSection {
     fn default() -> Self {
         Self {
+            allow_external_xfer_dir: false,
             xfer_dir: opsbox_priv::DEFAULT_XFER_DIR.into(),
             trash_dir: opsbox_priv::DEFAULT_TRASH_DIR.into(),
             apps_dir: "/var/lib/opsbox/apps".into(),
@@ -269,6 +271,14 @@ impl Config {
         let socket_group = o.socket_group.unwrap_or(file.privileged.socket_group);
         let mode = o.socket_mode.unwrap_or(file.privileged.socket_mode);
 
+        let xfer_dir = o.xfer_dir.unwrap_or(file.files.xfer_dir);
+        if !file.files.allow_external_xfer_dir
+            && xfer_dir != std::path::Path::new(opsbox_priv::DEFAULT_XFER_DIR)
+        {
+            bail!(
+                "files.xfer_dir is fixed at /var/lib/opsbox/xfer; set files.allow_external_xfer_dir = true explicitly for an alternate staging directory"
+            );
+        }
         Ok(Self {
             listen: o.listen.unwrap_or(file.api.listen),
             priv_socket: o.priv_socket.unwrap_or(file.privileged.socket),
@@ -280,7 +290,7 @@ impl Config {
             secure_cookies: o.secure_cookies.unwrap_or(file.api.secure_cookies),
             argon2_memory_kib: file.auth.argon2_memory_kib,
             argon2_iterations: file.auth.argon2_iterations,
-            xfer_dir: o.xfer_dir.unwrap_or(file.files.xfer_dir),
+            xfer_dir,
             trash_dir: file.files.trash_dir,
             apps_dir: file.files.apps_dir,
             max_upload_mb: file.files.max_upload_mb,
@@ -328,6 +338,28 @@ mod tests {
     fn load_str(toml_text: &str, o: Overrides) -> Result<Config> {
         let file: FileConfig = toml::from_str(toml_text)?;
         Config::resolve(file, None, o)
+    }
+
+    #[test]
+    fn external_staging_requires_explicit_opt_in() {
+        assert!(load_str("[files]\nxfer_dir = \"/tmp/xfer\"\n", Overrides::default()).is_err());
+        assert!(
+            load_str(
+                "[files]\nxfer_dir = \"/tmp/xfer\"\nallow_external_xfer_dir = true\n",
+                Overrides::default()
+            )
+            .is_ok()
+        );
+        assert!(
+            load_str(
+                "",
+                Overrides {
+                    xfer_dir: Some("/tmp/xfer".into()),
+                    ..Overrides::default()
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -41,6 +41,35 @@ pub(crate) struct Env {
 pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
     let secrets = &env.secrets;
     match op {
+        PrivOp::ConsoleNotice { text } => {
+            use std::io::Write;
+            if text.expose().len() > 4096
+                || !text.expose().starts_with("opsbox first-run setup")
+                || text
+                    .expose()
+                    .bytes()
+                    .any(|b| b < 32 && b != b'\n' && b != b'\t')
+            {
+                return Err(PrivError {
+                    code: opsbox_proto::PrivErrorCode::Invalid,
+                    message: "Invalid setup console notice.".into(),
+                });
+            }
+            let mut console = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/console")
+                .map_err(|_| PrivError {
+                    code: opsbox_proto::PrivErrorCode::Internal,
+                    message: "System console is unavailable.".into(),
+                })?;
+            console
+                .write_all(text.expose().as_bytes())
+                .map_err(|_| PrivError {
+                    code: opsbox_proto::PrivErrorCode::Internal,
+                    message: "Cannot write system console.".into(),
+                })?;
+            Ok(PrivReply::Done)
+        }
         PrivOp::Ping => Ok(ping::run()),
         PrivOp::HostInfo => host_info::run().map(PrivReply::HostInfo),
         PrivOp::Doctor => Ok(PrivReply::Doctor(doctor::collect(&env.master_key))),
