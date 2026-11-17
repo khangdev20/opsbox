@@ -16,6 +16,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use crate::config::PrivConfig;
 use crate::io::{ReadError, read_body, write_frame};
 use crate::ops;
+use crate::secrets::Secrets;
 
 /// How long a connection may sit idle between frames.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -82,6 +83,7 @@ impl PrivServer {
     /// Accept connections until `shutdown` completes, then remove the socket file.
     pub async fn run(self, shutdown: impl Future<Output = ()>) {
         let allowed: Arc<[u32]> = self.config.allowed_uids.clone().into();
+        let secrets = Arc::new(Secrets::new(&self.config.master_key_path));
         let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         info!(
             socket = %self.config.socket_path.display(),
@@ -96,10 +98,11 @@ impl PrivServer {
                     Ok((stream, _)) => {
                         let allowed = Arc::clone(&allowed);
                         let permits = Arc::clone(&permits);
+                        let secrets = Arc::clone(&secrets);
                         tokio::spawn(async move {
                             // Held for the life of the connection.
                             let Ok(_permit) = permits.acquire_owned().await else { return };
-                            handle_connection(stream, &allowed).await;
+                            handle_connection(stream, &allowed, &secrets).await;
                         });
                     }
                     Err(e) => {
@@ -132,7 +135,7 @@ fn remove_stale_socket(path: &Path) -> Result<(), ServerError> {
     })
 }
 
-async fn handle_connection(mut stream: UnixStream, allowed: &[u32]) {
+async fn handle_connection(mut stream: UnixStream, allowed: &[u32], secrets: &Arc<Secrets>) {
     // The kernel reports who is on the other end (SO_PEERCRED on Linux). This is
     // checked before anything the peer sent is read or parsed.
     let peer = match stream.peer_cred() {
@@ -178,7 +181,7 @@ async fn handle_connection(mut stream: UnixStream, allowed: &[u32]) {
             }
         };
 
-        let response = process(&body, uid).await;
+        let response = process(&body, uid, secrets).await;
         if write_frame(&mut stream, &response).await.is_err() {
             return;
         }
@@ -187,7 +190,7 @@ async fn handle_connection(mut stream: UnixStream, allowed: &[u32]) {
 
 /// Decode and run one request. Anything that is not a valid [`PrivRequest`]
 /// (bad JSON, unknown operation, unexpected fields) is answered with `bad_request`.
-async fn process(body: &[u8], uid: u32) -> PrivResponse {
+async fn process(body: &[u8], uid: u32, secrets: &Arc<Secrets>) -> PrivResponse {
     let value: serde_json::Value = match frame::decode(body) {
         Ok(v) => v,
         Err(e) => return PrivResponse::failure("", PrivErrorCode::BadRequest, e.to_string()),
@@ -217,8 +220,9 @@ async fn process(body: &[u8], uid: u32) -> PrivResponse {
         uid
     );
     let op = request.op.clone();
+    let secrets = Arc::clone(secrets);
     let result = async {
-        let outcome = tokio::task::spawn_blocking(move || ops::dispatch(&op))
+        let outcome = tokio::task::spawn_blocking(move || ops::dispatch(&op, &secrets))
             .await
             .unwrap_or_else(|_| {
                 Err(PrivError {

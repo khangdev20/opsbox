@@ -10,4 +10,5 @@ pub mod privilege;
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
 pub use privilege::{
     HostInfo, PrivError, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
+    Secret,
 };

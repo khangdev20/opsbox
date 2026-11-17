@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use nix::unistd::User;
 
 pub const DEFAULT_SOCKET_PATH: &str = "/run/opsbox/priv.sock";
+pub const DEFAULT_MASTER_KEY_PATH: &str = "/etc/opsbox/master.key";
 
 /// Everything the server needs, already resolved (no user names left).
 #[derive(Debug, Clone)]
@@ -14,6 +15,8 @@ pub struct PrivConfig {
     pub socket_mode: u32,
     /// Group that owns the socket. `None` leaves the group as created.
     pub socket_group: Option<String>,
+    /// File holding the 32-byte key that seals secrets. Created (0600) on first use.
+    pub master_key_path: PathBuf,
 }
 
 impl PrivConfig {
@@ -23,6 +26,7 @@ impl PrivConfig {
             allowed_uids,
             socket_mode: 0o660,
             socket_group: None,
+            master_key_path: DEFAULT_MASTER_KEY_PATH.into(),
         }
     }
 }

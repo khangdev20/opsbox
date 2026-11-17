@@ -5,6 +5,28 @@
 
 use serde::{Deserialize, Serialize};
 
+/// A string that must never reach a log: `Debug` prints `[redacted]`. Serializes as a
+/// plain string.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+    /// The plaintext. Call sites are the only places a secret becomes visible.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
 /// A request frame. `id` correlates the response and the logs on both sides; `serve`
 /// reuses the HTTP request id so one request can be followed across processes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +48,19 @@ pub enum PrivOp {
     Ping,
     /// Facts about the machine. Answered with [`PrivReply::HostInfo`].
     HostInfo,
+    /// Create a TOTP secret. `priv` keeps the plaintext only long enough to return it
+    /// once (for the QR code) and as a sealed value to store. `context` binds the
+    /// sealed value to its owner, e.g. `totp:<user id>`.
+    TotpNewSecret { context: String },
+    /// Check a 6-digit code against a sealed secret (RFC 6238, SHA-1, 30 s, +-1 step).
+    /// Only steps newer than `after_step` match, so a code cannot be used twice.
+    /// The secret never leaves `priv`.
+    TotpVerify {
+        sealed: String,
+        context: String,
+        code: Secret,
+        after_step: u64,
+    },
 }
 
 impl PrivOp {
@@ -34,6 +69,8 @@ impl PrivOp {
         match self {
             Self::Ping => "ping",
             Self::HostInfo => "host_info",
+            Self::TotpNewSecret { .. } => "totp_new_secret",
+            Self::TotpVerify { .. } => "totp_verify",
         }
     }
 }
@@ -84,6 +121,17 @@ pub enum PrivReply {
         version: String,
     },
     HostInfo(HostInfo),
+    /// Answer to [`PrivOp::TotpNewSecret`].
+    TotpSecret {
+        /// Encrypted with the master key; store this.
+        sealed: String,
+        /// RFC 4648 base32, for the authenticator app. Shown once, never stored.
+        secret_base32: Secret,
+    },
+    /// Answer to [`PrivOp::TotpVerify`]: the time step that matched, if any.
+    TotpResult {
+        matched_step: Option<u64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,5 +207,33 @@ mod tests {
             let s = serde_json::to_string(&r).unwrap();
             assert_eq!(serde_json::from_str::<PrivResponse>(&s).unwrap(), r);
         }
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+
+    #[test]
+    fn secrets_never_show_up_in_debug_output() {
+        let reply = PrivReply::TotpSecret {
+            sealed: "enc:v1:x".into(),
+            secret_base32: Secret::new("JBSWY3DPEHPK3PXP"),
+        };
+        let op = PrivOp::TotpVerify {
+            sealed: "enc:v1:x".into(),
+            context: "totp:u".into(),
+            code: Secret::new("123456"),
+            after_step: 0,
+        };
+        let shown = format!("{reply:?} {op:?}");
+        assert!(
+            !shown.contains("JBSWY3DPEHPK3PXP") && !shown.contains("123456"),
+            "{shown}"
+        );
+        assert!(shown.contains("[redacted]"));
+        // ...but they still travel as plain strings.
+        let json = serde_json::to_string(&op).unwrap();
+        assert!(json.contains("\"123456\""), "{json}");
     }
 }

@@ -12,10 +12,12 @@ mod client;
 mod config;
 mod io;
 mod ops;
+mod secrets;
 mod server;
 
 pub use client::{ClientError, PrivClient};
-pub use config::{DEFAULT_SOCKET_PATH, PrivConfig, resolve_users};
+pub use config::{DEFAULT_MASTER_KEY_PATH, DEFAULT_SOCKET_PATH, PrivConfig, resolve_users};
+pub use ops::{base32_encode, code_at, verify_at};
 pub use server::{PrivServer, ServerError};
 
 /// Version reported by `Ping`, so `status` can notice a stale helper after an update.

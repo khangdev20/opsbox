@@ -9,13 +9,20 @@ publish = false
 
 [dependencies]
 opsbox-proto.workspace = true
+base64 = "0.23"
+chacha20poly1305 = "0.11"
+getrandom = "0.4"
+hmac = "0.13"
 nix = { version = "0.32", default-features = false, features = ["user"] }
 serde = "1.0"
+sha1 = "0.11"
 serde_json = "1.0"
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.54", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
 tracing = "0.1"
+zeroize = "1.9"
 
 [dev-dependencies]
 tempfile = "3.27"

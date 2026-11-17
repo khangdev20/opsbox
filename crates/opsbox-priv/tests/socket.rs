@@ -39,10 +39,16 @@ impl Running {
 
 /// Start a server that allows `allowed(own_uid)`.
 fn start(allowed: impl FnOnce(u32) -> Vec<u32>) -> Running {
+    start_with_key(allowed, None)
+}
+
+fn start_with_key(allowed: impl FnOnce(u32) -> Vec<u32>, key: Option<PathBuf>) -> Running {
     let dir = tempfile::tempdir().unwrap();
     let uid = own_uid(dir.path());
     let socket = dir.path().join("run").join("priv.sock");
-    let server = PrivServer::bind(PrivConfig::new(&socket, allowed(uid))).unwrap();
+    let mut cfg = PrivConfig::new(&socket, allowed(uid));
+    cfg.master_key_path = key.unwrap_or_else(|| dir.path().join("master.key"));
+    let server = PrivServer::bind(cfg).unwrap();
     let (stop, rx) = oneshot::channel();
     let task = tokio::spawn(server.run(async {
         let _ = rx.await;
@@ -250,4 +256,70 @@ async fn client_reports_a_missing_helper_clearly() {
     let client = PrivClient::new(dir.path().join("nope.sock"));
     let err = client.ping("r").await.unwrap_err();
     assert_eq!(err.connect_kind(), Some(std::io::ErrorKind::NotFound));
+}
+
+#[tokio::test]
+async fn totp_enrolment_and_login_through_the_socket() {
+    let srv = start(|uid| vec![uid]);
+    let client = srv.client();
+
+    let (sealed, secret) = client.totp_new_secret("r1", "totp:u1").await.unwrap();
+    assert!(sealed.starts_with("enc:v1:"));
+    assert_eq!(secret.expose().len(), 32);
+
+    // Compute the current code the way an authenticator app would.
+    let raw = decode_base32(secret.expose());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let code = opsbox_priv::code_at(&raw, now / 30);
+
+    let step = client
+        .totp_verify("r2", &sealed, "totp:u1", &code, 0)
+        .await
+        .unwrap();
+    assert_eq!(step, Some(now / 30));
+    // Replay with the recorded step is refused; a wrong code never matches.
+    assert_eq!(
+        client
+            .totp_verify("r3", &sealed, "totp:u1", &code, now / 30)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        client
+            .totp_verify("r4", &sealed, "totp:u1", "000000", 0)
+            .await
+            .unwrap(),
+        None
+    );
+    // A sealed secret is useless under another user's context.
+    assert!(
+        client
+            .totp_verify("r5", &sealed, "totp:u2", &code, 0)
+            .await
+            .is_err()
+    );
+    srv.stop().await;
+}
+
+fn decode_base32(s: &str) -> Vec<u8> {
+    let (mut buf, mut bits, mut out) = (0u32, 0u32, Vec::new());
+    for c in s.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'2'..=b'7' => c - b'2' + 26,
+            _ => panic!("not base32"),
+        };
+        buf = (buf << 5) | u32::from(v);
+        bits += 5;
+        if bits >= 8 {
+            out.push((buf >> (bits - 8)) as u8);
+            bits -= 8;
+            buf &= (1 << bits) - 1;
+        }
+    }
+    out
 }

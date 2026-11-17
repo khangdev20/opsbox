@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use opsbox_proto::frame;
-use opsbox_proto::{HostInfo, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult};
+use opsbox_proto::{
+    HostInfo, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, Secret,
+};
 use tokio::net::UnixStream;
 
 use crate::io::{ReadError, WriteError, read_body, write_frame};
@@ -146,6 +148,46 @@ impl PrivClient {
     ) -> Result<HostInfo, ClientError> {
         match self.call(request_id, actor, PrivOp::HostInfo).await? {
             PrivReply::HostInfo(info) => Ok(info),
+            other => Err(ClientError::Protocol(format!("unexpected reply {other:?}"))),
+        }
+    }
+
+    /// Create a TOTP secret bound to `context` (e.g. `totp:<user id>`). Returns the
+    /// sealed value to store and the base32 secret to show once.
+    pub async fn totp_new_secret(
+        &self,
+        request_id: &str,
+        context: &str,
+    ) -> Result<(String, Secret), ClientError> {
+        let op = PrivOp::TotpNewSecret {
+            context: context.to_owned(),
+        };
+        match self.call(request_id, None, op).await? {
+            PrivReply::TotpSecret {
+                sealed,
+                secret_base32,
+            } => Ok((sealed, secret_base32)),
+            other => Err(ClientError::Protocol(format!("unexpected reply {other:?}"))),
+        }
+    }
+
+    /// The time step that `code` matches (newer than `after_step`), if any.
+    pub async fn totp_verify(
+        &self,
+        request_id: &str,
+        sealed: &str,
+        context: &str,
+        code: &str,
+        after_step: u64,
+    ) -> Result<Option<u64>, ClientError> {
+        let op = PrivOp::TotpVerify {
+            sealed: sealed.to_owned(),
+            context: context.to_owned(),
+            code: Secret::new(code),
+            after_step,
+        };
+        match self.call(request_id, None, op).await? {
+            PrivReply::TotpResult { matched_step } => Ok(matched_step),
             other => Err(ClientError::Protocol(format!("unexpected reply {other:?}"))),
         }
     }
