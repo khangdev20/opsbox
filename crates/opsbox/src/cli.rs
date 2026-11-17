@@ -118,6 +118,9 @@ pub struct ServeArgs {
     /// SQLite database file [default: /var/lib/opsbox/opsbox.db]
     #[arg(long, env = "OPSBOX_DB", value_name = "PATH")]
     pub db: Option<PathBuf>,
+    /// Folder for staged uploads and downloads [default: /var/lib/opsbox/xfer]
+    #[arg(long, env = "OPSBOX_XFER_DIR", value_name = "PATH")]
+    pub xfer_dir: Option<PathBuf>,
     /// Mark cookies Secure: auto (behind an HTTPS proxy), always or never [default: auto]
     #[arg(long, env = "OPSBOX_SECURE_COOKIES", value_enum)]
     pub secure_cookies: Option<crate::config::SecureCookiesSetting>,
@@ -153,6 +156,9 @@ pub struct PrivArgs {
     /// File with the key that seals secrets [default: /etc/opsbox/master.key]
     #[arg(long, env = "OPSBOX_PRIV_MASTER_KEY", value_name = "PATH")]
     pub master_key: Option<PathBuf>,
+    /// Folder for staged uploads and downloads [default: /var/lib/opsbox/xfer]
+    #[arg(long, env = "OPSBOX_XFER_DIR", value_name = "PATH")]
+    pub xfer_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]

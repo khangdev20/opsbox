@@ -91,7 +91,7 @@ async function boot() {
   if (api.MODE === 'http') {
     try {
       const s = await api.auth.session();
-      server.setupRequired = !!s.setupRequired;
+      server.setupRequired = !!s.setupRequired; server.role = s.role || '';
       if (s.authenticated) session.set(s.user); else session.clear();
       if (s.enrollRequired && !/^#\/enroll/.test(location.hash)) location.hash = '#/enroll';
     } catch { session.clear(); }

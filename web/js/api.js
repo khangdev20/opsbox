@@ -39,6 +39,7 @@ const REAL = new Set([
   'getMetrics', 'getAttention',
   'getUpdates', 'installUpdates', 'setAutoUpdates', 'reboot', 'cancelReboot', 'getUnits', 'unitAction', 'getJournal',
   'getJobs', 'runJob', 'addJob', 'removeJob', 'getFirewall', 'addRule', 'removeRule', 'confirmFirewall', 'openSsh',
+  'listDir', 'readFile', 'writeFile', 'chmod', 'mkdir', 'removePaths', 'upload',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -191,6 +192,39 @@ export function streamJournal({ unit = '', prio = 6, q = '' } = {}, onEntries) {
 export async function cancelReboot() { sample('cancelReboot'); if (real('cancelReboot')) return http('/system/reboot/cancel', { method: 'POST' }); await lag(150); return { ok: true }; }
 export async function confirmFirewall() { sample('confirmFirewall'); if (real('confirmFirewall')) return http('/firewall/confirm', { method: 'POST' }); await lag(100); return { ok: true }; }
 export async function removeJob(id) { sample('removeJob'); if (real('removeJob')) return http('/jobs/' + encodeURIComponent(id), { method: 'DELETE' }); await lag(200); const i = S.jobs.findIndex((x) => x.id === id); if (i >= 0) S.jobs.splice(i, 1); audit('remove job'); return { ok: true }; }
+
+
+// ---- helpers for the Files functions
+const enc = encodeURIComponent;
+// "12:30" for today, "Mon 12" this week, else "2026-11-01"
+function fileTime(sec) {
+  if (!sec) return '';
+  const d = new Date(sec * 1000), t = new Date();
+  if (d.toDateString() === t.toDateString()) return hhmm(d.getTime());
+  return d.toISOString().slice(0, 10);
+}
+// The editor does not pass the modification time it saw, so it is remembered here: saving
+// sends it back, and the server refuses to overwrite a file someone else saved meanwhile.
+const seenMtime = new Map();
+// Where the browser downloads a file from (a normal link; the session cookie authorizes it).
+export const downloadUrl = (path) => (MODE === 'http' && REAL.has('readFile') ? `/api/v1/files/download?path=${enc(path)}` : null);
+
+async function uploadReal(dir, file, overwrite = false) {
+  let res;
+  try {
+    res = await fetch(`/api/v1/files/upload?dir=${enc(dir)}&name=${enc(file.name)}${overwrite ? '&overwrite=true' : ''}`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/octet-stream', 'X-Opsbox-CSRF': cookie('opsbox_csrf') },
+      body: file, // streamed from disk by the browser
+    });
+  } catch { throw new Error('The upload was interrupted. Check the connection and try again.'); }
+  let data = null; try { data = await res.json(); } catch { /* none */ }
+  if (res.ok) return data;
+  const err = new Error(data?.error?.message || `The upload failed (HTTP ${res.status}).`);
+  err.code = data?.error?.code;
+  if (res.status === 409 && !overwrite && hooks.confirm && await hooks.confirm(`A file named ${file.name} already exists here. Replace it?`)) return uploadReal(dir, file, true);
+  throw err;
+}
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -573,21 +607,28 @@ export async function setAutoCleanup(on) { sample('setAutoCleanup'); await lag(1
 
 // ---------------------------------------------------------------- files
 export async function listDir(path) { sample('listDir');
+  if (real('listDir')) { const l = await http('/files?path=' + enc(path)); return { path: l.path, entries: l.entries.map((e) => ({ name: e.name, path: e.path, type: e.type, mode: e.mode, mtime: fileTime(e.mtime), size: e.size, warn: !!e.warn })) }; }
   await lag(80); const p = norm(path); if (!F[p] || F[p].type !== 'd') throw new Error(`Not a directory: ${p}`);
   const kids = childrenOf(p).map((k) => ({ name: k.split('/').pop(), path: k, ...F[k] }));
   kids.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'd' ? -1 : 1));
   return { path: p, entries: kids.map((k) => ({ name: k.name, path: k.path, type: k.type, mode: k.mode, mtime: k.mtime, size: k.size ?? null, warn: k.name.startsWith('.env') && k.mode !== '-rw-------' })) };
 }
-export async function readFile(path) { sample('readFile'); await lag(60); const f = F[norm(path)]; if (!f || f.type !== 'f') throw new Error('Not a file'); return { path: norm(path), content: f.content, mode: f.mode }; }
-export async function writeFile(path, content) { sample('writeFile'); await lag(200); const f = F[norm(path)]; if (!f) throw new Error('No such file'); f.content = content; f.size = content.length; f.mtime = 'just now'; audit(`edit ${norm(path)}`); }
+export async function readFile(path) { sample('readFile');
+  if (real('readFile')) { const f = await http('/files/content?path=' + enc(path)); seenMtime.set(f.path, f.mtime); return { path: f.path, content: f.content, mode: f.mode }; } await lag(60); const f = F[norm(path)]; if (!f || f.type !== 'f') throw new Error('Not a file'); return { path: norm(path), content: f.content, mode: f.mode }; }
+export async function writeFile(path, content) { sample('writeFile');
+  if (real('writeFile')) { const r = await http('/files/content', { method: 'PUT', body: { path, content, mtime: seenMtime.get(path) } }); seenMtime.set(path, r.mtime); return; } await lag(200); const f = F[norm(path)]; if (!f) throw new Error('No such file'); f.content = content; f.size = content.length; f.mtime = 'just now'; audit(`edit ${norm(path)}`); }
 export async function chmod(path, mode) { sample('chmod');
+  if (real('chmod')) return http('/files/chmod', { method: 'POST', body: { path, mode } });
   await lag(200); const f = F[norm(path)]; if (!f) throw new Error('No such file');
   if (!/^[0-7]{3}$/.test(mode)) throw new Error('Mode must be 3 octal digits, e.g. 600');
   const bits = ['---', '--x', '-w-', '-wx', 'r--', 'r-x', 'rw-', 'rwx']; f.mode = (f.type === 'd' ? 'd' : '-') + [...mode].map((d) => bits[+d]).join(''); audit(`chmod ${mode} ${norm(path)}`);
 }
-export async function mkdir(path) { sample('mkdir'); await lag(150); const p = norm(path); if (F[p]) throw new Error('Already exists'); addDir(p, 'just now'); audit(`mkdir ${p}`); }
-export async function removePaths(paths) { sample('removePaths'); await lag(250); paths.forEach((p) => { Object.keys(F).filter((k) => k === p || k.startsWith(p + '/')).forEach((k) => delete F[k]); }); audit(`delete ${paths.join(', ')}`); }
-export async function upload(dir, file) { sample('upload'); await lag(300); addFile(join(dir, file.name), '(uploaded)', '-rw-r--r--', 'just now', file.size); audit(`upload ${join(dir, file.name)}`); }
+export async function mkdir(path) { sample('mkdir');
+  if (real('mkdir')) return http('/files/mkdir', { method: 'POST', body: { path } }); await lag(150); const p = norm(path); if (F[p]) throw new Error('Already exists'); addDir(p, 'just now'); audit(`mkdir ${p}`); }
+export async function removePaths(paths) { sample('removePaths');
+  if (real('removePaths')) return http('/files/delete', { method: 'POST', body: { paths } }); await lag(250); paths.forEach((p) => { Object.keys(F).filter((k) => k === p || k.startsWith(p + '/')).forEach((k) => delete F[k]); }); audit(`delete ${paths.join(', ')}`); }
+export async function upload(dir, file) { sample('upload');
+  if (real('upload')) return uploadReal(dir, file); await lag(300); addFile(join(dir, file.name), '(uploaded)', '-rw-r--r--', 'just now', file.size); audit(`upload ${join(dir, file.name)}`); }
 
 // ---------------------------------------------------------------- security
 export async function getSecurity() { sample('getSecurity');

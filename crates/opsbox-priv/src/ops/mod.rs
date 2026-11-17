@@ -5,6 +5,7 @@
 pub(crate) mod cron;
 pub(crate) mod exec;
 mod facts;
+pub(crate) mod files;
 mod firewall;
 mod host_info;
 mod hostset;
@@ -24,8 +25,15 @@ use opsbox_proto::{PrivError, PrivOp, PrivReply};
 
 use crate::secrets::Secrets;
 
+/// What operations need besides their arguments.
+pub(crate) struct Env {
+    pub secrets: Secrets,
+    pub files: files::Dirs,
+}
+
 /// Blocking; the server runs it on a blocking thread.
-pub(crate) fn dispatch(op: &PrivOp, secrets: &Secrets) -> Result<PrivReply, PrivError> {
+pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
+    let secrets = &env.secrets;
     match op {
         PrivOp::Ping => Ok(ping::run()),
         PrivOp::HostInfo => host_info::run().map(PrivReply::HostInfo),
@@ -82,6 +90,41 @@ pub(crate) fn dispatch(op: &PrivOp, secrets: &Secrets) -> Result<PrivReply, Priv
         PrivOp::SwapSet { size_mb } => hostset::set_swap(*size_mb).map(|()| PrivReply::Done),
         PrivOp::HostnameSet { name } => hostset::set_hostname(name).map(|()| PrivReply::Done),
         PrivOp::TimezoneSet { zone } => hostset::set_timezone(zone).map(|()| PrivReply::Done),
+        PrivOp::FileList { path, jail } => {
+            files::list(path, jail.as_deref()).map(PrivReply::Listing)
+        }
+        PrivOp::FileRead { path, jail } => {
+            files::read(path, jail.as_deref()).map(PrivReply::FileContent)
+        }
+        PrivOp::FileWrite {
+            path,
+            content,
+            expect_mtime,
+            jail,
+        } => files::write(path, content, *expect_mtime, jail.as_deref())
+            .map(|mtime| PrivReply::Written { mtime }),
+        PrivOp::FileChmod { path, mode, jail } => {
+            files::chmod(path, mode, jail.as_deref()).map(|()| PrivReply::Done)
+        }
+        PrivOp::FileMkdir { path, jail } => {
+            files::mkdir(path, jail.as_deref()).map(|()| PrivReply::Done)
+        }
+        PrivOp::FileRemove {
+            paths,
+            permanent,
+            jail,
+        } => files::remove(paths, *permanent, jail.as_deref(), &env.files).map(PrivReply::Removed),
+        PrivOp::FileStageDownload { path, jail } => {
+            files::stage_download(path, jail.as_deref(), &env.files).map(PrivReply::Staged)
+        }
+        PrivOp::FileInstallUpload {
+            staging,
+            dir,
+            name,
+            overwrite,
+            jail,
+        } => files::install_upload(staging, dir, name, *overwrite, jail.as_deref(), &env.files)
+            .map(|()| PrivReply::Done),
         PrivOp::TotpNewSecret { context } => totp::new_secret(secrets, context),
         PrivOp::TotpVerify {
             sealed,

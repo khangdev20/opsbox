@@ -153,3 +153,20 @@ Open **System** (`#/system`). The "sample data" badge is gone.
 **Audit**: every change above is in the audit log with your name and address: `sudo opsbox audit verify`; `sudo -u opsbox sqlite3 /var/lib/opsbox/opsbox.db "select seq,actor,action,target,result from audit where action like 'system.%'"`.
 
 Not wired yet (still sample data, by design): the Settings page (hostname, time zone and swap controls). The operations and endpoints exist (`PUT /api/v1/system/swap|hostname|timezone`); the page is wired in M7 together with real settings data, because it is prefilled from mock values today.
+
+---
+
+## M5. Files
+
+Reinstall as in the preamble, sign in as the admin, open **Files** (`#/files`). It now starts at `/` (not the demo `/var/www/app`) and the "sample data" badge is gone.
+
+1. **Browse**: folders first, then files, with mode and size. Open `/etc/opsbox`: `master.key` is **not** shown as readable content: click it and the page says system areas are not available. Try `/proc`, `/sys`, `/dev`: refused with a sentence.
+2. **Edit**: open `/etc/hosts` (or any text file). Monaco loads (first time only). Change something, **Ctrl S**: "Saved." Check with `cat` in a shell. In a shell run `sudo sh -c 'echo x >> /etc/hosts'` while the file is open in the page, then press Save: **"This file changed on the server since you opened it. Reload it…"** and the shell's change is not lost.
+3. **Binary and big files**: open a binary (`/bin/ls`): "not text… Download it instead." Open anything over 5 MB: "too big to edit… Download it instead."
+4. **Download**: the ↓ link next to each file and the **Download** button in the editor save the exact file (compare `sha256sum`). `ls -la /var/lib/opsbox/xfer` is empty afterwards.
+5. **Upload**: **Upload** a small file, then a large one (a few hundred MB; the limit is `[files] max_upload_mb`, default 2048). It appears in the listing; the transfer folder is empty again. Upload the same name again: you are asked "Replace it?".
+6. **New folder, Permissions**: create a folder; in the editor press **Permissions** and set `600` (`ls -l` agrees).
+7. **Delete**: select files, **Delete**: "moved to the trash and kept for 7 days". `sudo ls /var/lib/opsbox/trash` shows `<time>-<id>-<name>` and a `.meta` note with the original path. Entries older than seven days are removed by `priv` (hourly).
+8. **Protected**: try to delete `/etc`, `/usr`, or select the folder `/var/lib/opsbox`: refused. Files under `/var/lib/opsbox/bin` or the database cannot be edited or deleted.
+9. **Roles**: make a deployer (not possible from the UI until M7; for a quick check run `sudo -u opsbox sqlite3 /var/lib/opsbox/opsbox.db "update users set role='deployer' where name='admin'"`, sign out and in, then `update ... role='admin'` again after). A deployer starts in `/var/lib/opsbox/apps` and cannot see or change anything outside it, even through a symlink. A viewer has no access to Files at all.
+10. Audit: `files.write`, `files.upload`, `files.download`, `files.trash`, `files.delete`, `files.mkdir`, `files.chmod` are in the audit log with the path.

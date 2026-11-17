@@ -63,6 +63,7 @@ impl From<ClientError> for HttpError {
                     PrivErrorCode::Refused | PrivErrorCode::Forbidden => ErrorCode::Forbidden,
                     PrivErrorCode::ConfirmRequired => ErrorCode::ConfirmationRequired,
                     PrivErrorCode::NotFound => ErrorCode::NotFound,
+                    PrivErrorCode::Conflict => ErrorCode::Conflict,
                     PrivErrorCode::Unsupported => ErrorCode::Unsupported,
                     PrivErrorCode::Internal => ErrorCode::Internal,
                 };

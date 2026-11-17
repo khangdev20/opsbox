@@ -139,6 +139,51 @@ pub enum PrivOp {
     TimezoneSet {
         zone: String,
     },
+    /// File operations. `jail`, when set, is a directory the path must stay inside after
+    /// all symbolic links are resolved (used to confine deployers to their apps).
+    FileList {
+        path: String,
+        jail: Option<String>,
+    },
+    FileRead {
+        path: String,
+        jail: Option<String>,
+    },
+    /// Replace a file atomically. `expect_mtime` guards against overwriting someone else's edit.
+    FileWrite {
+        path: String,
+        content: String,
+        expect_mtime: Option<i64>,
+        jail: Option<String>,
+    },
+    FileChmod {
+        path: String,
+        mode: String,
+        jail: Option<String>,
+    },
+    FileMkdir {
+        path: String,
+        jail: Option<String>,
+    },
+    /// Move to the trash (kept 7 days), or delete for good.
+    FileRemove {
+        paths: Vec<String>,
+        permanent: bool,
+        jail: Option<String>,
+    },
+    /// Copy a file into the transfer directory so `serve` can stream it to the browser.
+    FileStageDownload {
+        path: String,
+        jail: Option<String>,
+    },
+    /// Move an uploaded file from the transfer directory to `dir/name`.
+    FileInstallUpload {
+        staging: String,
+        dir: String,
+        name: String,
+        overwrite: bool,
+        jail: Option<String>,
+    },
 }
 
 impl PrivOp {
@@ -171,6 +216,14 @@ impl PrivOp {
             Self::SwapSet { .. } => "swap_set",
             Self::HostnameSet { .. } => "hostname_set",
             Self::TimezoneSet { .. } => "timezone_set",
+            Self::FileList { .. } => "file_list",
+            Self::FileRead { .. } => "file_read",
+            Self::FileWrite { .. } => "file_write",
+            Self::FileChmod { .. } => "file_chmod",
+            Self::FileMkdir { .. } => "file_mkdir",
+            Self::FileRemove { .. } => "file_remove",
+            Self::FileStageDownload { .. } => "file_stage_download",
+            Self::FileInstallUpload { .. } => "file_install_upload",
         }
     }
 }
@@ -247,6 +300,15 @@ pub enum PrivReply {
     JobId(String),
     /// Nothing to report: the operation succeeded.
     Done,
+    Listing(crate::files::DirListing),
+    FileContent(crate::files::FileContent),
+    Staged(crate::files::Staged),
+    /// How many items were removed.
+    Removed(u32),
+    /// A file was replaced; this is its new modification time (unix seconds).
+    Written {
+        mtime: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +333,8 @@ pub enum PrivErrorCode {
     /// The change could cut the caller off. Repeat it with `confirm` to go ahead.
     ConfirmRequired,
     NotFound,
+    /// The target changed or exists already (for example a file edited by someone else).
+    Conflict,
     Internal,
 }
 

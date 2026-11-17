@@ -6,6 +6,7 @@
 
 mod auth;
 mod error;
+mod files;
 mod health;
 mod host;
 mod json;
@@ -36,6 +37,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
 pub use error::HttpError;
+pub use files::FilesSettings;
 pub use request_id::RequestId;
 pub use session::SecureCookies;
 
@@ -43,6 +45,9 @@ pub use session::SecureCookies;
 /// streamed upload endpoint will get its own, larger limit in a later phase.
 const BODY_LIMIT: usize = 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The editor sends whole files: 5 MB of text can be more than 10 MB once JSON-escaped.
+const EDITOR_BODY_LIMIT: usize = 12 * 1024 * 1024;
+const TRANSFER_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 
 /// Shared by every handler. Cheap to clone.
 #[derive(Clone)]
@@ -52,6 +57,7 @@ pub struct AppState {
     pub auth: Auth,
     pub metrics: Metrics,
     pub tasks: tasks::Tasks,
+    pub files: FilesSettings,
     pub secure_cookies: SecureCookies,
     pub version: &'static str,
 }
@@ -72,6 +78,7 @@ impl AppState {
             auth,
             metrics,
             tasks: tasks::Tasks::default(),
+            files: FilesSettings::default(),
             secure_cookies,
             version,
         }
@@ -84,10 +91,22 @@ pub fn check_embedded_ui() -> Result<usize, String> {
     ui::check_embedded()
 }
 
+impl AppState {
+    /// Use these file-transfer settings instead of the defaults.
+    #[must_use]
+    pub fn with_files(mut self, files: FilesSettings) -> Self {
+        self.files = files;
+        self
+    }
+}
+
 /// Build the full application: API routes, the embedded UI as the fallback, and the
 /// middleware stack.
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let max_upload = usize::try_from(state.files.max_upload).unwrap_or(usize::MAX);
+
+    // Ordinary API calls: small bodies, short time.
+    let ordinary = Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route("/api/v1/host", get(host::get_host))
@@ -130,19 +149,53 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/setup/claim", post(setup::claim))
         .route("/api/v1/setup/admin", post(setup::admin))
         .route("/api/v1/setup/totp/confirm", post(setup::confirm))
-        .fallback(ui::fallback)
-        .method_not_allowed_fallback(error::method_not_allowed)
-        .with_state(state)
-        // Layers added last run first: request id outermost so its span covers all.
+        .route("/api/v1/files", get(files::list))
+        .route("/api/v1/files/chmod", post(files::chmod))
+        .route("/api/v1/files/mkdir", post(files::mkdir))
+        .route("/api/v1/files/delete", post(files::delete))
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
-        ))
-        // Fonts are already compressed; the UI's text assets compress well.
+        ));
+
+    // The editor sends a whole file (up to 5 MB, more once JSON-escaped).
+    let editor = Router::new()
+        .route("/api/v1/files/content", get(files::read).put(files::write))
+        // Two limits: axum's `Json` extractor has its own (2 MiB) and must be raised as well.
+        .layer(axum::extract::DefaultBodyLimit::max(EDITOR_BODY_LIMIT))
+        .layer(RequestBodyLimitLayer::new(EDITOR_BODY_LIMIT))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(60),
+        ));
+
+    // Uploads and downloads are streamed and can take as long as the connection needs.
+    let transfers = Router::new()
+        .route("/api/v1/files/upload", post(files::upload))
+        .route("/api/v1/files/download", get(files::download))
+        .layer(RequestBodyLimitLayer::new(max_upload))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            TRANSFER_TIMEOUT,
+        ));
+
+    Router::new()
+        .merge(ordinary)
+        .merge(editor)
+        .merge(transfers)
+        .fallback(ui::fallback)
+        .method_not_allowed_fallback(error::method_not_allowed)
+        .with_state(state)
+        // Layers added last run first: request id outermost so its span covers all.
+        // Fonts and downloads are already compressed (or must stay byte-exact); the UI's
+        // text assets compress well.
         .layer(
-            CompressionLayer::new()
-                .compress_when(DefaultPredicate::new().and(NotForContentType::new("font/"))),
+            CompressionLayer::new().compress_when(
+                DefaultPredicate::new()
+                    .and(NotForContentType::new("font/"))
+                    .and(NotForContentType::new("application/octet-stream")),
+            ),
         )
         .layer(axum::middleware::from_fn(request_id::middleware))
 }

@@ -4,9 +4,11 @@
 
 use serde::{Serialize, de::DeserializeOwned};
 
-/// Largest accepted frame body. Large payloads (uploads, PTY bytes) will use passed
-/// file descriptors in later phases, never bigger frames.
-pub const MAX_FRAME_LEN: usize = 1024 * 1024;
+/// Largest accepted frame body. It must hold the biggest thing sent inline: a file the
+/// editor opens or saves (up to 5 MB of text, which can double or more once JSON-escaped).
+/// Truly large payloads (uploads, downloads, PTY bytes) never travel in frames: they go
+/// through the transfer folder or their own streams.
+pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FrameError {

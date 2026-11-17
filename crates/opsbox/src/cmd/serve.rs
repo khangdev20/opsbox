@@ -72,7 +72,12 @@ async fn serve(config: Config) -> Result<()> {
         VERSION,
         secure,
         auth_cfg,
-    );
+    )
+    .with_files(opsbox_api::FilesSettings {
+        apps_dir: config.apps_dir.clone(),
+        xfer_dir: config.xfer_dir.clone(),
+        max_upload: config.max_upload_mb.saturating_mul(1 << 20),
+    });
 
     // First run: make sure there is a setup token and show it where the person who
     // installed opsbox will look: the console and the journal.

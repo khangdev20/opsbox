@@ -29,6 +29,10 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[priv] master_key` | `/etc/opsbox/master.key` | `--master-key PATH` | `OPSBOX_PRIV_MASTER_KEY` | priv |
 | `[auth] argon2_memory_kib` | `65536` | | | serve, CLI |
 | `[auth] argon2_iterations` | `3` | | | serve, CLI |
+| `[files] xfer_dir` | `/var/lib/opsbox/xfer` | `--xfer-dir PATH` | `OPSBOX_XFER_DIR` | serve, priv |
+| `[files] trash_dir` | `/var/lib/opsbox/trash` | | | priv |
+| `[files] apps_dir` | `/var/lib/opsbox/apps` | | | serve |
+| `[files] max_upload_mb` | `2048` | | | serve |
 | `[store] db_path` | `/var/lib/opsbox/opsbox.db` | `--db PATH` | `OPSBOX_DB` | serve |
 | `[log] level` | `"info"` | `--log-level FILTER` | `OPSBOX_LOG_LEVEL` | all |
 | `[log] format` | `"text"` (`"json"`) | `--log-format text\|json` | `OPSBOX_LOG_FORMAT` | all |
@@ -49,6 +53,10 @@ The default includes `root` so an administrator can run `sudo opsbox status`. Re
 - `secure_cookies`: `auto` marks the session cookies `Secure` only when a request arrives through an HTTPS proxy (`X-Forwarded-Proto: https`); `always` and `never` force it. Plain HTTP on loopback cannot use `Secure`, because the browser would then not send the cookie back.
 - `master_key`: the 32-byte key that seals TOTP secrets (and later other secrets). `priv` creates it with mode 0600 the first time it is needed and refuses a key file that others can read. Back it up with the database: without it, sealed values cannot be opened, and every user would need `opsbox user reset-2fa`.
 - `argon2_memory_kib` and `argon2_iterations`: password hashing cost (default 64 MB, 3 passes, one lane; the spec's values). A sign-in should take well under a third of a second. On a very small machine lower the memory (for example `16384`) rather than the passes. Existing hashes keep working after a change, because each hash records its own cost. Two sign-ins may hash at once, so peak use is about twice the memory setting.
+
+### File settings
+
+`xfer_dir` is where uploads and downloads are staged. `serve` creates it (mode 0700, owned by the `opsbox` user) and writes uploads there; `priv` moves them into place, or copies a file there for a download. `trash_dir` holds deleted files for seven days. `apps_dir` is the only place deployers can see. `max_upload_mb` caps one upload (the proxy in front of the panel, when there is one, needs a matching limit).
 
 ### Example
 

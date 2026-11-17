@@ -19,6 +19,8 @@ pub enum ErrorCode {
     /// This machine cannot do that (no supported package manager, no systemd...).
     Unsupported,
     RateLimited,
+    /// The request body is larger than this endpoint accepts.
+    TooLarge,
     /// A dependency (for example the privileged helper) is not reachable.
     Unavailable,
     Internal,
@@ -36,6 +38,7 @@ impl ErrorCode {
             Self::Conflict | Self::ConfirmationRequired => 409,
             Self::Unsupported => 501,
             Self::RateLimited => 429,
+            Self::TooLarge => 413,
             Self::Unavailable => 503,
             Self::Internal => 500,
         }

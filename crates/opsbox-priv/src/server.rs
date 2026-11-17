@@ -16,6 +16,7 @@ use tracing::{Instrument, debug, info, info_span, warn};
 use crate::config::PrivConfig;
 use crate::io::{ReadError, read_body, write_frame};
 use crate::ops;
+use crate::ops::{Env, files::Dirs};
 use crate::secrets::Secrets;
 
 /// How long a connection may sit idle between frames.
@@ -83,7 +84,13 @@ impl PrivServer {
     /// Accept connections until `shutdown` completes, then remove the socket file.
     pub async fn run(self, shutdown: impl Future<Output = ()>) {
         let allowed: Arc<[u32]> = self.config.allowed_uids.clone().into();
-        let secrets = Arc::new(Secrets::new(&self.config.master_key_path));
+        let env = Arc::new(Env {
+            secrets: Secrets::new(&self.config.master_key_path),
+            files: Dirs {
+                xfer: self.config.xfer_dir.clone(),
+                trash: self.config.trash_dir.clone(),
+            },
+        });
         let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         info!(
             socket = %self.config.socket_path.display(),
@@ -92,12 +99,26 @@ impl PrivServer {
         );
         // Firewall housekeeping: undo a change nobody confirmed, close emergency SSH when
         // its hour is up, and put the nftables ruleset back after a reboot.
-        let janitor = tokio::spawn(async {
+        let janitor_env = Arc::clone(&env);
+        let janitor = tokio::spawn(async move {
             let _ = tokio::task::spawn_blocking(ops::restore_on_start).await;
             let mut tick = tokio::time::interval(Duration::from_secs(10));
+            let mut n = 0u64;
             loop {
                 tick.tick().await;
-                let _ = tokio::task::spawn_blocking(ops::janitor_tick).await;
+                n += 1;
+                let e = Arc::clone(&janitor_env);
+                let _ = tokio::task::spawn_blocking(move || {
+                    ops::janitor_tick();
+                    // Once an hour: forget trash older than seven days.
+                    if n % 360 == 1 {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+                        ops::files::purge_trash(&e.files.trash, now);
+                    }
+                })
+                .await;
             }
         });
         tokio::pin!(shutdown);
@@ -108,11 +129,11 @@ impl PrivServer {
                     Ok((stream, _)) => {
                         let allowed = Arc::clone(&allowed);
                         let permits = Arc::clone(&permits);
-                        let secrets = Arc::clone(&secrets);
+                        let env = Arc::clone(&env);
                         tokio::spawn(async move {
                             // Held for the life of the connection.
                             let Ok(_permit) = permits.acquire_owned().await else { return };
-                            handle_connection(stream, &allowed, &secrets).await;
+                            handle_connection(stream, &allowed, &env).await;
                         });
                     }
                     Err(e) => {
@@ -146,7 +167,7 @@ fn remove_stale_socket(path: &Path) -> Result<(), ServerError> {
     })
 }
 
-async fn handle_connection(mut stream: UnixStream, allowed: &[u32], secrets: &Arc<Secrets>) {
+async fn handle_connection(mut stream: UnixStream, allowed: &[u32], env: &Arc<Env>) {
     // The kernel reports who is on the other end (SO_PEERCRED on Linux). This is
     // checked before anything the peer sent is read or parsed.
     let peer = match stream.peer_cred() {
@@ -192,7 +213,7 @@ async fn handle_connection(mut stream: UnixStream, allowed: &[u32], secrets: &Ar
             }
         };
 
-        let response = process(&body, uid, secrets).await;
+        let response = process(&body, uid, env).await;
         if write_frame(&mut stream, &response).await.is_err() {
             return;
         }
@@ -201,7 +222,7 @@ async fn handle_connection(mut stream: UnixStream, allowed: &[u32], secrets: &Ar
 
 /// Decode and run one request. Anything that is not a valid [`PrivRequest`]
 /// (bad JSON, unknown operation, unexpected fields) is answered with `bad_request`.
-async fn process(body: &[u8], uid: u32, secrets: &Arc<Secrets>) -> PrivResponse {
+async fn process(body: &[u8], uid: u32, env: &Arc<Env>) -> PrivResponse {
     let value: serde_json::Value = match frame::decode(body) {
         Ok(v) => v,
         Err(e) => return PrivResponse::failure("", PrivErrorCode::BadRequest, e.to_string()),
@@ -231,9 +252,9 @@ async fn process(body: &[u8], uid: u32, secrets: &Arc<Secrets>) -> PrivResponse 
         uid
     );
     let op = request.op.clone();
-    let secrets = Arc::clone(secrets);
+    let env = Arc::clone(env);
     let result = async {
-        let outcome = tokio::task::spawn_blocking(move || ops::dispatch(&op, &secrets))
+        let outcome = tokio::task::spawn_blocking(move || ops::dispatch(&op, &env))
             .await
             .unwrap_or_else(|_| {
                 Err(PrivError {

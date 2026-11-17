@@ -30,6 +30,8 @@ pub fn run(config: Config) -> Result<()> {
     priv_config.socket_mode = config.socket_mode;
     priv_config.socket_group.clone_from(&config.socket_group);
     priv_config.master_key_path.clone_from(&config.master_key);
+    priv_config.xfer_dir.clone_from(&config.xfer_dir);
+    priv_config.trash_dir.clone_from(&config.trash_dir);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

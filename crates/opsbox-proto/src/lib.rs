@@ -4,6 +4,7 @@
 //! and (later) the watchdog can all depend on it.
 
 pub mod api;
+pub mod files;
 pub mod frame;
 pub mod metrics;
 pub mod privilege;
@@ -11,6 +12,7 @@ pub mod role;
 pub mod system;
 
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
+pub use files::{DirListing, FileContent, FileEntry, FileKind, Staged};
 pub use metrics::{CpuTimes, DiskIo, DiskUsage, MemInfo, NetIf, RawProc, RawSample, SystemFacts};
 pub use privilege::{
     HostInfo, PrivError, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,

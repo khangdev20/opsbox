@@ -16,9 +16,17 @@ impl<S: Send + Sync, T: DeserializeOwned> FromRequest<S> for ApiJson<T> {
     async fn from_request(req: Request, state: &S) -> Result<Self, HttpError> {
         match axum::Json::<T>::from_request(req, state).await {
             Ok(axum::Json(v)) => Ok(Self(v)),
+            Err(JsonRejection::BytesRejection(e))
+                if e.status() == axum::http::StatusCode::PAYLOAD_TOO_LARGE =>
+            {
+                Err(HttpError::new(
+                    ErrorCode::TooLarge,
+                    "That request is larger than this page may send.",
+                ))
+            }
             Err(JsonRejection::BytesRejection(_)) => Err(HttpError::new(
                 ErrorCode::Validation,
-                "The request body is too large or could not be read.",
+                "The request body could not be read.",
             )),
             Err(_) => Err(HttpError::new(
                 ErrorCode::Validation,

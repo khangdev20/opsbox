@@ -15,7 +15,7 @@ export const theme = () => document.documentElement.dataset.theme || 'dark';
 export const toggleTheme = () => applyTheme(theme() === 'light' ? 'dark' : 'light');
 
 // Not persisted: asked of the server on every page load (see main.js).
-export const server = { setupRequired: false };
+export const server = { setupRequired: false, role: '' };
 
 export const session = {
   get user() { return safe(() => sessionStorage.getItem('opsbox.user'), null); },

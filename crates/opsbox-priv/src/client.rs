@@ -5,9 +5,9 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    CommandOutcome, FirewallChange, FirewallState, HostInfo, JobInfo, JournalEntry, NewRule,
-    PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
-    RawSample, Secret, SystemFacts, UnitActionKind, UnitInfo,
+    CommandOutcome, DirListing, FileContent, FirewallChange, FirewallState, HostInfo, JobInfo,
+    JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
+    PrivResponse, PrivResult, RawSample, Secret, Staged, SystemFacts, UnitActionKind, UnitInfo,
 };
 use tokio::net::UnixStream;
 
@@ -59,6 +59,18 @@ impl From<WriteError> for ClientError {
             WriteError::Io(e) => Self::Io(e.to_string()),
         }
     }
+}
+
+/// What to install from the transfer folder (see [`PrivClient::file_install_upload`]).
+#[derive(Debug, Clone, Copy)]
+pub struct InstallUpload<'a> {
+    /// The staged file, inside the transfer folder.
+    pub staging: &'a str,
+    /// The destination folder.
+    pub dir: &'a str,
+    /// The file name there.
+    pub name: &'a str,
+    pub overwrite: bool,
 }
 
 /// Calls `priv` over its Unix socket. Cheap to clone. Each call opens its own
@@ -470,5 +482,155 @@ impl PrivClient {
             o => Err(o),
         })
         .await
+    }
+
+    pub async fn file_list(
+        &self,
+        rid: &str,
+        path: &str,
+        jail: Option<&str>,
+    ) -> Result<DirListing, ClientError> {
+        let op = PrivOp::FileList {
+            path: path.to_owned(),
+            jail: jail.map(str::to_owned),
+        };
+        self.expect(rid, None, op, |r| match r {
+            PrivReply::Listing(l) => Ok(l),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn file_read(
+        &self,
+        rid: &str,
+        path: &str,
+        jail: Option<&str>,
+    ) -> Result<FileContent, ClientError> {
+        let op = PrivOp::FileRead {
+            path: path.to_owned(),
+            jail: jail.map(str::to_owned),
+        };
+        self.expect(rid, None, op, |r| match r {
+            PrivReply::FileContent(c) => Ok(c),
+            o => Err(o),
+        })
+        .await
+    }
+
+    /// Returns the new modification time.
+    pub async fn file_write(
+        &self,
+        rid: &str,
+        actor: &str,
+        path: &str,
+        content: &str,
+        expect_mtime: Option<i64>,
+        jail: Option<&str>,
+    ) -> Result<i64, ClientError> {
+        let op = PrivOp::FileWrite {
+            path: path.to_owned(),
+            content: content.to_owned(),
+            expect_mtime,
+            jail: jail.map(str::to_owned),
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::Written { mtime } => Ok(mtime),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn file_chmod(
+        &self,
+        rid: &str,
+        actor: &str,
+        path: &str,
+        mode: &str,
+        jail: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.done(
+            rid,
+            actor,
+            PrivOp::FileChmod {
+                path: path.to_owned(),
+                mode: mode.to_owned(),
+                jail: jail.map(str::to_owned),
+            },
+        )
+        .await
+    }
+
+    pub async fn file_mkdir(
+        &self,
+        rid: &str,
+        actor: &str,
+        path: &str,
+        jail: Option<&str>,
+    ) -> Result<(), ClientError> {
+        self.done(
+            rid,
+            actor,
+            PrivOp::FileMkdir {
+                path: path.to_owned(),
+                jail: jail.map(str::to_owned),
+            },
+        )
+        .await
+    }
+
+    pub async fn file_remove(
+        &self,
+        rid: &str,
+        actor: &str,
+        paths: Vec<String>,
+        permanent: bool,
+        jail: Option<&str>,
+    ) -> Result<u32, ClientError> {
+        let op = PrivOp::FileRemove {
+            paths,
+            permanent,
+            jail: jail.map(str::to_owned),
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::Removed(n) => Ok(n),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn file_stage_download(
+        &self,
+        rid: &str,
+        actor: &str,
+        path: &str,
+        jail: Option<&str>,
+    ) -> Result<Staged, ClientError> {
+        let op = PrivOp::FileStageDownload {
+            path: path.to_owned(),
+            jail: jail.map(str::to_owned),
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::Staged(s) => Ok(s),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn file_install_upload(
+        &self,
+        rid: &str,
+        actor: &str,
+        upload: InstallUpload<'_>,
+        jail: Option<&str>,
+    ) -> Result<(), ClientError> {
+        let op = PrivOp::FileInstallUpload {
+            staging: upload.staging.to_owned(),
+            dir: upload.dir.to_owned(),
+            name: upload.name.to_owned(),
+            overwrite: upload.overwrite,
+            jail: jail.map(str::to_owned),
+        };
+        self.done(rid, actor, op).await
     }
 }

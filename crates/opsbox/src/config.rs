@@ -41,6 +41,7 @@ pub enum SecureCookiesSetting {
 struct FileConfig {
     api: ApiSection,
     auth: AuthSection,
+    files: FilesSection,
     #[serde(rename = "priv")]
     privileged: PrivSection,
     store: StoreSection,
@@ -106,6 +107,27 @@ impl Default for AuthSection {
     }
 }
 
+/// Where file transfers and the trash live, and how large an upload may be.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct FilesSection {
+    xfer_dir: PathBuf,
+    trash_dir: PathBuf,
+    apps_dir: PathBuf,
+    max_upload_mb: u64,
+}
+
+impl Default for FilesSection {
+    fn default() -> Self {
+        Self {
+            xfer_dir: opsbox_priv::DEFAULT_XFER_DIR.into(),
+            trash_dir: opsbox_priv::DEFAULT_TRASH_DIR.into(),
+            apps_dir: "/var/lib/opsbox/apps".into(),
+            max_upload_mb: 2048,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct StoreSection {
@@ -150,6 +172,10 @@ pub struct Config {
     pub secure_cookies: SecureCookiesSetting,
     pub argon2_memory_kib: u32,
     pub argon2_iterations: u32,
+    pub xfer_dir: PathBuf,
+    pub trash_dir: PathBuf,
+    pub apps_dir: PathBuf,
+    pub max_upload_mb: u64,
     pub db_path: PathBuf,
     pub log_level: String,
     pub log_format: LogFormat,
@@ -168,6 +194,7 @@ pub struct Overrides {
     pub socket_mode: Option<String>,
     pub socket_group: Option<String>,
     pub master_key: Option<PathBuf>,
+    pub xfer_dir: Option<PathBuf>,
     pub secure_cookies: Option<SecureCookiesSetting>,
     pub log_level: Option<String>,
     pub log_format: Option<LogFormat>,
@@ -186,6 +213,7 @@ impl Overrides {
                 o.priv_socket.clone_from(&a.socket);
                 o.db_path.clone_from(&a.db);
                 o.secure_cookies = a.secure_cookies;
+                o.xfer_dir.clone_from(&a.xfer_dir);
             }
             Command::Priv(a) => {
                 o.priv_socket.clone_from(&a.socket);
@@ -194,6 +222,7 @@ impl Overrides {
                 o.socket_mode.clone_from(&a.socket_mode);
                 o.socket_group.clone_from(&a.socket_group);
                 o.master_key.clone_from(&a.master_key);
+                o.xfer_dir.clone_from(&a.xfer_dir);
             }
             Command::Status(a) => {
                 o.listen = a.listen;
@@ -233,6 +262,10 @@ impl Config {
             secure_cookies: o.secure_cookies.unwrap_or(file.api.secure_cookies),
             argon2_memory_kib: file.auth.argon2_memory_kib,
             argon2_iterations: file.auth.argon2_iterations,
+            xfer_dir: o.xfer_dir.unwrap_or(file.files.xfer_dir),
+            trash_dir: file.files.trash_dir,
+            apps_dir: file.files.apps_dir,
+            max_upload_mb: file.files.max_upload_mb,
             db_path: o.db_path.unwrap_or(file.store.db_path),
             log_level: o.log_level.unwrap_or(file.log.level),
             log_format: o.log_format.unwrap_or(file.log.format),

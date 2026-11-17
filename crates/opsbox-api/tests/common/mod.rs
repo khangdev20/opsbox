@@ -12,7 +12,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, Response, StatusCode, header};
 use http_body_util::BodyExt;
-use opsbox_api::{AppState, SecureCookies, router};
+use opsbox_api::{AppState, FilesSettings, SecureCookies, router};
 use opsbox_auth::AuthConfig;
 use opsbox_auth::password::HashParams;
 use opsbox_priv::{PrivClient, PrivConfig, PrivServer};
@@ -30,6 +30,8 @@ pub struct Harness {
     pub app: Router,
     pub state: AppState,
     pub store: Arc<Store>,
+    /// A private scratch area: `apps/` (the deployers' jail), `xfer/` and `trash/` live here.
+    pub root: std::path::PathBuf,
     _dir: tempfile::TempDir,
     stop: Option<oneshot::Sender<()>>,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -38,7 +40,13 @@ pub struct Harness {
 impl Harness {
     /// `with_priv = false` leaves nothing listening on the socket path.
     pub fn new(with_priv: bool) -> Self {
+        Self::with_upload_limit(with_priv, 2 << 20)
+    }
+
+    pub fn with_upload_limit(with_priv: bool, max_upload: u64) -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::create_dir_all(root.join("apps")).unwrap();
         let socket = dir.path().join("priv.sock");
         let probe = dir.path().join("probe");
         std::fs::write(&probe, b"").unwrap();
@@ -48,6 +56,8 @@ impl Harness {
         if with_priv {
             let mut cfg = PrivConfig::new(&socket, vec![uid]);
             cfg.master_key_path = dir.path().join("master.key");
+            cfg.xfer_dir = root.join("xfer");
+            cfg.trash_dir = root.join("trash");
             let server = PrivServer::bind(cfg).unwrap();
             let (tx, rx) = oneshot::channel::<()>();
             task = Some(tokio::spawn(server.run(async {
@@ -69,11 +79,17 @@ impl Harness {
                 },
                 ..AuthConfig::default()
             },
-        );
+        )
+        .with_files(FilesSettings {
+            apps_dir: root.join("apps"),
+            xfer_dir: root.join("xfer"),
+            max_upload,
+        });
         Self {
             app: router(state.clone()),
             state,
             store,
+            root,
             _dir: dir,
             stop,
             task,
@@ -244,6 +260,49 @@ impl Browser {
             }
             self.set_cookies.push(raw);
         }
+        Reply {
+            status: parts.status,
+            headers: parts.headers,
+            body: body.collect().await.unwrap().to_bytes().to_vec(),
+        }
+    }
+
+    /// Send raw bytes (an upload).
+    pub async fn send_bytes(
+        &mut self,
+        method: Method,
+        path: &str,
+        bytes: Vec<u8>,
+        opts: Opts,
+    ) -> Reply {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(header::HOST, &opts.host)
+            .header(header::CONTENT_TYPE, "application/octet-stream");
+        if !self.jar.is_empty() {
+            req = req.header(
+                header::COOKIE,
+                self.jar
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            );
+        }
+        if let (true, Some(c)) = (opts.csrf, self.jar.get("opsbox_csrf")) {
+            req = req.header("x-opsbox-csrf", c);
+        }
+        if let Some(o) = &opts.origin {
+            req = req.header(header::ORIGIN, o);
+        }
+        let resp: Response<Body> = self
+            .app
+            .clone()
+            .oneshot(req.body(Body::from(bytes)).unwrap())
+            .await
+            .unwrap();
+        let (parts, body) = resp.into_parts();
         Reply {
             status: parts.status,
             headers: parts.headers,

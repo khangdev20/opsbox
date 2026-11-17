@@ -1,5 +1,6 @@
 import { html, raw, esc, bytes, table, btn, header, bindActions, confirmDialog, askForm, toast } from '../ui.js';
 import * as api from '../api.js';
+import { server } from '../store.js';
 
 // Monaco (the VS Code editor core), self-hosted and loaded on first use.
 let monacoP;
@@ -22,7 +23,7 @@ const LANG = { js: 'javascript', mjs: 'javascript', ts: 'typescript', json: 'jso
 const langOf = (path) => { const n = path.split('/').pop().toLowerCase(); if (n === 'dockerfile') return 'dockerfile'; return LANG[n.split('.').pop()] || 'plaintext'; };
 
 export async function view({ query }) {
-  let dir = query.p || '/var/www/app', listing, open = null, dirty = false, picked = new Set(), root, ed = null;
+  let dir = query.p || (api.MODE === 'http' ? (server.role === 'deployer' ? '/var/lib/opsbox/apps' : '/') : '/var/www/app'), listing, open = null, dirty = false, picked = new Set(), root, ed = null;
   const disposeEd = () => { if (ed) { ed.dispose(); ed = null; } };
   const load = async () => { listing = await api.listDir(dir); picked.clear(); };
   await load();
@@ -30,9 +31,9 @@ export async function view({ query }) {
   const list = () => table('Files', [['', ''], ['Name'], ['Mode'], ['Size', 'r'], ['Modified']], [
     ...(dir !== '/' ? [[ '', html`<a href="#" data-act="go" data-p="${dir.split('/').slice(0, -1).join('/') || '/'}" class="mono">../</a>`, '', '', '']] : []),
     ...listing.entries.map((e) => [html`<input type="checkbox" data-act="pick" data-p="${e.path}" aria-label="Select ${e.name}" ${raw(picked.has(e.path) ? 'checked' : '')}>`,
-      e.type === 'd' ? html`<a href="#" class="mono" data-act="go" data-p="${e.path}">${e.name}/</a>` : html`<a href="#" class="mono" data-act="open" data-p="${e.path}">${e.name}</a>${e.warn ? html` <span class="st warn" title="Readable by everyone">▲ world-readable secrets</span>` : ''}`,
+      e.type === 'd' ? html`<a href="#" class="mono" data-act="go" data-p="${e.path}">${e.name}/</a>` : html`<a href="#" class="mono" data-act="open" data-p="${e.path}">${e.name}</a>${api.downloadUrl(e.path) ? html` <a href="${api.downloadUrl(e.path)}" class="muted" title="Download" aria-label="Download ${e.name}" download>↓</a>` : ''}${e.warn ? html` <span class="st warn" title="Readable by everyone">▲ world-readable secrets</span>` : ''}`,
       html`<span class="mono">${e.mode}</span>`, e.size == null ? '' : bytes(e.size), e.mtime])]);
-  const editor = () => open ? html`<section class="sec"><div class="sec-h"><h2 class="mono">${open.path}</h2><span class="row">${btn('Save', { act: 'save', kind: 'primary' })}${btn('Permissions', { act: 'chmod' })}${btn('Close', { act: 'close' })}</span></div>
+  const editor = () => open ? html`<section class="sec"><div class="sec-h"><h2 class="mono">${open.path}</h2><span class="row">${btn('Save', { act: 'save', kind: 'primary' })}${api.downloadUrl(open.path) ? html`<a class="btn" href="${api.downloadUrl(open.path)}" download>Download</a>` : ''}${btn('Permissions', { act: 'chmod' })}${btn('Close', { act: 'close' })}</span></div>
     <div id="mon" role="group" aria-label="Editor for ${open.path}" style="height:420px;border:1px solid var(--ls);border-radius:8px;background:#1e1e1e"><p class="muted sm" style="padding:16px">Loading editor…</p></div><p class="sm muted mono" id="es" style="margin-top:6px">${open.mode} · ${langOf(open.path)} · Ctrl S to save</p></section>` : '';
   const paint = () => {
     root.querySelector('#c').innerHTML = crumbs().toString(); root.querySelector('#l').innerHTML = list().toString(); root.querySelector('#e').innerHTML = editor().toString();
@@ -65,7 +66,7 @@ export async function view({ query }) {
         pick: (el) => { el.checked ? picked.add(el.dataset.p) : picked.delete(el.dataset.p); root.querySelector('#del').disabled = !picked.size; },
         mkdir: async () => { if (await askForm({ title: 'New folder', fields: [{ name: 'n', label: 'Name' }], submit: 'Create' }, (o) => { if (!o.n.trim() || o.n.includes('/')) throw new Error('Enter a folder name without slashes.'); return api.mkdir(`${dir}/${o.n.trim()}`); })) await rl(); },
         chmod: async () => { if (await askForm({ title: 'Permissions', body: open.path, fields: [{ name: 'm', label: 'Mode (octal)', value: '600', hint: '600 = owner only, 644 = everyone can read' }], submit: 'Apply' }, (o) => api.chmod(open.path, o.m))) { toast('Permissions updated.'); await rl(); } },
-        delete: async () => { const ps = [...picked]; if (await confirmDialog({ title: `Delete ${ps.length} item${ps.length > 1 ? 's' : ''}?`, body: ps.join(', ') + ' will be removed permanently.', confirm: 'Delete', danger: true })) { await api.removePaths(ps); if (open && ps.includes(open.path)) open = null; await rl(); } },
+        delete: async () => { const ps = [...picked]; if (await confirmDialog({ title: `Delete ${ps.length} item${ps.length > 1 ? 's' : ''}?`, body: ps.join(', ') + (api.MODE === 'http' ? ' will be moved to the trash and kept for 7 days.' : ' will be removed permanently.'), confirm: 'Delete', danger: true })) { await api.removePaths(ps); if (open && ps.includes(open.path)) open = null; await rl(); } },
       });
     },
     unmount() { disposeEd(); },
