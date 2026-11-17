@@ -1,19 +1,17 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/05-proxy-panel-domain.md` (Proxy and panel domain)
+Last completed prompt: `docs/prompts/archive/06-watchdog-safe-mode.md` (Watchdog and safe mode)
 
 ## What works
-- In-process Rust reverse proxy (`crates/opsbox-proxy`) on `:80`/`:443` with control socket `/run/opsbox-proxy/proxy.sock` and persisted `routes.json` (Hyper 1, `tokio-rustls`/`rustls` with `ring`, `instant-acme` HTTP-01, `hickory-resolver`, `x509-parser`).
-- HTTP `:80` answers `/.well-known/acme-challenge/<token>` and redirects other traffic (`308`) to HTTPS; HTTPS preserves `Host`, forwards `X-Forwarded-Proto`/`X-Forwarded-For`, pins upstream `serve` TLS cert SHA-256, adds HSTS, enforces upload limits (`413`), and upgrades WebSockets (`101`).
-- ACME account and domain private keys are encrypted at rest via `opsbox-priv` (`PrivOp::SecretSeal`/`SecretOpen`, restricted to `"proxy:"` contexts and refusing `"totp:*"`) and renewed 30 days before expiry.
-- `opsbox-api`: `/api/v1/panel` (`GET`, `/dns-check`, async `/certificate` task, `DELETE /domain`, `/local-only`), `GET /api/v1/settings` `panel` snapshot, startup route sync, and `/readyz` requiring `proxy` when a panel domain is active.
-- Settings UI (`web/js/pages/settings.js`, `web/js/api.js`): wired `REAL` Panel address section with Check DNS (`points here` / `waiting for DNS` + DNS records table), Issue/Renew certificate, Remove, and Close raw port 8443 offer (`sample data` badge removed).
-- CLI & packaging: `opsbox proxy`, `opsbox web domain <name> [--skip-dns-check]`, `opsbox status`/`selftest`/`doctor`/`update`, `packaging/systemd/opsbox-proxy.service`, `install.sh`, and `.github/workflows/release.yml`.
+- `crates/opsbox-watchdog` + `opsbox watchdog` (`opsbox-watchdog.service`, root, `MemoryMax=32M`, `Nice=-5`, `Before=` all opsbox services): probes `serve` `/healthz`, `priv` ping, `proxy` ping, `/` and `/var/lib/opsbox` disk space every 10s, and SQLite `PRAGMA quick_check` on start via `ReadOnlyStore`.
+- Auto-recovery & rollback policy: restarts failed units; frees opsbox space first on 3 failures in 10 min with critical disk; takes over post-update verification/schema-checked rollback from `opsbox-rollback-check` when active; enters safe-mode alert state and backs off restarts to 60s.
+- Standalone HTTPS Safe Mode (`:8444`, shared panel TLS cert, zero shared code with `serve` beyond `opsbox-proto` & read-only `opsbox-store`): admin password+TOTP (offloading 64 MiB Argon2id via stdin to a 128M transient systemd scope when constrained) or single-use `opsbox recovery-code`; actions for logs, free disk space, restart, conditional rollback, 1h emergency SSH, and reboot.
+- Panel recovery screen & Security check: `PrivOp::WatchdogStatus`, `GET /api/v1/recovery`, Security `"watchdog"` check, `web/js/pages/recovery.js` wired cleanly without `"sample data"` badge.
 
 ## Partial / Found, not fixed
 - Pre-existing `cargo::unused_dependencies` warning for `futures-util` in `crates/opsbox-priv/Cargo.toml` on non-Linux hosts (`futures-util` is only used inside `#[cfg(target_os = "linux")]`).
-- Linux-only checks (`tools/check-idle-memory.py`, `musl` target build, systemd service runtime, live Let's Encrypt staging in VM) are not runnable natively on macOS and remain for Linux CI / `opsbox-vm`.
+- Linux-only checks (`tools/check-idle-memory.py`, `musl` target build, systemd `MemoryMax=32M` + `systemd-run` Argon2 offload, live restart/rollback in VM) cannot run natively on macOS and remain for Linux CI / `opsbox-vm`.
 
 ## Next
-- Verify `opsbox-proxy.service`, UI Panel address flow, ACME staging, and closing port `:8443` in `opsbox-vm`.
-- Next prompt: `docs/prompts/06-watchdog-safe-mode.md`.
+- Verify `opsbox-watchdog.service`, Safe Mode `:8444`, `opsbox recovery-code`, and failure/rollback recovery in `opsbox-vm`.
+- Next prompt: `docs/prompts/07-docker-containers.md`.

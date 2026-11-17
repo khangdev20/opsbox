@@ -27,6 +27,7 @@ The inventory below is generated from the actual axum router. Run `python3 tools
 - Security: `GET /security` combines real checks, panel accounts and recent audit entries. Fix actions are identified by check ID. Allow-list update `{value,confirm?}` accepts IP/CIDR text and cannot exclude the caller.
 - Settings: `GET /settings` returns `{hostname,tz,timezones,swapMb,tokens,opsboxUpdate,panel}`. General settings save through the specific hostname/timezone endpoints; no generic PUT silently accepts future-phase fields. Tokens: create `{name,scope:"read"|"deploy"|"full"}` returns `{token,secret}`, listing exposes metadata only, DELETE revokes immediately.
 - Panel domain: `GET /panel` returns `{domain,activeDomain,certStatus,certExpiresAt,certDaysRemaining,certIssuer,certStaging,certError,proxyReachable,rawPortOpen,listen}`. `POST /panel/dns-check {domain}` verifies public A/AAAA records via `hickory-resolver` and returns `{domain,status:"points_here"|"waiting",pointsHere,message,resolvedIps,serverIps,cname,records}`. `POST /panel/certificate {domain}` starts an ACME HTTP-01 issuance task (`202 {task}`). `DELETE /panel/domain {confirm?}` detaches the panel domain and certificate (requires confirmation if raw `:8443` is closed). `POST /panel/local-only {localOnly,confirm?}` moves `serve` between `127.0.0.1:8443` and `0.0.0.0:8443` via `priv` and schedules a panel service restart (requires confirmation when closing `:8443` without a live certificate).
+- Recovery & watchdog: `GET /recovery` (admin only) reads the watchdog status published at `/run/opsbox-watchdog/status.json` via `priv` (`PrivOp::WatchdogStatus`) plus `opsbox-watchdog` journal entries and returns `{running,failed,degraded,updatedAt,currentVersion,previousVersion,canRollback,updateMessage,safeModeListen,sshOpenUntil,checks,events,log}`. Recovery mutations (`free`, `restart`, `rollback`, `ssh`, `reboot`) are served exclusively by `opsbox-watchdog`'s standalone HTTPS Safe Mode server on `:8444`.
 - Metrics: `GET /metrics?window=48s` accepts 1 second through 1 hour (`s`, `m`, `h`), returns percentages, memory/disk GB and network MB/s. `/stream/metrics` sends `{type:"metrics",ts,data}` once per second, with the same data shape.
 - Long operations return `202 {task}`; `GET /tasks/{id}` gives `running|ok|failed`, log tail, result and error. The UI polls it. Tasks are in memory, kept up to 24 hours/256 entries and are lost on restart. Task/event WebSocket streams are not part of this implementation.
 
@@ -84,6 +85,7 @@ Streams revalidate their session/token, role and allowed address every five seco
 | `POST` | `/api/v1/panel/dns-check` | [panel::check_dns](../crates/opsbox-api/src/panel.rs) |
 | `DELETE` | `/api/v1/panel/domain` | [panel::remove_domain](../crates/opsbox-api/src/panel.rs) |
 | `POST` | `/api/v1/panel/local-only` | [panel::set_local_only](../crates/opsbox-api/src/panel.rs) |
+| `GET` | `/api/v1/recovery` | [recovery::get](../crates/opsbox-api/src/recovery.rs) |
 | `GET` | `/api/v1/security` | [security::get](../crates/opsbox-api/src/security.rs) |
 | `PUT` | `/api/v1/security/allow-ips` | [security::set_allow_ips](../crates/opsbox-api/src/security.rs) |
 | `POST` | `/api/v1/security/checks/{id}/fix` | [security::fix](../crates/opsbox-api/src/security.rs) |
@@ -125,4 +127,4 @@ Streams revalidate their session/token, role and allowed address every five seco
 
 ## Future phases (sample UI)
 
-Recovery, watchdog and self-update: Phase 2. Docker management, deployments, GitHub, templates and Compose: Phase 3. App domains and per-app certificates: Phase 4 (panel domain and ACME certificate are implemented). Backups/alerts: Phase 5. WireGuard, desktop device authentication and other-server terminals: Phase 6. These APIs are not implemented; their UI retains sample-data labels.
+Docker management, deployments, GitHub, templates and Compose: Phase 3. App domains and per-app certificates: Phase 4 (panel domain and ACME certificate are implemented). Backups/alerts: Phase 5. WireGuard, desktop device authentication and other-server terminals: Phase 6. These APIs are not implemented; their UI retains sample-data labels. (Self-update, watchdog, and Safe Mode from Phase 2 are implemented.)

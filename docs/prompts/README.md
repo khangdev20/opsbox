@@ -19,7 +19,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 03b | Cleanup page performance (`03b-cleanup-performance.md`) | 1 (fix) | ✓ |
 | 04 | Public first run (`04-public-first-run.md`) | 1c | ✓ |
 | 05 | Proxy and panel domain (`05-proxy-panel-domain.md`) | 4 (panel first) | ✓ |
-| 06 | Watchdog and safe mode (`06-watchdog-safe-mode.md`) | 2 | |
+| 06 | Watchdog and safe mode (`06-watchdog-safe-mode.md`) | 2 | ✓ |
 | 07 | Docker and Containers page (`07-docker-containers.md`) | 3 | |
 | 08 | GitHub connection (`08-github-connection.md`) | 3 | |
 | 09 | Deploy pipeline (`09-deploy-pipeline.md`) | 3 | |

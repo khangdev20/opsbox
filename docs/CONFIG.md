@@ -42,7 +42,9 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[proxy] acme_directory` | unset (Let's Encrypt production) | | | proxy |
 | `[proxy] acme_email` | unset | | | proxy |
 | `[proxy] public_ips` | `[]` (auto-detected) | | | proxy, serve |
-| `[store] db_path` | `/var/lib/opsbox/opsbox.db` | `--db PATH` | `OPSBOX_DB` | serve |
+| `[watchdog] listen` | `<api.listen ip>:8444` | `--listen ADDR` | `OPSBOX_WATCHDOG_LISTEN` | watchdog, status |
+| `[watchdog] runtime_dir` | `/run/opsbox-watchdog` | `--runtime-dir PATH` | `OPSBOX_WATCHDOG_RUNTIME_DIR` | watchdog, recovery-code |
+| `[store] db_path` | `/var/lib/opsbox/opsbox.db` | `--db PATH` | `OPSBOX_DB` | serve, watchdog |
 | `[log] level` | `"info"` | `--log-level FILTER` | `OPSBOX_LOG_LEVEL` | all |
 | `[log] format` | `"text"` (`"json"`) | `--log-format text\|json` | `OPSBOX_LOG_FORMAT` | all |
 | (config file path) | `/etc/opsbox/config.toml` | `--config FILE` | `OPSBOX_CONFIG` | all |
@@ -101,7 +103,9 @@ ssh -L 8443:127.0.0.1:8443 you@server
 | `opsbox serve` | Opens the database, applies migrations, listens. |
 | `opsbox priv` | Creates the socket (and `/run/opsbox` if missing). |
 | `opsbox proxy` | Listens on `:80`/`:443`, handles ACME HTTP-01 challenges, and proxies panel routes received over `proxy.sock`. |
-| `opsbox status` | Probes `serve`, `priv`, and (when active/configured) `proxy`. Exit status 0 only if all healthy, 1 otherwise. |
+| `opsbox watchdog` | Probes `serve`, `priv`, `proxy`, disk space and SQLite integrity every 10s, handles restarts/auto-rollback, and serves HTTPS Safe Mode on `:8444`. |
+| `opsbox status` | Probes `serve`, `priv`, and (when installed/active) `proxy` and `watchdog`. Exit status 0 only if all healthy, 1 otherwise. |
+| `opsbox recovery-code` | Prints a single-use 15-minute Safe Mode code (`XXXX-XXXX-XXXX`) into `/run/opsbox-watchdog/recovery-code.json` (mode `0600`). |
 | `opsbox web local-only on\|off` | Switches `[api] listen` between `127.0.0.1:8443` and `0.0.0.0:8443` and restarts `opsbox.service`. |
 | `opsbox web domain NAME [--skip-dns-check]` | Configures the panel domain, checks DNS, requests an ACME certificate from `proxy`, and saves `opsbox.panel.domain`. |
 | `opsbox setup-token` | Prints a one-time token while no admin exists. Run as root, it switches to the `opsbox` user before opening the database. |
@@ -110,7 +114,7 @@ ssh -L 8443:127.0.0.1:8443 you@server
 | `opsbox doctor` | Read-only diagnostics through the helper: service/port health, DNS resolution, free disk space, clock synchronization, optional Docker and master-key permissions. Exit 1 for failed checks or unavailable helpers; warnings include suggested fixes. |
 | `opsbox selftest` | Ignores the configuration; uses a temporary directory. Exit status 0 if every check passes. |
 
-Commands that exist but are not built yet (`pair`, `watchdog`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.
+Commands that exist but are not built yet (`pair`, `backup`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.
 
 ## Running on a development machine
 
