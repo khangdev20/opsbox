@@ -11,10 +11,9 @@
 set -eu
 
 REPO="khangdev20/opsbox"
-# Public key used to verify release signatures (minisign). Empty until the first
-# signed release exists; with an empty key a normal install refuses to continue,
-# so an unsigned download can never be installed by accident. Only --dev skips it.
-MINISIGN_PUBKEY=""
+# Public key used to verify release signatures (minisign). A normal install refuses
+# to continue if verification fails. Only --dev skips it.
+MINISIGN_PUBKEY="RWRCUyMVksFGTIOeCqnTqQkIyfCLb5O1NPxAYB0tNyxfPl0whpWvfWJn"
 
 PREFIX_BIN="/usr/local/bin/opsbox"
 STATE_DIR="/var/lib/opsbox"
