@@ -38,14 +38,16 @@ export function ago(ts) {
 export const clock = (ts = Date.now()) => new Date(ts).toTimeString().slice(0, 8);
 
 // ---------- components ----------
-const GLYPH = { ok: '■', warn: '▲', fail: '✕', off: '□', build: '◐' };
+const GLYPH = { ok: '●', warn: '▲', fail: '✕', off: '○', build: '◐' };
+export function chk(kind, text) { const g = { ok: '✓', warn: '!', fail: '✕' }[kind] || '!'; return html`<span class="chk ${kind}"><i>${g}</i>${text}</span>`; }
 export function st(kind, text) {
   const cls = kind === 'build' ? 'warn' : kind;
-  return html`<span class="st ${cls}">${GLYPH[kind] || '■'} ${text}</span>`;
+  return html`<span class="st ${cls}"><span style="font-size:10px">${GLYPH[kind] || '●'}</span>${text}</span>`;
 }
 export function btn(label, { act, data = {}, kind = '', href, aria, disabled } = {}) {
   const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${esc(v)}"`).join('');
-  const cls = `btn ${kind}`.trim();
+  const dg = kind === 'link' && /^(Stop|Delete|Remove|Revoke|Lock|Disconnect|Uninstall|Reboot|Sign out all)/.test(String(label)) ? ' dg' : '';
+  const cls = `btn ${kind}${dg}`.trim();
   const al = aria ? ` aria-label="${esc(aria)}"` : '';
   if (href) return html`<a class="${cls}" href="${href}"${raw(al)}>${label}</a>`;
   return html`<button type="button" class="${cls}"${raw(al)}${raw(act ? ` data-act="${esc(act)}"` : '')}${raw(attrs)}${raw(disabled ? ' disabled' : '')}>${label}</button>`;
@@ -129,7 +131,7 @@ export function formDialog({ title, body = '', fields, submit = 'Save', danger =
     const d = document.createElement('dialog');
     const f = fields.map((x) => `<div class="field"><label for="f_${esc(x.name)}">${esc(x.label)}</label>${x.options
       ? `<select class="select" id="f_${esc(x.name)}" name="${esc(x.name)}">${x.options.map((o) => `<option${o === x.value ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`
-      : `<input class="input" id="f_${esc(x.name)}" name="${esc(x.name)}" type="${x.type || 'text'}" value="${esc(x.value || '')}" placeholder="${esc(x.placeholder || '')}" autocomplete="off">`}${x.hint ? `<span class="hint">${esc(x.hint)}</span>` : ''}</div>`).join('');
+      : `<input class="input" id="f_${esc(x.name)}" name="${esc(x.name)}" type="${x.type || 'text'}" value="${esc(x.value || '')}" placeholder="${esc(x.placeholder || '')}" autocomplete="off" data-1p-ignore data-lpignore="true">`}${x.hint ? `<span class="hint">${esc(x.hint)}</span>` : ''}</div>`).join('');
     d.innerHTML = `<form method="dialog"><div class="d-b"><h2>${esc(title)}</h2>${body ? `<p class="muted">${esc(body)}</p>` : ''}${f}<p class="err" role="alert" style="color:var(--danger);font-size:13px;min-height:0"></p></div><div class="d-f"><button class="btn" value="no" formnovalidate>Cancel</button><button class="btn ${danger ? 'danger' : 'primary'}" value="yes">${esc(submit)}</button></div></form>`;
     document.body.append(d);
     d.addEventListener('close', () => {

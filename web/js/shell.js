@@ -3,6 +3,7 @@ import { html, raw, esc, toast } from './ui.js';
 import * as api from './api.js';
 import { theme, toggleTheme, session } from './store.js';
 
+const ICONS = {"overview": "<rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/>", "apps": "<path d=\"M12 3l9 5-9 5-9-5 9-5z\"/><path d=\"M3 13l9 5 9-5\"/>", "containers": "<path d=\"M21 8l-9-5-9 5v8l9 5 9-5V8z\"/><path d=\"M3 8l9 5 9-5M12 13v8\"/>", "system": "<circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2\"/>", "backups": "<ellipse cx=\"12\" cy=\"6\" rx=\"8\" ry=\"3\"/><path d=\"M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6\"/>", "alerts": "<path d=\"M6 9a6 6 0 0112 0c0 6 2 7 2 7H4s2-1 2-7z\"/><path d=\"M10 20a2 2 0 004 0\"/>", "cleanup": "<path d=\"M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13\"/><path d=\"M10 11v6M14 11v6\"/>", "terminal": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M7 9l3 3-3 3M12 15h5\"/>", "files": "<path d=\"M3 6a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V6z\"/>", "security": "<path d=\"M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z\"/><path d=\"M9 12l2 2 4-4\"/>"};
 export const NAV = [
   ['01', 'Overview', '#/', 'overview'], ['02', 'Apps', '#/apps', 'apps'], ['03', 'Containers', '#/containers', 'containers'],
   ['04', 'System', '#/system', 'system'], ['05', 'Backups', '#/backups', 'backups'], ['06', 'Alerts', '#/alerts', 'alerts'],
@@ -15,26 +16,37 @@ export function mountShell(app) {
     <a class="logo" href="#/" aria-label="opsbox home">opsbox<i>_</i></a>
     <span class="crumb">srv-sgn-01<s>/</s>shop-platform<s>/</s><b>production</b></span>
     <span class="grow"></span>
-    <button type="button" class="btn" id="open-pal" style="color:var(--muted);gap:28px;font:400 12px var(--mono);padding:0 10px 0 14px">Search or run a command<span style="border:1px solid var(--ctl);border-radius:2px;padding:1px 6px;font-size:11px">Ctrl K</span></button>
-    <button type="button" class="btn" id="theme-btn"></button>
-    <a class="btn link mono" href="#/settings" id="settings-link" style="font-size:13px;color:var(--muted)">Settings</a>
-    <button type="button" class="btn link mono" id="sign-out" style="font-size:13px"></button>
+    <button type="button" class="btn" id="open-pal" style="color:var(--muted);gap:28px;font-weight:400;padding:0 10px 0 14px">Search or run a command<kbd class="kbd">Ctrl K</kbd></button>
+    <button type="button" class="btn icon" id="theme-btn"></button>
+    <a class="btn link" href="#/settings" id="settings-link" style="color:var(--muted)">Settings</a>
+    <button type="button" class="btn link" id="sign-out"></button>
   </div></header>
-  <nav class="tabs-nav" aria-label="Sections"><div class="wrap" id="nav"></div></nav>
-  <div id="view" style="flex:1;display:flex;flex-direction:column"></div>
-  <footer class="statusbar"><div class="wrap" id="status"></div></footer>`;
-  const label = () => { document.getElementById('theme-btn').textContent = theme() === 'light' ? 'Dark' : 'Light'; };
+  <div class="shell">
+    <aside class="side" aria-label="Main"><button type="button" class="side-toggle" id="side-toggle" aria-label="Collapse sidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg></button><nav id="nav" aria-label="Sections"></nav><nav id="nav2" aria-label="More" class="nav2"></nav></aside>
+    <div class="content">
+      <div id="view" style="flex:1;display:flex;flex-direction:column"></div>
+      <footer class="statusbar"><div class="wrap" id="status"></div></footer>
+    </div>
+  </div>`;
+  const label = () => { const b = document.getElementById('theme-btn'); const l = theme() === 'light'; b.innerHTML = l ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>' : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'; b.setAttribute('aria-label', l ? 'Switch to dark theme' : 'Switch to light theme'); b.title = b.getAttribute('aria-label'); };
   label();
   document.getElementById('theme-btn').addEventListener('click', () => { toggleTheme(); label(); });
   document.getElementById('sign-out').textContent = `${session.user || 'admin'} · sign out`;
   document.getElementById('sign-out').addEventListener('click', () => { session.clear(); location.hash = '#/login'; });
   document.getElementById('open-pal').addEventListener('click', openPalette);
+  const shell = app.querySelector('.shell'), tg = document.getElementById('side-toggle');
+  const setC = (c) => { shell.classList.toggle('collapsed', c); const l = c ? 'Expand sidebar' : 'Collapse sidebar'; tg.setAttribute('aria-label', l); tg.title = l; try { localStorage.setItem('opsbox.side', c ? '1' : '0'); } catch {} };
+  let c0 = false; try { c0 = localStorage.getItem('opsbox.side') === '1'; } catch {} setC(c0);
+  tg.addEventListener('click', () => setC(!shell.classList.contains('collapsed')));
   return document.getElementById('view');
 }
 
 export function setNav(active) {
   const nav = document.getElementById('nav'); if (!nav) return;
-  nav.innerHTML = NAV.map(([n, l, h, id]) => `<a href="${h}"${id === active ? ' aria-current="page"' : ''}><span>${n}</span>${l}</a>`).join('');
+  nav.innerHTML = NAV.map(([n, l, h, id]) => `<a href="${h}" title="${l}"${id === active ? ' aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[id]}</svg><span class="lbl">${l}</span></a>`).join('');
+  const more = [['Access', '#/security/access', 'access', '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/>'], ['Settings', '#/settings', 'settings', '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>']];
+  const n2 = document.getElementById('nav2'); const hash = location.hash;
+  if (n2) n2.innerHTML = more.map(([l, h, id, ic]) => `<a href="${h}" title="${l}"${hash.startsWith(h) ? ' aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ic}</svg><span class="lbl">${l}</span></a>`).join('');
 }
 
 export async function refreshStatus() {
@@ -47,6 +59,8 @@ export async function refreshStatus() {
 const ACTIONS = () => [
   ...NAV.map(([n, l, h]) => ({ label: `Go to ${l}`, hint: n, run: () => { location.hash = h; } })),
   { label: 'Go to Settings', hint: 'settings', run: () => { location.hash = '#/settings'; } },
+  { label: 'Domains and SSL for web', hint: 'apps', run: () => { location.hash = '#/apps?s=web&tab=domains'; } },
+  { label: 'Add backup destination (S3, R2, B2…)', hint: 'backups', run: () => { location.hash = '#/backups/new'; } },
   { label: 'Add a database or template', hint: 'apps', run: () => { location.hash = '#/apps/new/templates'; } },
   { label: 'Users and SSH keys', hint: 'security', run: () => { location.hash = '#/security/access'; } },
   { label: 'New service from GitHub', hint: 'apps', run: () => { location.hash = '#/apps/new'; } },

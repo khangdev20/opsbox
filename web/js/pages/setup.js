@@ -34,7 +34,7 @@ opsbox  setup token 7QK2-9XMD-4TFA   (single use, expires in 1 h)</pre>
       const f = root.querySelector('#f');
       f.addEventListener('submit', async (e) => {
         e.preventDefault();
-        try { await api.auth.claim(f.t.value); session.set('admin'); location.hash = '#/'; }
+        try { await api.auth.claim(f.t.value); session.set('admin'); let next = '#/'; try { next = sessionStorage.getItem('opsbox.next') || '#/'; sessionStorage.removeItem('opsbox.next'); } catch {} location.hash = /^#\/(login|setup)/.test(next) ? '#/' : next; }
         catch (err) { root.querySelector('#err').textContent = err.message; }
       });
     },

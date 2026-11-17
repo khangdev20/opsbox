@@ -15,7 +15,7 @@ export async function view() {
   const paint = () => { root.querySelector('#b').innerHTML = body().toString(); };
   const reload = async () => { d = await api.getAccess(); paint(); };
   return {
-    nav: 'security', title: 'Access',
+    nav: 'access', title: 'Access',
     html: html`<main>${header('Access', 'Who can log in to this server, and with what', html`<a class="btn" href="#/security">← Security</a>`)}<div id="b"></div></main>`,
     mount(r) {
       root = r; paint();

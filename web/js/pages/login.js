@@ -21,7 +21,7 @@ export async function view() {
       const f = root.querySelector('#f');
       f.addEventListener('submit', async (e) => {
         e.preventDefault(); const b = f.querySelector('button'); b.disabled = true;
-        try { const r = await api.auth.login(f.u.value, f.p.value, f.c.value); session.set(r.user); location.hash = '#/'; }
+        try { const r = await api.auth.login(f.u.value, f.p.value, f.c.value); session.set(r.user); let next = '#/'; try { next = sessionStorage.getItem('opsbox.next') || '#/'; sessionStorage.removeItem('opsbox.next'); } catch {} location.hash = /^#\/(login|setup)/.test(next) ? '#/' : next; }
         catch (err) { root.querySelector('#err').textContent = err.message; b.disabled = false; }
       });
       root.querySelector('#c').focus();

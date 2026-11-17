@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>opsbox — Terminal and SSH</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#17171A}
+a{text-decoration:none}
+[data-theme="dark"]{--fill:rgba(255,255,255,.06);--fill2:rgba(255,255,255,.10);--shadow:0 1px 0 rgba(255,255,255,.04) inset,0 8px 24px -12px rgba(0,0,0,.6);--bg:#17171A;--hl:#1F1F23;--input:#1A1A1D;--line:#2E2E33;--ls:#3E3E44;--ctl:#74747C;--text:#EEEEF0;--muted:#A3A3AB;--accent:#FF6A3D;--onaccent:#17171A;--ok:#5FD08A;--warn:#E8B64A;--danger:#FF8FB8;--code:#111113;--codetext:#DADADF}
+[data-theme="light"]{--fill:rgba(16,16,20,.045);--fill2:rgba(16,16,20,.08);--shadow:0 1px 2px rgba(16,16,20,.04),0 8px 24px -16px rgba(16,16,20,.18);--bg:#F6F6F3;--hl:#FFFFFF;--input:#FFFFFF;--line:#E6E5E0;--ls:#D5D4CE;--ctl:#84837C;--text:#1A1A18;--muted:#5E5D58;--accent:#C9300F;--onaccent:#FFFFFF;--ok:#1F7A3D;--warn:#8A5A00;--danger:#9B1B5A;--code:#0A0A09;--codetext:#D9D9D3}
+
+@keyframes topo-in{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes topo-flow-h{to{background-position:24px 0}}
+@keyframes topo-flow-v{to{background-position:0 24px}}
+@keyframes topo-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.7)}}
+@keyframes topo-spin{to{transform:rotate(360deg)}}
+@keyframes topo-glow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 35%,transparent)}50%{box-shadow:0 0 0 8px color-mix(in srgb,var(--accent) 0%,transparent)}}
+.topo-node{animation:topo-in .5s cubic-bezier(.2,.7,.2,1) both;transition:transform .2s,box-shadow .2s}
+.topo-node:hover{transform:translateY(-2px);box-shadow:0 10px 24px -12px rgba(0,0,0,.35)}
+.topo-node.sel{animation:topo-in .5s cubic-bezier(.2,.7,.2,1) both,topo-glow 2.4s ease-in-out .6s infinite}
+.topo-edge.h{background:repeating-linear-gradient(90deg,var(--accent) 0 6px,transparent 6px 12px);opacity:.55;animation:topo-flow-h 1.2s linear infinite}
+.topo-edge.v{background:repeating-linear-gradient(180deg,var(--accent) 0 6px,transparent 6px 12px);opacity:.55;animation:topo-flow-v 1.2s linear infinite}
+[aria-label="Service topology"] .st-run{animation:topo-pulse 1.8s ease-in-out infinite}
+[aria-label="Service topology"] .st-build{animation:topo-spin 1.2s linear infinite}
+@media (prefers-reduced-motion:reduce){.topo-node,.topo-edge,.st-g{animation:none!important}}
+</style>
+</helmet>
+<div data-theme="{{theme}}" style="min-height: 100vh; display: flex; flex-direction: column; background: var(--bg); color: var(--text); font-family: 'Geist', system-ui, sans-serif">
+<div style="position: sticky; top: 0; z-index: 30"><dc-import name="Header" theme="{{theme}}" toggle-theme="{{toggleTheme}}" hint-size="100%,64px"></dc-import></div>
+<div style="flex: 1; display: flex; align-items: stretch; min-height: 0">
+<div style="position: sticky; top: 64px; align-self: flex-start; height: calc(100vh - 64px); overflow-y: auto; overscroll-behavior: contain; flex: none"><dc-import name="Nav" active="terminal" theme="{{theme}}" hint-size="248px,100%"></dc-import></div>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+<main style="flex: 1; width: 100%; max-width: 1180px; margin: 0 auto; box-sizing: border-box; padding: 40px 40px 64px; display: flex; flex-direction: column; gap: 32px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px"><div style="display: flex; flex-direction: column; gap: 6px"><h1 style="margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.15">Terminal and SSH</h1><span style="font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 14px; color: var(--muted)">local shell and SSH to other machines · every session is written to the audit log</span></div><div style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center"></div></div><div style="display: flex; flex-wrap: wrap; gap: 32px; align-items: stretch"><section style="flex: 1 1 240px; max-width: 320px; min-width: 0; background: var(--hl); border: 1px solid var(--line); border-radius: 16px; box-shadow: var(--shadow); padding: 24px 28px 28px; display: flex; flex-direction: column; gap: 20px"><h2 style="margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.02em">Hosts</h2><div style="display: flex; flex-direction: column"><button type="button" style="min-height: 56px; text-align: left; padding: 0 14px; border: 0; border-left: 2px solid var(--accent); background: var(--hl); color: var(--text); display: flex; flex-direction: column; justify-content: center; gap: 2px; cursor: pointer; font: 500 14px 'Geist', sans-serif">srv-sgn-01<span style="font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 400; color: var(--muted); ">local · root</span></button><button type="button" style="min-height: 56px; text-align: left; padding: 0 14px; border: 0; border-left: 2px solid transparent; color: var(--text); display: flex; flex-direction: column; justify-content: center; gap: 2px; cursor: pointer; background-color: transparent; font: 500 14px 'Geist', sans-serif">db-primary<span style="font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 400; color: var(--muted); ">deploy@10.0.1.12 · ed25519</span></button><button type="button" style="min-height: 56px; text-align: left; padding: 0 14px; border: 0; border-left: 2px solid transparent; color: var(--text); display: flex; flex-direction: column; justify-content: center; gap: 2px; cursor: pointer; background-color: transparent; font: 500 14px 'Geist', sans-serif">edge-hn-02<span style="font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 12px; font-weight: 400; color: var(--muted); ">ubuntu@203.0.113.40:2222</span></button></div><button type="button" style="display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 14px; border-radius: 10px; font: 500 14px 'Geist', sans-serif; cursor: pointer; box-sizing: border-box; white-space: nowrap; background: var(--fill); color: var(--text); border: 1px solid transparent;">+ Add SSH host</button><span style="font-size: 13px; color: var(--muted); line-height: 1.6">Private keys stay encrypted on the server and never reach the browser. The first host fingerprint is pinned; a change raises a warning.</span></section><div data-theme="dark" style="flex: 1 1 560px; min-width: 0; display: flex; flex-direction: column; background: var(--code); border: 1px solid var(--ls); border-radius: 8px; color: var(--text)">
+<div role="tablist" aria-label="Terminal sessions" style="display: flex; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--line)">
+<button type="button" role="tab" aria-selected="true" style="min-height: 44px; padding: 0 16px; background: var(--hl); border: 0; border-bottom: 2px solid var(--accent); color: var(--text); font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 14px; cursor: pointer">srv-sgn-01</button>
+<button type="button" role="tab" aria-selected="false" style="min-height: 44px; padding: 0 16px; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 14px; cursor: pointer">db-primary</button>
+<button type="button" aria-label="New terminal tab" style="min-height: 44px; min-width: 44px; background: transparent; border: 0; color: var(--muted); font-size: 18px; cursor: pointer">+</button>
+<span style="flex: 1"></span>
+<button type="button" style="min-height: 44px; padding: 0 12px; background: transparent; border: 0; color: var(--muted); font: 500 13px 'Geist', sans-serif; cursor: pointer">Split</button>
+<button type="button" style="min-height: 44px; padding: 0 12px; background: transparent; border: 0; color: var(--muted); font: 500 13px 'Geist', sans-serif; cursor: pointer">Full screen</button></div>
+<pre style="margin: 0; padding: 18px 20px; flex: 1; min-height: 480px; color: var(--codetext); font: 14px/1.7 'Geist Mono', monospace; overflow-x: auto; white-space: pre"><span style="color: var(--ok)">root@srv-sgn-01</span>:<span style="color: var(--accent)">~</span># docker ps
+NAMES         STATUS
+web-app       Up 3 days
+postgres-15   Up 3 days
+redis         Up 3 days
+nginx-proxy   Up 2 hours
+<span style="color: var(--ok)">root@srv-sgn-01</span>:<span style="color: var(--accent)">~</span># df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1       120G   98G   22G  82% /
+<span style="color: var(--ok)">root@srv-sgn-01</span>:<span style="color: var(--accent)">~</span># tail -n 3 /var/log/auth.log
+Nov 17 02:47:03 sshd[9121]: Failed password for root from 203.0.113.9
+Nov 17 02:47:09 sshd[9123]: Failed password for root from 203.0.113.9
+Nov 17 03:02:11 sshd[9210]: Accepted publickey for deploy
+<span style="color: var(--ok)">root@srv-sgn-01</span>:<span style="color: var(--accent)">~</span># <span style="background: var(--codetext); color: var(--code)"> </span></pre>
+<div style="display: flex; flex-wrap: wrap; gap: 4px 20px; padding: 8px 16px; border-top: 1px solid var(--line); font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted)"><span style="color: var(--ok)">■ encrypted websocket</span><span>pty 120×32</span><span>utf-8</span><span>Ctrl+Shift+C/V copy, paste</span></div></div></div>
+</main>
+<dc-import name="Status" theme="{{theme}}" hint-size="100%,44px"></dc-import>
+</div></div></div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","default":"dark","options":["dark","light"]},"$preview":{"width":1440,"height":1100}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const theme = (this.state && this.state.theme) || this.props.theme || 'dark';
+    return {
+      theme,
+      themeLabel: theme === 'light' ? 'Dark' : 'Light',
+      toggleTheme: () => this.setState({ theme: theme === 'light' ? 'dark' : 'light' })
+    };
+  }
+}
+</script>
+</body>
+</html>

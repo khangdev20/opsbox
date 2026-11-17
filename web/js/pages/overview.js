@@ -1,4 +1,4 @@
-import { html, raw, bytes, gb, steps, legend, section, header, table, st, bindActions } from '../ui.js';
+import { html, raw, chk, bytes, gb, steps, legend, section, header, table, st, bindActions } from '../ui.js';
 import * as api from '../api.js';
 import { listeners } from '../store.js';
 
@@ -15,12 +15,12 @@ export async function view() {
     </div>
     <div class="cols">
       <div class="w2">${section('CPU and memory, last 48 s', html`<div class="chart"><svg viewBox="0 0 640 180" preserveAspectRatio="none" role="img" aria-label="CPU and memory over time" style="width:100%;height:180px"><path d="${steps(m.mem)}" fill="none" stroke="var(--muted)" stroke-width="1.5" vector-effect="non-scaling-stroke"/><path d="${steps(m.cpu)}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg></div>${legend([['var(--accent)', 'CPU %'], ['var(--muted)', 'Memory %']])}`)}</div>
-      <div>${section('Top processes', table('Top processes', [['Process'], ['PID', 'r'], ['CPU', 'r'], ['Mem', 'r']], m.procs.map((p) => [html`${p.name}${p.self ? raw(' <span class="muted">(opsbox)</span>') : ''}`, p.pid, `${p.cpu.toFixed(1)}%`, `${p.mem} MB`])))}</div>
+      <div>${section('Top processes', table('Top processes', [['Process'], ['PID', 'r'], ['CPU', 'r'], ['Mem', 'r']], m.procs.map((p) => [html`${p.name}${p.self ? raw(' <span class="muted">· this panel</span>') : ''}`, p.pid, `${p.cpu.toFixed(1)}%`, `${p.mem} MB`])))}</div>
     </div>`;
   return {
     nav: 'overview', title: 'Overview',
     html: html`<main>${header('Overview', `${h.name} · ${h.os} · kernel ${h.kernel} · up ${h.upDays} days · ${h.cores} cores`, html`<a class="btn primary" href="#/apps/new">New service</a>`)}
-      ${section('Needs attention', att.length ? html`<div>${att.map((a) => html`<div class="list-row"><span class="st warn">▲ ${a.text}</span><a class="btn link" href="${a.link[1]}">${a.link[0]}</a></div>`)}</div>` : html`<p class="st ok">■ Nothing needs attention.</p>`)}
+      ${section('Needs attention', att.length ? html`<div>${att.map((a) => html`<div class="list-row">${chk('warn', a.text)}<a class="btn link" href="${a.link[1]}">${a.link[0]}</a></div>`)}</div>` : chk('ok', 'Nothing needs attention.'))}
       <div id="live">${body(m)}</div></main>`,
     mount(root) {
       const f = async () => { const live = root.querySelector('#live'); if (!live) return; live.innerHTML = body(await api.getMetrics()).toString(); };

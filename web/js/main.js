@@ -10,7 +10,7 @@ const BARE = new Set(['login', 'setup', 'recovery']);
 const ROUTES = [
   [/^\/?$/, 'overview'], [/^\/apps\/?$/, 'apps'], [/^\/apps\/new\/?$/, 'newservice'], [/^\/apps\/new\/configure\/?$/, 'configure'],
   [/^\/containers\/?$/, 'containers'], [/^\/system\/?$/, 'system'], [/^\/cleanup\/?$/, 'cleanup'], [/^\/terminal\/?$/, 'terminal'],
-  [/^\/files\/?$/, 'files'], [/^\/backups\/?$/, 'backups'], [/^\/alerts\/?$/, 'alerts'], [/^\/apps\/new\/templates\/?$/, 'templates'], [/^\/security\/access\/?$/, 'access'], [/^\/settings\/?$/, 'settings'], [/^\/security\/?$/, 'security'], [/^\/login\/?$/, 'login'], [/^\/setup\/?$/, 'setup'], [/^\/recovery\/?$/, 'recovery'],
+  [/^\/files\/?$/, 'files'], [/^\/backups\/?$/, 'backups'], [/^\/backups\/new\/?$/, 'backupdest'], [/^\/alerts\/?$/, 'alerts'], [/^\/apps\/new\/templates\/?$/, 'templates'], [/^\/security\/access\/?$/, 'access'], [/^\/settings\/?$/, 'settings'], [/^\/security\/?$/, 'security'], [/^\/login\/?$/, 'login'], [/^\/setup\/?$/, 'setup'], [/^\/recovery\/?$/, 'recovery'],
 ];
 const app = document.getElementById('app');
 let current = null, shellUp = false, gen = 0;
@@ -26,7 +26,7 @@ async function navigate() {
   if (current && current.unmount) { try { current.unmount(); } catch {} }
   current = null;
   const bare = BARE.has(name);
-  if (!bare && !session.user) { location.hash = '#/login'; return; }
+  if (!bare && !session.user) { try { sessionStorage.setItem('opsbox.next', location.hash); } catch {} location.hash = '#/login'; return; }
   let root;
   if (bare) { app.innerHTML = '<div id="view" style="flex:1;display:flex;flex-direction:column"></div>'; root = document.getElementById('view'); shellUp = false; }
   else { if (!shellUp || !document.getElementById('nav')) { root = mountShell(app); shellUp = true; } else root = document.getElementById('view'); }

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>opsbox — Status bar</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#17171A}
+a{text-decoration:none}
+[data-theme="dark"]{--fill:rgba(255,255,255,.06);--fill2:rgba(255,255,255,.10);--shadow:0 1px 0 rgba(255,255,255,.04) inset,0 8px 24px -12px rgba(0,0,0,.6);--bg:#17171A;--hl:#1F1F23;--input:#1A1A1D;--line:#2E2E33;--ls:#3E3E44;--ctl:#74747C;--text:#EEEEF0;--muted:#A3A3AB;--accent:#FF6A3D;--onaccent:#17171A;--ok:#5FD08A;--warn:#E8B64A;--danger:#FF8FB8;--code:#111113;--codetext:#DADADF}
+[data-theme="light"]{--fill:rgba(16,16,20,.045);--fill2:rgba(16,16,20,.08);--shadow:0 1px 2px rgba(16,16,20,.04),0 8px 24px -16px rgba(16,16,20,.18);--bg:#F6F6F3;--hl:#FFFFFF;--input:#FFFFFF;--line:#E6E5E0;--ls:#D5D4CE;--ctl:#84837C;--text:#1A1A18;--muted:#5E5D58;--accent:#C9300F;--onaccent:#FFFFFF;--ok:#1F7A3D;--warn:#8A5A00;--danger:#9B1B5A;--code:#0A0A09;--codetext:#D9D9D3}
+
+@keyframes topo-in{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes topo-flow-h{to{background-position:24px 0}}
+@keyframes topo-flow-v{to{background-position:0 24px}}
+@keyframes topo-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.7)}}
+@keyframes topo-spin{to{transform:rotate(360deg)}}
+@keyframes topo-glow{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 35%,transparent)}50%{box-shadow:0 0 0 8px color-mix(in srgb,var(--accent) 0%,transparent)}}
+.topo-node{animation:topo-in .5s cubic-bezier(.2,.7,.2,1) both;transition:transform .2s,box-shadow .2s}
+.topo-node:hover{transform:translateY(-2px);box-shadow:0 10px 24px -12px rgba(0,0,0,.35)}
+.topo-node.sel{animation:topo-in .5s cubic-bezier(.2,.7,.2,1) both,topo-glow 2.4s ease-in-out .6s infinite}
+.topo-edge.h{background:repeating-linear-gradient(90deg,var(--accent) 0 6px,transparent 6px 12px);opacity:.55;animation:topo-flow-h 1.2s linear infinite}
+.topo-edge.v{background:repeating-linear-gradient(180deg,var(--accent) 0 6px,transparent 6px 12px);opacity:.55;animation:topo-flow-v 1.2s linear infinite}
+[aria-label="Service topology"] .st-run{animation:topo-pulse 1.8s ease-in-out infinite}
+[aria-label="Service topology"] .st-build{animation:topo-spin 1.2s linear infinite}
+@media (prefers-reduced-motion:reduce){.topo-node,.topo-edge,.st-g{animation:none!important}}
+</style>
+</helmet>
+<footer data-theme="{{theme}}" style="background: var(--bg); border-top: 1px solid var(--ls); font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted)">
+<div style="max-width: 1280px; margin: 0 auto; padding: 8px 32px; box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 24px; min-height: 44px">
+<span style="color: var(--ok)">■ srv-sgn-01</span><span>cpu <span style="color: var(--text)">23%</span></span><span>mem <span style="color: var(--text)">3.1/8.0 GB</span></span><span>disk / <span style="color: var(--warn)">82%</span></span><span>net <span style="color: var(--text)">↓4.2 ↑0.8 MB/s</span></span><span style="flex: 1"></span><span>sample data</span><span>opsbox 0.1.0</span>
+</div></footer>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"theme":{"editor":"enum","default":"dark","options":["dark","light"]},"$preview":{"width":1440,"height":44}}'>
+class Component extends DCLogic {
+  renderVals() { return { theme: this.props.theme ?? 'dark' }; }
+}
+</script>
+</body>
+</html>

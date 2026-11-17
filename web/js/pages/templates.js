@@ -20,7 +20,7 @@ export async function view() {
     html: html`<main>${header('New service', 'Databases and tools run as containers in shop-platform', html`<a class="btn" href="#/apps">Cancel</a>`)}
       <div class="tabs" role="tablist">${['GitHub', 'Public repo URL', 'Docker image', 'Templates'].map((t, i) => html`<button type="button" role="tab" aria-selected="${i === 3}" data-act="src" data-i="${i}">${t}</button>`)}</div>
       <div class="cols"><div class="w3"><div id="db"></div><div id="tl" style="margin-top:32px"></div>
-        ${section('Your own Compose file', html`<p class="muted sm">Paste a docker-compose.yml. Each service appears on the Apps graph with logs, variables and rollback.</p><div class="editor" style="border-radius:2px"><textarea id="yml" spellcheck="false" aria-label="Compose file" style="min-height:170px">${YML}</textarea></div><p id="cerr" role="alert" style="color:var(--danger);font-size:13px"></p><div>${btn('Deploy compose file', { act: 'compose', kind: 'primary' })}</div>`)}
+        ${section('Your own Compose file', html`<p class="muted sm">Paste a docker-compose.yml. Each service appears on the Apps graph with logs, variables and rollback.</p><div class="editor" style="border-radius:8px"><textarea id="yml" spellcheck="false" aria-label="Compose file" style="min-height:170px">${YML}</textarea></div><p id="cerr" role="alert" style="color:var(--danger);font-size:13px"></p><div>${btn('Deploy compose file', { act: 'compose', kind: 'primary' })}</div>`)}
       </div><div id="fm"></div></div></main>`,
     mount(r) {
       root = r; paint();

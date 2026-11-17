@@ -547,3 +547,62 @@ export async function growFs() { await lag(900); ST.fsGrown = true; audit('grow 
 export async function setOpsboxAutoUpdate(on) { await lag(150); ST.autoUpdate = on; }
 export async function disconnectGithub() { await lag(300); ST.github = false; audit('disconnect GitHub'); }
 export async function exportConfig() { await lag(400); audit('export configuration'); return JSON.stringify({ opsbox: '0.1.0', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel } }, null, 2); }
+
+// ---------------------------------------------------------------- domains
+const DOM = {
+  web: [
+    { name: 'shop.example.com', primary: true, redirect: '', dns: 'ok', cert: 'valid', renews: 61 },
+    { name: 'www.shop.example.com', primary: false, redirect: 'shop.example.com', dns: 'ok', cert: 'valid', renews: 61 },
+    { name: 'shop.acme.co', primary: false, redirect: '', dns: 'pending', cert: 'none', custom: true },
+  ],
+};
+const DOMRE = /^(?=.{1,253}$)(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+export async function getDomains(svc) { await lag(); return clone([...(DOM[svc] || []), { name: `${svc}.srv-sgn-01.opsbox.internal`, internal: true, dns: 'ok', cert: 'internal' }]); }
+export async function addDomain(svc, d) {
+  await lag(400); const name = (d.name || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+  if (!DOMRE.test(name)) throw new Error('Enter a domain like app.acme.co (no https://, no path).');
+  if (name.startsWith('*.')) throw new Error('Wildcard domains need a DNS provider token. Add one in Settings first.');
+  const all = Object.values(DOM).flat(); if (all.some((x) => x.name === name)) throw new Error(`${name} is already used by a service.`);
+  (DOM[svc] = DOM[svc] || []).push({ name, primary: !(DOM[svc] || []).length, redirect: '', dns: 'pending', cert: 'none', custom: true, www: d.www, force: d.force });
+  audit(`add domain ${name} to ${svc}`); return { name };
+}
+export async function checkDns(svc, name) {
+  await lag(900); const x = (DOM[svc] || []).find((d) => d.name === name); if (!x) throw new Error('No such domain');
+  x.checks = (x.checks || 0) + 1; if (x.checks >= 2) { x.dns = 'ok'; x.cert = 'valid'; x.renews = 90; audit(`certificate issued for ${name}`); }
+  return clone(x);
+}
+export async function removeDomain(svc, name) { await lag(200); DOM[svc] = (DOM[svc] || []).filter((d) => d.name !== name); audit(`remove domain ${name}`); }
+export async function makePrimary(svc, name) { await lag(200); (DOM[svc] || []).forEach((d) => { d.primary = d.name === name; d.redirect = d.primary ? '' : d.redirect; }); audit(`primary domain ${name}`); }
+
+// ---------------------------------------------------------------- backup providers
+export const PROVIDERS = [
+  { id: 'r2', name: 'Cloudflare R2', sub: 'Cloudflare', mono: 'R2', fields: [['account', 'Account ID', 'Cloudflare dashboard › R2 › Overview, right-hand side.'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key ID'], ['secret', 'Secret Access Key']], endpoint: (v) => v.account ? `https://${v.account}.r2.cloudflarestorage.com` : '', steps: ['Open R2 Object Storage and create a bucket.', 'Manage R2 API Tokens › Create API token.', 'Choose Object Read & Write, limited to that bucket.', 'Copy the Access Key ID and Secret here. The secret is shown only once.'], tip: 'R2 charges nothing to download, so restoring costs only storage.' },
+  { id: 's3', name: 'AWS S3', sub: 'Amazon', mono: 'S3', fields: [['region', 'Region', 'For example ap-southeast-2.'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key ID'], ['secret', 'Secret Access Key']], endpoint: (v) => v.region ? `https://s3.${v.region}.amazonaws.com` : '', steps: ['Create a bucket in S3 (block public access stays on).', 'In IAM create a user with a policy limited to that bucket.', 'Create an access key for that user.', 'Copy the key and secret here.'] },
+  { id: 'b2', name: 'Backblaze B2', sub: 'Backblaze', mono: 'B2', fields: [['region', 'Region', 'Shown on the bucket page, e.g. us-west-004.'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Application Key ID'], ['secret', 'Application Key']], endpoint: (v) => v.region ? `https://s3.${v.region}.backblazeb2.com` : '', steps: ['Create a private bucket.', 'App Keys › Add a New Application Key, limited to that bucket.', 'Copy the keyID and applicationKey here.'] },
+  { id: 'wasabi', name: 'Wasabi', sub: 'Wasabi', mono: 'WA', fields: [['region', 'Region'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.region ? `https://s3.${v.region}.wasabisys.com` : '', steps: ['Create a bucket.', 'Access Keys › Create new access key.', 'Copy both keys here.'] },
+  { id: 'do', name: 'DigitalOcean Spaces', sub: 'DigitalOcean', mono: 'DO', fields: [['region', 'Region', 'e.g. sgp1'], ['bucket', 'Space name'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret']], endpoint: (v) => v.region ? `https://${v.region}.digitaloceanspaces.com` : '', steps: ['Create a Space.', 'API › Spaces Keys › Generate New Key.', 'Copy both values here.'] },
+  { id: 'hetzner', name: 'Hetzner Storage', sub: 'Hetzner', mono: 'HZ', fields: [['region', 'Location', 'fsn1, nbg1 or hel1'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.region ? `https://${v.region}.your-objectstorage.com` : '', steps: ['Create a bucket in Object Storage.', 'Security › S3 credentials › Generate.', 'Copy both values here.'] },
+  { id: 'gcs', name: 'Google Cloud Storage', sub: 'Google Cloud', mono: 'GC', fields: [['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'HMAC Access ID'], ['secret', 'HMAC Secret']], endpoint: () => 'https://storage.googleapis.com', steps: ['Create a bucket.', 'Settings › Interoperability › Create a key for a service account.', 'Copy the access ID and secret here.'] },
+  { id: 'minio', name: 'MinIO', sub: 'Self-hosted', mono: 'MI', fields: [['endpoint', 'Endpoint URL', 'https://minio.example.com:9000'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.endpoint || '', steps: ['Create a bucket and a user limited to it.', 'Create an access key for that user.'] },
+  { id: 'sftp', name: 'SFTP server', sub: 'Any Linux box over SSH', mono: 'SF', fields: [['host', 'Host', 'backup.example.com or an IP'], ['user', 'User'], ['path', 'Folder on that server', '/srv/backups/srv-sgn-01']], endpoint: (v) => v.host ? `sftp://${v.user || 'user'}@${v.host}` : '', steps: ['opsbox shows a public key after you save.', 'Add it to ~/.ssh/authorized_keys of that user on the backup server.', 'Run the test again.'], sftp: true },
+  { id: 'custom', name: 'Other S3-compatible', sub: 'Custom endpoint', mono: 'S3', fields: [['endpoint', 'Endpoint URL'], ['region', 'Region (optional)'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.endpoint || '', steps: ['Use the S3 endpoint your provider documents.', 'Create a key limited to one bucket.'] },
+];
+export async function testDestination(pid, v) {
+  await lag(1100); const p = PROVIDERS.find((x) => x.id === pid); if (!p) throw new Error('Choose a provider');
+  const opt = new Set(['prefix', 'region']); if (pid === 'custom') opt.add('region');
+  const miss = p.fields.filter(([k]) => !opt.has(k) && !(v[k] || '').trim()).map(([, l]) => l);
+  if (pid === 's3' || pid === 'b2' || pid === 'wasabi' || pid === 'do' || pid === 'hetzner') { if (!(v.region || '').trim()) miss.unshift(p.fields.find(([k]) => k === 'region')[1]); }
+  if (miss.length) return { ok: false, steps: [['fail', `Missing: ${miss.join(', ')}`]] };
+  if (v.bucket && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(v.bucket)) return { ok: false, steps: [['ok', 'Connected to endpoint'], ['fail', 'Bucket names use lowercase letters, numbers, dots and dashes.']] };
+  if (p.sftp) return { ok: true, steps: [['ok', `Reached ${v.host}:22`], ['warn', 'Add the opsbox public key to the backup server, then test again.']] };
+  return { ok: true, steps: [['ok', 'Connected to endpoint'], ['ok', `Bucket ${v.bucket} found`], ['ok', 'Wrote and read back a 1 KB test file'], ['warn', 'Key can also delete objects. Fine for pruning old backups; use a separate key for append-only.']] };
+}
+export async function saveDestination(pid, v, name) {
+  await lag(400); const p = PROVIDERS.find((x) => x.id === pid);
+  BK.dests = BK.dests.filter((d) => d.ok || d.type !== 'folder');
+  BK.dests.unshift({ id: 'd' + Date.now(), name: (name || '').trim() || `Offsite (${p.name})`, type: p.name, loc: p.sftp ? `${p.endpoint(v)}:${v.path}` : `${p.endpoint(v).replace(/^https:\/\//, '')}/${v.bucket}/${v.prefix || ''}`, ok: true });
+  BK.dests.push({ id: 'd2', name: 'Local disk', type: 'folder', loc: '/var/backups', ok: false });
+  BK.dests = BK.dests.filter((d, i, a) => a.findIndex((x) => x.loc === d.loc) === i);
+  BK.jobs.forEach((j) => { if (j.dest === 'Local disk') { j.dest = BK.dests[0].name; j.state = 'ok'; j.last = 'next run 02:40'; } });
+  audit(`add backup destination ${p.name}`);
+}

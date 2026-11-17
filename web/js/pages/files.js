@@ -33,7 +33,7 @@ export async function view({ query }) {
       e.type === 'd' ? html`<a href="#" class="mono" data-act="go" data-p="${e.path}">${e.name}/</a>` : html`<a href="#" class="mono" data-act="open" data-p="${e.path}">${e.name}</a>${e.warn ? html` <span class="st warn" title="Readable by everyone">▲ world-readable secrets</span>` : ''}`,
       html`<span class="mono">${e.mode}</span>`, e.size == null ? '' : bytes(e.size), e.mtime])]);
   const editor = () => open ? html`<section class="sec"><div class="sec-h"><h2 class="mono">${open.path}</h2><span class="row">${btn('Save', { act: 'save', kind: 'primary' })}${btn('Permissions', { act: 'chmod' })}${btn('Close', { act: 'close' })}</span></div>
-    <div id="mon" role="group" aria-label="Editor for ${open.path}" style="height:420px;border:1px solid var(--ls);border-radius:2px;background:#1e1e1e"><p class="muted sm" style="padding:16px">Loading editor…</p></div><p class="sm muted mono" id="es" style="margin-top:6px">${open.mode} · ${langOf(open.path)} · Ctrl S to save</p></section>` : '';
+    <div id="mon" role="group" aria-label="Editor for ${open.path}" style="height:420px;border:1px solid var(--ls);border-radius:8px;background:#1e1e1e"><p class="muted sm" style="padding:16px">Loading editor…</p></div><p class="sm muted mono" id="es" style="margin-top:6px">${open.mode} · ${langOf(open.path)} · Ctrl S to save</p></section>` : '';
   const paint = () => {
     root.querySelector('#c').innerHTML = crumbs().toString(); root.querySelector('#l').innerHTML = list().toString(); root.querySelector('#e').innerHTML = editor().toString();
     root.querySelector('#del').disabled = !picked.size;
@@ -43,7 +43,7 @@ export async function view({ query }) {
       loadMonaco().then((monaco) => {
         if (!open || open.path !== path || !host.isConnected) return;
         host.innerHTML = '';
-        ed = monaco.editor.create(host, { value: open.content, language: langOf(path), theme: 'vs-dark', automaticLayout: true, minimap: { enabled: true }, fontFamily: 'IBM Plex Mono, monospace', fontSize: 13, scrollBeyondLastLine: false, tabSize: 2, renderWhitespace: 'selection', bracketPairColorization: { enabled: true } });
+        ed = monaco.editor.create(host, { value: open.content, language: langOf(path), theme: 'vs-dark', automaticLayout: true, minimap: { enabled: true }, fontFamily: 'Geist Mono, monospace', fontSize: 13, scrollBeyondLastLine: false, tabSize: 2, renderWhitespace: 'selection', bracketPairColorization: { enabled: true } });
         ed.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => root.querySelector('[data-act=save]')?.click());
         ed.onDidChangeModelContent(() => { dirty = ed.getValue() !== open.content; const es = root.querySelector('#es'); if (es) es.textContent = `${open.mode} · ${langOf(path)} · ${dirty ? '● unsaved changes · ' : ''}Ctrl S to save`; });
         ed.focus();

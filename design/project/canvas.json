@@ -1,0 +1,275 @@
+{
+ "v": 3,
+ "attachments": {},
+ "boards": {
+  "Login.dc.html": {
+   "x": 1560,
+   "y": 0,
+   "w": 1440,
+   "h": 1008,
+   "title": "A \u00b7 Sign in",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Main.dc.html": {
+   "x": 0,
+   "y": 1736,
+   "w": 1440,
+   "h": 1500,
+   "title": "B \u00b7 Overview",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Apps.dc.html": {
+   "x": 0,
+   "y": 4200,
+   "w": 1440,
+   "h": 1456,
+   "title": "C \u00b7 Apps and deployments",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Containers.dc.html": {
+   "x": 0,
+   "y": 6608,
+   "w": 1440,
+   "h": 1232,
+   "title": "D \u00b7 Containers",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Cleanup.dc.html": {
+   "x": 6240,
+   "y": 6608,
+   "w": 1440,
+   "h": 1400,
+   "title": "D \u00b7 Cleanup",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Terminal.dc.html": {
+   "x": 3120,
+   "y": 6608,
+   "w": 1440,
+   "h": 1232,
+   "title": "D \u00b7 Terminal and SSH",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Files.dc.html": {
+   "x": 4680,
+   "y": 6608,
+   "w": 1440,
+   "h": 1176,
+   "title": "D \u00b7 Files",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Security.dc.html": {
+   "x": 3120,
+   "y": 10136,
+   "w": 1440,
+   "h": 1456,
+   "title": "E \u00b7 Security",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "MainLight.dc.html": {
+   "x": 1560,
+   "y": 1736,
+   "w": 1440,
+   "h": 1500,
+   "title": "B \u00b7 Overview (light)",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "AppsLight.dc.html": {
+   "x": 1560,
+   "y": 4200,
+   "w": 1440,
+   "h": 1456,
+   "title": "C \u00b7 Apps and deployments (light)",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Nav.dc.html": {
+   "x": 1560,
+   "y": 12544,
+   "w": 248,
+   "h": 700,
+   "title": "F \u00b7 Sidebar navigation (shared)",
+   "is_interactive": true
+  },
+  "Status.dc.html": {
+   "x": 1928,
+   "y": 12544,
+   "w": 1440,
+   "h": 44,
+   "title": "F \u00b7 Status bar (shared)"
+  },
+  "NewService.dc.html": {
+   "x": 3120,
+   "y": 4200,
+   "w": 1440,
+   "h": 1288,
+   "title": "C \u00b7 New service: choose GitHub repo",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Configure.dc.html": {
+   "x": 6240,
+   "y": 4200,
+   "w": 1440,
+   "h": 2128,
+   "title": "C \u00b7 New service: configure",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Setup.dc.html": {
+   "x": 0,
+   "y": 0,
+   "w": 1440,
+   "h": 1232,
+   "title": "A \u00b7 First-time setup (claim server)",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Recovery.dc.html": {
+   "x": 3120,
+   "y": 0,
+   "w": 1440,
+   "h": 1456,
+   "title": "A \u00b7 Safe mode (recovery)",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "System.dc.html": {
+   "x": 1560,
+   "y": 6608,
+   "w": 1440,
+   "h": 3248,
+   "title": "D \u00b7 System (updates, services, logs, firewall)",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Backups.dc.html": {
+   "x": 0,
+   "y": 10136,
+   "w": 1440,
+   "h": 2128,
+   "title": "E \u00b7 Backups",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Alerts.dc.html": {
+   "x": 1560,
+   "y": 10136,
+   "w": 1440,
+   "h": 1904,
+   "title": "E \u00b7 Alerts",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Templates.dc.html": {
+   "x": 4680,
+   "y": 4200,
+   "w": 1440,
+   "h": 1960,
+   "title": "C \u00b7 New service: templates and databases",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Access.dc.html": {
+   "x": 4680,
+   "y": 10136,
+   "w": 1440,
+   "h": 1848,
+   "title": "E \u00b7 Access: SSH keys and Linux users",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Settings.dc.html": {
+   "x": 3120,
+   "y": 1736,
+   "w": 1440,
+   "h": 2184,
+   "title": "B \u00b7 Settings",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "Header.dc.html": {
+   "x": 0,
+   "y": 12544,
+   "w": 1440,
+   "h": 64,
+   "title": "F \u00b7 Top header (shared)",
+   "is_interactive": true
+  },
+  "Landing.dc.html": {
+   "x": 0,
+   "y": 13644,
+   "w": 1440,
+   "h": 5128,
+   "title": "G \u00b7 Landing page (marketing site)",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "AppDomains.dc.html": {
+   "x": 7800,
+   "y": 4200,
+   "w": 1440,
+   "h": 1500,
+   "title": "C \u00b7 Apps \u203a Domains and SSL",
+   "expand": "fill",
+   "is_interactive": true
+  },
+  "BackupDest.dc.html": {
+   "x": 6240,
+   "y": 10136,
+   "w": 1440,
+   "h": 1850,
+   "title": "E \u00b7 Backups \u203a Add destination",
+   "expand": "fill",
+   "is_interactive": true
+  }
+ },
+ "createdOnFiles": {
+  "at": "2026-11-17T03:40:00Z",
+  "v": 1
+ },
+ "designSystems": [],
+ "launch": {
+  "view": "canvas"
+ },
+ "notes": {},
+ "order": [
+  "Setup.dc.html",
+  "Login.dc.html",
+  "Recovery.dc.html",
+  "Main.dc.html",
+  "MainLight.dc.html",
+  "Settings.dc.html",
+  "Apps.dc.html",
+  "AppsLight.dc.html",
+  "NewService.dc.html",
+  "Templates.dc.html",
+  "Configure.dc.html",
+  "AppDomains.dc.html",
+  "Containers.dc.html",
+  "System.dc.html",
+  "Terminal.dc.html",
+  "Files.dc.html",
+  "Cleanup.dc.html",
+  "Backups.dc.html",
+  "BackupDest.dc.html",
+  "Alerts.dc.html",
+  "Security.dc.html",
+  "Access.dc.html",
+  "Header.dc.html",
+  "Nav.dc.html",
+  "Status.dc.html",
+  "Landing.dc.html"
+ ],
+ "pages": [],
+ "title": "opsbox \u2014 Web UI design"
+}
