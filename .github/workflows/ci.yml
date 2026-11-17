@@ -20,6 +20,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Format
@@ -36,3 +37,37 @@ jobs:
         run: python3 tools/check-idle-memory.py --binary target/release/opsbox
       - name: Lint install.sh
         run: shellcheck --shell=sh --severity=warning install.sh
+
+      - name: Install cargo-deny and cargo-zigbuild
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig-venv"
+          "$RUNNER_TEMP/zig-venv/bin/pip" install --quiet cargo-zigbuild ziglang
+          echo "$RUNNER_TEMP/zig-venv/bin" >> "$GITHUB_PATH"
+          DENY_VER="0.18.2"
+          curl -fsSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${DENY_VER}/cargo-deny-${DENY_VER}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/zig-venv/bin" --strip-components=1 "cargo-deny-${DENY_VER}-x86_64-unknown-linux-musl/cargo-deny"
+
+      - name: Dependency audit (cargo deny)
+        run: cargo deny check
+
+      - name: Build static musl targets
+        run: |
+          cargo zigbuild --release --locked \
+            --target x86_64-unknown-linux-musl \
+            --target aarch64-unknown-linux-musl
+
+      - name: Report binary sizes
+        run: |
+          {
+            echo "### Static musl binary sizes"
+            echo ""
+            echo "| Target | Size |"
+            echo "|---|---|"
+            for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+              bin="target/$t/release/opsbox"
+              bytes="$(stat -c%s "$bin")"
+              human="$(numfmt --to=iec-i --suffix=B "$bytes")"
+              echo "| \`$t\` | $human ($bytes bytes) |"
+              echo "$t: $human ($bytes bytes)" >&2
+            done
+          } >> "$GITHUB_STEP_SUMMARY"

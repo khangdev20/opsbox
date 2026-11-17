@@ -4,6 +4,14 @@ Self-hosted all-in-one server panel in the spirit of Railway / Render, installed
 
 **Status: alpha. Phase 1 server management is implemented and tested on Ubuntu 24.04 arm64; later-phase screens retain labelled sample data.** See [verification](docs/VERIFY.md) and [current status](docs/PHASE1_STATUS.md).
 
+## Install
+
+```sh
+curl -fsSL https://github.com/khangdev20/opsbox/releases/latest/download/install.sh | sh
+```
+
+Re-running the installer upgrades an existing installation in place while keeping data and configuration. Pass `--channel beta` for pre-releases or `--version vX.Y.Z` for a specific release. See [docs/RELEASING.md](docs/RELEASING.md) for release signing and verification details.
+
 ## Layout
 - `web/` the whole interface: plain HTML, CSS and ES modules, no build step. `web/js/api.js` selects real or sample data; each export maps to one REST endpoint (see `docs/API.md`).
 - `web/vendor/monaco/` the file editor (VS Code's editor core), self-hosted, loaded on first use.

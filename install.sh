@@ -1,7 +1,7 @@
 #!/bin/sh
 # opsbox installer (docs/BACKEND_SPEC.md section 10). POSIX sh, no bashisms.
 #
-#   curl -fsSL https://raw.githubusercontent.com/khangdev20/opsbox/main/install.sh | sudo sh
+#   curl -fsSL https://github.com/khangdev20/opsbox/releases/latest/download/install.sh | sh
 #   sudo sh install.sh --dev --binary ./target/release/opsbox     # test a local build
 #
 # Phase 0 note: `opsbox install` is still a stub, so this script creates the user,
@@ -151,10 +151,39 @@ fetch() { # fetch URL DEST
 
 latest_version() {
   tmp_json="$WORK/latest.json"
-  fetch "https://api.github.com/repos/$REPO/releases/latest" "$tmp_json" ||
-    die "could not look up the latest release; pass --version"
-  # tag_name looks like "v0.1.0"
-  sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$tmp_json" | head -n 1
+  if [ "$CHANNEL" = "beta" ]; then
+    fetch "https://api.github.com/repos/$REPO/releases?per_page=20" "$tmp_json" ||
+      die "could not look up releases; pass --version"
+    awk '
+      /"tag_name"[[:space:]]*:/ {
+        gsub(/.*"tag_name"[[:space:]]*:[[:space:]]*"v?/, "");
+        gsub(/".*/, "");
+        tag = $0;
+      }
+      /"draft"[[:space:]]*:[[:space:]]*false/ {
+        if (tag != "") { print tag; exit }
+      }
+    ' "$tmp_json"
+  else
+    fetch "https://api.github.com/repos/$REPO/releases/latest" "$tmp_json" ||
+      die "could not look up the latest release; pass --version"
+    # tag_name looks like "v0.1.0"
+    sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$tmp_json" | head -n 1
+  fi
+}
+
+ensure_minisign() {
+  command -v minisign >/dev/null 2>&1 && return 0
+  if command -v apt-get >/dev/null 2>&1; then
+    say "installing minisign to verify release signature"
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq minisign >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    say "installing minisign to verify release signature"
+    dnf install -y -q minisign >/dev/null 2>&1 || true
+  fi
+  command -v minisign >/dev/null 2>&1 ||
+    die "minisign is required to verify the download (apt install minisign, or dnf install minisign)"
 }
 
 verify_signature() { # verify_signature ARCHIVE
@@ -164,8 +193,7 @@ verify_signature() { # verify_signature ARCHIVE
   fi
   [ -n "$MINISIGN_PUBKEY" ] ||
     die "this installer has no signing key embedded, so it cannot verify a download. Use an official install.sh from a release, or --dev for a local test."
-  command -v minisign >/dev/null 2>&1 ||
-    die "minisign is required to verify the download (apt install minisign, or dnf install minisign)"
+  ensure_minisign
   minisign -Vm "$1" -x "$1.minisig" -P "$MINISIGN_PUBKEY" >/dev/null ||
     die "signature verification FAILED for $1; refusing to install"
   say "signature verified"
@@ -294,7 +322,6 @@ run systemctl restart opsbox.service
 # scripts written today keep working; nothing consumes them yet.
 [ -n "$PAIR" ] && warn "--pair is not used yet (pairing arrives with the desktop app)"
 [ "$WEB" -eq 1 ] && warn "--web is not used yet (the panel is always on, on loopback only)"
-[ -n "$CHANNEL" ] && warn "--channel is not used yet"
 
 # ------------------------------------------------------------------ check and report
 

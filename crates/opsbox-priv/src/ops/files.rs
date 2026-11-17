@@ -114,7 +114,7 @@ impl DevIno {
     fn from_stat(st: &Stat) -> Self {
         Self {
             dev: st.st_dev as u64,
-            ino: st.st_ino as u64,
+            ino: st.st_ino,
         }
     }
 }
@@ -171,7 +171,9 @@ impl Policy {
                 no_delete_exact.insert(DevIno::from_stat(&lst));
             }
         }
-        let opsbox_dir = stat("/var/lib/opsbox").ok().map(|st| DevIno::from_stat(&st));
+        let opsbox_dir = stat("/var/lib/opsbox")
+            .ok()
+            .map(|st| DevIno::from_stat(&st));
         let opsbox_apps_dir = stat("/var/lib/opsbox/apps")
             .ok()
             .map(|st| DevIno::from_stat(&st));
@@ -466,7 +468,12 @@ impl RootCtx {
         Ok(())
     }
 
-    fn step_dir(&self, state: &mut WalkState, comp: &str, queue: &mut VecDeque<String>) -> Result<(), PrivError> {
+    fn step_dir(
+        &self,
+        state: &mut WalkState,
+        comp: &str,
+        queue: &mut VecDeque<String>,
+    ) -> Result<(), PrivError> {
         match openat(
             &state.cur_fd,
             comp,
@@ -605,7 +612,10 @@ impl RootCtx {
             // Fall back to component walk when openat2 is unavailable (< 5.6) or encounters an
             // intra-jail absolute symlink (EXDEV).
             Err(Errno::NOSYS | Errno::XDEV) => None,
-            Err(Errno::NOENT) => Some(Err(err(PrivErrorCode::NotFound, "No such file or directory."))),
+            Err(Errno::NOENT) => Some(Err(err(
+                PrivErrorCode::NotFound,
+                "No such file or directory.",
+            ))),
             Err(Errno::NOTDIR) => Some(Err(invalid("Not a folder."))),
             Err(e) => Some(Err(r_io_err("Cannot open the path", e))),
         }
@@ -626,10 +636,9 @@ impl RootCtx {
             });
         }
         #[cfg(target_os = "linux")]
-        if let Some(res) = self.try_openat2(
-            rel,
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        ) {
+        if let Some(res) =
+            self.try_openat2(rel, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC)
+        {
             let dir_fd = res?;
             let st = fstat(&dir_fd).map_err(|e| r_io_err("Cannot open the folder", e))?;
             self.policy.check_not_denied(&st)?;
@@ -754,7 +763,7 @@ fn mode_string_stat(st: &Stat) -> String {
 }
 
 fn stat_mtime(st: &Stat) -> i64 {
-    st.st_mtime as i64
+    st.st_mtime
 }
 
 /// A hint for files that probably should not be readable by everyone.
@@ -827,7 +836,11 @@ pub(super) fn list(path: &str, jail: Option<&str>) -> Result<DirListing, PrivErr
         };
         let mode_bits = st.st_mode as u32;
         entries.push(FileEntry {
-            path: resolved.display_path.join(&name).to_string_lossy().into_owned(),
+            path: resolved
+                .display_path
+                .join(&name)
+                .to_string_lossy()
+                .into_owned(),
             kind,
             mode: mode_string_stat(&st),
             mtime: stat_mtime(&st),
@@ -1151,8 +1164,12 @@ fn delete_forever_at(
     let st = statat(parent_fd.as_fd(), leaf, AtFlags::SYMLINK_NOFOLLOW)
         .map_err(|e| r_io_err("Cannot find it", e))?;
     if FileType::from_raw_mode(st.st_mode as _).is_dir() {
-        remove_dir_all_at(parent_fd.as_fd(), leaf)
-            .map_err(|_| err(PrivErrorCode::Internal, format!("Cannot delete {}", display_path.display())))
+        remove_dir_all_at(parent_fd.as_fd(), leaf).map_err(|_| {
+            err(
+                PrivErrorCode::Internal,
+                format!("Cannot delete {}", display_path.display()),
+            )
+        })
     } else {
         unlinkat(parent_fd.as_fd(), leaf, AtFlags::empty())
             .map_err(|e| r_io_err(&format!("Cannot delete {}", display_path.display()), e))
@@ -1219,9 +1236,8 @@ fn move_to_trash_at(
             ));
         }
     }
-    let note =
-        serde_json::json!({ "original": display_path.to_string_lossy(), "deleted_at": now })
-            .to_string();
+    let note = serde_json::json!({ "original": display_path.to_string_lossy(), "deleted_at": now })
+        .to_string();
     if let Ok(meta_fd) = openat(
         &trash_fd,
         format!("{id}.meta"),
@@ -1358,8 +1374,7 @@ pub(super) fn stage_download(
             "The transfer folder does not exist.",
         )
     })?;
-    let xfer_st =
-        fstat(&xfer_fd).map_err(|e| r_io_err("Cannot open the transfer folder", e))?;
+    let xfer_st = fstat(&xfer_fd).map_err(|e| r_io_err("Cannot open the transfer folder", e))?;
     let mut rnd = [0u8; 8];
     getrandom::fill(&mut rnd)
         .map_err(|_| err(PrivErrorCode::Internal, "random number generator failed"))?;
@@ -2285,7 +2300,11 @@ mod tests {
             let mut i = 0u64;
             while !stop_bg.load(Ordering::Relaxed) {
                 let tmp_link = jail_bg.join(format!("swap-{i}.tmp"));
-                let target = if i % 2 == 0 { &outside_bg } else { &real_sub_bg };
+                let target = if i.is_multiple_of(2) {
+                    &outside_bg
+                } else {
+                    &real_sub_bg
+                };
                 let _ = symlink(target, &tmp_link);
                 let _ = fs::rename(&tmp_link, &sub_bg);
                 if !real_sub_bg.join("secret").exists() {
@@ -2334,7 +2353,11 @@ mod tests {
             s(&root.join("rel_dev_null")),
             "/tmp/../dev/null".to_owned(),
         ] {
-            assert_eq!(read(&p, None).unwrap_err().code, PrivErrorCode::Refused, "read {p}");
+            assert_eq!(
+                read(&p, None).unwrap_err().code,
+                PrivErrorCode::Refused,
+                "read {p}"
+            );
             assert_eq!(
                 write(&p, "x", None, None).unwrap_err().code,
                 PrivErrorCode::Refused,
