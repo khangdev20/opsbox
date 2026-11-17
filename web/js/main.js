@@ -26,6 +26,7 @@ async function navigate() {
   if (current && current.unmount) { try { current.unmount(); } catch {} }
   current = null;
   const bare = BARE.has(name);
+  if (bare) endStream();
   if (!bare && !session.user) { try { sessionStorage.setItem('opsbox.next', location.hash); } catch {} location.hash = server.setupRequired ? '#/setup' : '#/login'; return; }
   // Real server: setup exists only until the first admin is enrolled, and a signed-in
   // person has no use for the sign-in page.
@@ -49,7 +50,7 @@ async function navigate() {
     current = page; if (page.mount) page.mount(host);
     markSampleData(host, name);
   } catch (e) { console.error(e); root.innerHTML = `<main><h1>Something went wrong</h1><p class="muted">${String(e.message || e).replace(/</g, '&lt;')}</p></main>`; }
-  if (!bare) refreshStatus();
+  if (!bare) { ensureStream(); refreshStatus(); }
 }
 window.addEventListener('hashchange', navigate);
 
@@ -68,8 +69,13 @@ function markSampleData(host, page) {
   if (row) row.prepend(badge); else host.prepend(badge);
 }
 
-// live metrics tick (drives status bar + pages that subscribe)
-setInterval(() => { api.tick(); if (shellUp) refreshStatus(); api.quiet(() => listeners.forEach((f) => f())); }, 2000);
+// Live metrics drive the status bar and the pages that subscribe. Mock mode ticks every
+// 2 s; http mode is pushed by the server over a WebSocket, only while signed in.
+const refreshLive = () => { if (shellUp) refreshStatus(); api.quiet(() => listeners.forEach((f) => f())); };
+let stopStream = null;
+const ensureStream = () => { if (api.MODE === 'http' && !stopStream) stopStream = api.startMetricsStream(refreshLive); };
+const endStream = () => { if (stopStream) { stopStream(); stopStream = null; } };
+if (api.MODE !== 'http') setInterval(() => { api.tick(); refreshLive(); }, 2000);
 window.addEventListener('unhandledrejection', (e) => toast(e.reason?.message || 'Request failed', 'err'));
 
 // The server decides who is signed in. Ask it once at start-up (http mode) so the first

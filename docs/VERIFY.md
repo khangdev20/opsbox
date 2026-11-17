@@ -88,3 +88,29 @@ sudo -u opsbox sqlite3 /var/lib/opsbox/opsbox.db "select seq,actor,action,result
 ```
 
 You should see `setup.*`, `auth.login` (ok and denied), `auth.lockout`, `user.*` entries, and `audit verify` stays intact.
+
+---
+
+## M3. Metrics and Overview
+
+Reinstall as in the preamble, sign in, and open **Overview**.
+
+1. The amber "sample data" badge is **gone** from Overview (hover nothing: there is none), and the status bar at the bottom says **live** instead of "sample metrics". The header line still shows the real hostname, OS, kernel, uptime and core count.
+2. The four cards (CPU, Memory, Disk /, Network) and the chart move every second. In the VM run `yes > /dev/null &` for a few seconds (then `kill %1`): CPU jumps, `yes` appears at the top of **Top processes**, and `opsbox` rows are marked as this pane.
+3. **Disk /** shows the real used/total GB of the root filesystem and the free space. `dd if=/dev/zero of=/tmp/big bs=1M count=2000` then `rm /tmp/big` moves it.
+4. **Needs attention** is real: on a machine with a pending security update it says "N security updates are waiting"; `sudo touch /run/reboot-required` adds "A reboot is needed…" (remove the file to clear it, it refreshes within five minutes); a disk over 75% adds "Disk / is at N%"; `sudo systemctl start nonexistent` does not count, but a failed unit does (`sudo systemd-run --unit=boom /bin/false` then `systemctl reset-failed boom` to clear). Updates and failed units are re-read every five minutes.
+5. Dev tools: Network tab → WS shows one connection to `/api/v1/stream/metrics` delivering a message every second, and navigating between pages does not open another. Sign out and it closes.
+
+From a shell (replace the cookie with yours from the browser, or use the UI):
+
+```sh
+curl -s http://127.0.0.1:8443/api/v1/metrics -b 'opsbox_session=…' | python3 -m json.tool | head -40
+sqlite3 /var/lib/opsbox/opsbox.db "select ts,round(cpu,1),round(mem,1),net_in from metrics_minute order by ts desc limit 5"   # as the opsbox user; rows appear a minute after start
+```
+
+**Idle memory of `serve`** (the spec's target is under 40 MB). After the page has been closed for a minute:
+
+```sh
+ps -o pid,rss,cmd -C opsbox | awk 'NR==1{print} NR>1{printf "%s  %.1f MB  %s %s\n",$1,$2/1024,$3,$4}'
+systemctl show opsbox -p MemoryCurrent
+```

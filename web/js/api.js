@@ -36,6 +36,7 @@ const REAL = new Set([
   'getHost',
   'auth.session', 'auth.login', 'auth.logout', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
   'auth.enroll', 'auth.enrollConfirm', 'signOutAll',
+  'getMetrics', 'getAttention',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -297,6 +298,31 @@ export const auth = {
 };
 
 // ---------------------------------------------------------------- metrics
+// http mode: the server pushes one frame a second over a WebSocket and `onFrame` is called
+// for each. Reconnects with a growing delay; if the reason is an ended session, tells the
+// app to go to the sign-in page instead of retrying forever. Returns a function that stops it.
+export function startMetricsStream(onFrame) {
+  if (MODE !== 'http' || !REAL.has('getMetrics')) return () => {};
+  let ws, stopped = false, delay = 1000, timer;
+  const open = () => {
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/stream/metrics`);
+    ws.onmessage = (e) => {
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.type !== 'metrics') return;
+      streamFrame = m.data; streamAt = Date.now(); delay = 1000; onFrame(m.data);
+    };
+    ws.onclose = async () => {
+      if (stopped) return;
+      streamFrame = null;
+      try { const s = await fetch('/api/v1/session').then((r) => r.json()); if (s && s.authenticated === false) { dispatchEvent(new Event('opsbox:unauthorized')); return; } } catch { /* server down: keep trying */ }
+      timer = setTimeout(open, delay); delay = Math.min(delay * 2, 15000);
+    };
+    ws.onerror = () => { try { ws.close(); } catch { /* already closed */ } };
+  };
+  open();
+  return () => { stopped = true; clearTimeout(timer); streamFrame = null; try { ws.close(); } catch { /* not open */ } };
+}
+
 export function tick() {
   const m = S.metrics, walk = (v, s, lo, hi) => Math.min(hi, Math.max(lo, v + (Math.random() - 0.5) * s));
   const cpu = walk(m.cpu[m.cpu.length - 1], 14, 8, 62);
@@ -312,12 +338,21 @@ export async function getHost() {
   if (real('getHost')) { if (!untracked) used.real.add('getHost'); return http('/host'); } // GET /api/v1/host
   sample('getHost'); await lag(30); return clone(S.host);
 }
-export async function getMetrics() { sample('getMetrics');
+// Latest frame pushed by the metrics stream (http mode); see startMetricsStream().
+let streamFrame = null, streamAt = 0;
+const FRESH_MS = 3000;
+
+export async function getMetrics() {
+  // GET /api/v1/metrics?window=48s, or the newest frame from WS /api/v1/stream/metrics
+  if (real('getMetrics')) return streamFrame && Date.now() - streamAt < FRESH_MS ? streamFrame : http('/metrics?window=48s');
+ sample('getMetrics');
   const m = S.metrics;
   return { cpu: [...m.cpu], mem: [...m.mem], cpuNow: m.cpu[m.cpu.length - 1], memUsed: m.memUsed, memTotal: S.host.memTotal, cache: m.cache,
     disk: m.disk, diskTotal: S.host.diskTotal, netIn: m.netIn, netOut: m.netOut, conns: m.conns, load: [...m.load], procs: clone(S.procs).sort((a, b) => b.cpu - a.cpu) };
 }
-export async function getAttention() { sample('getAttention');
+export async function getAttention() {
+  if (real('getAttention')) return http('/attention'); // GET /api/v1/attention
+  sample('getAttention');
   const sec = S.updates.filter((u) => u.sec).length;
   const out = [];
   if (sec) out.push({ kind: 'security', text: `${sec} security updates are waiting (${S.updates.filter((u) => u.sec).map((u) => u.pkg.replace('-generic', '')).join(', ')})`, link: ['Review and install →', '#/system'] });

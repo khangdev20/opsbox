@@ -138,6 +138,26 @@ Choices made while building the backend where `BACKEND_SPEC.md` left room or whe
 
 **Tests depend on the real clock** for TOTP (`priv` uses it, and a step is 30 s wide). The tests use steps 0 and +1 relative to now; a test that straddles a step boundary could fail, a chance of well under one in a thousand per run.
 
+### M3: metrics
+
+**Sampling goes through `priv`.** Reading `/proc` needs no privilege, but the rule is that `serve` never touches the system, and a once-a-second Unix-socket round trip of a few kilobytes costs nothing. `priv` stays stateless: `MetricsSample` returns cumulative counters (CPU ticks per core, memory, per-mount usage, disk and network byte counters, established TCP connections, optionally every process) and `serve` (`opsbox-metrics`) turns consecutive samples into rates. Counter resets (an interface re-created, a reboot) count as zero for that second instead of a huge spike; a new interface or process has no baseline and counts as zero until its second sample.
+
+**Process scans every other second.** Walking `/proc/<pid>/stat` is the costly part, so it happens on every second sample; the list in between is carried over. CPU per process is percent of one core (as `top`), the list is the six busiest plus the three largest by memory that are not already in it (at most eight), and anything named `opsbox*` is marked as this pane. The reply is capped at 2000 processes so it always fits one frame.
+
+**Disks.** Real filesystems only (ext*, xfs, btrfs, zfs, vfat, ...), each device once, via `statvfs`; the Overview card shows `/`. Disk I/O sums whole block devices (not partitions, loop or ram devices).
+
+**Storage.** One-second points live in an in-memory ring (one hour, a few hundred KB). Per-minute averages (with the minute's peak CPU) are written to `metrics_minute` when the next minute starts, hourly averages to `metrics_hour`; 7 and 90 days of retention, purged hourly. A restart loses at most the minute in progress. Rows are written from a blocking thread so a slow disk never delays sampling.
+
+**API.** `GET /api/v1/metrics?window=48s` returns the mock's exact shape (history arrays as percent, memory and disk in GB, network in MB/s) plus extras (`cores`, swap, `disks`, disk I/O, `ts`). The history is averaged into buckets of at least two seconds and at most 120 points, aligned to the newest sample, so the default window gives the mock's 24 points. A request that arrives before the first sample (about two seconds after start) waits for it; if sampling is failing it answers 503 with a sentence.
+
+**WebSocket.** `WS /api/v1/stream/metrics` sends the newest frame at once and then one frame per second, each the same object `GET /metrics` returns, so the page is stateless. It authenticates before looking at the upgrade, and requires an `Origin` that names this host (browsers always send one on a WebSocket), which closes cross-site WebSocket hijacking. A slow client skips frames instead of buffering. A session that ends while a socket is open is noticed at the next reconnect, not mid-stream; ending open sockets on sign-out is left for the hardening pass.
+
+**Replacing the mock tick.** In http mode the page opens one socket after sign-in (not one per page); every frame refreshes the status bar and the pages that subscribed. If the socket drops, it reconnects with a growing delay and, if the reason is an ended session, sends the person to sign-in instead of retrying. Mock mode keeps its two-second tick.
+
+**Attention** (spec 7.3): security updates, reboot required, disks over 75% (not at 75%), failed units, each with a sentence and a link in the UI's terms. Facts come from a new `SystemFacts` operation, refreshed every five minutes because it can run `apt-check`: reboot flag from `/run/reboot-required`, failed units from `systemctl list-units --state=failed`, updates from Ubuntu/Debian's `apt-check`. Children run with a cleared environment, absolute paths, no shell and a timeout. On other distributions update counts are unknown and simply not reported rather than reported as zero; M4's package module replaces this. The disk item says how full the disk is; the mock's "N GB can be reclaimed" returns with the cleanup scanners (M7).
+
+**Development off Linux.** Off Linux the sampler uses `sysinfo` (CPU ticks synthesized from instantaneous usage, memory, load, processes, `/` usage, no network or disk I/O) so the whole UI can be developed on a laptop. The `/proc` parsers are pure functions tested on fixture text everywhere, and a Linux-only test reads the real files; CI is its first run.
+
 ## Problems found in the spec
 
 1. **Privilege escalation in the file layout (section 4).** Root runs `/usr/local/bin/opsbox`, a symlink into `/var/lib/opsbox/bin/`, while the unprivileged `opsbox` user must own `/var/lib/opsbox` (database, `ReadWritePaths`). A compromised `serve` could rename `bin/` and put its own binary in its place; root would run it on the next restart. Mitigation implemented: sticky bit (mode 1770, root-owned) so `opsbox` cannot rename or delete entries it does not own. Phase 2 (self-update) should keep the slots out of any directory that `opsbox` can write, or this property must be tested.
