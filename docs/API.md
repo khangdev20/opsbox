@@ -5,7 +5,7 @@ Every function exported by `web/js/api.js` maps 1:1 to one REST endpoint (JSON, 
 | Mock function | Endpoint |
 |---|---|
 | `tick()` | to be assigned |
-| `getHost()` | to be assigned |
+| `getHost()` | `GET /api/v1/host` (implemented in Phase 0; the only real call in `MODE = 'http'`) |
 | `getMetrics()` | to be assigned |
 | `getAttention()` | to be assigned |
 | `listContainers()` | to be assigned |
