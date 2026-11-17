@@ -16,6 +16,7 @@ opsbox-priv = { path = "crates/opsbox-priv" }
 opsbox-api = { path = "crates/opsbox-api" }
 opsbox-auth = { path = "crates/opsbox-auth" }
 opsbox-metrics = { path = "crates/opsbox-metrics" }
+opsbox-proxy = { path = "crates/opsbox-proxy" }
 opsbox-update = { path = "crates/opsbox-update" }
 
 [workspace.lints.rust]
