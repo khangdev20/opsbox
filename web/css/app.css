@@ -123,6 +123,8 @@ pre.code .e{color:#FF9AC4}pre.code .w{color:#E6B94A}
 .term-line{display:flex;gap:8px;align-items:baseline}
 .term-in{flex:1;background:transparent;border:0;outline:0;color:#D9D4C7;font:400 14px var(--fcode);padding:0;min-width:0}
 .term .ps-u{color:#A3C46B}.term .ps-p{color:#FF6A3D}
+.xterm-host{height:min(62vh,560px);min-height:300px;padding:10px 6px 6px 14px}
+.xterm-host .xterm-viewport{background-color:transparent!important}
 .term-foot{display:flex;flex-wrap:wrap;gap:4px 20px;padding:8px 16px;border-top:1px solid #2B2923;font:400 12px var(--fcode);color:#A39E92}
 
 /* ---------- misc ---------- */

@@ -42,6 +42,7 @@ struct FileConfig {
     api: ApiSection,
     auth: AuthSection,
     files: FilesSection,
+    terminal: TerminalSection,
     #[serde(rename = "priv")]
     privileged: PrivSection,
     store: StoreSection,
@@ -128,6 +129,22 @@ impl Default for FilesSection {
     }
 }
 
+/// The terminal page.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct TerminalSection {
+    /// A terminal nobody has typed in for this many minutes is closed.
+    idle_timeout_min: u64,
+}
+
+impl Default for TerminalSection {
+    fn default() -> Self {
+        Self {
+            idle_timeout_min: 30,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct StoreSection {
@@ -176,6 +193,7 @@ pub struct Config {
     pub trash_dir: PathBuf,
     pub apps_dir: PathBuf,
     pub max_upload_mb: u64,
+    pub terminal_idle_min: u64,
     pub db_path: PathBuf,
     pub log_level: String,
     pub log_format: LogFormat,
@@ -266,6 +284,7 @@ impl Config {
             trash_dir: file.files.trash_dir,
             apps_dir: file.files.apps_dir,
             max_upload_mb: file.files.max_upload_mb,
+            terminal_idle_min: file.terminal.idle_timeout_min.clamp(1, 24 * 60),
             db_path: o.db_path.unwrap_or(file.store.db_path),
             log_level: o.log_level.unwrap_or(file.log.level),
             log_format: o.log_format.unwrap_or(file.log.format),

@@ -8,6 +8,7 @@ pub mod files;
 pub mod frame;
 pub mod metrics;
 pub mod privilege;
+pub mod pty;
 pub mod role;
 pub mod system;
 
@@ -18,6 +19,7 @@ pub use privilege::{
     HostInfo, PrivError, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
     Secret,
 };
+pub use pty::{MAX_PTY_DIM, MAX_PTY_PAYLOAD, PtyFrame, PtyFrameError, SystemUser, clamp_size};
 pub use role::Role;
 pub use system::{
     CommandOutcome, FirewallChange, FirewallRule, FirewallState, JobInfo, JournalEntry, NewRule,

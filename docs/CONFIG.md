@@ -33,6 +33,7 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[files] trash_dir` | `/var/lib/opsbox/trash` | | | priv |
 | `[files] apps_dir` | `/var/lib/opsbox/apps` | | | serve |
 | `[files] max_upload_mb` | `2048` | | | serve |
+| `[terminal] idle_timeout_min` | `30` | | | serve |
 | `[store] db_path` | `/var/lib/opsbox/opsbox.db` | `--db PATH` | `OPSBOX_DB` | serve |
 | `[log] level` | `"info"` | `--log-level FILTER` | `OPSBOX_LOG_LEVEL` | all |
 | `[log] format` | `"text"` (`"json"`) | `--log-format text\|json` | `OPSBOX_LOG_FORMAT` | all |
@@ -57,6 +58,10 @@ The default includes `root` so an administrator can run `sudo opsbox status`. Re
 ### File settings
 
 `xfer_dir` is where uploads and downloads are staged. `serve` creates it (mode 0700, owned by the `opsbox` user) and writes uploads there; `priv` moves them into place, or copies a file there for a download. `trash_dir` holds deleted files for seven days. `apps_dir` is the only place deployers can see. `max_upload_mb` caps one upload (the proxy in front of the panel, when there is one, needs a matching limit).
+
+### Terminal settings
+
+`idle_timeout_min`: a terminal in which nothing has been typed for this long is closed (1 to 1440 minutes). Output from a running program does not count as activity, so a forgotten tab cannot keep a root shell open. At most eight terminals are open at once.
 
 ### Example
 

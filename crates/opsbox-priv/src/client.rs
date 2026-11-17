@@ -7,11 +7,17 @@ use opsbox_proto::frame;
 use opsbox_proto::{
     CommandOutcome, DirListing, FileContent, FirewallChange, FirewallState, HostInfo, JobInfo,
     JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
-    PrivResponse, PrivResult, RawSample, Secret, Staged, SystemFacts, UnitActionKind, UnitInfo,
+    PrivResponse, PrivResult, PtyFrame, RawSample, Secret, Staged, SystemFacts, SystemUser,
+    UnitActionKind, UnitInfo,
 };
-use tokio::net::UnixStream;
+use tokio::net::{
+    UnixStream,
+    unix::{OwnedReadHalf, OwnedWriteHalf},
+};
 
-use crate::io::{ReadError, WriteError, read_body, write_frame};
+use crate::io::{
+    PtyIoError, ReadError, WriteError, read_body, read_pty_frame, write_frame, write_pty_frame,
+};
 
 /// How long a single call may take, connect included.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -71,6 +77,38 @@ pub struct InstallUpload<'a> {
     /// The file name there.
     pub name: &'a str,
     pub overwrite: bool,
+}
+
+/// An open terminal: the shell's output arrives through `reader`, keystrokes go out through
+/// `writer`. Dropping both ends the shell.
+#[derive(Debug)]
+pub struct PtySession {
+    pub user: String,
+    pub shell: String,
+    pub reader: PtyReader,
+    pub writer: PtyWriter,
+}
+
+#[derive(Debug)]
+pub struct PtyReader(OwnedReadHalf);
+
+#[derive(Debug)]
+pub struct PtyWriter(OwnedWriteHalf);
+
+impl PtyReader {
+    /// The next message from the shell side; `None` once the stream is closed. Not
+    /// cancel-safe: do not use it as a `select!` branch that may lose the race.
+    pub async fn recv(&mut self) -> Result<Option<PtyFrame>, PtyIoError> {
+        read_pty_frame(&mut self.0).await
+    }
+}
+
+impl PtyWriter {
+    pub async fn send(&mut self, frame: &PtyFrame) -> Result<(), PtyIoError> {
+        write_pty_frame(&mut self.0, frame)
+            .await
+            .map_err(Into::into)
+    }
 }
 
 /// Calls `priv` over its Unix socket. Cheap to clone. Each call opens its own
@@ -482,6 +520,69 @@ impl PrivClient {
             o => Err(o),
         })
         .await
+    }
+
+    /// Local accounts.
+    pub async fn users(&self, rid: &str) -> Result<Vec<SystemUser>, ClientError> {
+        self.expect(rid, None, PrivOp::UserList, |r| match r {
+            PrivReply::Users(u) => Ok(u),
+            o => Err(o),
+        })
+        .await
+    }
+
+    /// Start a login shell as `user`. The returned session owns the connection.
+    pub async fn pty_open(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        user: &str,
+        cols: u16,
+        rows: u16,
+    ) -> Result<PtySession, ClientError> {
+        let handshake = async {
+            let mut stream = UnixStream::connect(&*self.socket_path)
+                .await
+                .map_err(|source| ClientError::Connect {
+                    path: self.socket_path.display().to_string(),
+                    source,
+                })?;
+            let request = PrivRequest {
+                id: rid.to_owned(),
+                actor: actor.map(str::to_owned),
+                op: PrivOp::PtyOpen {
+                    user: user.to_owned(),
+                    cols,
+                    rows,
+                },
+            };
+            write_frame(&mut stream, &request).await?;
+            let body = read_body(&mut stream).await?.ok_or_else(|| {
+                ClientError::Protocol("connection closed without an answer".into())
+            })?;
+            let response: PrivResponse =
+                frame::decode(&body).map_err(|e| ClientError::Protocol(e.to_string()))?;
+            match response.result {
+                PrivResult::Failure { error } => Err(ClientError::Remote(error)),
+                PrivResult::Success {
+                    reply: PrivReply::PtyStarted { user, shell },
+                } => {
+                    let (r, w) = stream.into_split();
+                    Ok(PtySession {
+                        user,
+                        shell,
+                        reader: PtyReader(r),
+                        writer: PtyWriter(w),
+                    })
+                }
+                PrivResult::Success { reply } => {
+                    Err(ClientError::Protocol(format!("unexpected reply {reply:?}")))
+                }
+            }
+        };
+        tokio::time::timeout(self.timeout, handshake)
+            .await
+            .map_err(|_| ClientError::Timeout)?
     }
 
     pub async fn file_list(

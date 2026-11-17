@@ -16,6 +16,7 @@ pub mod session;
 mod setup;
 mod system;
 mod tasks;
+mod terminal;
 mod ui;
 
 use std::future::Future;
@@ -40,6 +41,7 @@ pub use error::HttpError;
 pub use files::FilesSettings;
 pub use request_id::RequestId;
 pub use session::SecureCookies;
+pub use terminal::{DEFAULT_IDLE as DEFAULT_TERMINAL_IDLE, TerminalSettings};
 
 /// Request bodies above this are rejected (docs/BACKEND_SPEC.md section 6.1). The
 /// streamed upload endpoint will get its own, larger limit in a later phase.
@@ -58,6 +60,7 @@ pub struct AppState {
     pub metrics: Metrics,
     pub tasks: tasks::Tasks,
     pub files: FilesSettings,
+    pub terminal: TerminalSettings,
     pub secure_cookies: SecureCookies,
     pub version: &'static str,
 }
@@ -79,6 +82,7 @@ impl AppState {
             metrics,
             tasks: tasks::Tasks::default(),
             files: FilesSettings::default(),
+            terminal: TerminalSettings::default(),
             secure_cookies,
             version,
         }
@@ -96,6 +100,13 @@ impl AppState {
     #[must_use]
     pub fn with_files(mut self, files: FilesSettings) -> Self {
         self.files = files;
+        self
+    }
+
+    /// Close a terminal nobody has typed in for this long.
+    #[must_use]
+    pub fn with_terminal_idle(mut self, idle: Duration) -> Self {
+        self.terminal = TerminalSettings::new(idle);
         self
     }
 }
@@ -140,6 +151,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/metrics", get(metrics::get_metrics))
         .route("/api/v1/attention", get(metrics::get_attention))
         .route("/api/v1/stream/metrics", get(metrics::stream))
+        .route("/api/v1/terminal/users", get(terminal::users))
+        .route("/api/v1/stream/terminal", get(terminal::stream))
         .route("/api/v1/session", get(auth::session))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))

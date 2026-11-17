@@ -323,3 +323,175 @@ fn decode_base32(s: &str) -> Vec<u8> {
     }
     out
 }
+
+// ---- terminal -------------------------------------------------------------------------
+
+mod terminal {
+    use super::*;
+    use opsbox_priv::PtySession;
+    use opsbox_proto::PtyFrame;
+
+    fn current_user() -> String {
+        nix::unistd::User::from_uid(nix::unistd::geteuid())
+            .unwrap()
+            .expect("the test user is in the passwd database")
+            .name
+    }
+
+    /// Read output until `needle` appears; returns everything read.
+    async fn read_until(s: &mut PtySession, needle: &str) -> String {
+        read_while(s, |seen| seen.contains(needle)).await
+    }
+
+    /// Read output until `done` is satisfied by everything seen so far.
+    async fn read_while(s: &mut PtySession, done: impl Fn(&str) -> bool) -> String {
+        let mut seen = String::new();
+        let step = async {
+            loop {
+                match s.reader.recv().await.unwrap() {
+                    Some(PtyFrame::Data(d)) => {
+                        seen.push_str(&String::from_utf8_lossy(&d));
+                        if done(&seen) {
+                            return;
+                        }
+                    }
+                    Some(PtyFrame::Exit { .. }) | None => return,
+                    Some(other) => panic!("unexpected {other:?}"),
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(20), step)
+            .await
+            .unwrap_or_else(|_| panic!("timed out; saw {seen:?}"));
+        assert!(done(&seen), "output ended too early: {seen:?}");
+        seen
+    }
+
+    async fn type_line(s: &mut PtySession, line: &str) {
+        s.writer
+            .send(&PtyFrame::Data(format!("{line}\r").into_bytes()))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_shell_runs_commands_resizes_and_reports_its_exit_code() {
+        let srv = start(|uid| vec![uid]);
+        let mut s = srv
+            .client()
+            .pty_open("t1", Some("admin"), &current_user(), 80, 24)
+            .await
+            .unwrap();
+        assert_eq!(s.user, current_user());
+
+        // Keystrokes reach the shell and output comes back. The sum is computed by the
+        // shell, so the echoed command line cannot satisfy the check by itself.
+        type_line(&mut s, "echo sum=$((40+2))").await;
+        read_until(&mut s, "sum=42").await;
+
+        // The terminal size is real: a resize is visible to programs.
+        s.writer
+            .send(&PtyFrame::Resize {
+                cols: 101,
+                rows: 33,
+            })
+            .await
+            .unwrap();
+        type_line(&mut s, "stty size").await;
+        read_until(&mut s, "33 101").await;
+
+        type_line(&mut s, "exit 7").await;
+        let mut exit = None;
+        let wait = async {
+            while let Some(f) = s.reader.recv().await.unwrap() {
+                if let PtyFrame::Exit { code } = f {
+                    exit = Some(code);
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(20), wait)
+            .await
+            .expect("the shell ends");
+        assert_eq!(exit, Some(Some(7)));
+        srv.stop().await;
+    }
+
+    #[tokio::test]
+    async fn closing_the_stream_ends_the_shell() {
+        let srv = start(|uid| vec![uid]);
+        let mut s = srv
+            .client()
+            .pty_open("t2", None, &current_user(), 80, 24)
+            .await
+            .unwrap();
+        type_line(&mut s, "echo shellpid=$$.").await;
+        // The echoed command line has `$$` where the answer has digits.
+        let find = |seen: &str| -> Option<i32> {
+            seen.split("shellpid=")
+                .filter_map(|p| p.split_once('.'))
+                .find_map(|(n, _)| n.parse().ok())
+        };
+        let seen = read_while(&mut s, |seen| find(seen).is_some()).await;
+        let pid = find(&seen).expect("the shell reports its pid");
+        let pid = nix::unistd::Pid::from_raw(pid);
+        assert!(nix::sys::signal::kill(pid, None).is_ok(), "alive before");
+        drop(s);
+        // priv notices, hangs the shell up and reaps it; the server keeps serving.
+        let gone = async {
+            while nix::sys::signal::kill(pid, None).is_ok() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), gone)
+            .await
+            .expect("the shell is gone after the stream closes");
+        assert!(srv.client().ping("p").await.is_ok());
+        srv.stop().await;
+    }
+
+    #[tokio::test]
+    async fn unknown_and_unusable_users_are_refused() {
+        let srv = start(|uid| vec![uid]);
+        for (name, code) in [
+            ("no-such-user-xyz", PrivErrorCode::NotFound),
+            ("-r", PrivErrorCode::Invalid),
+            ("a b;c", PrivErrorCode::Invalid),
+        ] {
+            let err = srv
+                .client()
+                .pty_open("t3", None, name, 80, 24)
+                .await
+                .unwrap_err();
+            match err {
+                ClientError::Remote(e) => assert_eq!(e.code, code, "{name}"),
+                other => panic!("{name}: {other:?}"),
+            }
+        }
+        srv.stop().await;
+    }
+
+    #[tokio::test]
+    async fn the_user_list_is_available() {
+        let srv = start(|uid| vec![uid]);
+        let users = srv.client().users("u1").await.unwrap();
+        assert!(!users.is_empty());
+        assert!(users.iter().all(|u| !u.name.is_empty()));
+        srv.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_user_who_is_not_allowed_cannot_open_a_terminal() {
+        let srv = start(|uid| vec![uid.wrapping_add(1)]);
+        let err = srv
+            .client()
+            .pty_open("t4", None, &current_user(), 80, 24)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, ClientError::Remote(e) if e.code == PrivErrorCode::Forbidden),
+            "{err:?}"
+        );
+        srv.stop().await;
+    }
+}

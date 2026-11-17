@@ -15,11 +15,12 @@ mod ops;
 mod secrets;
 mod server;
 
-pub use client::{ClientError, InstallUpload, PrivClient};
+pub use client::{ClientError, InstallUpload, PrivClient, PtyReader, PtySession, PtyWriter};
 pub use config::{
     DEFAULT_MASTER_KEY_PATH, DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR, PrivConfig,
     resolve_users,
 };
+pub use io::PtyIoError;
 pub use ops::{base32_encode, code_at, verify_at};
 pub use server::{PrivServer, ServerError};
 

@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use nix::unistd::Group;
 use opsbox_proto::frame::{self, FrameError};
-use opsbox_proto::{PrivError, PrivErrorCode, PrivRequest, PrivResponse, PrivResult};
+use opsbox_proto::{
+    PrivError, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
@@ -213,37 +215,96 @@ async fn handle_connection(mut stream: UnixStream, allowed: &[u32], env: &Arc<En
             }
         };
 
-        let response = process(&body, uid, env).await;
+        let request = match parse(&body, uid) {
+            Ok(r) => r,
+            Err(response) => {
+                if write_frame(&mut stream, &response).await.is_err() {
+                    return;
+                }
+                continue;
+            }
+        };
+        if let PrivOp::PtyOpen { user, cols, rows } = &request.op {
+            open_terminal(stream, &request, user, *cols, *rows).await;
+            return;
+        }
+        let response = process(request, uid, env).await;
         if write_frame(&mut stream, &response).await.is_err() {
             return;
         }
     }
 }
 
-/// Decode and run one request. Anything that is not a valid [`PrivRequest`]
-/// (bad JSON, unknown operation, unexpected fields) is answered with `bad_request`.
-async fn process(body: &[u8], uid: u32, env: &Arc<Env>) -> PrivResponse {
+/// Decode one request. Anything that is not a valid [`PrivRequest`] (bad JSON, unknown
+/// operation, unexpected fields) is answered with `bad_request`.
+fn parse(body: &[u8], uid: u32) -> Result<PrivRequest, Box<PrivResponse>> {
     let value: serde_json::Value = match frame::decode(body) {
         Ok(v) => v,
-        Err(e) => return PrivResponse::failure("", PrivErrorCode::BadRequest, e.to_string()),
+        Err(e) => {
+            return Err(Box::new(PrivResponse::failure(
+                "",
+                PrivErrorCode::BadRequest,
+                e.to_string(),
+            )));
+        }
     };
     let id = value
         .get("id")
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_owned();
-    let request: PrivRequest = match serde_json::from_value(value) {
-        Ok(r) => r,
-        Err(e) => {
-            warn!(request_id = %id, uid, error = %e, "rejected request that is not a known operation");
-            return PrivResponse::failure(
-                id,
-                PrivErrorCode::BadRequest,
-                "Not a known privileged operation.",
-            );
-        }
-    };
+    serde_json::from_value(value).map_err(|e| {
+        warn!(request_id = %id, uid, error = %e, "rejected request that is not a known operation");
+        Box::new(PrivResponse::failure(
+            id,
+            PrivErrorCode::BadRequest,
+            "Not a known privileged operation.",
+        ))
+    })
+}
 
+/// A terminal: answer the request, then speak the PTY stream on this connection until
+/// the shell or the peer ends it.
+async fn open_terminal(
+    mut stream: UnixStream,
+    request: &PrivRequest,
+    user: &str,
+    cols: u16,
+    rows: u16,
+) {
+    let span = info_span!("priv_request", request_id = %request.id, op = "pty_open", actor = request.actor.as_deref().unwrap_or("-"));
+    async {
+        let session = ops::terminal::open(user, cols, rows);
+        let response = match &session {
+            Ok(s) => PrivResponse::success(
+                request.id.clone(),
+                PrivReply::PtyStarted {
+                    user: s.user.clone(),
+                    shell: s.shell.clone(),
+                },
+            ),
+            Err(e) => {
+                warn!(code = ?e.code, "failed: {}", e.message);
+                PrivResponse {
+                    id: request.id.clone(),
+                    result: PrivResult::Failure { error: e.clone() },
+                }
+            }
+        };
+        if write_frame(&mut stream, &response).await.is_err() {
+            return;
+        }
+        if let Ok(session) = session {
+            let (read, write) = stream.into_split();
+            ops::terminal::run(session, read, write).await;
+        }
+    }
+    .instrument(span)
+    .await;
+}
+
+/// Run one request.
+async fn process(request: PrivRequest, uid: u32, env: &Arc<Env>) -> PrivResponse {
     let span = info_span!(
         "priv_request",
         request_id = %request.id,

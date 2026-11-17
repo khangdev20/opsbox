@@ -184,6 +184,15 @@ pub enum PrivOp {
         overwrite: bool,
         jail: Option<String>,
     },
+    /// Local accounts, for the terminal and the Access page.
+    UserList,
+    /// Start a login shell on a new PTY as `user`. On success the connection becomes a
+    /// PTY stream (see [`crate::pty`]) and is no longer used for requests.
+    PtyOpen {
+        user: String,
+        cols: u16,
+        rows: u16,
+    },
 }
 
 impl PrivOp {
@@ -224,6 +233,8 @@ impl PrivOp {
             Self::FileRemove { .. } => "file_remove",
             Self::FileStageDownload { .. } => "file_stage_download",
             Self::FileInstallUpload { .. } => "file_install_upload",
+            Self::UserList => "user_list",
+            Self::PtyOpen { .. } => "pty_open",
         }
     }
 }
@@ -308,6 +319,12 @@ pub enum PrivReply {
     /// A file was replaced; this is its new modification time (unix seconds).
     Written {
         mtime: i64,
+    },
+    Users(Vec<crate::pty::SystemUser>),
+    /// A shell is running; the connection now carries the PTY stream.
+    PtyStarted {
+        user: String,
+        shell: String,
     },
 }
 

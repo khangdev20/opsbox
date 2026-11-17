@@ -3,6 +3,7 @@
 use std::io;
 
 use opsbox_proto::frame::{self, FrameError};
+use opsbox_proto::{PtyFrame, PtyFrameError};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -34,6 +35,38 @@ where
     w.write_all(&bytes).await?;
     w.flush().await?;
     Ok(())
+}
+
+/// Read one PTY stream frame. `Ok(None)` is a clean close between frames.
+pub(crate) async fn read_pty_frame<R>(r: &mut R) -> Result<Option<PtyFrame>, PtyIoError>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut header = [0u8; 4];
+    if r.read(&mut header[..1]).await? == 0 {
+        return Ok(None);
+    }
+    r.read_exact(&mut header[1..]).await?;
+    let len = PtyFrame::body_len(header)?;
+    let mut body = vec![0u8; len];
+    r.read_exact(&mut body).await?;
+    Ok(Some(PtyFrame::decode(&body)?))
+}
+
+pub(crate) async fn write_pty_frame<W>(w: &mut W, frame: &PtyFrame) -> Result<(), io::Error>
+where
+    W: AsyncWrite + Unpin,
+{
+    w.write_all(&frame.encode()).await?;
+    w.flush().await
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PtyIoError {
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error(transparent)]
+    Frame(#[from] PtyFrameError),
 }
 
 #[derive(Debug, thiserror::Error)]

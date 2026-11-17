@@ -170,3 +170,29 @@ Reinstall as in the preamble, sign in as the admin, open **Files** (`#/files`). 
 8. **Protected**: try to delete `/etc`, `/usr`, or select the folder `/var/lib/opsbox`: refused. Files under `/var/lib/opsbox/bin` or the database cannot be edited or deleted.
 9. **Roles**: make a deployer (not possible from the UI until M7; for a quick check run `sudo -u opsbox sqlite3 /var/lib/opsbox/opsbox.db "update users set role='deployer' where name='admin'"`, sign out and in, then `update ... role='admin'` again after). A deployer starts in `/var/lib/opsbox/apps` and cannot see or change anything outside it, even through a symlink. A viewer has no access to Files at all.
 10. Audit: `files.write`, `files.upload`, `files.download`, `files.trash`, `files.delete`, `files.mkdir`, `files.chmod` are in the audit log with the path.
+
+---
+
+## M6. Terminal
+
+Reinstall as in the preamble, sign in as the admin and open **Terminal** (`#/terminal`). The "sample data" badge is gone.
+
+1. **It opens by itself.** The page starts a shell as the first ordinary user on the machine (`ubuntu` in the VM) and says "Connected as ubuntu". Run `whoami`, `pwd` (your home), `echo $SHELL`, `sudo -n true && echo sudo-ok` (the user is a real login: `ubuntu` has passwordless sudo on cloud images), `htop` or `top` (full-screen programs draw properly), `vim /tmp/x` (type, `:q!`). Colours work: `ls --color`.
+2. **Resize.** Resize the browser window (or zoom): run `stty size` before and after; the numbers change to match. Paste a long multi-line text: it arrives whole.
+3. **Other users.** Use the "Open as user" list to pick another account, press **New session**: `whoami` shows it. Accounts without a login shell (`daemon`, `www-data`) are not offered.
+4. **Root asks first.** Pick `root (root)` and **New session**: a dialog says root can change anything. **Cancel** opens nothing. **Open as root** gives `# ` and `id` shows `uid=0`.
+5. **End it three ways.** `exit` (or Ctrl+D): "[session ended with exit code 0]", the status says "Session ended", and **New session** is offered. **Disconnect**. Or just leave the page: in another shell `ps -u ubuntu -o pid,tty,cmd | grep pts` shows the shell is gone within about 3 seconds. Also close the browser tab with a running `sleep 1000`: `pgrep -a sleep` shows nothing after a few seconds.
+6. **Idle timeout.** Add `[terminal]` `idle_timeout_min = 1` to `/etc/opsbox/config.toml`, `sudo systemctl restart opsbox`, open a terminal and wait a minute without typing: the session closes (status "Disconnected"). Output from a running `watch date` does not keep it open. Remove the setting again.
+7. **Flood.** Run `yes | head -c 200M` or `cat /dev/urandom | base64 | head -c 100M`: the browser stays responsive and finishes; `ps -o rss= -C opsbox` shows the serve and priv processes did not balloon.
+8. **Other servers.** The left list has "this server" plus a disabled "Other servers · needs the desktop app".
+9. **Roles.** A deployer or viewer who opens `#/terminal` gets "Only administrators can open a terminal." (create one with the `sqlite3` trick from M5 step 9.) Direct socket attempts without a session are 401; from another site 403.
+10. **Keyboard.** Tab inside the terminal goes to the shell (completion). **Shift+Esc** moves focus out to the user list.
+11. **Audit.** `sudo -u opsbox sqlite3 /var/lib/opsbox/opsbox.db "select seq,actor,action,target,detail from audit where action like 'terminal.%'"` shows a `terminal.start` and a `terminal.end` (with seconds and reason) for each session, with the account and your address, and **nothing you typed**. `sudo opsbox audit verify` is still OK.
+12. **Too many.** Open nine tabs on the Terminal page: the ninth says "Too many terminals are open."
+
+On the desktop-only side: `journalctl -u opsbox-priv -f` during these steps logs `terminal opened` / `terminal closed` lines with the user and exit code.
+
+Two things only a real Linux machine can answer; please tell me what you see (they are recorded as known limits in DECISIONS.md):
+
+13. **Where does the shell live?** In the terminal run `cat /proc/self/cgroup` and `systemd-cgls --no-pager | head -30`. Good: the shell is in `user.slice/.../session-N.scope` (a login session). Not good: it is under `opsbox-priv.service`. Then try `tmux new -d -s t 'sleep 600'`, run `sudo systemctl restart opsbox-priv` from a normal SSH session, and `tmux ls` / `pgrep -a sleep`: the session should survive in the good case and be gone in the other.
+14. **Inherited restrictions.** `sudo tcpdump -i lo -c1` probably fails ("socket: Address family not supported") because the shell inherits the helper's socket-family limit. Everything else (`ping`, `curl`, `apt`, `docker`) should work.

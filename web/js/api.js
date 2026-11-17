@@ -40,6 +40,7 @@ const REAL = new Set([
   'getUpdates', 'installUpdates', 'setAutoUpdates', 'reboot', 'cancelReboot', 'getUnits', 'unitAction', 'getJournal',
   'getJobs', 'runJob', 'addJob', 'removeJob', 'getFirewall', 'addRule', 'removeRule', 'confirmFirewall', 'openSsh',
   'listDir', 'readFile', 'writeFile', 'chmod', 'mkdir', 'removePaths', 'upload',
+  'getTerminalUsers', 'openTerminal',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -72,7 +73,8 @@ export const PAGE_USES = {
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['TEMPLATES', 'addTemplate', 'deployCompose'],
-  terminal: ['HOSTS', 'termExec'],
+  // In http mode the page shows only this server (the demo hosts and shell are mock-only).
+  terminal: ['getTerminalUsers', 'openTerminal'],
 };
 
 export function resetUsage() { used.sample.clear(); used.real.clear(); }
@@ -668,6 +670,51 @@ export async function recoveryAction(a) { sample('recoveryAction');
 }
 
 // ---------------------------------------------------------------- terminal
+// Linux accounts a terminal can be opened as: { default, users: [{ name, uid, home, shell, root }] }.
+export async function getTerminalUsers() {
+  if (real('getTerminalUsers')) { if (!untracked) used.real.add('getTerminalUsers'); return http('/terminal/users'); }
+  sample('getTerminalUsers'); await lag(60);
+  return { default: 'deploy', users: [{ name: 'deploy', uid: 1000, home: '/home/deploy', shell: '/bin/bash', root: false }, { name: 'root', uid: 0, home: '/root', shell: '/bin/bash', root: true }] };
+}
+
+// A real shell on this server over a WebSocket (http mode). Output arrives as bytes through
+// `on.data`; `on.ready({user, shell})` fires once the shell runs, `on.exit(code)` when it
+// ends, and `on.close({ ready, ended })` when the connection is gone. `confirmRoot` must be
+// true to open a shell as root. Returns { send(text), sendBytes(bytes), resize(cols, rows), close() }.
+export function openTerminal({ user = '', cols = 80, rows = 24, confirmRoot = false } = {}, on = {}) {
+  if (!real('openTerminal')) throw new Error('The terminal needs a real server.');
+  if (!untracked) used.real.add('openTerminal');
+  const q = new URLSearchParams({ cols, rows }); if (user) q.set('user', user); if (confirmRoot) q.set('confirm', 'root');
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/stream/terminal?${q}`);
+  ws.binaryType = 'arraybuffer';
+  const enc = new TextEncoder();
+  let ready = false, ended = false, reason = '';
+  ws.onmessage = (e) => {
+    if (typeof e.data !== 'string') { on.data?.(new Uint8Array(e.data)); return; }
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.type === 'ready') { ready = true; on.ready?.(m); }
+    else if (m.type === 'exit') { ended = true; on.exit?.(m.code); }
+    else if (m.type === 'error') { reason = m.message || ''; on.error?.(reason); }
+  };
+  ws.onclose = async () => {
+    // The server explains a refusal in an `error` message. Without one the upgrade itself was
+    // refused (a browser cannot read why): the likely cause is the session or the role.
+    let why = reason;
+    if (!ready && !why) {
+      try { await getTerminalUsers(); why = 'The server refused to open a terminal. It may be busy (too many are open) or its helper may be down.'; }
+      catch (err) { why = err.message; }
+    }
+    on.close?.({ ready, ended, why });
+  };
+  const open = () => ws.readyState === 1;
+  return {
+    send: (text) => { if (open()) ws.send(enc.encode(text)); },
+    sendBytes: (bytes) => { if (open()) ws.send(bytes); },
+    resize: (c, r) => { if (open()) ws.send(JSON.stringify({ type: 'resize', cols: c, rows: r })); },
+    close: () => { try { ws.close(); } catch { /* already closed */ } },
+  };
+}
+
 export const HOSTS = [
   { id: 'local', name: 'srv-sgn-01', sub: 'local · root', user: 'root' },
   { id: 'db', name: 'db-primary', sub: 'deploy@10.0.1.12 · ed25519', user: 'deploy' },

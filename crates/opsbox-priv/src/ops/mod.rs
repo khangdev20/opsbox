@@ -14,6 +14,7 @@ mod journal;
 mod metrics;
 mod ping;
 mod pkg;
+pub(crate) mod terminal;
 mod totp;
 mod units;
 
@@ -125,6 +126,12 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             jail,
         } => files::install_upload(staging, dir, name, *overwrite, jail.as_deref(), &env.files)
             .map(|()| PrivReply::Done),
+        PrivOp::UserList => terminal::list(),
+        // A PTY turns the whole connection into a stream, which only the server can do.
+        PrivOp::PtyOpen { .. } => Err(PrivError {
+            code: opsbox_proto::PrivErrorCode::Internal,
+            message: "A terminal can only be opened on its own connection.".into(),
+        }),
         PrivOp::TotpNewSecret { context } => totp::new_secret(secrets, context),
         PrivOp::TotpVerify {
             sealed,

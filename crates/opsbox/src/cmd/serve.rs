@@ -77,7 +77,10 @@ async fn serve(config: Config) -> Result<()> {
         apps_dir: config.apps_dir.clone(),
         xfer_dir: config.xfer_dir.clone(),
         max_upload: config.max_upload_mb.saturating_mul(1 << 20),
-    });
+    })
+    .with_terminal_idle(std::time::Duration::from_secs(
+        config.terminal_idle_min * 60,
+    ));
 
     // First run: make sure there is a setup token and show it where the person who
     // installed opsbox will look: the console and the journal.
