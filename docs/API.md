@@ -25,7 +25,8 @@ The inventory below is generated from the actual axum router. Run `python3 tools
 - Cleanup: scan returns `{items,disk,total,system,auto,scanned}`; run `{ids:[...]}` is a task, auto `{on}` controls the weekly safe set. Docker scanners are absent when Docker is unavailable.
 - Access keys: add `{user,key}` (public key only); removal `{id}` where ID is `user:fingerprint`; lock `{lock:true|false}`. Invitations `{name,role}` return a one-time link. Claim `{token,password}` starts TOTP enrolment. Removing an account also revokes its sessions.
 - Security: `GET /security` combines real checks, panel accounts and recent audit entries. Fix actions are identified by check ID. Allow-list update `{value,confirm?}` accepts IP/CIDR text and cannot exclude the caller.
-- Settings: `GET /settings` returns `{hostname,tz,timezones,swapMb,tokens}`. General settings save through the specific hostname/timezone endpoints; no generic PUT silently accepts future-phase fields. Tokens: create `{name,scope:"read"|"deploy"|"full"}` returns `{token,secret}`, listing exposes metadata only, DELETE revokes immediately.
+- Settings: `GET /settings` returns `{hostname,tz,timezones,swapMb,tokens,opsboxUpdate,panel}`. General settings save through the specific hostname/timezone endpoints; no generic PUT silently accepts future-phase fields. Tokens: create `{name,scope:"read"|"deploy"|"full"}` returns `{token,secret}`, listing exposes metadata only, DELETE revokes immediately.
+- Panel domain: `GET /panel` returns `{domain,activeDomain,certStatus,certExpiresAt,certDaysRemaining,certIssuer,certStaging,certError,proxyReachable,rawPortOpen,listen}`. `POST /panel/dns-check {domain}` verifies public A/AAAA records via `hickory-resolver` and returns `{domain,status:"points_here"|"waiting",pointsHere,message,resolvedIps,serverIps,cname,records}`. `POST /panel/certificate {domain}` starts an ACME HTTP-01 issuance task (`202 {task}`). `DELETE /panel/domain {confirm?}` detaches the panel domain and certificate (requires confirmation if raw `:8443` is closed). `POST /panel/local-only {localOnly,confirm?}` moves `serve` between `127.0.0.1:8443` and `0.0.0.0:8443` via `priv` and schedules a panel service restart (requires confirmation when closing `:8443` without a live certificate).
 - Metrics: `GET /metrics?window=48s` accepts 1 second through 1 hour (`s`, `m`, `h`), returns percentages, memory/disk GB and network MB/s. `/stream/metrics` sends `{type:"metrics",ts,data}` once per second, with the same data shape.
 - Long operations return `202 {task}`; `GET /tasks/{id}` gives `running|ok|failed`, log tail, result and error. The UI polls it. Tasks are in memory, kept up to 24 hours/256 entries and are lost on restart. Task/event WebSocket streams are not part of this implementation.
 
@@ -78,6 +79,11 @@ Streams revalidate their session/token, role and allowed address every five seco
 | `DELETE` | `/api/v1/jobs/{id}` | [system::remove_job](../crates/opsbox-api/src/system.rs) |
 | `POST` | `/api/v1/jobs/{id}/run` | [system::run_job](../crates/opsbox-api/src/system.rs) |
 | `GET` | `/api/v1/metrics` | [metrics::get_metrics](../crates/opsbox-api/src/metrics.rs) |
+| `GET` | `/api/v1/panel` | [panel::status](../crates/opsbox-api/src/panel.rs) |
+| `POST` | `/api/v1/panel/certificate` | [panel::issue_cert](../crates/opsbox-api/src/panel.rs) |
+| `POST` | `/api/v1/panel/dns-check` | [panel::check_dns](../crates/opsbox-api/src/panel.rs) |
+| `DELETE` | `/api/v1/panel/domain` | [panel::remove_domain](../crates/opsbox-api/src/panel.rs) |
+| `POST` | `/api/v1/panel/local-only` | [panel::set_local_only](../crates/opsbox-api/src/panel.rs) |
 | `GET` | `/api/v1/security` | [security::get](../crates/opsbox-api/src/security.rs) |
 | `PUT` | `/api/v1/security/allow-ips` | [security::set_allow_ips](../crates/opsbox-api/src/security.rs) |
 | `POST` | `/api/v1/security/checks/{id}/fix` | [security::fix](../crates/opsbox-api/src/security.rs) |
@@ -119,4 +125,4 @@ Streams revalidate their session/token, role and allowed address every five seco
 
 ## Future phases (sample UI)
 
-Recovery, watchdog and self-update: Phase 2. Docker management, deployments, GitHub, templates and Compose: Phase 3. Proxy/panel domains and certificates: Phase 4. Backups/alerts: Phase 5. WireGuard, desktop device authentication and other-server terminals: Phase 6. These APIs are not implemented; their UI retains sample-data labels.
+Recovery, watchdog and self-update: Phase 2. Docker management, deployments, GitHub, templates and Compose: Phase 3. App domains and per-app certificates: Phase 4 (panel domain and ACME certificate are implemented). Backups/alerts: Phase 5. WireGuard, desktop device authentication and other-server terminals: Phase 6. These APIs are not implemented; their UI retains sample-data labels.

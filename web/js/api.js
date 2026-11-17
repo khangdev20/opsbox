@@ -45,6 +45,7 @@ const REAL = new Set([
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
   'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap',
+  'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
   'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
@@ -76,7 +77,7 @@ export const PAGE_USES = {
   overview: ['getAttention', 'getHost', 'getMetrics'],
   recovery: ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
-  settings: ['createToken', 'disconnectGithub', 'exportConfig', 'getSettings', 'growFs', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setSwap'],
+  settings: ['checkPanelDns', 'createToken', 'disconnectGithub', 'exportConfig', 'getSettings', 'growFs', 'issuePanelCert', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['TEMPLATES', 'addTemplate', 'deployCompose'],
@@ -941,22 +942,43 @@ export async function lockUser(name, lock) { sample('lockUser');
 export async function rotateOutKey(id) { sample('rotateOutKey'); await lag(500); audit('rotate outgoing key'); }
 
 // ---------------------------------------------------------------- settings
-const ST = { hostname: 'srv-sgn-01', tz: 'Asia/Ho_Chi_Minh', panel: 'https://panel.example.com', swap: '2 GB', autoUpdate: true, channel: 'stable', github: true, fsGrown: false,
-  tokens: [{ id: 't1', name: 'github-actions', can: 'deploy only, service web', last: '2 min ago' }, { id: 't2', name: 'uptime-check', can: 'read-only metrics', last: '1 min ago' }] };
+const ST = {
+  hostname: 'srv-sgn-01', tz: 'Asia/Ho_Chi_Minh', panel: 'panel.example.com', swap: '2 GB', autoUpdate: true, channel: 'stable', github: true, fsGrown: false,
+  panelInfo: {
+    domain: 'panel.example.com', activeDomain: 'panel.example.com', certStatus: 'valid',
+    certExpiresAt: Math.floor(Date.now() / 1000) + 74 * 86400, certDaysRemaining: 74, certIssuer: "Let's Encrypt",
+    certStaging: false, certError: null, proxyReachable: true, rawPortOpen: true, listen: '0.0.0.0:8443',
+  },
+  tokens: [{ id: 't1', name: 'github-actions', can: 'deploy only, service web', last: '2 min ago' }, { id: 't2', name: 'uptime-check', can: 'read-only metrics', last: '1 min ago' }],
+};
 // Swap as the page's choices: None, 1 GB, 2 GB, 4 GB (the system reports a little under the size).
 const swapLabel = (mb) => { if (!mb) return 'None'; const gb = Math.round(mb / 1024); return Math.abs(mb - gb * 1024) <= gb * 1024 * 0.02 ? `${gb} GB` : `${(mb / 1024).toFixed(1)} GB`; };
+const normPanelDomain = (raw) => {
+  const s = String(raw || '').trim().toLowerCase().replace(/^https:\/\//, '').replace(/\/$/, '');
+  if (!DOMRE.test(s) || s.startsWith('*.')) throw new Error('Enter a domain name like panel.example.com (no wildcard, port, or path).');
+  return s;
+};
 let realSettings = null;
 export async function getSettings() { sample('getSettings');
   if (real('getSettings')) {
-    // Host name, time zone, swap and tokens are the server's. Panel address, GitHub, updates
-    // and disk growth arrive with later phases and stay sample data (the page's badge says so).
+    // Host name, time zone, swap, tokens, opsbox updates and panel domain are real;
+    // GitHub, disk growth and export/uninstall arrive with later phases.
     const r = await http('/settings'); realSettings = r;
-    return { ...clone(ST), hostname: r.hostname, tz: r.tz, timezones: r.timezones, swap: swapLabel(r.swapMb), tokens: r.tokens.map((t) => ({ id: t.id, name: t.name, can: t.can, last: t.last })), opsboxUpdate: r.opsboxUpdate };
+    return {
+      ...clone(ST),
+      hostname: r.hostname,
+      tz: r.tz,
+      timezones: r.timezones,
+      panel: r.panel?.domain || '',
+      panelInfo: r.panel || null,
+      swap: swapLabel(r.swapMb),
+      tokens: r.tokens.map((t) => ({ id: t.id, name: t.name, can: t.can, last: t.last })),
+      opsboxUpdate: r.opsboxUpdate,
+    };
   }
   await lag(); return clone(ST); }
 export async function saveSettings(v) { sample('saveSettings');
   if (real('saveSettings')) {
-    // Only what changed is sent. The panel address belongs to a later phase and is ignored.
     const cur = realSettings || await http('/settings');
     if (v.hostname !== cur.hostname) { await http('/system/hostname', { method: 'PUT', body: { name: v.hostname } }); cur.hostname = v.hostname; S.host.name = v.hostname; }
     if (v.tz !== cur.tz) { await http('/system/timezone', { method: 'PUT', body: { zone: v.tz } }); cur.tz = v.tz; }
@@ -964,8 +986,53 @@ export async function saveSettings(v) { sample('saveSettings');
   }
   await lag(300);
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(v.hostname || '')) throw new Error('Hostname: letters, numbers and dashes only.');
-  if (!/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(v.panel || '')) throw new Error('Panel address must start with https:// and have no path.');
-  Object.assign(ST, { hostname: v.hostname, tz: v.tz, panel: v.panel }); S.host.name = v.hostname; audit('update general settings');
+  Object.assign(ST, { hostname: v.hostname, tz: v.tz }); S.host.name = v.hostname; audit('update general settings');
+}
+export async function checkPanelDns(domain) { sample('checkPanelDns');
+  if (real('checkPanelDns')) return http('/panel/dns-check', { method: 'POST', body: { domain } });
+  await lag(300);
+  const name = normPanelDomain(domain);
+  ST.panel = name;
+  const waiting = name.includes('wait');
+  return {
+    domain: name,
+    status: waiting ? 'waiting' : 'points_here',
+    pointsHere: !waiting,
+    message: waiting ? 'DNS does not resolve to this server yet.' : 'DNS points to this server.',
+    resolvedIps: waiting ? [] : ['203.0.113.10'],
+    serverIps: ['203.0.113.10'],
+    cname: null,
+    records: [{ type: 'A', name, value: '203.0.113.10' }],
+  };
+}
+export async function issuePanelCert(domain) { sample('issuePanelCert');
+  if (real('issuePanelCert')) {
+    const { task } = await http('/panel/certificate', { method: 'POST', body: { domain } });
+    const t = await waitTask(task, { every: 1000, max: 3 * 60 * 1000 });
+    return t.result;
+  }
+  await lag(700);
+  const name = normPanelDomain(domain);
+  const nowSec = Math.floor(Date.now() / 1000);
+  Object.assign(ST, { panel: name });
+  ST.panelInfo = { ...ST.panelInfo, domain: name, activeDomain: name, certStatus: 'valid', certExpiresAt: nowSec + 90 * 86400, certDaysRemaining: 90, certIssuer: "Let's Encrypt", certStaging: false, certError: null };
+  audit(`issue certificate for ${name}`);
+  return { domain: name, status: 'valid', notAfter: ST.panelInfo.certExpiresAt, daysRemaining: 90, issuer: "Let's Encrypt", staging: false, lastError: null };
+}
+export async function removePanelDomain(confirm = false) { sample('removePanelDomain');
+  if (real('removePanelDomain')) return http('/panel/domain', { method: 'DELETE', body: { confirm } });
+  await lag(250);
+  ST.panel = '';
+  ST.panelInfo = { ...ST.panelInfo, domain: null, activeDomain: null, certStatus: 'none', certExpiresAt: null, certDaysRemaining: null, certIssuer: null, certError: null };
+  audit('remove panel domain');
+  return { ok: true };
+}
+export async function setPanelLocalOnly(localOnly, confirm = false) { sample('setPanelLocalOnly');
+  if (real('setPanelLocalOnly')) return http('/panel/local-only', { method: 'POST', body: { localOnly, confirm } });
+  await lag(300);
+  ST.panelInfo = { ...ST.panelInfo, rawPortOpen: !localOnly, listen: localOnly ? '127.0.0.1:8443' : '0.0.0.0:8443' };
+  audit(localOnly ? 'close raw 8443 listener' : 're-open raw 8443 listener');
+  return { ok: true, localOnly, restarting: true };
 }
 export async function createToken(name, can) { sample('createToken');
   if (real('createToken')) { const scope = { 'deploy only': 'deploy', 'read-only metrics': 'read', 'full access': 'full' }[can] || can; const r = await http('/tokens', { method: 'POST', body: { name, scope } }); return { secret: r.secret }; }

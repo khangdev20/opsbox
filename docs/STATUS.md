@@ -1,16 +1,19 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/03b-cleanup-performance.md` (Cleanup page performance)
+Last completed prompt: `docs/prompts/archive/05-proxy-panel-domain.md` (Proxy and panel domain)
 
-## Current state
-- Per-scanner `tracing` timings and `opsbox cleanup scan --timings` CLI command added (`opsbox-priv`, `opsbox`).
-- Synchronous `du -sxk /usr` removed from scan path; system bytes computed at most once per 24h via low-IO background `nice -n 19 ionice -c3 du -sxk /usr`, cached in `/var/lib/opsbox/cleanup-system-bytes.json`.
-- Scanners run concurrently with per-scanner deadline; `GET /api/v1/cleanup/scan` returns cached/completed items + `pending: true` placeholders (~250ms budget), caches for 60s, invalidates on `cleanup_run` or `?fresh=1`.
-- Docker scanning optimized (`docker info` once, `docker image ls --filter dangling=true`, `docker builder du --format '{{json .}}'`, `docker ps -a -s --filter status=exited --filter status=created`), unused volume count without `docker system df`, on-demand `GET /api/v1/cleanup/volumes`, prune parses `"Total reclaimed space:"`.
-- `/tmp` and `/var/tmp` walk bounded to depth 8 / 50,000 entries per root using `DirEntry::metadata()`.
-- Cleanup UI renders immediately with skeleton rows, polls while `pending`, shows `"scanned X ago · Rescan"`, omits System bar segment when `system === 0`, adds `"Calculate size"` for `docker-volumes`, updates cleaned items in place.
-- `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `python3 tools/generate-api.py --check` pass locally.
+## What works
+- In-process Rust reverse proxy (`crates/opsbox-proxy`) on `:80`/`:443` with control socket `/run/opsbox-proxy/proxy.sock` and persisted `routes.json` (Hyper 1, `tokio-rustls`/`rustls` with `ring`, `instant-acme` HTTP-01, `hickory-resolver`, `x509-parser`).
+- HTTP `:80` answers `/.well-known/acme-challenge/<token>` and redirects other traffic (`308`) to HTTPS; HTTPS preserves `Host`, forwards `X-Forwarded-Proto`/`X-Forwarded-For`, pins upstream `serve` TLS cert SHA-256, adds HSTS, enforces upload limits (`413`), and upgrades WebSockets (`101`).
+- ACME account and domain private keys are encrypted at rest via `opsbox-priv` (`PrivOp::SecretSeal`/`SecretOpen`, restricted to `"proxy:"` contexts and refusing `"totp:*"`) and renewed 30 days before expiry.
+- `opsbox-api`: `/api/v1/panel` (`GET`, `/dns-check`, async `/certificate` task, `DELETE /domain`, `/local-only`), `GET /api/v1/settings` `panel` snapshot, startup route sync, and `/readyz` requiring `proxy` when a panel domain is active.
+- Settings UI (`web/js/pages/settings.js`, `web/js/api.js`): wired `REAL` Panel address section with Check DNS (`points here` / `waiting for DNS` + DNS records table), Issue/Renew certificate, Remove, and Close raw port 8443 offer (`sample data` badge removed).
+- CLI & packaging: `opsbox proxy`, `opsbox web domain <name> [--skip-dns-check]`, `opsbox status`/`selftest`/`doctor`/`update`, `packaging/systemd/opsbox-proxy.service`, `install.sh`, and `.github/workflows/release.yml`.
+
+## Partial / Found, not fixed
+- Pre-existing `cargo::unused_dependencies` warning for `futures-util` in `crates/opsbox-priv/Cargo.toml` on non-Linux hosts (`futures-util` is only used inside `#[cfg(target_os = "linux")]`).
+- Linux-only checks (`tools/check-idle-memory.py`, `musl` target build, systemd service runtime, live Let's Encrypt staging in VM) are not runnable natively on macOS and remain for Linux CI / `opsbox-vm`.
 
 ## Next
-- Verify `sudo opsbox cleanup scan --timings` and the Cleanup UI on the real Linux instance (`almanac-sensor`).
-- Next prompt: `docs/prompts/05-proxy-panel-domain.md`.
+- Verify `opsbox-proxy.service`, UI Panel address flow, ACME staging, and closing port `:8443` in `opsbox-vm`.
+- Next prompt: `docs/prompts/06-watchdog-safe-mode.md`.

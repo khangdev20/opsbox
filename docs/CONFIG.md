@@ -34,6 +34,14 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[files] apps_dir` | `/var/lib/opsbox/apps` | | | serve |
 | `[files] max_upload_mb` | `2048` | | | serve |
 | `[terminal] idle_timeout_min` | `30` | | | serve |
+| `[proxy] listen_http` | `0.0.0.0:80` | `--http ADDR` | `OPSBOX_PROXY_HTTP` | proxy |
+| `[proxy] listen_https` | `0.0.0.0:443` | `--https ADDR` | `OPSBOX_PROXY_HTTPS` | proxy |
+| `[proxy] socket` | `/run/opsbox-proxy/proxy.sock` | `--proxy-socket PATH` | `OPSBOX_PROXY_SOCKET` | proxy, serve, status |
+| `[proxy] state_dir` | `/var/lib/opsbox/proxy` | `--state-dir PATH` | `OPSBOX_PROXY_STATE_DIR` | proxy |
+| `[proxy] acme_staging` | `false` | `--staging` | `OPSBOX_ACME_STAGING` | proxy |
+| `[proxy] acme_directory` | unset (Let's Encrypt production) | | | proxy |
+| `[proxy] acme_email` | unset | | | proxy |
+| `[proxy] public_ips` | `[]` (auto-detected) | | | proxy, serve |
 | `[store] db_path` | `/var/lib/opsbox/opsbox.db` | `--db PATH` | `OPSBOX_DB` | serve |
 | `[log] level` | `"info"` | `--log-level FILTER` | `OPSBOX_LOG_LEVEL` | all |
 | `[log] format` | `"text"` (`"json"`) | `--log-format text\|json` | `OPSBOX_LOG_FORMAT` | all |
@@ -92,14 +100,17 @@ ssh -L 8443:127.0.0.1:8443 you@server
 |---|---|
 | `opsbox serve` | Opens the database, applies migrations, listens. |
 | `opsbox priv` | Creates the socket (and `/run/opsbox` if missing). |
-| `opsbox status` | Probes `serve` over HTTP and `priv` over its socket. Exit status 0 only if both are healthy, 1 otherwise. |
+| `opsbox proxy` | Listens on `:80`/`:443`, handles ACME HTTP-01 challenges, and proxies panel routes received over `proxy.sock`. |
+| `opsbox status` | Probes `serve`, `priv`, and (when active/configured) `proxy`. Exit status 0 only if all healthy, 1 otherwise. |
+| `opsbox web local-only on\|off` | Switches `[api] listen` between `127.0.0.1:8443` and `0.0.0.0:8443` and restarts `opsbox.service`. |
+| `opsbox web domain NAME [--skip-dns-check]` | Configures the panel domain, checks DNS, requests an ACME certificate from `proxy`, and saves `opsbox.panel.domain`. |
 | `opsbox setup-token` | Prints a one-time token while no admin exists. Run as root, it switches to the `opsbox` user before opening the database. |
 | `opsbox user reset-2fa\|unlock\|password NAME` | Account recovery over SSH. `password` asks twice on a terminal and reads one line from standard input when piped. |
 | `opsbox audit verify` | Walks the hash chain of the audit log; exit status 1 and the first bad entry if it was altered. |
 | `opsbox doctor` | Read-only diagnostics through the helper: service/port health, DNS resolution, free disk space, clock synchronization, optional Docker and master-key permissions. Exit 1 for failed checks or unavailable helpers; warnings include suggested fixes. |
 | `opsbox selftest` | Ignores the configuration; uses a temporary directory. Exit status 0 if every check passes. |
 
-Commands that exist but are not built yet (`pair`, `web`, `update`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.
+Commands that exist but are not built yet (`pair`, `watchdog`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.
 
 ## Running on a development machine
 
@@ -140,4 +151,4 @@ Ordinary API requests: 1 MiB body, 30 seconds; editor: 12 MiB JSON body/5 MiB te
 
 API responses are `no-store`; responses include request IDs, MIME-sniffing/frame protection and a same-origin referrer policy. CSP limits framing, base URLs and embedded objects while allowing the existing self-hosted Monaco/xterm runtime. Command output captured in priv is capped at 8 MiB per pipe; command timeouts kill the process group. Accepted authenticated mutations must be recorded in the audit chain before dispatch.
 
-In Settings, host name/time zone/swap and API tokens are real. Tokens use `read`, `deploy`, or `full` scopes and are hashed at rest; copy the secret at creation. They have no expiry setting in Phase 1; revoke them explicitly. See [API.md](API.md) for exact capabilities. Host name/time zone changes use hostnamectl/timedatectl through priv and persist in the operating system; they are not duplicated in config.toml. Panel domains, disk growth, GitHub, self-update and export/uninstall remain labelled samples.
+In Settings, host name/time zone/swap, API tokens, self-update settings, and the panel domain (DNS check, ACME certificate, and local-only `:8443` toggle) are real. Tokens use `read`, `deploy`, or `full` scopes and are hashed at rest; copy the secret at creation. They have no expiry setting in Phase 1; revoke them explicitly. See [API.md](API.md) for exact capabilities. Host name/time zone changes use hostnamectl/timedatectl through priv and persist in the operating system; they are not duplicated in config.toml. Disk growth, GitHub, and export/uninstall remain labelled samples.
