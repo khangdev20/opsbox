@@ -1,0 +1,44 @@
+[Unit]
+Description=opsbox server
+Documentation=https://github.com/khangdev20/opsbox
+After=opsbox-priv.service
+# Wants, not Requires: serve keeps running (and reports "not ready") if priv restarts.
+Wants=opsbox-priv.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=opsbox
+Group=opsbox
+ExecStart=/usr/local/bin/opsbox serve
+Restart=always
+RestartSec=2
+
+# Hardening (docs/BACKEND_SPEC.md section 4). serve is the network-facing process and
+# has no business being powerful: it asks `priv` for anything privileged.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/opsbox
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
