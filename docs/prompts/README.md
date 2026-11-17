@@ -21,7 +21,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 05 | Proxy and panel domain (`05-proxy-panel-domain.md`) | 4 (panel first) | ✓ |
 | 06 | Watchdog and safe mode (`06-watchdog-safe-mode.md`) | 2 | ✓ |
 | 07 | Docker and Containers page (`07-docker-containers.md`) | 3 | ✓ |
-| 08 | GitHub connection (`08-github-connection.md`) | 3 | |
+| 08 | GitHub connection (`08-github-connection.md`) | 3 | ✓ |
 | 09 | Deploy pipeline (`09-deploy-pipeline.md`) | 3 | |
 | 10 | App domains (`10-app-domains.md`) | 4 | |
 | 11 | Templates and Compose (`11-templates-compose.md`) | 3 | |
