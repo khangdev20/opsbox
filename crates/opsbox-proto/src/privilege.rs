@@ -196,6 +196,10 @@ pub enum PrivOp {
     },
     /// Look for things that can be cleaned and estimate what each frees.
     CleanupScan,
+    /// Force a fresh Cleanup scan (bypassing the 60 s cache).
+    CleanupScanFresh,
+    /// Compute unused Docker volume sizes on demand.
+    CleanupVolumeSizes,
     /// Clean the named things, in a fixed order. Unknown or unavailable ones are reported, not run.
     CleanupRun {
         ids: Vec<String>,
@@ -295,6 +299,8 @@ impl PrivOp {
             Self::FileStageDownload { .. } => "file_stage_download",
             Self::FileInstallUpload { .. } => "file_install_upload",
             Self::CleanupScan => "cleanup_scan",
+            Self::CleanupScanFresh => "cleanup_scan_fresh",
+            Self::CleanupVolumeSizes => "cleanup_volume_sizes",
             Self::CleanupRun { .. } => "cleanup_run",
             Self::CleanupAutoSet { .. } => "cleanup_auto_set",
             Self::SettingsGet => "settings_get",
@@ -406,6 +412,10 @@ pub enum PrivReply {
     },
     Cleanup(crate::cleanup::CleanupScan),
     CleanupFreed(Vec<crate::cleanup::CleanupFreed>),
+    CleanupVolumeSize {
+        bytes: u64,
+        count: usize,
+    },
     /// A shell is running; the connection now carries the PTY stream.
     PtyStarted {
         user: String,

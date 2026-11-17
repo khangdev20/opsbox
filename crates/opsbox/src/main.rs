@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 
-use crate::cli::{AuditAction, Cli, Command, WebAction};
+use crate::cli::{AuditAction, CleanupAction, Cli, Command, WebAction};
 use crate::config::{Config, Overrides};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -59,7 +59,12 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             logging::init(&config)?;
             cmd::serve::run(config)?;
         }
-        Command::Cleanup { .. } => return Ok(ok_or_failure(cmd::cleanup::run())),
+        Command::Cleanup { action, .. } => match action {
+            Some(CleanupAction::Scan { timings }) => {
+                return Ok(ok_or_failure(cmd::cleanup::scan(*timings)));
+            }
+            None => return Ok(ok_or_failure(cmd::cleanup::run())),
+        },
         Command::SetupToken => {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             cmd::admin::setup_token(&config)?;

@@ -16,7 +16,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 01 | File access race (`01-file-access-race.md`) | 1b | ✓ |
 | 02 | Release builds, signing and one-line install (`02-release-builds.md`) | 2 | ✓ |
 | 03 | Self-update and rollback (`03-self-update.md`) | 2 | ✓ |
-| 03b | Cleanup page performance (`03b-cleanup-performance.md`) | 1 (fix) | |
+| 03b | Cleanup page performance (`03b-cleanup-performance.md`) | 1 (fix) | ✓ |
 | 04 | Public first run (`04-public-first-run.md`) | 1c | ✓ |
 | 05 | Proxy and panel domain (`05-proxy-panel-domain.md`) | 4 (panel first) | |
 | 06 | Watchdog and safe mode (`06-watchdog-safe-mode.md`) | 2 | |

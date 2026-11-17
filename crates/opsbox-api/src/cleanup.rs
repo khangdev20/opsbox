@@ -1,7 +1,7 @@
 //! `GET /cleanup/scan`, `POST /cleanup/run`, `PUT /cleanup/auto` (docs/BACKEND_SPEC.md 7.11).
 
 use axum::Json;
-use axum::extract::{Extension, State};
+use axum::extract::{Extension, Query, State};
 use opsbox_proto::{CleanupFreed, CleanupItem, ErrorCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -36,8 +36,15 @@ fn item_json(i: &CleanupItem) -> Value {
     json!({
         "id": i.id, "title": i.title, "desc": i.desc, "bytes": i.bytes, "gb": gb(i.bytes),
         // Selected by default: everything safe to run unattended.
-        "on": i.safe && !i.warn, "safe": i.safe, "warn": i.warn, "color": colour(&i.id),
+        "on": !i.pending && i.safe && !i.warn, "safe": i.safe, "warn": i.warn,
+        "pending": i.pending, "durationMs": i.duration_ms, "color": colour(&i.id),
     })
+}
+
+#[derive(Deserialize, Default)]
+pub(crate) struct ScanQuery {
+    #[serde(default)]
+    fresh: Option<u8>,
 }
 
 /// `GET /cleanup/scan`
@@ -45,8 +52,10 @@ pub(crate) async fn scan(
     State(state): State<AppState>,
     Admin(_): Admin,
     Extension(RequestId(rid)): Extension<RequestId>,
+    Query(q): Query<ScanQuery>,
 ) -> Result<Json<Value>, HttpError> {
-    let s = patient(&state, 120).cleanup_scan(&rid).await?;
+    let fresh = q.fresh == Some(1);
+    let s = patient(&state, 30).cleanup_scan_opts(&rid, fresh).await?;
     // The disk the Overview shows: "/" if present, else the first real filesystem.
     let disk = state.metrics.latest().and_then(|snap| {
         snap.disks
@@ -56,12 +65,27 @@ pub(crate) async fn scan(
             .map(|d| (d.used, d.total))
     });
     let (used, total) = disk.unwrap_or((0, 0));
+    let pending = s.items.iter().any(|i| i.pending);
     Ok(Json(json!({
         "items": s.items.iter().map(item_json).collect::<Vec<_>>(),
         "disk": gb(used), "total": gb(total).round(), "system": gb(s.system_bytes),
         "auto": s.auto,
+        "pending": pending,
+        "scannedAt": s.scanned_at,
         "scanned": clock_now(),
     })))
+}
+
+/// `GET /cleanup/volumes`: compute unused Docker volume sizes on demand.
+pub(crate) async fn volume_sizes(
+    State(state): State<AppState>,
+    Admin(_): Admin,
+    Extension(RequestId(rid)): Extension<RequestId>,
+) -> Result<Json<Value>, HttpError> {
+    let (bytes, count) = patient(&state, 120).cleanup_volume_sizes(&rid).await?;
+    Ok(Json(
+        json!({ "bytes": bytes, "gb": gb(bytes), "count": count }),
+    ))
 }
 
 fn clock_now() -> String {

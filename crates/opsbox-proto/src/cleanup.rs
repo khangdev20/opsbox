@@ -15,6 +15,12 @@ pub struct CleanupItem {
     pub safe: bool,
     /// Can lose data someone may still want: never selected by default, never automatic.
     pub warn: bool,
+    /// True while this scanner is still running past the initial response deadline.
+    #[serde(default)]
+    pub pending: bool,
+    /// How long this scanner took, in milliseconds (when finished).
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,6 +30,9 @@ pub struct CleanupScan {
     pub system_bytes: u64,
     /// The weekly automatic clean is switched on.
     pub auto: bool,
+    /// Unix timestamp (seconds) when the scan was taken.
+    #[serde(default)]
+    pub scanned_at: i64,
 }
 
 /// What one scanner freed.

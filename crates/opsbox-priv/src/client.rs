@@ -550,8 +550,29 @@ impl PrivClient {
     }
 
     pub async fn cleanup_scan(&self, rid: &str) -> Result<CleanupScan, ClientError> {
-        self.expect(rid, None, PrivOp::CleanupScan, |r| match r {
+        self.cleanup_scan_opts(rid, false).await
+    }
+
+    pub async fn cleanup_scan_opts(
+        &self,
+        rid: &str,
+        fresh: bool,
+    ) -> Result<CleanupScan, ClientError> {
+        let op = if fresh {
+            PrivOp::CleanupScanFresh
+        } else {
+            PrivOp::CleanupScan
+        };
+        self.expect(rid, None, op, |r| match r {
             PrivReply::Cleanup(s) => Ok(s),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn cleanup_volume_sizes(&self, rid: &str) -> Result<(u64, usize), ClientError> {
+        self.expect(rid, None, PrivOp::CleanupVolumeSizes, |r| match r {
+            PrivReply::CleanupVolumeSize { bytes, count } => Ok((bytes, count)),
             o => Err(o),
         })
         .await

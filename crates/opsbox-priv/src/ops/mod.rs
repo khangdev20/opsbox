@@ -165,7 +165,10 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             jail,
         } => files::install_upload(staging, dir, name, *overwrite, jail.as_deref(), &env.files)
             .map(|()| PrivReply::Done),
-        PrivOp::CleanupScan => Ok(cleanup::scan()),
+        PrivOp::CleanupScan => Ok(cleanup::scan(false)),
+        PrivOp::CleanupScanFresh => Ok(cleanup::scan(true)),
+        PrivOp::CleanupVolumeSizes => cleanup::volume_sizes()
+            .map(|(bytes, count)| PrivReply::CleanupVolumeSize { bytes, count }),
         PrivOp::CleanupRun { ids } => cleanup::run_ids(ids),
         PrivOp::CleanupAutoSet { on } => cleanup::set_auto(*on).map(|()| PrivReply::Done),
         PrivOp::SettingsGet => Ok(PrivReply::Settings(hostset::settings())),

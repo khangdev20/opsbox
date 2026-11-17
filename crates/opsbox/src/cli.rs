@@ -55,6 +55,8 @@ pub enum Command {
         /// Only what is safe to run unattended (the default; there is no other mode yet)
         #[arg(long)]
         safe: bool,
+        #[command(subcommand)]
+        action: Option<CleanupAction>,
     },
 
     // ------------------------------------------------- not implemented yet
@@ -245,6 +247,16 @@ pub enum BackupAction {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum CleanupAction {
+    /// Run a fresh cleanup scan and print results
+    Scan {
+        /// Print per-scanner duration in milliseconds
+        #[arg(long)]
+        timings: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum AuditAction {
     /// Check the audit log's hash chain
     Verify,
@@ -336,6 +348,8 @@ mod tests {
             "proxy",
             "watchdog",
             "selftest",
+            "cleanup --safe",
+            "cleanup scan --timings",
             "version",
         ];
         for line in lines {

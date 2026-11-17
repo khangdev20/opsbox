@@ -41,7 +41,7 @@ const REAL = new Set([
   'getJobs', 'runJob', 'addJob', 'removeJob', 'getFirewall', 'addRule', 'removeRule', 'confirmFirewall', 'openSsh',
   'listDir', 'readFile', 'writeFile', 'chmod', 'mkdir', 'removePaths', 'upload',
   'getTerminalUsers', 'openTerminal',
-  'scanCleanup', 'runCleanup', 'setAutoCleanup',
+  'scanCleanup', 'runCleanup', 'setAutoCleanup', 'getCleanupVolumes',
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
   'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap',
@@ -619,12 +619,25 @@ export async function openSsh() { sample('openSsh');
   if (real('openSsh')) return openSshReal(); await lag(400); S.sshOpenUntil = now() + HOUR; S.units.find((u) => u.name === 'ssh.service').state = 'active'; audit('emergency SSH enabled for 1 hour', 'admin', true); return { until: S.sshOpenUntil }; }
 
 // ---------------------------------------------------------------- cleanup
-export async function scanCleanup() { sample('scanCleanup');
-  if (real('scanCleanup')) return http('/cleanup/scan');
-  await lag(500);
-  return { items: clone(S.cleanup), disk: S.metrics.disk, total: S.host.diskTotal, system: 41, auto: S.autoCleanup, scanned: hhmm() };
+let cleanupCache = null;
+export async function scanCleanup(fresh = false) { sample('scanCleanup');
+  if (real('scanCleanup')) {
+    if (!fresh && cleanupCache && !cleanupCache.pending && (Date.now() - cleanupCache._at) < 60000) {
+      return clone(cleanupCache);
+    }
+    const r = await http(fresh ? '/cleanup/scan?fresh=1' : '/cleanup/scan');
+    cleanupCache = { ...r, _at: Date.now() };
+    return clone(r);
+  }
+  await lag(200);
+  return { items: clone(S.cleanup), disk: S.metrics.disk, total: S.host.diskTotal, system: 41, auto: S.autoCleanup, pending: false, scannedAt: Math.floor(Date.now() / 1000), scanned: hhmm() };
+}
+export async function getCleanupVolumes() { sample('getCleanupVolumes');
+  if (real('getCleanupVolumes')) return http('/cleanup/volumes');
+  await lag(300); return { bytes: 300_000_000, gb: 0.3, count: 2 };
 }
 export async function runCleanup(ids) { sample('runCleanup');
+  cleanupCache = null;
   if (real('runCleanup')) { const { task } = await http('/cleanup/run', { method: 'POST', body: { ids } }); const t = await waitTask(task, { every: 1000, max: 30 * 60 * 1000 }); return { freed: t.result?.freed ?? 0, bytes: t.result?.bytes ?? 0, items: t.result?.items ?? [] }; }
   await lag(1200);
   const hit = S.cleanup.filter((c) => ids.includes(c.id)); const freed = hit.reduce((a, c) => a + c.gb, 0);

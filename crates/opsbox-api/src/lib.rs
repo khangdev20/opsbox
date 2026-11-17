@@ -226,6 +226,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/access/keys/remove", post(access::remove_key))
         .route("/api/v1/access/users/{name}/lock", post(access::lock_user))
         .route("/api/v1/cleanup/scan", get(cleanup::scan))
+        .route("/api/v1/cleanup/volumes", get(cleanup::volume_sizes))
         .route("/api/v1/cleanup/run", post(cleanup::run))
         .route("/api/v1/cleanup/auto", put(cleanup::set_auto))
         .route("/api/v1/terminal/users", get(terminal::users))

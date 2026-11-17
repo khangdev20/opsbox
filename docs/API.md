@@ -57,6 +57,7 @@ Streams revalidate their session/token, role and allowed address every five seco
 | `PUT` | `/api/v1/cleanup/auto` | [cleanup::set_auto](../crates/opsbox-api/src/cleanup.rs) |
 | `POST` | `/api/v1/cleanup/run` | [cleanup::run](../crates/opsbox-api/src/cleanup.rs) |
 | `GET` | `/api/v1/cleanup/scan` | [cleanup::scan](../crates/opsbox-api/src/cleanup.rs) |
+| `GET` | `/api/v1/cleanup/volumes` | [cleanup::volume_sizes](../crates/opsbox-api/src/cleanup.rs) |
 | `GET` | `/api/v1/files` | [files::list](../crates/opsbox-api/src/files.rs) |
 | `POST` | `/api/v1/files/chmod` | [files::chmod](../crates/opsbox-api/src/files.rs) |
 | `GET` | `/api/v1/files/content` | [files::read](../crates/opsbox-api/src/files.rs) |
