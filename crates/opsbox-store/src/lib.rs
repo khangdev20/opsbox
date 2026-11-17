@@ -25,9 +25,10 @@ pub use audit::{
     ActorKind, AuditEntry, AuditError, AuditReport, AuditResult, GENESIS_HASH, NewAudit,
 };
 pub use deploy::{
-    ActiveServiceRoute, DeployLogRow, DeployRecord, DeployStatus, DeployTrigger, EnvironmentRecord,
-    NewService, NewServiceDomain, ProjectRecord, ServiceDomainRecord, ServiceKind, ServiceRecord,
-    ServiceState, ServiceVarRecord, SourceKind, UpdateService, UpdateServiceDomain,
+    ActiveServiceRoute, BackupJobRecord, ComposeStackRecord, DeployLogRow, DeployRecord,
+    DeployStatus, DeployTrigger, EnvironmentRecord, NewService, NewServiceDomain, ProjectRecord,
+    ServiceDomainRecord, ServiceKind, ServiceRecord, ServiceState, ServiceVarRecord, SourceKind,
+    UpdateService, UpdateServiceDomain, UpsertComposeStack,
 };
 pub use github::{
     DeployKeyInfo, DeployKeyRecord, GithubAppRecord, NewDeployKey, NewGithubApp,

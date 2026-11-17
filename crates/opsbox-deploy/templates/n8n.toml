@@ -1,0 +1,35 @@
+id = "n8n"
+name = "n8n"
+category = "tools"
+kind = "tool"
+description = "Workflow automation"
+resources = "≈ 250 MB RAM"
+image = "n8nio/n8n"
+versions = ["latest"]
+port = 5678
+internal_by_default = true
+
+[[volumes]]
+suffix = "data"
+container_path = "/home/node/.n8n"
+
+[[env]]
+key = "N8N_ENCRYPTION_KEY"
+value = ""
+secret = true
+generate = "hex64"
+
+[[env]]
+key = "GENERIC_TIMEZONE"
+value = "UTC"
+secret = false
+generate = "none"
+
+[health]
+http_path = "/healthz"
+tcp_port = 5678
+
+[backup]
+enabled_by_default = false
+cron = "0 2 * * *"
+method = "volume"

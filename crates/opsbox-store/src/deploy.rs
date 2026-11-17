@@ -197,6 +197,9 @@ pub struct ServiceRecord {
     pub graph_x: i64,
     pub graph_y: i64,
     pub note: Option<String>,
+    pub compose_stack_id: Option<String>,
+    pub template_id: Option<String>,
+    pub internal_only: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -326,6 +329,50 @@ pub struct ActiveServiceRoute {
     pub hsts: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposeStackRecord {
+    pub id: String,
+    pub project_id: String,
+    pub env_id: String,
+    pub name: String,
+    pub owner_id: Option<String>,
+    pub compose_yaml: String,
+    pub project_name: String,
+    pub service_names: Vec<String>,
+    pub depends_edges: Vec<(String, String)>,
+    pub confirmed: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct UpsertComposeStack<'a> {
+    pub project_id: &'a str,
+    pub env_id: &'a str,
+    pub name: &'a str,
+    pub owner_id: Option<&'a str>,
+    pub compose_yaml: &'a str,
+    pub project_name: &'a str,
+    pub service_names: &'a [String],
+    pub depends_edges: &'a [(String, String)],
+    pub confirmed: bool,
+    pub now: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupJobRecord {
+    pub id: String,
+    pub service_id: String,
+    pub template_id: Option<String>,
+    pub method: String,
+    pub cron: String,
+    pub retain_daily: i64,
+    pub retain_weekly: i64,
+    pub enabled: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 const DOMAIN_COLS: &str = "\
     id, service_id, domain, is_primary, redirect_to, force_https, hsts, \
     dns_status, dns_checked_at, created_at, updated_at";
@@ -335,7 +382,7 @@ const SERVICE_COLS: &str = "\
     build_method, dockerfile_path, start_cmd, port, health_path, domain, image_ref, \
     deploy_key_id, auto_deploy, memory_limit_mb, cpu_limit_millis, state, \
     active_deploy_id, active_container, active_host_port, graph_x, graph_y, note, \
-    created_at, updated_at";
+    compose_stack_id, template_id, internal_only, created_at, updated_at";
 
 const DEPLOY_COLS: &str = "\
     id, service_id, commit_sha, message, trigger_kind, triggered_by, status, \
@@ -352,47 +399,97 @@ fn invalid_col(col: usize, what: &str) -> rusqlite::Error {
     )
 }
 
-fn service_from_row(r: &Row<'_>) -> rusqlite::Result<ServiceRecord> {
-    let kind_s: String = r.get(4)?;
-    let source_s: String = r.get(6)?;
-    let port_i: i64 = r.get(12)?;
-    let auto_i: i64 = r.get(17)?;
-    let state_s: String = r.get(20)?;
-    let host_port_i: Option<i64> = r.get(23)?;
+fn service_row_at(r: &Row<'_>, off: usize) -> rusqlite::Result<ServiceRecord> {
+    let kind_s: String = r.get(off + 4)?;
+    let source_s: String = r.get(off + 6)?;
+    let port_i: i64 = r.get(off + 12)?;
+    let auto_i: i64 = r.get(off + 17)?;
+    let state_s: String = r.get(off + 20)?;
+    let host_port_i: Option<i64> = r.get(off + 23)?;
+    let internal_i: i64 = r.get(off + 29)?;
 
     Ok(ServiceRecord {
+        id: r.get(off)?,
+        project_id: r.get(off + 1)?,
+        env_id: r.get(off + 2)?,
+        name: r.get(off + 3)?,
+        kind: ServiceKind::parse(&kind_s).ok_or_else(|| invalid_col(off + 4, "service kind"))?,
+        owner_id: r.get(off + 5)?,
+        source_kind: SourceKind::parse(&source_s)
+            .ok_or_else(|| invalid_col(off + 6, "source kind"))?,
+        repo: r.get(off + 7)?,
+        branch: r.get(off + 8)?,
+        build_method: r.get(off + 9)?,
+        dockerfile_path: r.get(off + 10)?,
+        start_cmd: r.get(off + 11)?,
+        port: u16::try_from(port_i).map_err(|_| invalid_col(off + 12, "port"))?,
+        health_path: r.get(off + 13)?,
+        domain: r.get(off + 14)?,
+        image_ref: r.get(off + 15)?,
+        deploy_key_id: r.get(off + 16)?,
+        auto_deploy: auto_i != 0,
+        memory_limit_mb: r.get(off + 18)?,
+        cpu_limit_millis: r.get(off + 19)?,
+        state: ServiceState::parse(&state_s)
+            .ok_or_else(|| invalid_col(off + 20, "service state"))?,
+        active_deploy_id: r.get(off + 21)?,
+        active_container: r.get(off + 22)?,
+        active_host_port: host_port_i
+            .map(u16::try_from)
+            .transpose()
+            .map_err(|_| invalid_col(off + 23, "host port"))?,
+        graph_x: r.get(off + 24)?,
+        graph_y: r.get(off + 25)?,
+        note: r.get(off + 26)?,
+        compose_stack_id: r.get(off + 27)?,
+        template_id: r.get(off + 28)?,
+        internal_only: internal_i != 0,
+        created_at: r.get(off + 30)?,
+        updated_at: r.get(off + 31)?,
+    })
+}
+
+fn service_from_row(r: &Row<'_>) -> rusqlite::Result<ServiceRecord> {
+    service_row_at(r, 0)
+}
+
+fn compose_stack_from_row(r: &Row<'_>) -> rusqlite::Result<ComposeStackRecord> {
+    let names_raw: String = r.get(7)?;
+    let edges_raw: String = r.get(8)?;
+    let confirmed_i: i64 = r.get(9)?;
+    let service_names: Vec<String> =
+        serde_json::from_str(&names_raw).map_err(|_| invalid_col(7, "service_names"))?;
+    let depends_edges: Vec<(String, String)> =
+        serde_json::from_str(&edges_raw).map_err(|_| invalid_col(8, "depends_edges"))?;
+    Ok(ComposeStackRecord {
         id: r.get(0)?,
         project_id: r.get(1)?,
         env_id: r.get(2)?,
         name: r.get(3)?,
-        kind: ServiceKind::parse(&kind_s).ok_or_else(|| invalid_col(4, "service kind"))?,
-        owner_id: r.get(5)?,
-        source_kind: SourceKind::parse(&source_s).ok_or_else(|| invalid_col(6, "source kind"))?,
-        repo: r.get(7)?,
-        branch: r.get(8)?,
-        build_method: r.get(9)?,
-        dockerfile_path: r.get(10)?,
-        start_cmd: r.get(11)?,
-        port: u16::try_from(port_i).map_err(|_| invalid_col(12, "port"))?,
-        health_path: r.get(13)?,
-        domain: r.get(14)?,
-        image_ref: r.get(15)?,
-        deploy_key_id: r.get(16)?,
-        auto_deploy: auto_i != 0,
-        memory_limit_mb: r.get(18)?,
-        cpu_limit_millis: r.get(19)?,
-        state: ServiceState::parse(&state_s).ok_or_else(|| invalid_col(20, "service state"))?,
-        active_deploy_id: r.get(21)?,
-        active_container: r.get(22)?,
-        active_host_port: host_port_i
-            .map(u16::try_from)
-            .transpose()
-            .map_err(|_| invalid_col(23, "host port"))?,
-        graph_x: r.get(24)?,
-        graph_y: r.get(25)?,
-        note: r.get(26)?,
-        created_at: r.get(27)?,
-        updated_at: r.get(28)?,
+        owner_id: r.get(4)?,
+        compose_yaml: r.get(5)?,
+        project_name: r.get(6)?,
+        service_names,
+        depends_edges,
+        confirmed: confirmed_i != 0,
+        created_at: r.get(10)?,
+        updated_at: r.get(11)?,
+    })
+}
+
+fn backup_job_from_row(r: &Row<'_>) -> rusqlite::Result<BackupJobRecord> {
+    let enabled_i: i64 = r.get(7)?;
+    Ok(BackupJobRecord {
+        id: r.get(0)?,
+        service_id: r.get(1)?,
+        template_id: r.get(2)?,
+        method: r.get(3)?,
+        cron: r.get(4)?,
+        retain_daily: r.get(5)?,
+        retain_weekly: r.get(6)?,
+        enabled: enabled_i != 0,
+        created_at: r.get(8)?,
+        updated_at: r.get(9)?,
     })
 }
 
@@ -611,6 +708,16 @@ impl Store {
     }
 
     pub fn create_service(&self, new: NewService<'_>) -> Result<ServiceRecord, StoreError> {
+        self.create_service_with_meta(new, None, None, false)
+    }
+
+    pub fn create_service_with_meta(
+        &self,
+        new: NewService<'_>,
+        compose_stack_id: Option<&str>,
+        template_id: Option<&str>,
+        internal_only: bool,
+    ) -> Result<ServiceRecord, StoreError> {
         let id = ulid::Ulid::generate().to_string();
         let norm_domain = new
             .domain
@@ -624,12 +731,12 @@ impl Store {
                 id, project_id, env_id, name, kind, owner_id, source_kind, repo, branch,
                 build_method, dockerfile_path, start_cmd, port, health_path, domain, image_ref,
                 deploy_key_id, auto_deploy, memory_limit_mb, cpu_limit_millis, state,
-                graph_x, graph_y, note, created_at, updated_at
+                graph_x, graph_y, note, compose_stack_id, template_id, internal_only, created_at, updated_at
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
                 ?10, ?11, ?12, ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19, ?20, 'idle',
-                ?21, ?22, ?23, ?24, ?24
+                ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?27
             )",
             params![
                 id,
@@ -655,6 +762,9 @@ impl Store {
                 new.graph_x,
                 new.graph_y,
                 new.note,
+                compose_stack_id,
+                template_id,
+                i64::from(internal_only),
                 new.now,
             ],
         )?;
@@ -1085,7 +1195,7 @@ impl Store {
                 service_id,
                 deploy_id,
                 container_id,
-                i64::from(host_port),
+                (host_port > 0).then_some(i64::from(host_port)),
                 detected_build_method,
                 now,
             ],
@@ -1216,7 +1326,7 @@ impl Store {
                     sd.redirect_to, sd.force_https, sd.hsts
              FROM service_domains sd
              JOIN services s ON s.id = sd.service_id
-             WHERE (sd.redirect_to IS NOT NULL AND s.kind = 'app')
+             WHERE (sd.redirect_to IS NOT NULL AND s.kind IN ('app', 'tool', 'compose'))
                 OR (s.active_host_port IS NOT NULL AND s.active_host_port > 0)
              ORDER BY s.name ASC, sd.is_primary DESC, sd.created_at ASC",
         )?;
@@ -1286,7 +1396,7 @@ impl Store {
                     s.build_method, s.dockerfile_path, s.start_cmd, s.port, s.health_path, s.domain, s.image_ref,
                     s.deploy_key_id, s.auto_deploy, s.memory_limit_mb, s.cpu_limit_millis, s.state,
                     s.active_deploy_id, s.active_container, s.active_host_port, s.graph_x, s.graph_y, s.note,
-                    s.created_at, s.updated_at
+                    s.compose_stack_id, s.template_id, s.internal_only, s.created_at, s.updated_at
              FROM service_domains sd
              JOIN services s ON s.id = sd.service_id
              ORDER BY s.name ASC, sd.is_primary DESC, sd.created_at ASC",
@@ -1306,49 +1416,7 @@ impl Store {
                     created_at: r.get(9)?,
                     updated_at: r.get(10)?,
                 };
-                let kind_s: String = r.get(15)?;
-                let source_s: String = r.get(17)?;
-                let port_i: i64 = r.get(23)?;
-                let auto_i: i64 = r.get(28)?;
-                let state_s: String = r.get(31)?;
-                let host_port_i: Option<i64> = r.get(34)?;
-                let svc = ServiceRecord {
-                    id: r.get(11)?,
-                    project_id: r.get(12)?,
-                    env_id: r.get(13)?,
-                    name: r.get(14)?,
-                    kind: ServiceKind::parse(&kind_s)
-                        .ok_or_else(|| invalid_col(15, "service kind"))?,
-                    owner_id: r.get(16)?,
-                    source_kind: SourceKind::parse(&source_s)
-                        .ok_or_else(|| invalid_col(17, "source kind"))?,
-                    repo: r.get(18)?,
-                    branch: r.get(19)?,
-                    build_method: r.get(20)?,
-                    dockerfile_path: r.get(21)?,
-                    start_cmd: r.get(22)?,
-                    port: u16::try_from(port_i).map_err(|_| invalid_col(23, "port"))?,
-                    health_path: r.get(24)?,
-                    domain: r.get(25)?,
-                    image_ref: r.get(26)?,
-                    deploy_key_id: r.get(27)?,
-                    auto_deploy: auto_i != 0,
-                    memory_limit_mb: r.get(29)?,
-                    cpu_limit_millis: r.get(30)?,
-                    state: ServiceState::parse(&state_s)
-                        .ok_or_else(|| invalid_col(31, "service state"))?,
-                    active_deploy_id: r.get(32)?,
-                    active_container: r.get(33)?,
-                    active_host_port: host_port_i
-                        .map(u16::try_from)
-                        .transpose()
-                        .map_err(|_| invalid_col(34, "host port"))?,
-                    graph_x: r.get(35)?,
-                    graph_y: r.get(36)?,
-                    note: r.get(37)?,
-                    created_at: r.get(38)?,
-                    updated_at: r.get(39)?,
-                };
+                let svc = service_row_at(r, 11)?;
                 Ok((dom, svc))
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -1637,5 +1705,210 @@ impl Store {
             }
         }
         Ok(candidates)
+    }
+
+    pub fn upsert_compose_stack(
+        &self,
+        stack: UpsertComposeStack<'_>,
+    ) -> Result<ComposeStackRecord, StoreError> {
+        let names_json = serde_json::to_string(stack.service_names)?;
+        let edges_json = serde_json::to_string(stack.depends_edges)?;
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing_id: Option<String> = tx
+            .query_row(
+                "SELECT id FROM compose_stacks WHERE name = ?1 LIMIT 1",
+                params![stack.name],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let id = existing_id.unwrap_or_else(|| ulid::Ulid::generate().to_string());
+        tx.execute(
+            "INSERT INTO compose_stacks (
+                id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                service_names, depends_edges, confirmed, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+            ON CONFLICT(name) DO UPDATE SET
+                compose_yaml = excluded.compose_yaml,
+                project_name = excluded.project_name,
+                service_names = excluded.service_names,
+                depends_edges = excluded.depends_edges,
+                confirmed = CASE WHEN excluded.confirmed = 1 THEN 1 ELSE compose_stacks.confirmed END,
+                updated_at = excluded.updated_at",
+            params![
+                id,
+                stack.project_id,
+                stack.env_id,
+                stack.name,
+                stack.owner_id,
+                stack.compose_yaml,
+                stack.project_name,
+                names_json,
+                edges_json,
+                i64::from(stack.confirmed),
+                stack.now,
+            ],
+        )?;
+        let rec = tx.query_row(
+            "SELECT id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                    service_names, depends_edges, confirmed, created_at, updated_at
+             FROM compose_stacks WHERE id = ?1",
+            params![id],
+            compose_stack_from_row,
+        )?;
+        tx.commit()?;
+        Ok(rec)
+    }
+
+    pub fn get_compose_stack(
+        &self,
+        id_or_name: &str,
+    ) -> Result<Option<ComposeStackRecord>, StoreError> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                        service_names, depends_edges, confirmed, created_at, updated_at
+                 FROM compose_stacks WHERE id = ?1 OR name = ?1 LIMIT 1",
+                params![id_or_name],
+                compose_stack_from_row,
+            )
+            .optional()?)
+    }
+
+    pub fn list_compose_stacks(
+        &self,
+        project_id: &str,
+        env_id: &str,
+    ) -> Result<Vec<ComposeStackRecord>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                    service_names, depends_edges, confirmed, created_at, updated_at
+             FROM compose_stacks
+             WHERE project_id = ?1 AND env_id = ?2
+             ORDER BY created_at ASC, name ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![project_id, env_id], compose_stack_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_compose_stacks_by_owner(
+        &self,
+        owner_id: &str,
+    ) -> Result<Vec<ComposeStackRecord>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                    service_names, depends_edges, confirmed, created_at, updated_at
+             FROM compose_stacks
+             WHERE owner_id = ?1
+             ORDER BY created_at ASC, name ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![owner_id], compose_stack_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_services_by_compose_stack(
+        &self,
+        stack_id: &str,
+    ) -> Result<Vec<ServiceRecord>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {SERVICE_COLS} FROM services WHERE compose_stack_id = ?1 ORDER BY created_at ASC, name ASC"
+        ))?;
+        let rows = stmt
+            .query_map(params![stack_id], service_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn delete_compose_stack(
+        &self,
+        id_or_name: &str,
+    ) -> Result<Option<ComposeStackRecord>, StoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let found = tx
+            .query_row(
+                "SELECT id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                        service_names, depends_edges, confirmed, created_at, updated_at
+                 FROM compose_stacks WHERE id = ?1 OR name = ?1 LIMIT 1",
+                params![id_or_name],
+                compose_stack_from_row,
+            )
+            .optional()?;
+        if let Some(ref stack) = found {
+            tx.execute(
+                "DELETE FROM services WHERE compose_stack_id = ?1",
+                params![stack.id],
+            )?;
+            tx.execute(
+                "DELETE FROM compose_stacks WHERE id = ?1",
+                params![stack.id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(found)
+    }
+
+    pub fn upsert_backup_job(
+        &self,
+        service_id: &str,
+        template_id: Option<&str>,
+        method: &str,
+        cron: &str,
+        enabled: bool,
+        now: i64,
+    ) -> Result<BackupJobRecord, StoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing_id: Option<String> = tx
+            .query_row(
+                "SELECT id FROM backup_jobs WHERE service_id = ?1 LIMIT 1",
+                params![service_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let id = existing_id.unwrap_or_else(|| ulid::Ulid::generate().to_string());
+        tx.execute(
+            "INSERT INTO backup_jobs (
+                id, service_id, template_id, method, cron, retain_daily, retain_weekly, enabled, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, 14, 8, ?6, ?7, ?7)
+            ON CONFLICT(service_id) DO UPDATE SET
+                template_id = excluded.template_id,
+                method = excluded.method,
+                cron = excluded.cron,
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at",
+            params![id, service_id, template_id, method, cron, i64::from(enabled), now],
+        )?;
+        let rec = tx.query_row(
+            "SELECT id, service_id, template_id, method, cron, retain_daily, retain_weekly, enabled, created_at, updated_at
+             FROM backup_jobs WHERE service_id = ?1",
+            params![service_id],
+            backup_job_from_row,
+        )?;
+        tx.commit()?;
+        Ok(rec)
+    }
+
+    pub fn get_backup_job_for_service(
+        &self,
+        service_id: &str,
+    ) -> Result<Option<BackupJobRecord>, StoreError> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id, service_id, template_id, method, cron, retain_daily, retain_weekly, enabled, created_at, updated_at
+                 FROM backup_jobs WHERE service_id = ?1 LIMIT 1",
+                params![service_id],
+                backup_job_from_row,
+            )
+            .optional()?)
     }
 }

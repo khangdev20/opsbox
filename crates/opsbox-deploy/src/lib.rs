@@ -1,5 +1,6 @@
 //! GitHub integration, build detection, deploy key generation, and webhook verification (Phase 3).
 
+pub mod compose;
 pub mod deploy_key;
 pub mod detect;
 pub mod github;
@@ -7,6 +8,7 @@ pub mod jwt;
 pub mod manifest;
 pub mod pipeline;
 pub mod public_repo;
+pub mod templates;
 pub mod webhook;
 
 pub use deploy_key::{

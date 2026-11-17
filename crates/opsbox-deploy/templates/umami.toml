@@ -1,0 +1,31 @@
+id = "umami"
+name = "Umami"
+category = "tools"
+kind = "tool"
+description = "Privacy-friendly analytics (needs PostgreSQL)"
+resources = "≈ 150 MB RAM"
+image = "ghcr.io/umami-software/umami"
+versions = ["postgresql-latest", "latest"]
+port = 3000
+internal_by_default = true
+
+[[env]]
+key = "APP_SECRET"
+value = ""
+secret = true
+generate = "hex64"
+
+[[env]]
+key = "DATABASE_TYPE"
+value = "postgresql"
+secret = false
+generate = "none"
+
+[health]
+http_path = "/api/heartbeat"
+tcp_port = 3000
+
+[backup]
+enabled_by_default = false
+cron = "0 2 * * *"
+method = "none"

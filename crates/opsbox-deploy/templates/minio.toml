@@ -1,0 +1,56 @@
+id = "minio"
+name = "MinIO"
+category = "tools"
+kind = "tool"
+description = "S3-compatible file storage"
+resources = "≈ 150 MB RAM"
+image = "minio/minio"
+versions = ["latest"]
+port = 9000
+extra_ports = [9001]
+cmd = ["server", "/data", "--console-address", ":9001"]
+internal_by_default = true
+
+[[volumes]]
+suffix = "data"
+container_path = "/data"
+
+[[env]]
+key = "MINIO_ROOT_USER"
+value = "opsbox"
+secret = false
+generate = "none"
+
+[[env]]
+key = "MINIO_ROOT_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[connection]
+primary_var = "S3_ENDPOINT"
+url_template = "http://{{service}}:9000"
+
+[[connection.vars]]
+key = "S3_ENDPOINT"
+value = "http://{{service}}:9000"
+secret = false
+
+[[connection.vars]]
+key = "S3_ACCESS_KEY"
+value = "{{MINIO_ROOT_USER}}"
+secret = false
+
+[[connection.vars]]
+key = "S3_SECRET_KEY"
+value = "{{MINIO_ROOT_PASSWORD}}"
+secret = true
+
+[health]
+http_path = "/minio/health/live"
+tcp_port = 9000
+
+[backup]
+enabled_by_default = false
+cron = "0 2 * * *"
+method = "volume"

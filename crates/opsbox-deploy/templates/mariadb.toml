@@ -1,0 +1,61 @@
+id = "mariadb"
+name = "MariaDB"
+category = "databases"
+kind = "db"
+description = "MySQL-compatible database"
+resources = "≈ 150 MB RAM · 1 GB disk"
+image = "mariadb"
+versions = ["11.4"]
+port = 3306
+internal_by_default = true
+
+[[volumes]]
+suffix = "data"
+container_path = "/var/lib/mysql"
+
+[[env]]
+key = "MARIADB_ROOT_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[[env]]
+key = "MARIADB_DATABASE"
+value = "app"
+secret = false
+generate = "none"
+
+[[env]]
+key = "MARIADB_USER"
+value = "app"
+secret = false
+generate = "none"
+
+[[env]]
+key = "MARIADB_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[connection]
+primary_var = "DATABASE_URL"
+url_template = "mysql://{{MARIADB_USER}}:{{MARIADB_PASSWORD}}@{{service}}:3306/{{MARIADB_DATABASE}}"
+
+[[connection.vars]]
+key = "DATABASE_URL"
+value = "mysql://{{MARIADB_USER}}:{{MARIADB_PASSWORD}}@{{service}}:3306/{{MARIADB_DATABASE}}"
+secret = true
+
+[[connection.vars]]
+key = "MYSQL_URL"
+value = "mysql://{{MARIADB_USER}}:{{MARIADB_PASSWORD}}@{{service}}:3306/{{MARIADB_DATABASE}}"
+secret = true
+
+[health]
+exec = ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -uroot -p\"$MARIADB_ROOT_PASSWORD\" || mysqladmin ping -h 127.0.0.1 -uroot -p\"$MARIADB_ROOT_PASSWORD\""]
+tcp_port = 3306
+
+[backup]
+enabled_by_default = true
+cron = "0 2 * * *"
+method = "mysqldump"

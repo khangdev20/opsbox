@@ -1,0 +1,55 @@
+id = "mongo"
+name = "MongoDB"
+category = "databases"
+kind = "db"
+description = "Document database"
+resources = "≈ 300 MB RAM · 1 GB disk"
+image = "mongo"
+versions = ["7.0"]
+port = 27017
+internal_by_default = true
+
+[[volumes]]
+suffix = "data"
+container_path = "/data/db"
+
+[[env]]
+key = "MONGO_INITDB_ROOT_USERNAME"
+value = "app"
+secret = false
+generate = "none"
+
+[[env]]
+key = "MONGO_INITDB_ROOT_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[[env]]
+key = "MONGO_INITDB_DATABASE"
+value = "app"
+secret = false
+generate = "none"
+
+[connection]
+primary_var = "DATABASE_URL"
+url_template = "mongodb://{{MONGO_INITDB_ROOT_USERNAME}}:{{MONGO_INITDB_ROOT_PASSWORD}}@{{service}}:27017/{{MONGO_INITDB_DATABASE}}?authSource=admin"
+
+[[connection.vars]]
+key = "DATABASE_URL"
+value = "mongodb://{{MONGO_INITDB_ROOT_USERNAME}}:{{MONGO_INITDB_ROOT_PASSWORD}}@{{service}}:27017/{{MONGO_INITDB_DATABASE}}?authSource=admin"
+secret = true
+
+[[connection.vars]]
+key = "MONGODB_URI"
+value = "mongodb://{{MONGO_INITDB_ROOT_USERNAME}}:{{MONGO_INITDB_ROOT_PASSWORD}}@{{service}}:27017/{{MONGO_INITDB_DATABASE}}?authSource=admin"
+secret = true
+
+[health]
+exec = ["sh", "-c", "mongosh --quiet -u \"$MONGO_INITDB_ROOT_USERNAME\" -p \"$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand(\"ping\").ok'"]
+tcp_port = 27017
+
+[backup]
+enabled_by_default = true
+cron = "0 2 * * *"
+method = "mongodump"

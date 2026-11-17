@@ -1,0 +1,44 @@
+id = "grafana"
+name = "Grafana"
+category = "tools"
+kind = "tool"
+description = "Dashboards for your own metrics"
+resources = "≈ 200 MB RAM"
+image = "grafana/grafana"
+versions = ["11", "latest"]
+port = 3000
+internal_by_default = true
+
+[[volumes]]
+suffix = "data"
+container_path = "/var/lib/grafana"
+
+[[env]]
+key = "GF_SECURITY_ADMIN_USER"
+value = "admin"
+secret = false
+generate = "none"
+
+[[env]]
+key = "GF_SECURITY_ADMIN_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[connection]
+primary_var = "GRAFANA_ADMIN_PASSWORD"
+url_template = "http://{{GF_SECURITY_ADMIN_USER}}:{{GF_SECURITY_ADMIN_PASSWORD}}@{{service}}:3000"
+
+[[connection.vars]]
+key = "GRAFANA_ADMIN_PASSWORD"
+value = "{{GF_SECURITY_ADMIN_PASSWORD}}"
+secret = true
+
+[health]
+http_path = "/api/health"
+tcp_port = 3000
+
+[backup]
+enabled_by_default = false
+cron = "0 2 * * *"
+method = "volume"

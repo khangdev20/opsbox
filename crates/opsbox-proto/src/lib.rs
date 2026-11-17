@@ -23,8 +23,10 @@ pub use access::{AccessState, AccessUser, AuthorizedKey, SshStatus};
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
 pub use cleanup::{CleanupFreed, CleanupItem, CleanupScan};
 pub use deploy::{
-    DeployBuildFrame, DeployBuildRequest, DeployBuildResult, DeployEnvSpec, DeployGitSource,
-    DeployPullRequest, DeployStartRequest, DeployStartResult, valid_commit_sha,
+    ComposeDeployRequest, ComposeDeployResult, ComposeDeployedService, ComposeServiceInfo,
+    ComposeValidateRequest, ComposeValidationResult, DeployBuildFrame, DeployBuildRequest,
+    DeployBuildResult, DeployEnvSpec, DeployGitSource, DeployPullRequest, DeployStartRequest,
+    DeployStartResult, TemplateStartRequest, valid_commit_sha, valid_compose_service_name,
     valid_docker_image_ref, valid_domain_name, valid_env_key, valid_git_branch, valid_health_path,
     valid_rel_repo_path, valid_service_name,
 };

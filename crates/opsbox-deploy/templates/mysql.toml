@@ -1,0 +1,61 @@
+id = "mysql"
+name = "MySQL"
+category = "databases"
+kind = "db"
+description = "Relational database"
+resources = "≈ 400 MB RAM · 1 GB disk"
+image = "mysql"
+versions = ["8.4", "8.0"]
+port = 3306
+internal_by_default = true
+
+[[volumes]]
+suffix = "data"
+container_path = "/var/lib/mysql"
+
+[[env]]
+key = "MYSQL_ROOT_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[[env]]
+key = "MYSQL_DATABASE"
+value = "app"
+secret = false
+generate = "none"
+
+[[env]]
+key = "MYSQL_USER"
+value = "app"
+secret = false
+generate = "none"
+
+[[env]]
+key = "MYSQL_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[connection]
+primary_var = "DATABASE_URL"
+url_template = "mysql://{{MYSQL_USER}}:{{MYSQL_PASSWORD}}@{{service}}:3306/{{MYSQL_DATABASE}}"
+
+[[connection.vars]]
+key = "DATABASE_URL"
+value = "mysql://{{MYSQL_USER}}:{{MYSQL_PASSWORD}}@{{service}}:3306/{{MYSQL_DATABASE}}"
+secret = true
+
+[[connection.vars]]
+key = "MYSQL_URL"
+value = "mysql://{{MYSQL_USER}}:{{MYSQL_PASSWORD}}@{{service}}:3306/{{MYSQL_DATABASE}}"
+secret = true
+
+[health]
+exec = ["sh", "-c", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$MYSQL_ROOT_PASSWORD\""]
+tcp_port = 3306
+
+[backup]
+enabled_by_default = true
+cron = "0 2 * * *"
+method = "mysqldump"

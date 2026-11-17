@@ -30,6 +30,8 @@ fn migrates_an_empty_database() {
         [
             "api_tokens",
             "audit",
+            "backup_jobs",
+            "compose_stacks",
             "deploy_keys",
             "deploy_logs",
             "deploys",
@@ -954,4 +956,125 @@ fn service_domains_crud_primary_and_routes() {
             .as_deref(),
         Some("shop.example.com")
     );
+}
+
+#[test]
+fn compose_stacks_and_backup_jobs_round_trip() {
+    use opsbox_store::{NewService, ServiceKind, SourceKind, UpsertComposeStack};
+
+    let store = Store::open_in_memory().unwrap();
+    let (proj, env) = store.ensure_default_project(10).unwrap();
+
+    let stack = store
+        .upsert_compose_stack(UpsertComposeStack {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "shop-stack",
+            owner_id: None,
+            compose_yaml: "services:\n  web:\n    image: nginx:1.27-alpine\n",
+            project_name: "opsbox-shop-stack",
+            service_names: &["web".into(), "cache".into()],
+            depends_edges: &[("web".into(), "cache".into())],
+            confirmed: false,
+            now: 20,
+        })
+        .unwrap();
+    assert_eq!(stack.project_name, "opsbox-shop-stack");
+    assert_eq!(stack.depends_edges, vec![("web".into(), "cache".into())]);
+    assert!(!stack.confirmed);
+
+    let db = store
+        .create_service_with_meta(
+            NewService {
+                project_id: &proj.id,
+                env_id: &env.id,
+                name: "postgres-main",
+                kind: ServiceKind::Db,
+                owner_id: None,
+                source_kind: SourceKind::DockerImage,
+                repo: "PostgreSQL 16.4 · volume 1 GB",
+                branch: "main",
+                build_method: "template:postgres",
+                dockerfile_path: None,
+                start_cmd: None,
+                port: 5432,
+                health_path: "tcp",
+                domain: None,
+                image_ref: Some("postgres:16.4"),
+                deploy_key_id: None,
+                auto_deploy: false,
+                memory_limit_mb: None,
+                cpu_limit_millis: None,
+                graph_x: 0,
+                graph_y: 20,
+                note: Some("backup daily 02:00"),
+                now: 30,
+            },
+            None,
+            Some("postgres"),
+            true,
+        )
+        .unwrap();
+    assert_eq!(db.template_id.as_deref(), Some("postgres"));
+    assert!(db.internal_only);
+
+    let job = store
+        .upsert_backup_job(&db.id, Some("postgres"), "pg_dump", "0 2 * * *", true, 30)
+        .unwrap();
+    assert_eq!(job.method, "pg_dump");
+    assert_eq!(job.cron, "0 2 * * *");
+    assert!(job.enabled);
+    assert_eq!(
+        store
+            .get_backup_job_for_service(&db.id)
+            .unwrap()
+            .unwrap()
+            .id,
+        job.id
+    );
+
+    let web = store
+        .create_service_with_meta(
+            NewService {
+                project_id: &proj.id,
+                env_id: &env.id,
+                name: "web",
+                kind: ServiceKind::Compose,
+                owner_id: None,
+                source_kind: SourceKind::DockerImage,
+                repo: "compose · shop-stack",
+                branch: "main",
+                build_method: "docker compose",
+                dockerfile_path: None,
+                start_cmd: None,
+                port: 80,
+                health_path: "/",
+                domain: None,
+                image_ref: Some("nginx:1.27-alpine"),
+                deploy_key_id: None,
+                auto_deploy: false,
+                memory_limit_mb: None,
+                cpu_limit_millis: None,
+                graph_x: 290,
+                graph_y: 20,
+                note: Some("stack shop-stack"),
+                now: 40,
+            },
+            Some(&stack.id),
+            None,
+            false,
+        )
+        .unwrap();
+    assert_eq!(web.compose_stack_id.as_deref(), Some(stack.id.as_str()));
+    assert_eq!(
+        store
+            .list_services_by_compose_stack(&stack.id)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    store.delete_compose_stack(&stack.id).unwrap();
+    assert!(store.get_compose_stack(&stack.id).unwrap().is_none());
+    assert!(store.get_service(&web.id).unwrap().is_none());
 }

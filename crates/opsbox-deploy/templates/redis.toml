@@ -1,0 +1,39 @@
+id = "redis"
+name = "Redis"
+category = "databases"
+kind = "db"
+description = "Cache and queues"
+resources = "≈ 20 MB RAM"
+image = "redis"
+versions = ["7.4"]
+port = 6379
+cmd = ["sh", "-c", "exec redis-server --appendonly yes --requirepass \"$REDIS_PASSWORD\""]
+internal_by_default = true
+
+[[volumes]]
+suffix = "data"
+container_path = "/data"
+
+[[env]]
+key = "REDIS_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[connection]
+primary_var = "REDIS_URL"
+url_template = "redis://:{{REDIS_PASSWORD}}@{{service}}:6379/0"
+
+[[connection.vars]]
+key = "REDIS_URL"
+value = "redis://:{{REDIS_PASSWORD}}@{{service}}:6379/0"
+secret = true
+
+[health]
+exec = ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+tcp_port = 6379
+
+[backup]
+enabled_by_default = true
+cron = "0 2 * * *"
+method = "redis-cli --rdb"

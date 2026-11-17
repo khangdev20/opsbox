@@ -92,6 +92,78 @@ pub struct DeployStartResult {
     pub host_port: u16,
 }
 
+/// Privileged template container pull, named-volume creation, startup, and health check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateStartRequest {
+    pub project: String,
+    pub service: String,
+    pub deploy_id: String,
+    pub template_id: String,
+    pub version: String,
+    pub image_ref: String,
+    pub internal_only: bool,
+    pub vars: Vec<DeployEnvSpec>,
+    pub memory_limit_mb: Option<i64>,
+    pub cpu_limit_millis: Option<i64>,
+}
+
+/// Privileged `docker compose config` validation and safety check request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposeValidateRequest {
+    pub stack: String,
+    pub yaml: String,
+    pub confirm: bool,
+}
+
+/// Parsed Compose service summary returned by [`PrivOp::ComposeValidate`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposeServiceInfo {
+    pub name: String,
+    pub image: Option<String>,
+    pub port: u16,
+    pub depends_on: Vec<String>,
+    pub host_network: bool,
+}
+
+/// Result of [`PrivOp::ComposeValidate`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposeValidationResult {
+    pub project_name: String,
+    pub service_dir: String,
+    pub services: Vec<ComposeServiceInfo>,
+    pub warnings: Vec<String>,
+}
+
+/// Privileged Compose validation + `docker compose -p opsbox-<stack> up -d` execution request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposeDeployRequest {
+    pub project: String,
+    pub stack: String,
+    pub yaml: String,
+    pub confirm: bool,
+    pub vars: Vec<DeployEnvSpec>,
+}
+
+/// Runtime state of one deployed Compose service container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposeDeployedService {
+    pub name: String,
+    pub container_id: Option<String>,
+    pub image: Option<String>,
+    pub state: String,
+    pub port: u16,
+    pub host_port: Option<u16>,
+    pub depends_on: Vec<String>,
+}
+
+/// Result of [`PrivOp::ComposeDeploy`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ComposeDeployResult {
+    pub project_name: String,
+    pub log_lines: Vec<String>,
+    pub services: Vec<ComposeDeployedService>,
+}
+
 /// Validate a service or project slug: lowercase ASCII alphanumeric + `-`, 1..=63 chars,
 /// never starting or ending with `-`.
 pub fn valid_service_name(s: &str) -> bool {
@@ -102,6 +174,18 @@ pub fn valid_service_name(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
         && b[0] != b'-'
         && b[b.len() - 1] != b'-'
+}
+
+/// Validate a Compose service name: lowercase ASCII alphanumeric + `-` or `_`, 1..=63 chars,
+/// never starting or ending with `-` or `_`.
+pub fn valid_compose_service_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 63
+        && b.iter()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
+        && !matches!(b[0], b'-' | b'_')
+        && !matches!(b[b.len() - 1], b'-' | b'_')
 }
 
 /// Validate a git branch name (strict safe ref characters only, no `..`, leading `-` or `/`).

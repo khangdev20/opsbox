@@ -47,6 +47,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "app_domains",
         sql: include_str!("../migrations/0007_app_domains.sql"),
     },
+    Migration {
+        version: 8,
+        name: "templates_compose",
+        sql: include_str!("../migrations/0008_templates_compose.sql"),
+    },
 ];
 
 /// Version of the newest migration this binary knows.

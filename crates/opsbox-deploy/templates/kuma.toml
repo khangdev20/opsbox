@@ -1,0 +1,23 @@
+id = "kuma"
+name = "Uptime Kuma"
+category = "tools"
+kind = "tool"
+description = "Watch your public URLs from outside"
+resources = "≈ 100 MB RAM"
+image = "louislam/uptime-kuma"
+versions = ["1", "2"]
+port = 3001
+internal_by_default = true
+
+[[volumes]]
+suffix = "data"
+container_path = "/app/data"
+
+[health]
+http_path = "/"
+tcp_port = 3001
+
+[backup]
+enabled_by_default = false
+cron = "0 2 * * *"
+method = "volume"

@@ -15,8 +15,8 @@ use std::time::Duration;
 use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::models::{
-    ContainerCreateBody, EndpointSettings, HostConfig, NetworkCreateRequest, NetworkingConfig,
-    PortBinding, RestartPolicy, RestartPolicyNameEnum,
+    ContainerCreateBody, EndpointSettings, HostConfig, NetworkConnectRequest, NetworkCreateRequest,
+    NetworkingConfig, PortBinding, RestartPolicy, RestartPolicyNameEnum, VolumeCreateRequest,
 };
 use bollard::query_parameters::{
     CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
@@ -1125,34 +1125,224 @@ impl DockerClient {
         }
     }
 
+    /// Ensure a managed local named Docker volume (`opsbox-vol-...`) exists.
+    pub async fn ensure_volume(
+        &self,
+        name: &str,
+        project: &str,
+        service: &str,
+    ) -> Result<(), DockerError> {
+        let docker = self.connect().await?;
+        match docker.inspect_volume(name).await {
+            Ok(_) => return Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
+            Err(e) => return Err(DockerError::from_bollard(e, "inspect volume")),
+        }
+        let mut labels = HashMap::new();
+        labels.insert("opsbox.managed".into(), "true".into());
+        labels.insert("opsbox.project".into(), project.to_owned());
+        labels.insert("opsbox.service".into(), service.to_owned());
+        let req = VolumeCreateRequest {
+            name: Some(name.to_owned()),
+            driver: Some("local".into()),
+            labels: Some(labels),
+            ..Default::default()
+        };
+        match docker.create_volume(req).await {
+            Ok(_) => Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 409, ..
+            }) => Ok(()),
+            Err(e) => Err(DockerError::from_bollard(e, "create volume")),
+        }
+    }
+
+    /// Ensure a container is connected to `network_name` with the given DNS aliases.
+    pub async fn connect_container_to_network(
+        &self,
+        container_id: &str,
+        network_name: &str,
+        project: &str,
+        aliases: &[String],
+    ) -> Result<(), DockerError> {
+        self.ensure_network(network_name, project).await?;
+        let docker = self.connect().await?;
+        if let Ok(info) = docker
+            .inspect_container(container_id, None::<InspectContainerOptions>)
+            .await
+            && info
+                .network_settings
+                .as_ref()
+                .and_then(|ns| ns.networks.as_ref())
+                .is_some_and(|nets| nets.contains_key(network_name))
+        {
+            return Ok(());
+        }
+        let req = NetworkConnectRequest {
+            container: container_id.to_owned(),
+            endpoint_config: Some(EndpointSettings {
+                aliases: (!aliases.is_empty()).then(|| aliases.to_vec()),
+                ..Default::default()
+            }),
+        };
+        match docker.connect_network(network_name, req).await {
+            Ok(()) => Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 403 | 409,
+                ..
+            }) => Ok(()),
+            Err(e) => Err(DockerError::from_bollard(e, "connect container to network")),
+        }
+    }
+
+    /// Inspect running containers started by Docker Compose under `compose_project`.
+    pub async fn find_compose_containers(
+        &self,
+        compose_project: &str,
+    ) -> Result<Vec<ComposeRuntimeContainer>, DockerError> {
+        let docker = self.connect().await?;
+        let label_filter = format!("com.docker.compose.project={compose_project}");
+        let mut filters = HashMap::new();
+        filters.insert("label", vec![label_filter.as_str()]);
+        let list = docker
+            .list_containers(Some(
+                ListContainersOptionsBuilder::default()
+                    .all(true)
+                    .filters(&filters)
+                    .build(),
+            ))
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "list compose containers"))?;
+
+        let mut out = Vec::new();
+        for summary in list {
+            let Some(id) = summary.id else {
+                continue;
+            };
+            let state = summary
+                .state
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "unknown".to_owned());
+            let labels = summary.labels.unwrap_or_default();
+            let Some(service_name) = labels.get("com.docker.compose.service").cloned() else {
+                continue;
+            };
+            let inspected = docker
+                .inspect_container(&id, None::<InspectContainerOptions>)
+                .await
+                .map_err(|e| DockerError::from_bollard(e, "inspect compose container"))?;
+            let host_ports = inspected
+                .network_settings
+                .as_ref()
+                .and_then(|ns| ns.ports.as_ref())
+                .map(extract_bound_tcp_ports)
+                .unwrap_or_default();
+            out.push(ComposeRuntimeContainer {
+                id,
+                service_name,
+                state,
+                host_ports,
+            });
+        }
+        Ok(out)
+    }
+
     /// Create and start a managed release container bound on loopback `127.0.0.1:0:<port>`
     /// (or no port binding when `port == 0` for workers). Returns `(container_id, host_port)`.
     pub async fn create_and_start_service_container(
         &self,
         spec: &ServiceContainerSpec<'_>,
     ) -> Result<(String, u16), DockerError> {
-        self.ensure_network(spec.network_name, spec.project).await?;
-        let docker = self.connect().await?;
-
         let mut labels = HashMap::new();
         labels.insert("opsbox.managed".into(), "true".into());
         labels.insert("opsbox.project".into(), spec.project.to_owned());
         labels.insert("opsbox.service".into(), spec.service.to_owned());
         labels.insert("opsbox.deploy".into(), spec.deploy_id.to_owned());
 
-        let (exposed_ports, port_bindings) = if spec.port > 0 {
+        let req = ManagedContainerCreate {
+            project: spec.project,
+            service: spec.service,
+            container_name: spec.container_name,
+            network_name: spec.network_name,
+            image_ref: spec.image_ref,
+            env: spec.env,
+            cmd: &[],
+            binds: Vec::new(),
+            labels,
+            port: spec.port,
+            expose_loopback: spec.port > 0,
+            memory_limit_mb: spec.memory_limit_mb,
+            cpu_limit_millis: spec.cpu_limit_millis,
+        };
+        let (id, host_port, _) = self.create_start_and_inspect_managed(&req).await?;
+        Ok((id, host_port))
+    }
+
+    /// Create and start a managed template container (database or tool) with optional named
+    /// volume binds and optional loopback port exposure (`expose_loopback = false` keeps it
+    /// reachable only over `opsbox-<project>`). Returns `(container_id, host_port, container_ip)`.
+    pub async fn create_and_start_template_container(
+        &self,
+        spec: &TemplateContainerSpec<'_>,
+    ) -> Result<(String, u16, Option<String>), DockerError> {
+        for (volume_name, _) in spec.volume_binds {
+            self.ensure_volume(volume_name, spec.project, spec.service)
+                .await?;
+        }
+        let mut labels = HashMap::new();
+        labels.insert("opsbox.managed".into(), "true".into());
+        labels.insert("opsbox.project".into(), spec.project.to_owned());
+        labels.insert("opsbox.service".into(), spec.service.to_owned());
+        labels.insert("opsbox.template".into(), spec.template_id.to_owned());
+        labels.insert("opsbox.deploy".into(), spec.deploy_id.to_owned());
+
+        let binds = spec
+            .volume_binds
+            .iter()
+            .map(|(vol, path)| format!("{vol}:{path}"))
+            .collect();
+        let req = ManagedContainerCreate {
+            project: spec.project,
+            service: spec.service,
+            container_name: spec.container_name,
+            network_name: spec.network_name,
+            image_ref: spec.image_ref,
+            env: spec.env,
+            cmd: spec.cmd,
+            binds,
+            labels,
+            port: spec.container_port,
+            expose_loopback: spec.expose_loopback && spec.container_port > 0,
+            memory_limit_mb: spec.memory_limit_mb,
+            cpu_limit_millis: spec.cpu_limit_millis,
+        };
+        self.create_start_and_inspect_managed(&req).await
+    }
+
+    async fn create_start_and_inspect_managed(
+        &self,
+        spec: &ManagedContainerCreate<'_>,
+    ) -> Result<(String, u16, Option<String>), DockerError> {
+        self.ensure_network(spec.network_name, spec.project).await?;
+        let docker = self.connect().await?;
+
+        let exposed_ports = (spec.port > 0).then(|| vec![format!("{}/tcp", spec.port)]);
+        let port_bindings = if spec.expose_loopback && spec.port > 0 {
             let key = format!("{}/tcp", spec.port);
             let mut pb = HashMap::new();
             pb.insert(
-                key.clone(),
+                key,
                 Some(vec![PortBinding {
                     host_ip: Some("127.0.0.1".into()),
                     host_port: Some("0".into()),
                 }]),
             );
-            (Some(vec![key]), Some(pb))
+            Some(pb)
         } else {
-            (None, None)
+            None
         };
 
         let mut endpoints = HashMap::new();
@@ -1166,10 +1356,12 @@ impl DockerClient {
 
         let body = ContainerCreateBody {
             image: Some(spec.image_ref.to_owned()),
+            cmd: (!spec.cmd.is_empty()).then(|| spec.cmd.to_vec()),
             env: (!spec.env.is_empty()).then(|| spec.env.to_vec()),
             exposed_ports,
-            labels: Some(labels),
+            labels: Some(spec.labels.clone()),
             host_config: Some(HostConfig {
+                binds: (!spec.binds.is_empty()).then(|| spec.binds.clone()),
                 memory: spec
                     .memory_limit_mb
                     .map(|mb| mb.saturating_mul(1024 * 1024)),
@@ -1203,20 +1395,38 @@ impl DockerClient {
             return Err(DockerError::from_bollard(e, "start container"));
         }
 
-        if spec.port == 0 {
-            return Ok((created.id, 0));
-        }
-
         let inspected = match docker
             .inspect_container(&created.id, None::<InspectContainerOptions>)
             .await
         {
             Ok(info) => info,
             Err(e) => {
-                let _ = self.force_stop_and_remove_container(&created.id).await;
-                return Err(DockerError::from_bollard(e, "inspect new container"));
+                if spec.expose_loopback && spec.port > 0 {
+                    let _ = self.force_stop_and_remove_container(&created.id).await;
+                    return Err(DockerError::from_bollard(e, "inspect new container"));
+                }
+                return Ok((created.id, 0, None));
             }
         };
+
+        let container_ip = inspected
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.networks.as_ref())
+            .and_then(|nets| {
+                nets.get(spec.network_name)
+                    .and_then(|ep| ep.ip_address.as_deref())
+                    .filter(|ip| !ip.is_empty())
+                    .or_else(|| {
+                        nets.values()
+                            .find_map(|ep| ep.ip_address.as_deref().filter(|ip| !ip.is_empty()))
+                    })
+            })
+            .map(ToOwned::to_owned);
+
+        if !(spec.expose_loopback && spec.port > 0) {
+            return Ok((created.id, 0, container_ip));
+        }
 
         let key = format!("{}/tcp", spec.port);
         let host_port = inspected
@@ -1231,7 +1441,7 @@ impl DockerClient {
             .filter(|p| *p > 0);
 
         match host_port {
-            Some(p) => Ok((created.id, p)),
+            Some(p) => Ok((created.id, p, container_ip)),
             None => {
                 let _ = self.force_stop_and_remove_container(&created.id).await;
                 Err(DockerError::Internal(format!(
@@ -1251,12 +1461,8 @@ impl DockerClient {
         Ok(inspected.state.and_then(|s| s.running).unwrap_or(false))
     }
 
-    /// Pull a remote Docker image and tag it as `target_tag` (`repo:tag`).
-    pub async fn pull_and_tag_image(
-        &self,
-        source_image: &str,
-        target_tag: &str,
-    ) -> Result<(), DockerError> {
+    /// Pull a remote Docker image into the local daemon cache.
+    pub async fn pull_image(&self, source_image: &str) -> Result<(), DockerError> {
         let docker = self.connect().await?;
         let mut opts_builder = CreateImageOptionsBuilder::default();
         if source_image.contains('@') {
@@ -1276,7 +1482,17 @@ impl DockerClient {
                 )));
             }
         }
+        Ok(())
+    }
 
+    /// Pull a remote Docker image and tag it as `target_tag` (`repo:tag`).
+    pub async fn pull_and_tag_image(
+        &self,
+        source_image: &str,
+        target_tag: &str,
+    ) -> Result<(), DockerError> {
+        self.pull_image(source_image).await?;
+        let docker = self.connect().await?;
         let (target_repo, target_ver) = target_tag
             .rsplit_once(':')
             .ok_or_else(|| DockerError::Invalid("Target tag must include ':tag'.".into()))?;
@@ -1370,6 +1586,76 @@ pub struct ServiceContainerSpec<'a> {
     pub port: u16,
     pub memory_limit_mb: Option<i64>,
     pub cpu_limit_millis: Option<i64>,
+}
+
+/// Parameters required to create and start a managed template container.
+#[derive(Debug, Clone)]
+pub struct TemplateContainerSpec<'a> {
+    pub project: &'a str,
+    pub service: &'a str,
+    pub template_id: &'a str,
+    pub deploy_id: &'a str,
+    pub container_name: &'a str,
+    pub network_name: &'a str,
+    pub image_ref: &'a str,
+    pub env: &'a [String],
+    pub cmd: &'a [String],
+    pub volume_binds: &'a [(String, String)],
+    pub container_port: u16,
+    pub expose_loopback: bool,
+    pub memory_limit_mb: Option<i64>,
+    pub cpu_limit_millis: Option<i64>,
+}
+
+/// Running container metadata discovered for a Docker Compose project.
+#[derive(Debug, Clone)]
+pub struct ComposeRuntimeContainer {
+    pub id: String,
+    pub service_name: String,
+    pub state: String,
+    pub host_ports: BTreeMap<u16, u16>,
+}
+
+struct ManagedContainerCreate<'a> {
+    project: &'a str,
+    service: &'a str,
+    container_name: &'a str,
+    network_name: &'a str,
+    image_ref: &'a str,
+    env: &'a [String],
+    cmd: &'a [String],
+    binds: Vec<String>,
+    labels: HashMap<String, String>,
+    port: u16,
+    expose_loopback: bool,
+    memory_limit_mb: Option<i64>,
+    cpu_limit_millis: Option<i64>,
+}
+
+fn extract_bound_tcp_ports(
+    ports: &HashMap<String, Option<Vec<PortBinding>>>,
+) -> BTreeMap<u16, u16> {
+    let mut map = BTreeMap::new();
+    for (key, bindings) in ports {
+        let Some(c_port) = key
+            .strip_suffix("/tcp")
+            .and_then(|p| p.parse::<u16>().ok())
+            .filter(|p| *p > 0)
+        else {
+            continue;
+        };
+        let Some(host_port) = bindings
+            .as_ref()
+            .and_then(|list| list.first())
+            .and_then(|b| b.host_port.as_deref())
+            .and_then(|p| p.parse::<u16>().ok())
+            .filter(|p| *p > 0)
+        else {
+            continue;
+        };
+        map.insert(c_port, host_port);
+    }
+    map
 }
 
 fn split_image_repo_tag(image: &str) -> (&str, &str) {

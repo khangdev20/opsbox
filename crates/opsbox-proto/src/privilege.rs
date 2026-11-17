@@ -337,6 +337,23 @@ pub enum PrivOp {
         container_ids: Vec<String>,
         image_refs: Vec<String>,
     },
+    /// Pull image, create named volume(s), start a template service on the project network,
+    /// and verify its health check.
+    TemplateStart(crate::deploy::TemplateStartRequest),
+    /// Validate a Compose YAML file with `docker compose config` and safety policies.
+    ComposeValidate(crate::deploy::ComposeValidateRequest),
+    /// Validate, write `compose.yml`, and run `docker compose -p opsbox-<stack> up -d`.
+    ComposeDeploy(crate::deploy::ComposeDeployRequest),
+    /// Tear down a Compose stack (`docker compose -p opsbox-<stack> down`) and optionally remove files.
+    ComposeDown {
+        stack: String,
+        remove_files: bool,
+    },
+    /// Stop and remove a single service container belonging to a Compose stack.
+    ComposeRemoveService {
+        stack: String,
+        service: String,
+    },
 }
 
 impl PrivOp {
@@ -420,6 +437,11 @@ impl PrivOp {
             Self::DeployImageExists { .. } => "deploy_image_exists",
             Self::DeployPruneImages { .. } => "deploy_prune_images",
             Self::DeployDeleteService { .. } => "deploy_delete_service",
+            Self::TemplateStart(_) => "template_start",
+            Self::ComposeValidate(_) => "compose_validate",
+            Self::ComposeDeploy(_) => "compose_deploy",
+            Self::ComposeDown { .. } => "compose_down",
+            Self::ComposeRemoveService { .. } => "compose_remove_service",
         }
     }
 }
@@ -569,6 +591,10 @@ pub enum PrivReply {
     Bool(bool),
     /// Answer to [`PrivOp::DeployPruneImages`] (image refs actually removed).
     PrunedImages(Vec<String>),
+    /// Answer to [`PrivOp::ComposeValidate`].
+    ComposeValidated(crate::deploy::ComposeValidationResult),
+    /// Answer to [`PrivOp::ComposeDeploy`].
+    ComposeDeployed(crate::deploy::ComposeDeployResult),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
