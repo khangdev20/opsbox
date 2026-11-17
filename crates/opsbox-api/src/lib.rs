@@ -42,6 +42,12 @@ pub struct AppState {
     pub version: &'static str,
 }
 
+/// Check that the embedded web UI is complete. Used by `opsbox selftest`; returns the
+/// number of embedded files.
+pub fn check_embedded_ui() -> Result<usize, String> {
+    ui::check_embedded()
+}
+
 /// Build the full application: API routes, the embedded UI as the fallback, and the
 /// middleware stack.
 pub fn router(state: AppState) -> Router {

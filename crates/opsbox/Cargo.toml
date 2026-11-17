@@ -1,0 +1,27 @@
+[package]
+name = "opsbox"
+description = "All-in-one Linux server manager: web UI, terminal, files, docker, cleanup, monitoring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+opsbox-proto.workspace = true
+opsbox-store.workspace = true
+opsbox-priv.workspace = true
+opsbox-api.workspace = true
+anyhow = "1.0"
+clap = { version = "4.6", default-features = false, features = ["std", "help", "usage", "error-context", "derive", "env"] }
+nix = { version = "0.32", default-features = false, features = ["user"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.27"
+toml = { version = "1.2", default-features = false, features = ["parse", "serde"] }
+tokio = { version = "1.54", features = ["rt", "rt-multi-thread", "net", "time", "io-util", "signal", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "json", "std"] }
+
+[lints]
+workspace = true

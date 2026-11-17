@@ -25,6 +25,17 @@ const CACHE_LONG: &str = "public, max-age=31536000, immutable";
 /// Revalidate every time (cheap: the ETag usually answers 304).
 const CACHE_REVALIDATE: &str = "no-cache";
 
+/// Sanity check for `opsbox selftest`: the entry points of the UI are present.
+/// Returns the number of embedded files.
+pub(crate) fn check_embedded() -> Result<usize, String> {
+    for required in ["index.html", "js/main.js", "js/api.js", "css/app.css"] {
+        if Assets::get(required).is_none() {
+            return Err(format!("{required} is missing from the embedded UI"));
+        }
+    }
+    Ok(Assets::iter().count())
+}
+
 /// Serves the UI for everything the API routes did not match.
 pub(crate) async fn fallback(req: Request) -> Response {
     let path = req.uri().path();

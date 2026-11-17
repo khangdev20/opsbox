@@ -88,7 +88,7 @@ async fn text(resp: Response<Body>) -> String {
     .unwrap()
 }
 
-fn header_str<'a>(resp: &'a Response<Body>, name: impl header::AsHeaderName) -> &'a str {
+fn header_str(resp: &Response<Body>, name: impl header::AsHeaderName) -> &str {
     resp.headers()
         .get(name)
         .and_then(|v| v.to_str().ok())
