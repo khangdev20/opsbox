@@ -1,0 +1,16 @@
+[package]
+name = "opsbox-proto"
+description = "Shared types: API error format, host view, privileged operation enum and the wire framing. Also meant for the desktop app."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+[lints]
+workspace = true
