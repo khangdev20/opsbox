@@ -291,6 +291,35 @@ async fn open_app_jwt(
     sign_app_jwt(app.app_id, pem.expose(), now_secs()).map_err(map_deploy_err)
 }
 
+/// Mint an installation access token for cloning a GitHub App repository during deploy.
+pub(crate) async fn mint_installation_token_for_deploy(
+    state: &AppState,
+    rid: &str,
+    actor: Option<&str>,
+) -> Result<Secret, HttpError> {
+    let store = state.store.clone();
+    let app = tokio::task::spawn_blocking(move || store.get_github_app())
+        .await
+        .map_err(|_| HttpError::internal())?
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "GitHub is not connected."))?;
+    let installation_id = app.installation_id.ok_or_else(|| {
+        HttpError::new(
+            ErrorCode::Validation,
+            "Install the GitHub App on your account before deploying from GitHub.",
+        )
+    })?;
+    let jwt = open_app_jwt(state, rid, actor, &app).await?;
+    let gh_client = state.github.client();
+    let tok = tokio::task::spawn_blocking(move || {
+        gh_client.create_installation_token(&jwt, installation_id)
+    })
+    .await
+    .map_err(|_| HttpError::internal())?
+    .map_err(map_deploy_err)?;
+    Ok(Secret::new(tok.as_str()))
+}
+
 async fn refresh_installation_from_github(
     state: &AppState,
     rid: &str,
@@ -1283,6 +1312,20 @@ pub(crate) async fn webhook(
         } => {
             state.github.clear_cache().await;
             let short_sha = after.chars().take(12).collect::<String>();
+            let (queued, triggered_deploys) = if !deleted && let Some(ref br) = branch {
+                crate::deploy::trigger_webhook_deploys(
+                    &state,
+                    &rid,
+                    &repo_full_name,
+                    br,
+                    &after,
+                    commit_message.as_deref(),
+                    pusher.as_deref(),
+                )
+                .await
+            } else {
+                (0, Vec::new())
+            };
             let resp = json!({
                 "ok": true,
                 "event": "push",
@@ -1291,7 +1334,8 @@ pub(crate) async fn webhook(
                 "branch": branch,
                 "commit": after,
                 "deleted": deleted,
-                "queued": 0,
+                "queued": queued,
+                "deploys": triggered_deploys,
             });
             let deliv = NewWebhookDelivery {
                 delivery_id: delivery_id.clone(),

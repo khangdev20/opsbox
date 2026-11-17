@@ -332,20 +332,33 @@ async fn authorize(
         );
         let allowed = match who.user.role {
             Role::Viewer => is_safe(&parts.method) && metrics,
-            // Service-scoped deployment endpoints arrive in Phase 3. Until then a
-            // deploy token can inspect metrics and logs, with no mutation capability.
             Role::Deployer => {
-                is_safe(&parts.method)
-                    && (metrics
-                        || matches!(
-                            path,
-                            "/api/v1/system/journal"
-                                | "/api/v1/stream/journal"
-                                | "/api/v1/github"
-                                | "/api/v1/github/repos"
-                        )
-                        || path.starts_with("/api/v1/docker/")
-                        || path.starts_with("/api/v1/stream/containers/"))
+                let deploy_mutation = parts.method == Method::POST
+                    && path.starts_with("/api/v1/services/")
+                    && (path.ends_with("/deploys") || path.ends_with("/rollback"));
+                let deploy_read = is_safe(&parts.method)
+                    && (path.starts_with("/api/v1/projects/")
+                        || (path.starts_with("/api/v1/services/") && !path.contains("/vars"))
+                        || path.starts_with("/api/v1/deploys/")
+                        || path.starts_with("/api/v1/stream/deploys/")
+                        || path.starts_with("/api/v1/tasks/"));
+                if who.scoped_service.is_some() {
+                    deploy_mutation || deploy_read
+                } else {
+                    deploy_mutation
+                        || deploy_read
+                        || (is_safe(&parts.method)
+                            && (metrics
+                                || matches!(
+                                    path,
+                                    "/api/v1/system/journal"
+                                        | "/api/v1/stream/journal"
+                                        | "/api/v1/github"
+                                        | "/api/v1/github/repos"
+                                )
+                                || path.starts_with("/api/v1/docker/")
+                                || path.starts_with("/api/v1/stream/containers/")))
+                }
             }
             Role::Admin => true,
         };

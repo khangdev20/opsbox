@@ -156,11 +156,13 @@ fn valid_acme_token(token: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
-/// Handle one plain HTTP (:80) request: ACME HTTP-01 challenge or HTTPS redirect.
+/// Handle one plain HTTP (:80) request: ACME HTTP-01 challenge, HTTPS redirect, or plain HTTP proxy.
 pub async fn handle_http(
     req: Request<Incoming>,
+    peer: SocketAddr,
     routes: RouteTable,
     challenges: ChallengeMap,
+    default_max_body: u64,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let path = req.uri().path();
     if let Some(token) = path.strip_prefix(CHALLENGE_PREFIX) {
@@ -185,17 +187,23 @@ pub async fn handle_http(
             "Missing Host header.",
         ));
     };
-    let Some((route, _is_www)) = routes.lookup(&host) else {
+    let Some((route, is_www)) = routes.lookup(&host) else {
         return Ok(text_response(StatusCode::NOT_FOUND, "Unknown host."));
     };
-    if !route.redirect_https {
-        return Ok(text_response(
-            StatusCode::BAD_REQUEST,
-            "HTTPS redirect is disabled for this route.",
-        ));
+    if route.redirect_https {
+        let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
+        return Ok(redirect_https_response(&route.host, pq, false));
     }
-    let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
-    Ok(redirect_https_response(&route.host, pq, false))
+    if is_www {
+        let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
+        let location = format!("http://{}{}", route.host, pq);
+        return Ok(Response::builder()
+            .status(StatusCode::MOVED_PERMANENTLY)
+            .header(LOCATION, location)
+            .body(empty_body())
+            .unwrap_or_else(|_| Response::new(empty_body())));
+    }
+    forward_request(req, peer, &route, "http", default_max_body).await
 }
 
 #[derive(Debug)]
@@ -399,7 +407,7 @@ fn connection_header_tokens(headers: &HeaderMap) -> Vec<String> {
 
 /// Handle one HTTPS (:443) request and reverse-proxy it to the matched upstream.
 pub async fn handle_https(
-    mut req: Request<Incoming>,
+    req: Request<Incoming>,
     peer: SocketAddr,
     routes: RouteTable,
     default_max_body: u64,
@@ -417,7 +425,16 @@ pub async fn handle_https(
         let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
         return Ok(redirect_https_response(&route.host, pq, route.hsts));
     }
+    forward_request(req, peer, &route, "https", default_max_body).await
+}
 
+async fn forward_request(
+    mut req: Request<Incoming>,
+    peer: SocketAddr,
+    route: &Route,
+    proto: &str,
+    default_max_body: u64,
+) -> Result<Response<ProxyBody>, Infallible> {
     let max_body = if route.max_body_bytes > 0 {
         route.max_body_bytes
     } else {
@@ -496,7 +513,12 @@ pub async fn handle_https(
     if let Ok(v) = xff_val.parse() {
         clean_headers.insert("x-forwarded-for", v);
     }
-    clean_headers.insert("x-forwarded-proto", "https".parse().expect("valid"));
+    clean_headers.insert(
+        "x-forwarded-proto",
+        proto
+            .parse()
+            .unwrap_or_else(|_| "https".parse().expect("valid")),
+    );
     if let Some(ref h) = original_host
         && let Ok(v) = h.parse()
     {
@@ -571,7 +593,10 @@ pub async fn handle_https(
             }
         });
         let (mut resp_parts, _) = upstream_resp.into_parts();
-        if route.hsts && !resp_parts.headers.contains_key("strict-transport-security") {
+        if proto == "https"
+            && route.hsts
+            && !resp_parts.headers.contains_key("strict-transport-security")
+        {
             resp_parts.headers.insert(
                 "strict-transport-security",
                 "max-age=31536000".parse().expect("valid"),
@@ -591,7 +616,10 @@ pub async fn handle_https(
     for k in keys {
         resp_parts.headers.remove(&k);
     }
-    if route.hsts && !resp_parts.headers.contains_key("strict-transport-security") {
+    if proto == "https"
+        && route.hsts
+        && !resp_parts.headers.contains_key("strict-transport-security")
+    {
         resp_parts.headers.insert(
             "strict-transport-security",
             "max-age=31536000".parse().expect("valid"),
@@ -602,14 +630,23 @@ pub async fn handle_https(
 
 pub async fn serve_http_connection(
     stream: TcpStream,
+    peer: SocketAddr,
     routes: RouteTable,
     challenges: ChallengeMap,
+    default_max_body: u64,
 ) {
     let io = TokioIo::new(stream);
-    let svc =
-        hyper::service::service_fn(move |req| handle_http(req, routes.clone(), challenges.clone()));
+    let svc = hyper::service::service_fn(move |req| {
+        handle_http(
+            req,
+            peer,
+            routes.clone(),
+            challenges.clone(),
+            default_max_body,
+        )
+    });
     let _ = ConnBuilder::new(TokioExecutor::new())
-        .serve_connection(io, svc)
+        .serve_connection_with_upgrades(io, svc)
         .await;
 }
 

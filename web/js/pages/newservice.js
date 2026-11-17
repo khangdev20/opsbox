@@ -117,11 +117,23 @@ export async function view({ query = {} } = {}) {
     </div>`)}
   </div>`;
 
+  let imgRef = '';
+
+  const renderDockerImageTab = () => html`<div class="col gap24">
+    ${section('Prebuilt Docker image', html`<div class="col gap16">
+      <p class="sm muted">Deploy any public registry image (Docker Hub, GHCR, Quay) directly without a build step.</p>
+      <div class="row">
+        <input class="input grow mono" id="img-ref" placeholder="nginx:1.27-alpine or ghcr.io/owner/app:latest" value="${imgRef}">
+        ${btn('Continue to configure →', { act: 'goImage', kind: 'primary' })}
+      </div>
+    </div>`)}
+  </div>`;
+
   const renderBody = () => {
     if (tab === 0) return renderGithubTab();
     if (tab === 1) return renderDeployKeyTab();
     if (tab === 2) return renderPublicUrlTab();
-    return section('Docker image', html`<p class="sm muted">Deploying prebuilt Docker images arrives in the deploy pipeline step (Prompt 09).</p>`);
+    return renderDockerImageTab();
   };
 
   const paint = () => {
@@ -154,9 +166,15 @@ export async function view({ query = {} } = {}) {
       root.addEventListener('input', (e) => {
         if (e.target.id === 'dk-repo') dkRepo = e.target.value;
         if (e.target.id === 'pub-url') pubUrl = e.target.value;
+        if (e.target.id === 'img-ref') imgRef = e.target.value;
       });
       bindActions(root, {
         goTab: (el) => { tab = +el.dataset.i; paint(); },
+        goImage: () => {
+          const val = (root.querySelector('#img-ref')?.value || imgRef || '').trim();
+          if (!val) { toast('Enter a Docker image reference.', 'err'); return; }
+          location.hash = `#/apps/new/configure?image=${encodeURIComponent(val)}&source=docker_image&build=${encodeURIComponent('Docker image')}`;
+        },
         refreshRepos: async () => {
           busy = true; ghErr = ''; paint();
           try {

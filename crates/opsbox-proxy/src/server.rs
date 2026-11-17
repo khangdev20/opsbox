@@ -244,10 +244,11 @@ impl ProxyServer {
                 () = &mut shutdown => break,
                 accepted = self.http_listener.accept() => {
                     match accepted {
-                        Ok((stream, _peer)) => {
+                        Ok((stream, peer)) => {
                             let routes = self.routes.clone();
                             let challenges = self.challenges.clone();
-                            tokio::spawn(serve_http_connection(stream, routes, challenges));
+                            let max_body = self.config.max_body_bytes;
+                            tokio::spawn(serve_http_connection(stream, peer, routes, challenges, max_body));
                         }
                         Err(e) => {
                             warn!(error = %e, "HTTP accept failed");

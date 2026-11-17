@@ -265,7 +265,30 @@ export async function view({ query = {} } = {}) {
           } catch (e) { panelErr = e.message; paint(); }
         },
         copyRec: async (el) => { try { await navigator.clipboard?.writeText(el.dataset.val || ''); toast('Copied.'); } catch { toast('Copy the value from the table.'); } },
-        token: async () => { const out = await askForm({ title: 'Create API token', fields: [{ name: 'n', label: 'Name', placeholder: 'ci-deploy' }, { name: 'c', label: 'Can do', options: ['deploy only', 'read-only metrics', 'full access'], value: 'deploy only' }], submit: 'Create' }, (o) => api.createToken(o.n.trim(), o.c)); if (out) { await confirmDialog({ title: 'Copy your token now', body: `${out.secret} — it is shown only once.`, confirm: 'I have copied it' }); await reload(); } },
+        token: async () => {
+          let svcScopes = [];
+          try {
+            const p = await api.getProject();
+            svcScopes = (p.services || []).map((s) => `deploy:${s.id}`);
+          } catch { /* ignore */ }
+          const out = await askForm({
+            title: 'Create API token',
+            fields: [
+              { name: 'n', label: 'Name', placeholder: 'ci-deploy' },
+              { name: 'c', label: 'Can do', options: ['deploy only', ...svcScopes, 'read-only metrics', 'full access'], value: 'deploy only' },
+              { name: 'svc', label: 'Or specific service name (overrides above)', placeholder: 'web', hint: 'Creates a token scoped strictly to deploy:<service>.' },
+            ],
+            submit: 'Create',
+          }, (o) => {
+            const custom = (o.svc || '').trim();
+            const scope = custom ? `deploy:${custom}` : o.c;
+            return api.createToken(o.n.trim(), scope);
+          });
+          if (out) {
+            await confirmDialog({ title: 'Copy your token now', body: `${out.secret} — it is shown only once.`, confirm: 'I have copied it' });
+            await reload();
+          }
+        },
         revoke: async (el) => { if (await confirmDialog({ title: 'Revoke this token?', body: 'Anything using it stops working.', confirm: 'Revoke', danger: true })) { await api.revokeToken(el.dataset.id); await reload(); } },
         grow: async () => { await api.growFs(); toast('Filesystem grown.'); await reload(); },
         ghConnect: async () => {

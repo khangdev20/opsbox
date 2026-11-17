@@ -170,7 +170,10 @@ pub(crate) async fn get_metrics(
     Ok(Json(view(&snap, &state.metrics.window(window), window)))
 }
 
-pub(crate) async fn get_attention(State(state): State<AppState>, Viewer(_): Viewer) -> Json<Value> {
+pub(crate) async fn get_attention(
+    State(state): State<AppState>,
+    Viewer(who): Viewer,
+) -> Json<Value> {
     let mut items = state.metrics.attention();
     if let Some(ver) = state.updater.latest_available() {
         items.push(opsbox_metrics::Attention {
@@ -178,6 +181,25 @@ pub(crate) async fn get_attention(State(state): State<AppState>, Viewer(_): View
             text: format!("opsbox {ver} is available"),
             link: ("Review in Settings →".to_owned(), "#/settings".to_owned()),
         });
+    }
+    if let Ok(failed) = state.store.list_failed_latest_deploys() {
+        for (svc, dep) in failed {
+            if !who.allows_service(&svc.name) {
+                continue;
+            }
+            if who.user.role == opsbox_proto::Role::Deployer
+                && !who.via_token
+                && svc.owner_id.as_deref() != Some(who.user.id.as_str())
+            {
+                continue;
+            }
+            let reason = dep.error_message.as_deref().unwrap_or("Deploy failed");
+            items.push(opsbox_metrics::Attention {
+                kind: "deploy",
+                text: format!("Deploy failed for {}: {reason}", svc.name),
+                link: ("View deploy →".to_owned(), format!("#/apps?s={}", svc.name)),
+            });
+        }
     }
     Json(json!(items))
 }

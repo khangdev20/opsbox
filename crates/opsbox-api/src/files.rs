@@ -5,7 +5,7 @@
 //! `priv` enforces after resolving symbolic links; viewers have no file access.
 
 use std::os::fd::OwnedFd;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use rustix::fs::{AtFlags, Mode, OFlags, fchmod, open, openat, unlinkat};
 
@@ -50,9 +50,90 @@ impl Default for FilesSettings {
     }
 }
 
-/// The folder a request is confined to, from the caller's role.
-pub fn jail_for(who: &Principal, files: &FilesSettings) -> Option<String> {
-    (who.user.role != Role::Admin).then(|| files.apps_dir.to_string_lossy().into_owned())
+fn outside_jail() -> HttpError {
+    HttpError::new(
+        ErrorCode::Forbidden,
+        "That path is outside the folders you are allowed to work in.",
+    )
+}
+
+fn normalize_lexical(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            Component::RootDir => out.push("/"),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(s) => out.push(s),
+            Component::Prefix(_) => return None,
+        }
+    }
+    Some(out)
+}
+
+fn owned_service_names(state: &AppState, who: &Principal) -> Result<Vec<String>, HttpError> {
+    let svcs = state
+        .store
+        .list_services_by_owner(&who.user.id)
+        .map_err(|_| HttpError::internal())?;
+    Ok(svcs.into_iter().map(|s| s.name).collect())
+}
+
+fn apps_roots(apps_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(norm) = normalize_lexical(apps_dir) {
+        roots.push(norm);
+    }
+    if let Ok(canon) = std::fs::canonicalize(apps_dir)
+        && !roots.contains(&canon)
+    {
+        roots.push(canon);
+    }
+    roots
+}
+
+fn is_apps_root_path(apps_dir: &Path, target: &str) -> bool {
+    let Some(norm_target) = normalize_lexical(Path::new(target)) else {
+        return false;
+    };
+    apps_roots(apps_dir).contains(&norm_target)
+}
+
+/// Resolve the service jail path (`/var/lib/opsbox/apps/<owned_svc>`) for a deployer target path.
+/// Returns `Ok(None)` for admins, `Err(403)` for any path outside an owned service directory.
+fn jail_for_target(
+    state: &AppState,
+    who: &Principal,
+    target: &str,
+) -> Result<Option<String>, HttpError> {
+    if who.user.role == Role::Admin {
+        return Ok(None);
+    }
+    let norm_target = normalize_lexical(Path::new(target)).ok_or_else(outside_jail)?;
+    let owned = owned_service_names(state, who)?;
+    if owned.is_empty() {
+        return Err(outside_jail());
+    }
+    for root in apps_roots(&state.files.apps_dir) {
+        if let Ok(rel) = norm_target.strip_prefix(&root) {
+            let Some(Component::Normal(first)) = rel.components().next() else {
+                return Err(outside_jail());
+            };
+            let first_str = first.to_string_lossy();
+            if owned.iter().any(|svc| svc == first_str.as_ref()) {
+                return Ok(Some(root.join(first).to_string_lossy().into_owned()));
+            }
+            return Err(outside_jail());
+        }
+    }
+    Err(outside_jail())
 }
 
 fn invalid(field: &'static str, msg: &str) -> HttpError {
@@ -106,20 +187,40 @@ pub(crate) async fn list(
     Extension(RequestId(rid)): Extension<RequestId>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<Value>, HttpError> {
+    let target = need_path(&q)?;
+    let listing_apps_root =
+        who.user.role != Role::Admin && is_apps_root_path(&state.files.apps_dir, target);
+    let jail = if listing_apps_root {
+        Some(state.files.apps_dir.to_string_lossy().into_owned())
+    } else {
+        jail_for_target(&state, &who, target)?
+    };
     let l = state
         .priv_client
-        .file_list(
-            &rid,
-            need_path(&q)?,
-            jail_for(&who, &state.files).as_deref(),
-        )
+        .file_list(&rid, target, jail.as_deref())
         .await?;
+    let owned: Vec<String> = if listing_apps_root {
+        owned_service_names(&state, &who)?
+    } else {
+        Vec::new()
+    };
+    let entries: Vec<Value> = l
+        .entries
+        .iter()
+        .filter(|e| {
+            !listing_apps_root
+                || (e.kind == FileKind::Dir && !e.is_link && owned.iter().any(|svc| svc == &e.name))
+        })
+        .map(|e| {
+            json!({
+                "name": e.name, "path": e.path, "type": type_char(e.kind), "mode": e.mode,
+                "mtime": e.mtime, "size": e.size, "link": e.is_link, "brokenLink": e.kind == FileKind::BrokenLink, "warn": e.warn,
+            })
+        })
+        .collect();
     Ok(Json(json!({
         "path": l.path,
-        "entries": l.entries.iter().map(|e| json!({
-            "name": e.name, "path": e.path, "type": type_char(e.kind), "mode": e.mode,
-            "mtime": e.mtime, "size": e.size, "link": e.is_link, "brokenLink": e.kind == FileKind::BrokenLink, "warn": e.warn,
-        })).collect::<Vec<_>>(),
+        "entries": entries,
     })))
 }
 
@@ -129,13 +230,11 @@ pub(crate) async fn read(
     Extension(RequestId(rid)): Extension<RequestId>,
     Query(q): Query<PathQuery>,
 ) -> Result<Json<Value>, HttpError> {
+    let target = need_path(&q)?;
+    let jail = jail_for_target(&state, &who, target)?;
     let c = state
         .priv_client
-        .file_read(
-            &rid,
-            need_path(&q)?,
-            jail_for(&who, &state.files).as_deref(),
-        )
+        .file_read(&rid, target, jail.as_deref())
         .await?;
     Ok(Json(
         json!({ "path": c.path, "content": c.content, "mode": c.mode, "size": c.size, "mtime": c.mtime }),
@@ -157,6 +256,7 @@ pub(crate) async fn write(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<WriteBody>,
 ) -> Result<Json<Value>, HttpError> {
+    let jail = jail_for_target(&state, &who, &b.path)?;
     let mtime = state
         .priv_client
         .file_write(
@@ -165,7 +265,7 @@ pub(crate) async fn write(
             &b.path,
             &b.content,
             b.mtime,
-            jail_for(&who, &state.files).as_deref(),
+            jail.as_deref(),
         )
         .await?;
     audit(
@@ -192,6 +292,7 @@ pub(crate) async fn chmod(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<ChmodBody>,
 ) -> Result<Json<Value>, HttpError> {
+    let jail = jail_for_target(&state, &who, &b.path)?;
     state
         .priv_client
         .file_chmod(
@@ -199,7 +300,7 @@ pub(crate) async fn chmod(
             &who.user.name,
             &b.path,
             b.mode.trim(),
-            jail_for(&who, &state.files).as_deref(),
+            jail.as_deref(),
         )
         .await?;
     audit(
@@ -225,14 +326,10 @@ pub(crate) async fn mkdir(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<PathBody>,
 ) -> Result<Json<Value>, HttpError> {
+    let jail = jail_for_target(&state, &who, &b.path)?;
     state
         .priv_client
-        .file_mkdir(
-            &rid,
-            &who.user.name,
-            &b.path,
-            jail_for(&who, &state.files).as_deref(),
-        )
+        .file_mkdir(&rid, &who.user.name, &b.path, jail.as_deref())
         .await?;
     audit(
         &state,
@@ -259,6 +356,21 @@ pub(crate) async fn delete(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<DeleteBody>,
 ) -> Result<Json<Value>, HttpError> {
+    let jail = if who.user.role == Role::Admin {
+        None
+    } else {
+        let mut chosen: Option<String> = None;
+        for p in &b.paths {
+            let j = jail_for_target(&state, &who, p)?.ok_or_else(outside_jail)?;
+            if let Some(ref prev) = chosen
+                && *prev != j
+            {
+                return Err(outside_jail());
+            }
+            chosen = Some(j);
+        }
+        Some(chosen.ok_or_else(outside_jail)?)
+    };
     let n = state
         .priv_client
         .file_remove(
@@ -266,7 +378,7 @@ pub(crate) async fn delete(
             &who.user.name,
             b.paths.clone(),
             b.permanent,
-            jail_for(&who, &state.files).as_deref(),
+            jail.as_deref(),
         )
         .await?;
     audit(
@@ -324,6 +436,7 @@ pub(crate) async fn upload(
     headers: axum::http::HeaderMap,
     body: Body,
 ) -> Result<Json<Value>, HttpError> {
+    let upload_jail = jail_for_target(&state, &who, &q.dir)?;
     let max = state.files.max_upload;
     let too_big = || {
         HttpError::new(
@@ -394,7 +507,7 @@ pub(crate) async fn upload(
                 name: &q.name,
                 overwrite: q.overwrite,
             },
-            jail_for(&who, &state.files).as_deref(),
+            upload_jail.as_deref(),
         )
         .await;
     // Whether or not it was installed, the staged copy is no longer needed (a refused one is
@@ -445,17 +558,13 @@ pub(crate) async fn download(
     Query(q): Query<PathQuery>,
 ) -> Result<Response, HttpError> {
     let path = need_path(&q)?.to_owned();
+    let jail = jail_for_target(&state, &who, &path)?;
     let xfer_fd = ensure_xfer(&state.files.xfer_dir).await?;
     let staged = state
         .priv_client
         .clone()
         .with_timeout(std::time::Duration::from_secs(30 * 60))
-        .file_stage_download(
-            &rid,
-            &who.user.name,
-            &path,
-            jail_for(&who, &state.files).as_deref(),
-        )
+        .file_stage_download(&rid, &who.user.name, &path, jail.as_deref())
         .await?;
     let staged_name = Path::new(&staged.staging)
         .file_name()

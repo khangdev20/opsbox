@@ -51,6 +51,7 @@ const REAL = new Set([
   'getRecovery',
   'getGithubStatus', 'startGithubManifest', 'completeGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook',
   'disconnectGithub', 'getRepos', 'inspectPublicRepo', 'listDeployKeys', 'createDeployKey', 'deleteDeployKey',
+  'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'buildLog', 'addVar', 'removeVar', 'removeService',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -67,7 +68,7 @@ export const PAGE_USES = {
   // (Keys opsbox uses to reach other servers arrive with the desktop app; the section is hidden until then.)
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
   alerts: ['connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
-  apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'getDomains', 'getProject', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback'],
+  apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'getDomains', 'getProject', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'updateService'],
   backupdest: ['PROVIDERS', 'saveDestination', 'testDestination'],
   backups: ['getBackups', 'restoreBackup', 'runBackup'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
@@ -559,7 +560,12 @@ export function streamContainerLogs(id, { tail = 200 } = {}, onEntries, onEnd, o
 }
 
 // ---------------------------------------------------------------- apps & github
-export async function getProject() { sample('getProject'); await lag(); return clone(S.project); }
+export async function getProject(id = 'default') {
+  sample('getProject');
+  if (real('getProject')) return http(`/projects/${encodeURIComponent(id)}`);
+  await lag();
+  return clone(S.project);
+}
 export async function getGithubStatus(refresh = false) {
   sample('getGithubStatus');
   if (real('getGithubStatus')) return http('/github' + (refresh ? '?refresh=1' : ''));
@@ -640,19 +646,33 @@ export async function deleteDeployKey(id) {
   ST.deployKeys = ST.deployKeys.filter((k) => k.id !== id);
   return { ok: true };
 }
-export async function createService(cfg) { sample('createService');
+export async function createService(cfg) {
+  sample('createService');
+  if (real('createService')) return http('/services', { method: 'POST', body: cfg });
   await lag(500);
   const name = (cfg.name || '').trim();
   if (!/^[a-z][a-z0-9-]{1,30}$/.test(name)) throw new Error('Service name: lowercase letters, numbers and dashes, starting with a letter.');
   if (S.project.services.some((s) => s.id === name)) throw new Error(`A service named "${name}" already exists.`);
   const id = Math.random().toString(16).slice(2, 9);
   const idx = S.project.services.length;
-  S.project.services.push({ id: name, kind: 'app', state: 'building', repo: cfg.repo, branch: cfg.branch, build: cfg.build, domain: cfg.domain ? `${cfg.domain}.example.com` : '', port: +cfg.port || 3000,
+  const dom = (cfg.domain || '').trim();
+  const domain = dom ? (dom.includes('.') ? dom : `${dom}.example.com`) : '';
+  S.project.services.push({ id: name, kind: 'app', state: 'building', sourceKind: cfg.sourceKind || 'github', repo: cfg.repo || cfg.image || '', branch: cfg.branch || 'main', build: cfg.build || 'Dockerfile', domain, port: +cfg.port || 0,
     x: 370 * (idx % 3), y: 10 + 176 * Math.floor(idx / 3), vars: cfg.vars || [], deploys: [{ id, msg: 'Initial deploy', status: 'building', at: now(), secs: 0 }] });
   setTimeout(() => { const s = S.project.services.find((x) => x.id === name); if (s) { s.state = 'active'; s.deploys[0].status = 'live'; s.deploys[0].secs = 52; } }, 6000);
-  audit(`deploy ${name} ${id}`); return { id };
+  audit(`deploy ${name} ${id}`); return { id: name, deployId: id };
 }
-export async function redeploy(svc) { sample('redeploy');
+export async function updateService(svc, patch) {
+  sample('updateService');
+  if (real('updateService')) return http(`/services/${encodeURIComponent(svc)}`, { method: 'PATCH', body: patch });
+  await lag(200);
+  const s = S.project.services.find((x) => x.id === svc); if (!s) throw new Error('No such service');
+  Object.assign(s, patch);
+  return clone(s);
+}
+export async function redeploy(svc) {
+  sample('redeploy');
+  if (real('redeploy')) return http(`/services/${encodeURIComponent(svc)}/deploys`, { method: 'POST' });
   await lag(300);
   const s = S.project.services.find((x) => x.id === svc); if (!s) throw new Error('No such service');
   const id = Math.random().toString(16).slice(2, 9);
@@ -661,7 +681,9 @@ export async function redeploy(svc) { sample('redeploy');
   setTimeout(() => { s.state = 'active'; s.deploys[0].status = 'live'; s.deploys[0].secs = 44; }, 4000);
   audit(`redeploy ${svc} ${id}`); return { id };
 }
-export async function rollback(svc, deployId) { sample('rollback');
+export async function rollback(svc, deployId) {
+  sample('rollback');
+  if (real('rollback')) return http(`/services/${encodeURIComponent(svc)}/deploys/${encodeURIComponent(deployId)}/rollback`, { method: 'POST' });
   await lag(400);
   const s = S.project.services.find((x) => x.id === svc); if (!s) throw new Error('No such service');
   s.deploys.forEach((d) => { if (d.status === 'live') d.status = 'replaced'; if (d.id === deployId) d.status = 'live'; });
@@ -674,6 +696,24 @@ export function buildLog(svc, deploy) { sample('buildLog');
   if (deploy.status === 'failed') return [...lines.slice(0, 4), L(30, 'ERROR    npm ci exited with code 1'), L(30, 'ERROR    peer dependency conflict: react@19 vs react-dom@18'), L(31, 'abort    build failed, previous version kept running')];
   if (deploy.status === 'building') return lines.slice(0, 4);
   return lines;
+}
+export async function fetchBuildLog(svc, deploy) {
+  sample('buildLog');
+  if (real('buildLog')) return http(`/deploys/${encodeURIComponent(deploy.id)}/log`);
+  return { id: deploy.id, status: deploy.status, error: deploy.error || null, lines: buildLog(svc, deploy).map((line) => ({ line })) };
+}
+export function streamDeployLog(deployId, onLine, onDone, onError) {
+  if (MODE !== 'http' || !REAL.has('buildLog')) return () => {};
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/stream/deploys/${encodeURIComponent(deployId)}`);
+  ws.onmessage = (e) => {
+    try {
+      const m = JSON.parse(e.data);
+      if (m.type === 'log') onLine?.(m);
+      else if (m.type === 'done') onDone?.(m);
+    } catch { /* ignore */ }
+  };
+  ws.onerror = () => onError?.('Build log stream connection failed.');
+  return () => { try { ws.close(); } catch { /* closed */ } };
 }
 
 // ---------------------------------------------------------------- system
@@ -926,13 +966,24 @@ export async function termExec(host, cwd, line) { sample('termExec');
 // ---------------------------------------------------------------- small extras
 export async function getReclaimable() { sample('getReclaimable'); return { gb: S.cleanup.reduce((a, c) => a + c.gb, 0), parts: S.cleanup.map((c) => [c.id, c.gb, c.color]) }; }
 export async function getAudit(n = 5) { sample('getAudit'); return clone(S.audit).slice(0, n); }
-export async function addVar(svc, k, v) { sample('addVar');
+export async function addVar(svc, k, v, isSecret) {
+  sample('addVar');
+  if (real('addVar')) return http(`/services/${encodeURIComponent(svc)}/vars/${encodeURIComponent(k)}`, { method: 'PUT', body: { value: v, isSecret } });
   await lag(150); const s = S.project.services.find((x) => x.id === svc); if (!s) throw new Error('No such service');
   if (!/^[A-Z_][A-Z0-9_]*$/.test(k)) throw new Error('Variable names use UPPER_CASE letters, numbers and underscores.');
-  if (s.vars.some((x) => x[0] === k)) throw new Error(`${k} already exists.`); s.vars.push([k, v]); audit(`set variable ${k} on ${svc}`);
+  s.vars = s.vars.filter((x) => x[0] !== k);
+  s.vars.push([k, v, !!isSecret]); audit(`set variable ${k} on ${svc}`);
 }
-export async function removeVar(svc, k) { sample('removeVar'); await lag(150); const s = S.project.services.find((x) => x.id === svc); s.vars = s.vars.filter((x) => x[0] !== k); audit(`remove variable ${k} on ${svc}`); }
-export async function removeService(svc) { sample('removeService'); await lag(300); S.project.services = S.project.services.filter((x) => x.id !== svc); audit(`delete service ${svc}`); }
+export async function removeVar(svc, k) {
+  sample('removeVar');
+  if (real('removeVar')) return http(`/services/${encodeURIComponent(svc)}/vars/${encodeURIComponent(k)}`, { method: 'DELETE' });
+  await lag(150); const s = S.project.services.find((x) => x.id === svc); s.vars = s.vars.filter((x) => x[0] !== k); audit(`remove variable ${k} on ${svc}`);
+}
+export async function removeService(svc) {
+  sample('removeService');
+  if (real('removeService')) return http(`/services/${encodeURIComponent(svc)}`, { method: 'DELETE' });
+  await lag(300); S.project.services = S.project.services.filter((x) => x.id !== svc); audit(`delete service ${svc}`);
+}
 
 // ---------------------------------------------------------------- backups
 const BK = {

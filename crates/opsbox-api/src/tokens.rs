@@ -18,17 +18,18 @@ use crate::system::patient;
 use crate::{AppState, HttpError, RequestId};
 
 /// How the Settings page words a scope.
-fn can_text(scope: TokenScope) -> &'static str {
+fn can_text(scope: &TokenScope) -> String {
     match scope {
-        TokenScope::Read => "read-only metrics",
-        TokenScope::Deploy => "metrics and logs (deploy in Phase 3)",
-        TokenScope::Full => "full access (not people, terminals or keys)",
+        TokenScope::Read => "read-only metrics".to_owned(),
+        TokenScope::Deploy => "deploy services, metrics and logs".to_owned(),
+        TokenScope::DeployService(svc) => format!("deploy {svc} and view its build logs"),
+        TokenScope::Full => "full access (not people, terminals or keys)".to_owned(),
     }
 }
 
 fn token_json(t: &ApiToken, now: i64) -> Value {
     json!({
-        "id": t.id, "name": t.name, "scope": t.scope.as_str(), "can": can_text(t.scope),
+        "id": t.id, "name": t.name, "scope": t.scope.as_str(), "can": can_text(&t.scope),
         "last": t.last_used_at.map_or_else(|| "never".to_owned(), |l| ago(now - l)),
     })
 }
@@ -94,8 +95,12 @@ pub(crate) async fn create(
     ApiJson(body): ApiJson<CreateBody>,
 ) -> Result<Json<Value>, HttpError> {
     deny_token(&who)?;
-    let scope = TokenScope::parse(&body.scope)
-        .ok_or_else(|| HttpError::new(ErrorCode::Validation, "Choose read, deploy or full."))?;
+    let scope = TokenScope::parse(&body.scope).ok_or_else(|| {
+        HttpError::new(
+            ErrorCode::Validation,
+            "Choose read, deploy or full (or deploy:<service>).",
+        )
+    })?;
     let (token, secret) =
         state
             .auth

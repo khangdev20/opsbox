@@ -104,6 +104,25 @@ pub fn domain(config: &Config, name: &str, skip_dns_check: bool) -> Result<()> {
         is_panel: true,
     };
 
+    let mut routes = vec![route];
+    if let Ok(svc_domains) = store.list_active_service_domains() {
+        for (svc_dom, host_port) in svc_domains {
+            if svc_dom.eq_ignore_ascii_case(&domain) {
+                continue;
+            }
+            routes.push(Route {
+                host: svc_dom,
+                upstream: format!("127.0.0.1:{host_port}"),
+                upstream_tls: UpstreamTls::Plain,
+                redirect_www: false,
+                redirect_https: false,
+                hsts: false,
+                max_body_bytes: 0,
+                is_panel: false,
+            });
+        }
+    }
+
     let proxy = ProxyClient::new(&config.proxy_socket);
     rt.block_on(async {
         proxy
@@ -116,7 +135,7 @@ pub fn domain(config: &Config, name: &str, skip_dns_check: bool) -> Result<()> {
         proxy
             .clone()
             .with_timeout(Duration::from_secs(5))
-            .set_routes("cli-web-domain", vec![route])
+            .set_routes("cli-web-domain", routes)
             .await
             .context("could not update proxy routing table")?;
 

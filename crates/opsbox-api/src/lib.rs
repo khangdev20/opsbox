@@ -8,6 +8,7 @@ mod access;
 mod allowlist;
 mod auth;
 mod cleanup;
+pub mod deploy;
 mod docker;
 mod error;
 mod files;
@@ -51,6 +52,7 @@ use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Pr
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 
+pub use deploy::{DeployHub, DeploySettings};
 pub use error::HttpError;
 pub use files::FilesSettings;
 pub use panel::sync_proxy_routes;
@@ -89,6 +91,8 @@ pub struct AppState {
     pub version: &'static str,
     pub updater: update::Updater,
     pub github: github::GithubService,
+    pub deploy: DeploySettings,
+    pub deploy_hub: DeployHub,
 }
 
 impl AppState {
@@ -130,6 +134,8 @@ impl AppState {
             version,
             updater,
             github: github::GithubService::default(),
+            deploy: DeploySettings::default(),
+            deploy_hub: DeployHub::default(),
         }
     }
 }
@@ -141,6 +147,11 @@ pub fn check_embedded_ui() -> Result<usize, String> {
 }
 
 impl AppState {
+    #[must_use]
+    pub fn with_deploy(mut self, deploy: DeploySettings) -> Self {
+        self.deploy = deploy;
+        self
+    }
     /// Mark whether `serve` is terminating native TLS (forces `Secure` cookies in Auto mode).
     #[must_use]
     pub fn with_tls(mut self, tls: bool) -> Self {
@@ -317,6 +328,28 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/github/deploy-keys/{id}",
             delete(github::delete_deploy_key),
+        )
+        .route("/api/v1/projects/{id}", get(deploy::get_project))
+        .route("/api/v1/services", post(deploy::create_service))
+        .route(
+            "/api/v1/services/{id}",
+            get(deploy::get_service)
+                .patch(deploy::update_service)
+                .delete(deploy::delete_service),
+        )
+        .route("/api/v1/services/{id}/deploys", post(deploy::redeploy))
+        .route(
+            "/api/v1/services/{id}/deploys/{deploy_id}/rollback",
+            post(deploy::rollback),
+        )
+        .route(
+            "/api/v1/services/{id}/vars/{key}",
+            put(deploy::put_var).delete(deploy::delete_var),
+        )
+        .route("/api/v1/deploys/{id}/log", get(deploy::deploy_log))
+        .route(
+            "/api/v1/stream/deploys/{id}",
+            get(deploy::stream_deploy_log),
         )
         .route("/api/v1/terminal/users", get(terminal::users))
         .route("/api/v1/stream/terminal", get(terminal::stream))

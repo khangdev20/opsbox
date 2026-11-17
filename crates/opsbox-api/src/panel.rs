@@ -99,16 +99,42 @@ fn draft_panel_domain(state: &AppState) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Push the current routing table (currently the panel domain route if configured) to
-/// `opsbox-proxy`.
+/// Build the complete proxy route table (panel domain plus active service domains).
+pub(crate) fn build_proxy_routes(state: &AppState) -> Vec<Route> {
+    let mut routes = Vec::new();
+    let panel_dom = active_panel_domain(state);
+    if let Some(ref domain) = panel_dom {
+        routes.push(panel_route(state, domain));
+    }
+    if let Ok(svc_domains) = state.store.list_active_service_domains() {
+        for (domain, host_port) in svc_domains {
+            if panel_dom
+                .as_deref()
+                .is_some_and(|p| p.eq_ignore_ascii_case(&domain))
+            {
+                continue;
+            }
+            routes.push(Route {
+                host: domain,
+                upstream: format!("127.0.0.1:{host_port}"),
+                upstream_tls: UpstreamTls::Plain,
+                redirect_www: false,
+                redirect_https: false,
+                hsts: false,
+                max_body_bytes: 0,
+                is_panel: false,
+            });
+        }
+    }
+    routes
+}
+
+/// Push the current routing table (panel domain + active service routes) to `opsbox-proxy`.
 pub async fn sync_proxy_routes(state: &AppState) -> Result<(), ProxyClientError> {
     let Some(ref client) = state.proxy else {
         return Ok(());
     };
-    let routes = match active_panel_domain(state) {
-        Some(domain) => vec![panel_route(state, &domain)],
-        None => Vec::new(),
-    };
+    let routes = build_proxy_routes(state);
     client
         .clone()
         .with_timeout(Duration::from_secs(5))
@@ -244,13 +270,10 @@ pub(crate) async fn issue_cert(
     };
     let ip = client.ip.clone();
     let task = state.tasks.start("panel_cert", async move {
-        let mut routes = Vec::new();
-        if let Some(prev) = active_panel_domain(&state_clone)
-            && prev != domain
-        {
-            routes.push(panel_route(&state_clone, &prev));
+        let mut routes = build_proxy_routes(&state_clone);
+        if !routes.iter().any(|r| r.host.eq_ignore_ascii_case(&domain)) {
+            routes.push(panel_route(&state_clone, &domain));
         }
-        routes.push(panel_route(&state_clone, &domain));
 
         if let Err(e) = proxy
             .clone()

@@ -89,14 +89,85 @@ async fn who_may_use_files() {
 
 #[tokio::test]
 async fn deployers_see_only_the_apps_directory_even_through_links() {
+    use opsbox_store::{NewService, ServiceKind, SourceKind};
+
     let h = Harness::new(true);
     fs::create_dir_all(h.root.join("apps/web")).unwrap();
+    fs::create_dir_all(h.root.join("apps/other")).unwrap();
     fs::write(h.root.join("apps/web/.env"), "A=1").unwrap();
+    fs::write(h.root.join("apps/other/.env"), "OTHER=1").unwrap();
     fs::write(h.root.join("secret.txt"), "top secret").unwrap();
     symlink(&h.root, h.root.join("apps/escape")).unwrap();
     symlink(h.root.join("apps/web"), h.root.join("apps/shortcut")).unwrap();
-    let mut d = h.signed_in("deployer1", Role::Deployer);
+    symlink(
+        h.root.join("apps/other"),
+        h.root.join("apps/web/peek-other"),
+    )
+    .unwrap();
 
+    let mut d = h.signed_in("deployer1", Role::Deployer);
+    let _d2 = h.signed_in("deployer2", Role::Deployer);
+    let mut d3 = h.signed_in("deployer3", Role::Deployer);
+    let d1_user = h.store.user_by_name("deployer1").unwrap().unwrap();
+    let d2_user = h.store.user_by_name("deployer2").unwrap().unwrap();
+    let (proj, env) = h.store.ensure_default_project(10).unwrap();
+
+    h.store
+        .create_service(NewService {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "web",
+            kind: ServiceKind::App,
+            owner_id: Some(&d1_user.id),
+            source_kind: SourceKind::GitUrl,
+            repo: "https://github.com/acme/web.git",
+            branch: "main",
+            build_method: "auto",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 3000,
+            health_path: "/",
+            domain: None,
+            image_ref: None,
+            deploy_key_id: None,
+            auto_deploy: true,
+            memory_limit_mb: None,
+            cpu_limit_millis: None,
+            graph_x: 0,
+            graph_y: 0,
+            note: None,
+            now: 10,
+        })
+        .unwrap();
+    h.store
+        .create_service(NewService {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "other",
+            kind: ServiceKind::App,
+            owner_id: Some(&d2_user.id),
+            source_kind: SourceKind::GitUrl,
+            repo: "https://github.com/acme/other.git",
+            branch: "main",
+            build_method: "auto",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 3001,
+            health_path: "/",
+            domain: None,
+            image_ref: None,
+            deploy_key_id: None,
+            auto_deploy: true,
+            memory_limit_mb: None,
+            cpu_limit_millis: None,
+            graph_x: 0,
+            graph_y: 0,
+            note: None,
+            now: 10,
+        })
+        .unwrap();
+
+    // deployer1 sees ONLY their own service directory ("web"), never sibling services or links.
     let r = d
         .get(&format!("/api/v1/files?path={}", q(&h.root.join("apps"))))
         .await;
@@ -107,23 +178,45 @@ async fn deployers_see_only_the_apps_directory_even_through_links() {
         .iter()
         .map(|e| e["name"].as_str().unwrap().to_owned())
         .collect();
-    assert!(names.contains(&"web".to_owned()));
+    assert_eq!(names, vec!["web".to_owned()]);
+
+    // deployer1 CAN browse inside apps/web.
     assert_eq!(
         d.get(&format!(
             "/api/v1/files?path={}",
-            q(&h.root.join("apps/shortcut"))
+            q(&h.root.join("apps/web"))
         ))
         .await
         .status,
-        StatusCode::OK,
-        "a link that stays inside"
+        StatusCode::OK
+    );
+
+    // deployer3 owns zero services -> sees empty apps dir and cannot open apps/web.
+    let r3 = d3
+        .get(&format!("/api/v1/files?path={}", q(&h.root.join("apps"))))
+        .await;
+    assert_eq!(r3.status, StatusCode::OK);
+    assert_eq!(r3.json()["entries"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        d3.get(&format!(
+            "/api/v1/files?path={}",
+            q(&h.root.join("apps/web"))
+        ))
+        .await
+        .status,
+        StatusCode::FORBIDDEN
     );
 
     for outside in [
         h.root.clone(),
         h.root.join("secret.txt"),
+        h.root.join("apps/other"),
+        h.root.join("apps/other/.env"),
+        h.root.join("apps/shortcut"),
         h.root.join("apps/escape"),
         h.root.join("apps/escape/secret.txt"),
+        h.root.join("apps/web/peek-other"),
+        h.root.join("apps/web/peek-other/.env"),
         h.root.join("apps/web/../../secret.txt"),
         "/etc".into(),
     ] {
@@ -148,12 +241,17 @@ async fn deployers_see_only_the_apps_directory_even_through_links() {
             );
         }
     }
-    // Writing, creating, deleting and uploading outside are refused too, and nothing changes.
+    // Writing, creating, deleting and uploading outside (including another service's dir) are refused too.
     for (m, path, body) in [
         (
             Method::PUT,
             "/api/v1/files/content",
             json!({"path": s(&h.root.join("planted")), "content": "x"}),
+        ),
+        (
+            Method::PUT,
+            "/api/v1/files/content",
+            json!({"path": s(&h.root.join("apps/other/planted")), "content": "x"}),
         ),
         (
             Method::PUT,
@@ -167,8 +265,18 @@ async fn deployers_see_only_the_apps_directory_even_through_links() {
         ),
         (
             Method::POST,
+            "/api/v1/files/mkdir",
+            json!({"path": s(&h.root.join("apps/sibling-dir"))}),
+        ),
+        (
+            Method::POST,
             "/api/v1/files/delete",
             json!({"paths": [s(&h.root.join("secret.txt"))], "permanent": true}),
+        ),
+        (
+            Method::POST,
+            "/api/v1/files/delete",
+            json!({"paths": [s(&h.root.join("apps/other/.env"))], "permanent": true}),
         ),
         (
             Method::POST,
@@ -625,9 +733,41 @@ async fn uploads_are_streamed_installed_and_leave_nothing_behind() {
 
 #[tokio::test]
 async fn a_deployer_uploads_only_into_their_apps() {
+    use opsbox_store::{NewService, ServiceKind, SourceKind};
+
     let h = Harness::new(true);
     fs::create_dir_all(h.root.join("apps/web")).unwrap();
+    fs::create_dir_all(h.root.join("apps/other")).unwrap();
     let mut d = h.signed_in("deployer1", Role::Deployer);
+    let d1_user = h.store.user_by_name("deployer1").unwrap().unwrap();
+    let (proj, env) = h.store.ensure_default_project(10).unwrap();
+    h.store
+        .create_service(NewService {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "web",
+            kind: ServiceKind::App,
+            owner_id: Some(&d1_user.id),
+            source_kind: SourceKind::GitUrl,
+            repo: "https://github.com/acme/web.git",
+            branch: "main",
+            build_method: "auto",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 3000,
+            health_path: "/",
+            domain: None,
+            image_ref: None,
+            deploy_key_id: None,
+            auto_deploy: true,
+            memory_limit_mb: None,
+            cpu_limit_millis: None,
+            graph_x: 0,
+            graph_y: 0,
+            note: None,
+            now: 10,
+        })
+        .unwrap();
     let ok = d
         .send_bytes(
             Method::POST,
@@ -640,16 +780,19 @@ async fn a_deployer_uploads_only_into_their_apps() {
         )
         .await;
     assert_eq!(ok.status, StatusCode::OK, "{}", ok.text());
-    let no = d
-        .send_bytes(
-            Method::POST,
-            &format!("/api/v1/files/upload?dir={}&name=a.txt", q(&h.root)),
-            b"hi".to_vec(),
-            Opts::default(),
-        )
-        .await;
-    assert_eq!(no.status, StatusCode::FORBIDDEN);
+    for blocked in [h.root.clone(), h.root.join("apps/other")] {
+        let no = d
+            .send_bytes(
+                Method::POST,
+                &format!("/api/v1/files/upload?dir={}&name=a.txt", q(&blocked)),
+                b"hi".to_vec(),
+                Opts::default(),
+            )
+            .await;
+        assert_eq!(no.status, StatusCode::FORBIDDEN, "{}", blocked.display());
+    }
     assert!(!h.root.join("a.txt").exists());
+    assert!(!h.root.join("apps/other/a.txt").exists());
     assert_eq!(fs::read_dir(h.root.join("xfer")).unwrap().count(), 0);
     h.shutdown().await;
 }

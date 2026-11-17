@@ -593,6 +593,7 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
     proxy_task.await.unwrap();
 
     let server2 = ProxyServer::bind(cfg).await.unwrap();
+    let http2 = server2.http_addr();
     let https2 = server2.https_addr();
     let (proxy_stop2, proxy_stopped2) = oneshot::channel::<()>();
     let proxy_task2 = tokio::spawn(async move {
@@ -670,6 +671,56 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
     assert!(AcmeDirectory::Staging.is_staging());
     assert!(AcmeDirectory::Staging.url().contains("staging"));
     assert!(!AcmeDirectory::Production.is_staging());
+
+    // 13. Plain HTTP route without HTTPS redirect proxies directly to plain upstream (pre-TLS app domain).
+    let plain_up_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let plain_up_addr = plain_up_listener.local_addr().unwrap();
+    let plain_up_task = tokio::spawn(async move {
+        if let Ok((mut s, _)) = plain_up_listener.accept().await {
+            let mut buf = [0u8; 512];
+            let _ = s.read(&mut buf).await;
+            let _ = s
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+                )
+                .await;
+        }
+    });
+    client
+        .set_routes(
+            "r-http-app",
+            vec![Route {
+                host: "plain.example.com".into(),
+                upstream: plain_up_addr.to_string(),
+                upstream_tls: UpstreamTls::Plain,
+                redirect_www: false,
+                redirect_https: false,
+                hsts: false,
+                max_body_bytes: 0,
+                is_panel: false,
+            }],
+        )
+        .await
+        .unwrap();
+    let plain_tcp = TcpStream::connect(http2).await.unwrap();
+    let (mut plain_sender, plain_conn) =
+        hyper::client::conn::http1::handshake(TokioIo::new(plain_tcp))
+            .await
+            .unwrap();
+    tokio::spawn(plain_conn);
+    let plain_resp = plain_sender
+        .send_request(
+            Request::get("/healthz")
+                .header("host", "plain.example.com")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plain_resp.status(), StatusCode::OK);
+    let plain_body = plain_resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(plain_body.as_ref(), b"hello");
+    plain_up_task.abort();
 
     let _ = proxy_stop2.send(());
     proxy_task2.await.unwrap();

@@ -76,6 +76,7 @@ impl Harness {
             cfg.master_key_path = dir.path().join("master.key");
             cfg.xfer_dir = root.join("xfer");
             cfg.trash_dir = root.join("trash");
+            cfg.apps_dir = root.join("apps");
             let server = PrivServer::bind(cfg).unwrap();
             let (tx, rx) = oneshot::channel::<()>();
             task = Some(tokio::spawn(server.run(async {
