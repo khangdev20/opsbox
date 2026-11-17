@@ -110,10 +110,20 @@ struct DevIno {
     ino: u64,
 }
 
+#[allow(clippy::unnecessary_cast)]
+fn stat_dev(st: &Stat) -> u64 {
+    st.st_dev as u64
+}
+
+#[allow(clippy::unnecessary_cast)]
+fn stat_mode(st: &Stat) -> u32 {
+    st.st_mode as u32
+}
+
 impl DevIno {
     fn from_stat(st: &Stat) -> Self {
         Self {
-            dev: st.st_dev as u64,
+            dev: stat_dev(st),
             ino: st.st_ino,
         }
     }
@@ -133,12 +143,12 @@ struct Policy {
 
 impl Policy {
     fn current() -> Self {
-        let root_dev = stat("/").ok().map(|st| st.st_dev as u64);
+        let root_dev = stat("/").ok().map(|st| stat_dev(&st));
         let mut denied_fs_devs = HashSet::new();
         let mut denied_objs = HashSet::new();
         for p in DENIED {
             if let Ok(st) = stat(p) {
-                let dev = st.st_dev as u64;
+                let dev = stat_dev(&st);
                 if Some(dev) != root_dev {
                     denied_fs_devs.insert(dev);
                 }
@@ -189,7 +199,7 @@ impl Policy {
     }
 
     fn is_denied_stat(&self, st: &Stat) -> bool {
-        self.denied_fs_devs.contains(&(st.st_dev as u64))
+        self.denied_fs_devs.contains(&stat_dev(st))
             || self.denied_objs.contains(&DevIno::from_stat(st))
     }
 
@@ -759,7 +769,7 @@ pub fn mode_string(meta: &Metadata) -> String {
 
 fn mode_string_stat(st: &Stat) -> String {
     let ft = FileType::from_raw_mode(st.st_mode as _);
-    mode_string_raw(st.st_mode as u32, ft.is_dir(), ft.is_symlink())
+    mode_string_raw(stat_mode(st), ft.is_dir(), ft.is_symlink())
 }
 
 fn stat_mtime(st: &Stat) -> i64 {
@@ -834,7 +844,7 @@ pub(super) fn list(path: &str, jail: Option<&str>) -> Result<DirListing, PrivErr
             };
             (lst, k)
         };
-        let mode_bits = st.st_mode as u32;
+        let mode_bits = stat_mode(&st);
         entries.push(FileEntry {
             path: resolved
                 .display_path
@@ -974,7 +984,7 @@ pub(super) fn write(
                     "This file changed on the server since you opened it. Reload it, then make your edit again so nothing is lost.",
                 ));
             }
-            (st.st_mode as u32, st.st_uid, st.st_gid)
+            (stat_mode(&st), st.st_uid, st.st_gid)
         }
         Err(Errno::NOENT) => {
             let parent_st =
@@ -1435,7 +1445,7 @@ pub(super) fn install_upload(
             ctx.policy.check_not_denied(&st)?;
             ctx.policy.check_modifiable_stat(&st)?;
             if FileType::from_raw_mode(st.st_mode as _).is_file() && overwrite {
-                (st.st_mode as u32, st.st_uid, st.st_gid)
+                (stat_mode(&st), st.st_uid, st.st_gid)
             } else if !overwrite {
                 return Err(err(
                     PrivErrorCode::Conflict,

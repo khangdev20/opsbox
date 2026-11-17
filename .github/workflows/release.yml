@@ -65,7 +65,15 @@ jobs:
           mkdir -p dist
           KEY_FILE="$(mktemp)"
           trap 'rm -f "$KEY_FILE"' EXIT
-          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$KEY_FILE"
+          clean_key="$(printf '%s' "$MINISIGN_SECRET_KEY" | tr -d '\r')"
+          case "$clean_key" in
+            "untrusted comment:"*)
+              printf '%s\n' "$clean_key" > "$KEY_FILE"
+              ;;
+            *)
+              printf 'untrusted comment: minisign encrypted secret key\n%s\n' "$clean_key" > "$KEY_FILE"
+              ;;
+          esac
           chmod 600 "$KEY_FILE"
 
           for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
