@@ -27,7 +27,14 @@ fn migrates_an_empty_database() {
     assert_eq!(store.journal_mode().unwrap(), "wal");
     assert_eq!(
         table_names(&path),
-        ["audit", "schema_migrations", "settings"]
+        [
+            "audit",
+            "login_failures",
+            "schema_migrations",
+            "sessions",
+            "settings",
+            "users"
+        ]
     );
     store.ping().unwrap();
 }
@@ -100,4 +107,179 @@ fn database_file_is_private() {
             );
         }
     }
+}
+
+// ------------------------------------------------------------ accounts (migration 0002)
+
+use opsbox_proto::Role;
+use opsbox_store::SessionKind;
+
+#[test]
+fn migration_two_applies_on_top_of_an_existing_version_one_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v1.db");
+    // Build a database that stopped at version 1, as a Phase 0 install would be.
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("../migrations/0001_initial.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, applied_at TEXT NOT NULL) STRICT;
+             INSERT INTO schema_migrations VALUES (1, 'initial', 'x');
+             INSERT INTO settings (key, value, created_at, updated_at) VALUES ('keep', '1', 'x', 'x');",
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), LATEST_VERSION);
+    assert_eq!(store.get_setting("keep").unwrap(), Some(json!(1)));
+    store.create_user("alice", Role::Admin, "hash", 1).unwrap();
+}
+
+#[test]
+fn users_are_unique_case_insensitively_and_roles_round_trip() {
+    let store = Store::open_in_memory().unwrap();
+    let u = store.create_user("Alice", Role::Deployer, "h", 10).unwrap();
+    assert_eq!(
+        (u.role, u.totp_enabled, u.totp_secret.clone()),
+        (Role::Deployer, false, None)
+    );
+    assert!(store.create_user("alice", Role::Viewer, "h", 11).is_err());
+    assert_eq!(store.user_by_name("ALICE").unwrap().unwrap().id, u.id);
+    assert!(store.user_by_name("bob").unwrap().is_none());
+    assert_eq!(store.list_users().unwrap().len(), 1);
+}
+
+#[test]
+fn setup_state_tracks_enrolled_admins_only() {
+    let store = Store::open_in_memory().unwrap();
+    assert_eq!(store.enrolled_admin_count().unwrap(), 0);
+    let admin = store.create_user("admin", Role::Admin, "h", 1).unwrap();
+    let viewer = store.create_user("v", Role::Viewer, "h", 1).unwrap();
+    store.set_pending_totp(&admin.id, "enc:v1:a:b", 2).unwrap();
+    assert_eq!(
+        store.enrolled_admin_count().unwrap(),
+        0,
+        "pending enrolment is not an admin yet"
+    );
+    store.enable_totp(&viewer.id, 5, 3).unwrap(); // no secret: must not enable
+    assert!(!store.user_by_id(&viewer.id).unwrap().unwrap().totp_enabled);
+    store.enable_totp(&admin.id, 7, 3).unwrap();
+    assert_eq!(store.enrolled_admin_count().unwrap(), 1);
+    let u = store.user_by_id(&admin.id).unwrap().unwrap();
+    assert!(u.totp_enabled && u.totp_last_step == 7);
+}
+
+#[test]
+fn abandoned_setup_is_cleaned_up_without_touching_real_admins() {
+    let store = Store::open_in_memory().unwrap();
+    let pending = store.create_user("pending", Role::Admin, "h", 1).unwrap();
+    store.create_user("viewer", Role::Viewer, "h", 1).unwrap();
+    assert_eq!(store.delete_unenrolled_admins().unwrap(), 1);
+    assert!(store.user_by_id(&pending.id).unwrap().is_none());
+    assert!(store.user_by_name("viewer").unwrap().is_some());
+}
+
+#[test]
+fn a_totp_step_can_only_be_consumed_once() {
+    let store = Store::open_in_memory().unwrap();
+    let u = store.create_user("a", Role::Admin, "h", 1).unwrap();
+    assert!(store.advance_totp_step(&u.id, 100).unwrap());
+    assert!(
+        !store.advance_totp_step(&u.id, 100).unwrap(),
+        "same step twice"
+    );
+    assert!(!store.advance_totp_step(&u.id, 99).unwrap(), "older step");
+    assert!(store.advance_totp_step(&u.id, 101).unwrap());
+}
+
+#[test]
+fn sessions_are_found_by_hash_and_cascade_with_the_user() {
+    let store = Store::open_in_memory().unwrap();
+    let u = store.create_user("a", Role::Admin, "h", 1).unwrap();
+    let s = store
+        .create_session(
+            &u.id,
+            "hash-1",
+            SessionKind::Web,
+            Some("203.0.113.5"),
+            Some("curl"),
+            100,
+        )
+        .unwrap();
+    store
+        .create_session(&u.id, "hash-2", SessionKind::Enroll, None, None, 100)
+        .unwrap();
+    let (found, user) = store.session_by_token_hash("hash-1").unwrap().unwrap();
+    assert_eq!(
+        (found.id.as_str(), found.kind, user.name.as_str()),
+        (s.id.as_str(), SessionKind::Web, "a")
+    );
+    assert_eq!(
+        store
+            .session_by_token_hash("hash-2")
+            .unwrap()
+            .unwrap()
+            .0
+            .kind,
+        SessionKind::Enroll
+    );
+    assert!(store.session_by_token_hash("nope").unwrap().is_none());
+
+    store.touch_session(&s.id, 250).unwrap();
+    assert_eq!(
+        store
+            .session_by_token_hash("hash-1")
+            .unwrap()
+            .unwrap()
+            .0
+            .last_seen,
+        250
+    );
+
+    assert_eq!(store.delete_user_sessions(&u.id).unwrap(), 2);
+    assert!(store.session_by_token_hash("hash-1").unwrap().is_none());
+}
+
+#[test]
+fn expired_sessions_are_purged_by_either_limit() {
+    let store = Store::open_in_memory().unwrap();
+    let u = store.create_user("a", Role::Admin, "h", 1).unwrap();
+    store
+        .create_session(&u.id, "idle", SessionKind::Web, None, None, 1000)
+        .unwrap();
+    store
+        .create_session(&u.id, "old", SessionKind::Web, None, None, 10)
+        .unwrap();
+    store
+        .create_session(&u.id, "fresh", SessionKind::Web, None, None, 1000)
+        .unwrap();
+    let idle = store.session_by_token_hash("idle").unwrap().unwrap().0;
+    store.touch_session(&idle.id, 100).unwrap(); // last seen long ago
+    let old = store.session_by_token_hash("old").unwrap().unwrap().0;
+    store.touch_session(&old.id, 2000).unwrap(); // active, but created before the absolute limit
+    // idle limit: last_seen < 500; absolute limit: created_at < 500
+    assert_eq!(store.purge_sessions(500, 500).unwrap(), 2);
+    assert_eq!(store.session_count(&u.id).unwrap(), 1);
+    assert!(store.session_by_token_hash("fresh").unwrap().is_some());
+}
+
+#[test]
+fn failures_are_counted_per_user_and_per_address_inside_a_window() {
+    let store = Store::open_in_memory().unwrap();
+    for t in [100, 200, 300] {
+        store.record_login_failure("Alice", "1.1.1.1", t).unwrap();
+    }
+    store.record_login_failure("bob", "1.1.1.1", 400).unwrap();
+    store.record_login_failure("alice", "2.2.2.2", 500).unwrap();
+    assert_eq!(store.failures_for_user("ALICE", 0).unwrap(), (4, Some(500)));
+    assert_eq!(
+        store.failures_for_user("alice", 250).unwrap(),
+        (2, Some(500))
+    );
+    assert_eq!(store.failures_for_ip("1.1.1.1", 0).unwrap(), (4, Some(400)));
+    assert_eq!(store.failures_for_ip("9.9.9.9", 0).unwrap(), (0, None));
+    store.clear_failures_for_user("alice").unwrap();
+    assert_eq!(store.failures_for_user("alice", 0).unwrap().0, 0);
+    assert_eq!(store.prune_failures(1000).unwrap(), 1);
 }

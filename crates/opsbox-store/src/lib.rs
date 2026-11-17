@@ -3,6 +3,7 @@
 //! One [`Store`] owns one connection behind a mutex. Calls are short and
 //! synchronous; async callers wrap them in `spawn_blocking`.
 
+mod accounts;
 mod audit;
 mod migrations;
 mod settings;
@@ -14,6 +15,7 @@ use rusqlite::{Connection, OpenFlags};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
+pub use accounts::{Session, SessionKind, User};
 pub use audit::{
     ActorKind, AuditEntry, AuditError, AuditReport, AuditResult, GENESIS_HASH, NewAudit,
 };

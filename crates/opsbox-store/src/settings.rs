@@ -27,4 +27,10 @@ impl Store {
         )?;
         Ok(())
     }
+
+    pub fn delete_setting(&self, key: &str) -> Result<(), StoreError> {
+        self.lock()
+            .execute("DELETE FROM settings WHERE key = ?1", [key])?;
+        Ok(())
+    }
 }
