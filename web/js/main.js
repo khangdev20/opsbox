@@ -21,7 +21,7 @@ function parse() {
 }
 
 async function navigate() {
-  const my = ++gen; const { path, query } = parse();
+  const my = ++gen; const { path, query } = parse(); api.resetUsage();
   const hit = ROUTES.find(([re]) => re.test(path)); const name = hit ? hit[1] : 'notfound';
   if (current && current.unmount) { try { current.unmount(); } catch {} }
   current = null;
@@ -40,12 +40,28 @@ async function navigate() {
     const host = document.createElement('div'); host.style.cssText = 'flex:1;display:flex;flex-direction:column'; host.innerHTML = page.html.toString();
     root.replaceChildren(host); document.title = `opsbox — ${page.title}`; window.scrollTo(0, 0);
     current = page; if (page.mount) page.mount(host);
+    markSampleData(host, name);
   } catch (e) { console.error(e); root.innerHTML = `<main><h1>Something went wrong</h1><p class="muted">${String(e.message || e).replace(/</g, '&lt;')}</p></main>`; }
   if (!bare) refreshStatus();
 }
 window.addEventListener('hashchange', navigate);
 
+// In http mode, say so on every page that still shows mock data. Which functions a
+// page used is recorded by api.js, so the badge goes away on its own once the last
+// mock call on that page is wired to the real API.
+function markSampleData(host, page) {
+  if (api.MODE !== 'http') return;
+  const { sample, real } = api.usageFor(page);
+  if (!sample.length) return;
+  const badge = document.createElement('span');
+  badge.className = 'tag-sm sample'; badge.dataset.sample = sample.join(',');
+  badge.textContent = real.length ? 'partly sample data' : 'sample data';
+  badge.title = `Not connected to this server yet: ${sample.join(', ')}`;
+  const row = host.querySelector('.hdr .row');
+  if (row) row.prepend(badge); else host.prepend(badge);
+}
+
 // live metrics tick (drives status bar + pages that subscribe)
-setInterval(() => { api.tick(); if (shellUp) refreshStatus(); listeners.forEach((f) => f()); }, 2000);
+setInterval(() => { api.tick(); if (shellUp) refreshStatus(); api.quiet(() => listeners.forEach((f) => f())); }, 2000);
 window.addEventListener('unhandledrejection', (e) => toast(e.reason?.message || 'Request failed', 'err'));
 navigate();

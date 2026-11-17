@@ -27,6 +27,57 @@ function pickMode() {
   return DEFAULT_MODE;
 }
 
+// ---------------------------------------------------------------- real vs mock
+// The single place that decides which functions use the real API in MODE === 'http'.
+// To wire a function: implement its `if (real('name')) return http(...)` branch at the
+// top of the function, then add its name here. Pages that still call functions not in
+// this set get a "sample data" badge (main.js); the badge disappears by itself.
+const REAL = new Set([
+  'getHost',
+]);
+const real = (name) => MODE === 'http' && REAL.has(name);
+export const isReal = (name) => real(name);
+
+// Which functions did the page that is being drawn use? (Cleared on every navigation.)
+const used = { sample: new Set(), real: new Set() };
+let untracked = false;
+// Called first thing in every mock function. A no-op outside http mode.
+function sample(name) { if (MODE === 'http' && !untracked && !REAL.has(name)) used.sample.add(name); }
+// What each page shows from this module (including data it only fetches on a click,
+// and static sample data). Generated from the pages' `api.*` references; the "sample
+// data" badge is the entries here that are not in REAL, plus anything used at run time.
+export const PAGE_USES = {
+  access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey', 'rotateOutKey'],
+  alerts: ['connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
+  apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'getDomains', 'getProject', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback'],
+  backupdest: ['PROVIDERS', 'saveDestination', 'testDestination'],
+  backups: ['getBackups', 'restoreBackup', 'runBackup'],
+  cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
+  configure: ['createService'],
+  containers: ['containerAction', 'containerLogs', 'listContainers', 'listDocker'],
+  files: ['chmod', 'listDir', 'mkdir', 'readFile', 'removePaths', 'upload', 'writeFile'],
+  login: ['auth.login'],
+  newservice: ['getRepos'],
+  overview: ['getAttention', 'getHost', 'getMetrics'],
+  recovery: ['getRecovery', 'recoveryAction', 'simulateFailure'],
+  security: ['getSecurity', 'inviteUser', 'openSsh', 'setAllowIps', 'signOutAll', 'toggleCheck'],
+  settings: ['createToken', 'disconnectGithub', 'exportConfig', 'getSettings', 'growFs', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setSwap'],
+  setup: ['auth.claim'],
+  system: ['addJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
+  templates: ['TEMPLATES', 'addTemplate', 'deployCompose'],
+  terminal: ['HOSTS', 'termExec'],
+};
+
+export function resetUsage() { used.sample.clear(); used.real.clear(); }
+// Sample and real sources behind page `page`, for the badge.
+export function usageFor(page) {
+  const names = new Set([...(PAGE_USES[page] || []), ...used.sample, ...used.real]);
+  const all = [...names].sort();
+  return { sample: all.filter((n) => !REAL.has(n)), real: all.filter((n) => REAL.has(n)) };
+}
+// Run `fn` without attributing its API calls to the page (status bar, polling).
+export function quiet(fn) { const was = untracked; untracked = true; try { return fn(); } finally { untracked = was; } }
+
 // One fetch helper for every real endpoint. Errors carry the server's own
 // sentence (docs/BACKEND_SPEC.md 6.1), which the UI shows verbatim.
 async function http(path, { method = 'GET', body } = {}) {
@@ -201,15 +252,15 @@ export function tick() {
   S.containers.forEach((c) => { if (c.state === 'running') c.cpu = Math.max(0.1, walk(c.cpu, c.cpu * .3 + .2, 0.1, 40)); });
 }
 export async function getHost() {
-  if (MODE === 'http') return http('/host'); // GET /api/v1/host: name, os, kernel, cores, memTotal (GB), upDays, version
-  await lag(30); return clone(S.host);
+  if (real('getHost')) { if (!untracked) used.real.add('getHost'); return http('/host'); } // GET /api/v1/host
+  sample('getHost'); await lag(30); return clone(S.host);
 }
-export async function getMetrics() {
+export async function getMetrics() { sample('getMetrics');
   const m = S.metrics;
   return { cpu: [...m.cpu], mem: [...m.mem], cpuNow: m.cpu[m.cpu.length - 1], memUsed: m.memUsed, memTotal: S.host.memTotal, cache: m.cache,
     disk: m.disk, diskTotal: S.host.diskTotal, netIn: m.netIn, netOut: m.netOut, conns: m.conns, load: [...m.load], procs: clone(S.procs).sort((a, b) => b.cpu - a.cpu) };
 }
-export async function getAttention() {
+export async function getAttention() { sample('getAttention');
   const sec = S.updates.filter((u) => u.sec).length;
   const out = [];
   if (sec) out.push({ kind: 'security', text: `${sec} security updates are waiting (${S.updates.filter((u) => u.sec).map((u) => u.pkg.replace('-generic', '')).join(', ')})`, link: ['Review and install →', '#/system'] });
@@ -221,9 +272,9 @@ export async function getAttention() {
 
 // ---------------------------------------------------------------- containers
 const LOGS = ['INFO  GET /api/health 200 3ms', 'INFO  GET /api/items 200 21ms', 'WARN  slow query 412ms items.list', 'INFO  POST /api/login 200 88ms', 'ERROR upstream timeout cache:6379', 'INFO  retry 1/3 ok'];
-export async function listContainers() { await lag(); return clone(S.containers); }
-export async function listDocker(kind) { await lag(); return clone(S[kind]); }
-export async function containerAction(id, action) {
+export async function listContainers() { sample('listContainers'); await lag(); return clone(S.containers); }
+export async function listDocker(kind) { sample('listDocker'); await lag(); return clone(S[kind]); }
+export async function containerAction(id, action) { sample('containerAction');
   await lag(350);
   const c = S.containers.find((x) => x.id === id); if (!c) throw new Error('No such container');
   if (action === 'restart') { c.state = 'running'; c.since = now(); }
@@ -232,16 +283,16 @@ export async function containerAction(id, action) {
   if (action === 'delete') S.containers = S.containers.filter((x) => x.id !== id);
   audit(`${action} ${c.name}`); return { ok: true };
 }
-export async function containerLogs(id) {
+export async function containerLogs(id) { sample('containerLogs');
   await lag(80);
   const c = S.containers.find((x) => x.id === id); if (!c) return [];
   const t = now(); return Array.from({ length: 9 }, (_, i) => `${hhmmss(t - (9 - i) * 7000)} ${LOGS[(i * 5 + id.length) % LOGS.length]}`);
 }
 
 // ---------------------------------------------------------------- apps
-export async function getProject() { await lag(); return clone(S.project); }
-export async function getRepos() { await lag(250); return clone(S.repos); }
-export async function createService(cfg) {
+export async function getProject() { sample('getProject'); await lag(); return clone(S.project); }
+export async function getRepos() { sample('getRepos'); await lag(250); return clone(S.repos); }
+export async function createService(cfg) { sample('createService');
   await lag(500);
   const name = (cfg.name || '').trim();
   if (!/^[a-z][a-z0-9-]{1,30}$/.test(name)) throw new Error('Service name: lowercase letters, numbers and dashes, starting with a letter.');
@@ -253,7 +304,7 @@ export async function createService(cfg) {
   setTimeout(() => { const s = S.project.services.find((x) => x.id === name); if (s) { s.state = 'active'; s.deploys[0].status = 'live'; s.deploys[0].secs = 52; } }, 6000);
   audit(`deploy ${name} ${id}`); return { id };
 }
-export async function redeploy(svc) {
+export async function redeploy(svc) { sample('redeploy');
   await lag(300);
   const s = S.project.services.find((x) => x.id === svc); if (!s) throw new Error('No such service');
   const id = Math.random().toString(16).slice(2, 9);
@@ -262,13 +313,13 @@ export async function redeploy(svc) {
   setTimeout(() => { s.state = 'active'; s.deploys[0].status = 'live'; s.deploys[0].secs = 44; }, 4000);
   audit(`redeploy ${svc} ${id}`); return { id };
 }
-export async function rollback(svc, deployId) {
+export async function rollback(svc, deployId) { sample('rollback');
   await lag(400);
   const s = S.project.services.find((x) => x.id === svc); if (!s) throw new Error('No such service');
   s.deploys.forEach((d) => { if (d.status === 'live') d.status = 'replaced'; if (d.id === deployId) d.status = 'live'; });
   audit(`rollback ${svc} to ${deployId}`); return { ok: true };
 }
-export function buildLog(svc, deploy) {
+export function buildLog(svc, deploy) { sample('buildLog');
   const t = deploy.at; const L = (s, m) => `${hhmmss(t + s * 1000)} ${m}`;
   const lines = [L(0, `clone    ${svc.repo}@${deploy.id}`), L(1, `detect   ${svc.build}`), L(1, 'build    FROM node:22-alpine'), L(19, 'build    npm ci · 412 packages'), L(42, 'build    npm run build · ok'),
     L(47, `push     ${svc.id}:${deploy.id} (118 MB)`), L(48, 'deploy   start new version, wait for /healthz'), L(51, 'health   200 OK after 3 s'), L(51, 'switch   traffic moved, zero downtime'), L(52, 'done     stopped previous version')];
@@ -278,21 +329,21 @@ export function buildLog(svc, deploy) {
 }
 
 // ---------------------------------------------------------------- system
-export async function getUpdates() {
+export async function getUpdates() { sample('getUpdates');
   await lag();
   return { list: clone(S.updates), total: S.updates.length + S.extraUpdates, security: S.updates.filter((u) => u.sec).length, reboot: S.rebootRequired, auto: S.autoUpdates, running: S.host.kernel, checked: '03:30' };
 }
-export async function installUpdates(which) {
+export async function installUpdates(which) { sample('installUpdates');
   await lag(1400);
   const before = S.updates.length;
   if (which === 'security') { S.updates.some((u) => u.sec && u.kernel) && (S.rebootRequired = true, S.host.kernelNew = '6.8.0-52'); S.updates = S.updates.filter((u) => !u.sec); }
   else { if (S.updates.some((u) => u.kernel)) S.rebootRequired = true; S.updates = []; S.extraUpdates = 0; }
   audit(`install ${which} updates (${before - S.updates.length})`); return { installed: before - S.updates.length };
 }
-export async function setAutoUpdates(on) { await lag(150); S.autoUpdates = on; audit(`auto security updates ${on ? 'on' : 'off'}`); }
-export async function reboot() { await lag(500); S.rebootRequired = false; S.host.kernel = S.host.kernelNew || S.host.kernel; S.host.upDays = 0; audit('reboot instance'); return { ok: true }; }
-export async function getUnits() { await lag(); return clone(S.units); }
-export async function unitAction(name, action) {
+export async function setAutoUpdates(on) { sample('setAutoUpdates'); await lag(150); S.autoUpdates = on; audit(`auto security updates ${on ? 'on' : 'off'}`); }
+export async function reboot() { sample('reboot'); await lag(500); S.rebootRequired = false; S.host.kernel = S.host.kernelNew || S.host.kernel; S.host.upDays = 0; audit('reboot instance'); return { ok: true }; }
+export async function getUnits() { sample('getUnits'); await lag(); return clone(S.units); }
+export async function unitAction(name, action) { sample('unitAction');
   await lag(400);
   const u = S.units.find((x) => x.name === name); if (!u) throw new Error('No such unit');
   if (action === 'restart') u.state = 'active'; if (action === 'start') { u.state = 'active'; if (name === 'ssh.service') { S.sshOpenUntil = now() + HOUR; u.boot = 'disabled'; } }
@@ -305,86 +356,86 @@ const JOURNAL = [
   ['kernel', 4, '[UFW BLOCK] IN=eth0 SRC=203.0.113.9 DST=10.0.1.4 DPT=22'], ['chrony[640]', 6, 'Selected source 169.254.169.123'],
   ['sshd[9121]', 4, 'Failed password for root from 203.0.113.9'], ['opsbox[412]', 6, 'admin restart web-app'],
 ];
-export async function getJournal({ unit = '', prio = 6, q = '' } = {}) {
+export async function getJournal({ unit = '', prio = 6, q = '' } = {}) { sample('getJournal');
   await lag(100); const t = now();
   return JOURNAL.map((j, i) => ({ t: t - (JOURNAL.length - i) * 4 * MIN, proc: j[0], prio: j[1], msg: j[2] }))
     .filter((l) => (!unit || l.proc.startsWith(unit.replace('.service', ''))) && l.prio <= prio && (!q || (l.proc + l.msg).toLowerCase().includes(q.toLowerCase())));
 }
-export async function getJobs() { await lag(); return clone(S.jobs); }
-export async function runJob(id) { await lag(700); const j = S.jobs.find((x) => x.id === id); if (!j) throw new Error('No such job'); j.last = `today ${hhmm()}`; audit(`run job: ${j.name}`); return { ok: true }; }
-export async function addJob(job) {
+export async function getJobs() { sample('getJobs'); await lag(); return clone(S.jobs); }
+export async function runJob(id) { sample('runJob'); await lag(700); const j = S.jobs.find((x) => x.id === id); if (!j) throw new Error('No such job'); j.last = `today ${hhmm()}`; audit(`run job: ${j.name}`); return { ok: true }; }
+export async function addJob(job) { sample('addJob');
   await lag(250);
   if (!/^(\S+\s+){4}\S+$/.test((job.cron || '').trim())) throw new Error('Schedule must have 5 fields, e.g. 0 2 * * *');
   if (!(job.name || '').trim()) throw new Error('Describe what the job does.');
   S.jobs.push({ id: 'j' + (S.jobs.length + 1) + Date.now() % 1000, cron: job.cron.trim(), name: job.name.trim(), last: 'never', ok: true }); audit(`add job: ${job.name}`);
 }
-export async function getFirewall() { await lag(); return { rules: clone(S.firewall), sshOpen: S.sshOpenUntil > now() }; }
-export async function addRule(r) {
+export async function getFirewall() { sample('getFirewall'); await lag(); return { rules: clone(S.firewall), sshOpen: S.sshOpenUntil > now() }; }
+export async function addRule(r) { sample('addRule');
   await lag(250);
   const port = parseInt(r.port, 10);
   if (!(port >= 1 && port <= 65535)) throw new Error('Port must be between 1 and 65535.');
   if (!/^(anywhere|\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?)$/.test(r.src || 'anywhere')) throw new Error('Source must be "anywhere" or an IP / CIDR such as 203.0.113.0/24.');
   S.firewall.push({ id: 'f' + Date.now(), port: String(port), proto: r.proto || 'tcp', src: r.src || 'anywhere', note: r.note || '' }); audit(`firewall allow ${port}/${r.proto || 'tcp'} from ${r.src || 'anywhere'}`);
 }
-export async function removeRule(id) { await lag(250); const r = S.firewall.find((x) => x.id === id); S.firewall = S.firewall.filter((x) => x.id !== id); audit(`firewall remove ${r ? r.port : id}`); }
-export async function openSsh() { await lag(400); S.sshOpenUntil = now() + HOUR; S.units.find((u) => u.name === 'ssh.service').state = 'active'; audit('emergency SSH enabled for 1 hour', 'admin', true); return { until: S.sshOpenUntil }; }
+export async function removeRule(id) { sample('removeRule'); await lag(250); const r = S.firewall.find((x) => x.id === id); S.firewall = S.firewall.filter((x) => x.id !== id); audit(`firewall remove ${r ? r.port : id}`); }
+export async function openSsh() { sample('openSsh'); await lag(400); S.sshOpenUntil = now() + HOUR; S.units.find((u) => u.name === 'ssh.service').state = 'active'; audit('emergency SSH enabled for 1 hour', 'admin', true); return { until: S.sshOpenUntil }; }
 
 // ---------------------------------------------------------------- cleanup
-export async function scanCleanup() {
+export async function scanCleanup() { sample('scanCleanup');
   await lag(500);
   return { items: clone(S.cleanup), disk: S.metrics.disk, total: S.host.diskTotal, system: 41, auto: S.autoCleanup, scanned: hhmm() };
 }
-export async function runCleanup(ids) {
+export async function runCleanup(ids) { sample('runCleanup');
   await lag(1200);
   const hit = S.cleanup.filter((c) => ids.includes(c.id)); const freed = hit.reduce((a, c) => a + c.gb, 0);
   S.cleanup = S.cleanup.filter((c) => !ids.includes(c.id)); S.metrics.disk = Math.max(20, S.metrics.disk - freed);
   audit(`cleanup ${hit.map((c) => c.id).join(', ')} −${freed.toFixed(1)} GB`); return { freed };
 }
-export async function setAutoCleanup(on) { await lag(150); S.autoCleanup = on; }
+export async function setAutoCleanup(on) { sample('setAutoCleanup'); await lag(150); S.autoCleanup = on; }
 
 // ---------------------------------------------------------------- files
-export async function listDir(path) {
+export async function listDir(path) { sample('listDir');
   await lag(80); const p = norm(path); if (!F[p] || F[p].type !== 'd') throw new Error(`Not a directory: ${p}`);
   const kids = childrenOf(p).map((k) => ({ name: k.split('/').pop(), path: k, ...F[k] }));
   kids.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'd' ? -1 : 1));
   return { path: p, entries: kids.map((k) => ({ name: k.name, path: k.path, type: k.type, mode: k.mode, mtime: k.mtime, size: k.size ?? null, warn: k.name.startsWith('.env') && k.mode !== '-rw-------' })) };
 }
-export async function readFile(path) { await lag(60); const f = F[norm(path)]; if (!f || f.type !== 'f') throw new Error('Not a file'); return { path: norm(path), content: f.content, mode: f.mode }; }
-export async function writeFile(path, content) { await lag(200); const f = F[norm(path)]; if (!f) throw new Error('No such file'); f.content = content; f.size = content.length; f.mtime = 'just now'; audit(`edit ${norm(path)}`); }
-export async function chmod(path, mode) {
+export async function readFile(path) { sample('readFile'); await lag(60); const f = F[norm(path)]; if (!f || f.type !== 'f') throw new Error('Not a file'); return { path: norm(path), content: f.content, mode: f.mode }; }
+export async function writeFile(path, content) { sample('writeFile'); await lag(200); const f = F[norm(path)]; if (!f) throw new Error('No such file'); f.content = content; f.size = content.length; f.mtime = 'just now'; audit(`edit ${norm(path)}`); }
+export async function chmod(path, mode) { sample('chmod');
   await lag(200); const f = F[norm(path)]; if (!f) throw new Error('No such file');
   if (!/^[0-7]{3}$/.test(mode)) throw new Error('Mode must be 3 octal digits, e.g. 600');
   const bits = ['---', '--x', '-w-', '-wx', 'r--', 'r-x', 'rw-', 'rwx']; f.mode = (f.type === 'd' ? 'd' : '-') + [...mode].map((d) => bits[+d]).join(''); audit(`chmod ${mode} ${norm(path)}`);
 }
-export async function mkdir(path) { await lag(150); const p = norm(path); if (F[p]) throw new Error('Already exists'); addDir(p, 'just now'); audit(`mkdir ${p}`); }
-export async function removePaths(paths) { await lag(250); paths.forEach((p) => { Object.keys(F).filter((k) => k === p || k.startsWith(p + '/')).forEach((k) => delete F[k]); }); audit(`delete ${paths.join(', ')}`); }
-export async function upload(dir, file) { await lag(300); addFile(join(dir, file.name), '(uploaded)', '-rw-r--r--', 'just now', file.size); audit(`upload ${join(dir, file.name)}`); }
+export async function mkdir(path) { sample('mkdir'); await lag(150); const p = norm(path); if (F[p]) throw new Error('Already exists'); addDir(p, 'just now'); audit(`mkdir ${p}`); }
+export async function removePaths(paths) { sample('removePaths'); await lag(250); paths.forEach((p) => { Object.keys(F).filter((k) => k === p || k.startsWith(p + '/')).forEach((k) => delete F[k]); }); audit(`delete ${paths.join(', ')}`); }
+export async function upload(dir, file) { sample('upload'); await lag(300); addFile(join(dir, file.name), '(uploaded)', '-rw-r--r--', 'just now', file.size); audit(`upload ${join(dir, file.name)}`); }
 
 // ---------------------------------------------------------------- security
-export async function getSecurity() {
+export async function getSecurity() { sample('getSecurity');
   await lag(); const sshOpen = S.sshOpenUntil > now();
   const checks = clone(S.checks).map((c) => (c.id === 'sshd' ? { ...c, ok: !sshOpen, label: sshOpen ? 'on' : 'off', warn: sshOpen } : c));
   return { checks, users: clone(S.users), audit: clone(S.audit).slice(0, 12), allowIps: S.allowIps, passing: checks.filter((c) => c.ok).length, total: checks.length };
 }
-export async function toggleCheck(id) { await lag(200); const c = S.checks.find((x) => x.id === id); if (c) { c.ok = true; delete c.action; } audit(`enable ${id}`); }
-export async function setAllowIps(v) {
+export async function toggleCheck(id) { sample('toggleCheck'); await lag(200); const c = S.checks.find((x) => x.id === id); if (c) { c.ok = true; delete c.action; } audit(`enable ${id}`); }
+export async function setAllowIps(v) { sample('setAllowIps');
   await lag(200);
   const bad = v.split(',').map((s) => s.trim()).filter(Boolean).find((s) => !/^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(s));
   if (bad) throw new Error(`"${bad}" is not a valid IP or CIDR.`); S.allowIps = v; audit('update allowed IPs');
 }
-export async function inviteUser(name) { await lag(250); if (!/^[a-z][a-z0-9._-]{2,}$/.test(name)) throw new Error('Username: at least 3 characters, lowercase.'); S.users.push({ name, role: 'Deploy and view logs, no terminal', tfa: false }); audit(`invite ${name}`); }
-export async function signOutAll() { await lag(300); audit('sign out all sessions'); }
+export async function inviteUser(name) { sample('inviteUser'); await lag(250); if (!/^[a-z][a-z0-9._-]{2,}$/.test(name)) throw new Error('Username: at least 3 characters, lowercase.'); S.users.push({ name, role: 'Deploy and view logs, no terminal', tfa: false }); audit(`invite ${name}`); }
+export async function signOutAll() { sample('signOutAll'); await lag(300); audit('sign out all sessions'); }
 
 // ---------------------------------------------------------------- recovery
-export async function getRecovery() {
+export async function getRecovery() { sample('getRecovery');
   await lag(100); const failed = S.recovery.failed;
   return { failed, checks: failed
     ? [['opsbox.service', 'fail', 'failed', 'exit code 101 · restarted 3 times'], ['Health endpoint /healthz', 'fail', 'no answer', 'timeout after 5 s'], ['Disk /', 'fail', '100% full', '0 B free · likely cause: opsbox cannot write its database'], ['Docker', 'ok', 'running', '4 containers still serving traffic'], ['Network and DNS', 'ok', 'ok', '443 reachable from outside']]
     : [['opsbox.service', 'ok', 'active', 'running 3 days'], ['Health endpoint /healthz', 'ok', '200 OK', 'answered in 4 ms'], ['Disk /', 'warn', '82%', '22 GB free'], ['Docker', 'ok', 'running', '4 containers'], ['Network and DNS', 'ok', 'ok', '443 reachable from outside']],
     log: failed ? ['03:51:44 INFO  opsbox 0.1.4 starting', '03:51:46 ERROR sqlite: database or disk is full (code 13)', '03:51:47 FATAL cannot persist session store, exiting', '03:51:47 watchdog: exited with code 101, restart 1/3', '03:52:19 watchdog: restart 3/3 failed, entering safe mode'] : ['03:51:44 INFO  opsbox 0.1.0 starting', '03:51:45 INFO  listening on 127.0.0.1:8443'] };
 }
-export async function simulateFailure() { S.recovery.failed = true; }
-export async function recoveryAction(a) {
+export async function simulateFailure() { sample('simulateFailure'); S.recovery.failed = true; }
+export async function recoveryAction(a) { sample('recoveryAction');
   await lag(900);
   if (a === 'free') { S.metrics.disk = 84; S.recovery.failed = false; return { msg: 'Freed 14.6 GB. opsbox restarted and is healthy.' }; }
   if (a === 'restart') { if (S.metrics.disk > 95) throw new Error('Restart failed again: disk is still full. Free disk space first.'); S.recovery.failed = false; return { msg: 'opsbox restarted and passed its health check.' }; }
@@ -400,7 +451,7 @@ export const HOSTS = [
   { id: 'db', name: 'db-primary', sub: 'deploy@10.0.1.12 · ed25519', user: 'deploy' },
   { id: 'edge', name: 'edge-hn-02', sub: 'ubuntu@203.0.113.40:2222', user: 'ubuntu' },
 ];
-export async function termExec(host, cwd, line) {
+export async function termExec(host, cwd, line) { sample('termExec');
   await sleep(40);
   const [cmd, ...args] = line.trim().split(/\s+/); const m = S.metrics;
   const dir = (a) => join(cwd, a || '~'.replace('~', '/home/deploy'));
@@ -427,15 +478,15 @@ export async function termExec(host, cwd, line) {
 }
 
 // ---------------------------------------------------------------- small extras
-export async function getReclaimable() { return { gb: S.cleanup.reduce((a, c) => a + c.gb, 0), parts: S.cleanup.map((c) => [c.id, c.gb, c.color]) }; }
-export async function getAudit(n = 5) { return clone(S.audit).slice(0, n); }
-export async function addVar(svc, k, v) {
+export async function getReclaimable() { sample('getReclaimable'); return { gb: S.cleanup.reduce((a, c) => a + c.gb, 0), parts: S.cleanup.map((c) => [c.id, c.gb, c.color]) }; }
+export async function getAudit(n = 5) { sample('getAudit'); return clone(S.audit).slice(0, n); }
+export async function addVar(svc, k, v) { sample('addVar');
   await lag(150); const s = S.project.services.find((x) => x.id === svc); if (!s) throw new Error('No such service');
   if (!/^[A-Z_][A-Z0-9_]*$/.test(k)) throw new Error('Variable names use UPPER_CASE letters, numbers and underscores.');
   if (s.vars.some((x) => x[0] === k)) throw new Error(`${k} already exists.`); s.vars.push([k, v]); audit(`set variable ${k} on ${svc}`);
 }
-export async function removeVar(svc, k) { await lag(150); const s = S.project.services.find((x) => x.id === svc); s.vars = s.vars.filter((x) => x[0] !== k); audit(`remove variable ${k} on ${svc}`); }
-export async function removeService(svc) { await lag(300); S.project.services = S.project.services.filter((x) => x.id !== svc); audit(`delete service ${svc}`); }
+export async function removeVar(svc, k) { sample('removeVar'); await lag(150); const s = S.project.services.find((x) => x.id === svc); s.vars = s.vars.filter((x) => x[0] !== k); audit(`remove variable ${k} on ${svc}`); }
+export async function removeService(svc) { sample('removeService'); await lag(300); S.project.services = S.project.services.filter((x) => x.id !== svc); audit(`delete service ${svc}`); }
 
 // ---------------------------------------------------------------- backups
 const BK = {
@@ -455,13 +506,13 @@ const BK = {
     { id: 'k4', at: 'Sun 02:00', what: 'postgres-15 (weekly)', size: 1.1, where: 'S3', check: 'checksum ok' },
   ],
 };
-export async function getBackups() { await lag(); return clone(BK); }
-export async function runBackup(id) { await lag(900); audit(`backup ${id || 'all jobs'}`); const j = BK.jobs.find((x) => x.id === id); if (j) j.last = 'ok · just now'; return { ok: true }; }
-export async function restoreBackup(id, mode) {
+export async function getBackups() { sample('getBackups'); await lag(); return clone(BK); }
+export async function runBackup(id) { sample('runBackup'); await lag(900); audit(`backup ${id || 'all jobs'}`); const j = BK.jobs.find((x) => x.id === id); if (j) j.last = 'ok · just now'; return { ok: true }; }
+export async function restoreBackup(id, mode) { sample('restoreBackup');
   await lag(1200); const k = BK.items.find((x) => x.id === id); if (!k) throw new Error('No such backup');
   if (mode !== 'copy' && mode !== 'replace') throw new Error('Choose how to restore.'); audit(`restore ${k.what} (${k.at}) as ${mode}`); return { msg: mode === 'copy' ? `Restored ${k.what} into ${k.what}-restored. Check it, then swap it in.` : `${k.what} replaced from ${k.at}.` };
 }
-export async function addDestination(d) {
+export async function addDestination(d) { sample('addDestination');
   await lag(500);
   if (!(d.name || '').trim()) throw new Error('Give the destination a name.');
   if (!/^s3:\/\/[a-z0-9.-]{3,}(\/.*)?$/.test(d.loc || '')) throw new Error('Location must look like s3://bucket/path');
@@ -491,17 +542,17 @@ const AL = {
   ],
   quiet: { from: '23:00', to: '07:00', tz: 'Asia/Ho_Chi_Minh' },
 };
-export async function getAlerts() { await lag(); return clone(AL); }
-export async function setRule(id, on) { await lag(150); const r = AL.rules.find((x) => x.id === id); if (!r) throw new Error('No such rule'); r.on = on; audit(`alert rule ${r.name} ${on ? 'on' : 'off'}`); }
-export async function testAlert(channel) { await lag(600); const c = AL.channels.find((x) => x.id === channel); if (channel && (!c || !c.on)) throw new Error('Connect this channel first.'); audit(`test alert${c ? ' to ' + c.name : ''}`); return { ok: true }; }
-export async function connectChannel(id, to) {
+export async function getAlerts() { sample('getAlerts'); await lag(); return clone(AL); }
+export async function setRule(id, on) { sample('setRule'); await lag(150); const r = AL.rules.find((x) => x.id === id); if (!r) throw new Error('No such rule'); r.on = on; audit(`alert rule ${r.name} ${on ? 'on' : 'off'}`); }
+export async function testAlert(channel) { sample('testAlert'); await lag(600); const c = AL.channels.find((x) => x.id === channel); if (channel && (!c || !c.on)) throw new Error('Connect this channel first.'); audit(`test alert${c ? ' to ' + c.name : ''}`); return { ok: true }; }
+export async function connectChannel(id, to) { sample('connectChannel');
   await lag(400); const c = AL.channels.find((x) => x.id === id); if (!c) throw new Error('No such channel');
   if (id === 'c4' && !/^https:\/\//.test(to || '')) throw new Error('Webhook URL must start with https://');
   if (id === 'c3' && !/^-?\d{5,}$/.test(to || '')) throw new Error('Enter your Telegram chat id (digits only).');
   c.to = to; c.for = 'all alerts'; c.on = true; audit(`connect ${c.name}`);
 }
-export async function silenceAlert() { await lag(150); AL.firing = false; AL.history[0].state = 'silenced'; audit('silence alert 1 h'); }
-export async function setQuiet(q) { await lag(150); AL.quiet = { ...AL.quiet, ...q }; audit('update quiet hours'); }
+export async function silenceAlert() { sample('silenceAlert'); await lag(150); AL.firing = false; AL.history[0].state = 'silenced'; audit('silence alert 1 h'); }
+export async function setQuiet(q) { sample('setQuiet'); await lag(150); AL.quiet = { ...AL.quiet, ...q }; audit('update quiet hours'); }
 
 // ---------------------------------------------------------------- templates
 export const TEMPLATES = {
@@ -520,7 +571,7 @@ export const TEMPLATES = {
     { id: 'grafana', name: 'Grafana', desc: 'Dashboards for your own metrics', res: '≈ 200 MB RAM', versions: ['11'], port: 3000 },
   ],
 };
-export async function addTemplate(id, cfg) {
+export async function addTemplate(id, cfg) { sample('addTemplate');
   await lag(700);
   const t = [...TEMPLATES.databases, ...TEMPLATES.tools].find((x) => x.id === id); if (!t) throw new Error('Unknown template');
   const name = (cfg.name || '').trim();
@@ -530,7 +581,7 @@ export async function addTemplate(id, cfg) {
   S.project.services.push({ id: name, kind: 'db', state: 'active', repo: `${t.name} ${cfg.version || t.versions[0]} · volume ${cfg.disk || '1 GB'}`, domain: '', x: 370 * (idx % 3), y: 10 + 176 * Math.floor(idx / 3), note: cfg.backup ? 'backup daily 02:00' : 'no backup', deploys: [], vars: [] });
   audit(`add ${t.name} as ${name}`); return { id: name };
 }
-export async function deployCompose(text) {
+export async function deployCompose(text) { sample('deployCompose');
   await lag(700);
   const names = [...(text || '').matchAll(/^ {2}([a-z][a-z0-9_-]*):\s*$/gm)].map((m) => m[1]);
   if (!/^services:/m.test(text || '') || !names.length) throw new Error('This does not look like a Compose file: it needs a "services:" section.');
@@ -552,43 +603,43 @@ const AC = {
   ],
   out: [{ id: 'o1', name: 'db-primary', sub: 'deploy@10.0.1.12' }, { id: 'o2', name: 'edge-hn-02', sub: 'ubuntu@203.0.113.40:2222' }],
 };
-export async function getAccess() { await lag(); return { ...clone(AC), sshOpen: S.sshOpenUntil > now() }; }
-export async function addKey(user, pub) {
+export async function getAccess() { sample('getAccess'); await lag(); return { ...clone(AC), sshOpen: S.sshOpenUntil > now() }; }
+export async function addKey(user, pub) { sample('addKey');
   await lag(300);
   if (/PRIVATE KEY/.test(pub || '')) throw new Error('That is a private key. Never paste it here. Paste the .pub file instead.');
   const m = /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp\d+)\s+[A-Za-z0-9+/=]{20,}(\s+(.+))?$/.exec((pub || '').trim());
   if (!m) throw new Error('This is not a public key. It should start with ssh-ed25519 or ssh-rsa.');
   AC.keys.push({ id: 'a' + Date.now(), user, name: m[3] || 'unnamed key', type: m[1].replace('ssh-', ''), fp: 'SHA256:new…key', added: 'today', used: '' }); audit(`add ssh key for ${user}`);
 }
-export async function removeKey(id) { await lag(200); AC.keys = AC.keys.filter((k) => k.id !== id); audit('remove ssh key'); }
-export async function lockUser(name, lock) {
+export async function removeKey(id) { sample('removeKey'); await lag(200); AC.keys = AC.keys.filter((k) => k.id !== id); audit('remove ssh key'); }
+export async function lockUser(name, lock) { sample('lockUser');
   await lag(250); const u = AC.users.find((x) => x.name === name); if (!u) throw new Error('No such user');
   if (lock && name === 'deploy') throw new Error('deploy runs your apps. Locking it would stop deployments.');
   u.locked = lock; audit(`${lock ? 'lock' : 'unlock'} user ${name}`);
 }
-export async function rotateOutKey(id) { await lag(500); audit('rotate outgoing key'); }
+export async function rotateOutKey(id) { sample('rotateOutKey'); await lag(500); audit('rotate outgoing key'); }
 
 // ---------------------------------------------------------------- settings
 const ST = { hostname: 'srv-sgn-01', tz: 'Asia/Ho_Chi_Minh', panel: 'https://panel.example.com', swap: '2 GB', autoUpdate: true, channel: 'stable', github: true, fsGrown: false,
   tokens: [{ id: 't1', name: 'github-actions', can: 'deploy only, service web', last: '2 min ago' }, { id: 't2', name: 'uptime-check', can: 'read-only metrics', last: '1 min ago' }] };
-export async function getSettings() { await lag(); return clone(ST); }
-export async function saveSettings(v) {
+export async function getSettings() { sample('getSettings'); await lag(); return clone(ST); }
+export async function saveSettings(v) { sample('saveSettings');
   await lag(300);
   if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/i.test(v.hostname || '')) throw new Error('Hostname: letters, numbers and dashes only.');
   if (!/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(v.panel || '')) throw new Error('Panel address must start with https:// and have no path.');
   Object.assign(ST, { hostname: v.hostname, tz: v.tz, panel: v.panel }); S.host.name = v.hostname; audit('update general settings');
 }
-export async function createToken(name, can) {
+export async function createToken(name, can) { sample('createToken');
   await lag(300); if (!/^[a-z][a-z0-9-]{2,}$/.test(name || '')) throw new Error('Token name: at least 3 characters, lowercase, dashes allowed.');
   const secret = 'ops_' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
   ST.tokens.push({ id: 't' + Date.now(), name, can, last: 'never' }); audit(`create api token ${name}`); return { secret };
 }
-export async function revokeToken(id) { await lag(200); ST.tokens = ST.tokens.filter((t) => t.id !== id); audit('revoke api token'); }
-export async function setSwap(v) { await lag(400); ST.swap = v; audit(`swap ${v}`); }
-export async function growFs() { await lag(900); ST.fsGrown = true; audit('grow filesystem'); }
-export async function setOpsboxAutoUpdate(on) { await lag(150); ST.autoUpdate = on; }
-export async function disconnectGithub() { await lag(300); ST.github = false; audit('disconnect GitHub'); }
-export async function exportConfig() { await lag(400); audit('export configuration'); return JSON.stringify({ opsbox: '0.1.0', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel } }, null, 2); }
+export async function revokeToken(id) { sample('revokeToken'); await lag(200); ST.tokens = ST.tokens.filter((t) => t.id !== id); audit('revoke api token'); }
+export async function setSwap(v) { sample('setSwap'); await lag(400); ST.swap = v; audit(`swap ${v}`); }
+export async function growFs() { sample('growFs'); await lag(900); ST.fsGrown = true; audit('grow filesystem'); }
+export async function setOpsboxAutoUpdate(on) { sample('setOpsboxAutoUpdate'); await lag(150); ST.autoUpdate = on; }
+export async function disconnectGithub() { sample('disconnectGithub'); await lag(300); ST.github = false; audit('disconnect GitHub'); }
+export async function exportConfig() { sample('exportConfig'); await lag(400); audit('export configuration'); return JSON.stringify({ opsbox: '0.1.0', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel } }, null, 2); }
 
 // ---------------------------------------------------------------- domains
 const DOM = {
@@ -599,8 +650,8 @@ const DOM = {
   ],
 };
 const DOMRE = /^(?=.{1,253}$)(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
-export async function getDomains(svc) { await lag(); return clone([...(DOM[svc] || []), { name: `${svc}.srv-sgn-01.opsbox.internal`, internal: true, dns: 'ok', cert: 'internal' }]); }
-export async function addDomain(svc, d) {
+export async function getDomains(svc) { sample('getDomains'); await lag(); return clone([...(DOM[svc] || []), { name: `${svc}.srv-sgn-01.opsbox.internal`, internal: true, dns: 'ok', cert: 'internal' }]); }
+export async function addDomain(svc, d) { sample('addDomain');
   await lag(400); const name = (d.name || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
   if (!DOMRE.test(name)) throw new Error('Enter a domain like app.acme.co (no https://, no path).');
   if (name.startsWith('*.')) throw new Error('Wildcard domains need a DNS provider token. Add one in Settings first.');
@@ -608,13 +659,13 @@ export async function addDomain(svc, d) {
   (DOM[svc] = DOM[svc] || []).push({ name, primary: !(DOM[svc] || []).length, redirect: '', dns: 'pending', cert: 'none', custom: true, www: d.www, force: d.force });
   audit(`add domain ${name} to ${svc}`); return { name };
 }
-export async function checkDns(svc, name) {
+export async function checkDns(svc, name) { sample('checkDns');
   await lag(900); const x = (DOM[svc] || []).find((d) => d.name === name); if (!x) throw new Error('No such domain');
   x.checks = (x.checks || 0) + 1; if (x.checks >= 2) { x.dns = 'ok'; x.cert = 'valid'; x.renews = 90; audit(`certificate issued for ${name}`); }
   return clone(x);
 }
-export async function removeDomain(svc, name) { await lag(200); DOM[svc] = (DOM[svc] || []).filter((d) => d.name !== name); audit(`remove domain ${name}`); }
-export async function makePrimary(svc, name) { await lag(200); (DOM[svc] || []).forEach((d) => { d.primary = d.name === name; d.redirect = d.primary ? '' : d.redirect; }); audit(`primary domain ${name}`); }
+export async function removeDomain(svc, name) { sample('removeDomain'); await lag(200); DOM[svc] = (DOM[svc] || []).filter((d) => d.name !== name); audit(`remove domain ${name}`); }
+export async function makePrimary(svc, name) { sample('makePrimary'); await lag(200); (DOM[svc] || []).forEach((d) => { d.primary = d.name === name; d.redirect = d.primary ? '' : d.redirect; }); audit(`primary domain ${name}`); }
 
 // ---------------------------------------------------------------- backup providers
 export const PROVIDERS = [
@@ -629,7 +680,7 @@ export const PROVIDERS = [
   { id: 'sftp', name: 'SFTP server', sub: 'Any Linux box over SSH', mono: 'SF', fields: [['host', 'Host', 'backup.example.com or an IP'], ['user', 'User'], ['path', 'Folder on that server', '/srv/backups/srv-sgn-01']], endpoint: (v) => v.host ? `sftp://${v.user || 'user'}@${v.host}` : '', steps: ['opsbox shows a public key after you save.', 'Add it to ~/.ssh/authorized_keys of that user on the backup server.', 'Run the test again.'], sftp: true },
   { id: 'custom', name: 'Other S3-compatible', sub: 'Custom endpoint', mono: 'S3', fields: [['endpoint', 'Endpoint URL'], ['region', 'Region (optional)'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.endpoint || '', steps: ['Use the S3 endpoint your provider documents.', 'Create a key limited to one bucket.'] },
 ];
-export async function testDestination(pid, v) {
+export async function testDestination(pid, v) { sample('testDestination');
   await lag(1100); const p = PROVIDERS.find((x) => x.id === pid); if (!p) throw new Error('Choose a provider');
   const opt = new Set(['prefix', 'region']); if (pid === 'custom') opt.add('region');
   const miss = p.fields.filter(([k]) => !opt.has(k) && !(v[k] || '').trim()).map(([, l]) => l);
@@ -639,7 +690,7 @@ export async function testDestination(pid, v) {
   if (p.sftp) return { ok: true, steps: [['ok', `Reached ${v.host}:22`], ['warn', 'Add the opsbox public key to the backup server, then test again.']] };
   return { ok: true, steps: [['ok', 'Connected to endpoint'], ['ok', `Bucket ${v.bucket} found`], ['ok', 'Wrote and read back a 1 KB test file'], ['warn', 'Key can also delete objects. Fine for pruning old backups; use a separate key for append-only.']] };
 }
-export async function saveDestination(pid, v, name) {
+export async function saveDestination(pid, v, name) { sample('saveDestination');
   await lag(400); const p = PROVIDERS.find((x) => x.id === pid);
   BK.dests = BK.dests.filter((d) => d.ok || d.type !== 'folder');
   BK.dests.unshift({ id: 'd' + Date.now(), name: (name || '').trim() || `Offsite (${p.name})`, type: p.name, loc: p.sftp ? `${p.endpoint(v)}:${v.path}` : `${p.endpoint(v).replace(/^https:\/\//, '')}/${v.bucket}/${v.prefix || ''}`, ok: true });
