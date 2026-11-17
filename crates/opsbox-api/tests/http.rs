@@ -308,3 +308,18 @@ async fn dev_tooling_and_paths_outside_web_are_not_served() {
         assert_eq!(json(resp).await["error"]["code"], "not_found", "{path}");
     }
 }
+
+#[tokio::test]
+async fn es_modules_are_served_with_a_javascript_type() {
+    // Browsers refuse to run a module script served with any other type.
+    let h = Harness::new(false);
+    for path in ["/js/main.js", "/vendor/qrcode/qrcode.mjs"] {
+        let resp = h.get(path).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        let ct = resp.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(ct.contains("javascript"), "{path}: {ct}");
+    }
+}

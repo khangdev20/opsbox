@@ -4,6 +4,12 @@ import * as api from './api.js';
 import { theme, toggleTheme, session } from './store.js';
 
 const ICONS = {"overview": "<rect x=\"3\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"3\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"3\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/><rect x=\"14\" y=\"14\" width=\"7\" height=\"7\" rx=\"1.5\"/>", "apps": "<path d=\"M12 3l9 5-9 5-9-5 9-5z\"/><path d=\"M3 13l9 5 9-5\"/>", "containers": "<path d=\"M21 8l-9-5-9 5v8l9 5 9-5V8z\"/><path d=\"M3 8l9 5 9-5M12 13v8\"/>", "system": "<circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2\"/>", "backups": "<ellipse cx=\"12\" cy=\"6\" rx=\"8\" ry=\"3\"/><path d=\"M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6\"/>", "alerts": "<path d=\"M6 9a6 6 0 0112 0c0 6 2 7 2 7H4s2-1 2-7z\"/><path d=\"M10 20a2 2 0 004 0\"/>", "cleanup": "<path d=\"M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13\"/><path d=\"M10 11v6M14 11v6\"/>", "terminal": "<rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M7 9l3 3-3 3M12 15h5\"/>", "files": "<path d=\"M3 6a2 2 0 012-2h4l2 2h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V6z\"/>", "security": "<path d=\"M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z\"/><path d=\"M9 12l2 2 4-4\"/>"};
+// End the session on the server first, so the cookie is really gone, then leave.
+async function signOut() {
+  try { await api.auth.logout(); } catch { /* already signed out elsewhere */ }
+  session.clear(); location.hash = '#/login';
+}
+
 // Name shown in the top bar and status bar. In http mode it is the real hostname.
 let hostName = 'srv-sgn-01';
 async function loadHostName() {
@@ -40,7 +46,7 @@ export function mountShell(app) {
   label(); loadHostName();
   document.getElementById('theme-btn').addEventListener('click', () => { toggleTheme(); label(); });
   document.getElementById('sign-out').textContent = `${session.user || 'admin'} · sign out`;
-  document.getElementById('sign-out').addEventListener('click', () => { session.clear(); location.hash = '#/login'; });
+  document.getElementById('sign-out').addEventListener('click', signOut);
   document.getElementById('open-pal').addEventListener('click', openPalette);
   const shell = app.querySelector('.shell'), tg = document.getElementById('side-toggle');
   const setC = (c) => { shell.classList.toggle('collapsed', c); const l = c ? 'Expand sidebar' : 'Collapse sidebar'; tg.setAttribute('aria-label', l); tg.title = l; try { localStorage.setItem('opsbox.side', c ? '1' : '0'); } catch {} };
@@ -75,7 +81,7 @@ const ACTIONS = () => [
   { label: 'Toggle light / dark theme', hint: 'theme', run: () => { toggleTheme(); document.getElementById('theme-btn').textContent = theme() === 'light' ? 'Dark' : 'Light'; } },
   { label: 'Open emergency SSH for 1 hour', hint: 'security', run: async () => { await api.openSsh(); toast('Port 22 is open to your IP for one hour.'); } },
   { label: 'Open safe mode page', hint: 'recovery', run: () => { location.hash = '#/recovery'; } },
-  { label: 'Sign out', hint: 'session', run: () => { session.clear(); location.hash = '#/login'; } },
+  { label: 'Sign out', hint: 'session', run: signOut },
 ];
 export function openPalette() {
   if (document.getElementById('pal')) return;

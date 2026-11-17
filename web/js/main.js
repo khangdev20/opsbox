@@ -1,16 +1,16 @@
 // Router + boot. Hash routes: #/ #/apps #/apps/new #/apps/new/configure #/containers ...
-import { applyTheme, initialTheme, session, listeners } from './store.js';
+import { applyTheme, initialTheme, session, server, listeners } from './store.js';
 import * as api from './api.js';
 import { mountShell, setNav, refreshStatus } from './shell.js';
 import { toast } from './ui.js';
 
 applyTheme(initialTheme());
 
-const BARE = new Set(['login', 'setup', 'recovery']);
+const BARE = new Set(['login', 'setup', 'enroll', 'recovery']);
 const ROUTES = [
   [/^\/?$/, 'overview'], [/^\/apps\/?$/, 'apps'], [/^\/apps\/new\/?$/, 'newservice'], [/^\/apps\/new\/configure\/?$/, 'configure'],
   [/^\/containers\/?$/, 'containers'], [/^\/system\/?$/, 'system'], [/^\/cleanup\/?$/, 'cleanup'], [/^\/terminal\/?$/, 'terminal'],
-  [/^\/files\/?$/, 'files'], [/^\/backups\/?$/, 'backups'], [/^\/backups\/new\/?$/, 'backupdest'], [/^\/alerts\/?$/, 'alerts'], [/^\/apps\/new\/templates\/?$/, 'templates'], [/^\/security\/access\/?$/, 'access'], [/^\/settings\/?$/, 'settings'], [/^\/security\/?$/, 'security'], [/^\/login\/?$/, 'login'], [/^\/setup\/?$/, 'setup'], [/^\/recovery\/?$/, 'recovery'],
+  [/^\/files\/?$/, 'files'], [/^\/backups\/?$/, 'backups'], [/^\/backups\/new\/?$/, 'backupdest'], [/^\/alerts\/?$/, 'alerts'], [/^\/apps\/new\/templates\/?$/, 'templates'], [/^\/security\/access\/?$/, 'access'], [/^\/settings\/?$/, 'settings'], [/^\/security\/?$/, 'security'], [/^\/login\/?$/, 'login'], [/^\/setup\/?$/, 'setup'], [/^\/enroll\/?$/, 'enroll'], [/^\/recovery\/?$/, 'recovery'],
 ];
 const app = document.getElementById('app');
 let current = null, shellUp = false, gen = 0;
@@ -26,7 +26,14 @@ async function navigate() {
   if (current && current.unmount) { try { current.unmount(); } catch {} }
   current = null;
   const bare = BARE.has(name);
-  if (!bare && !session.user) { try { sessionStorage.setItem('opsbox.next', location.hash); } catch {} location.hash = '#/login'; return; }
+  if (!bare && !session.user) { try { sessionStorage.setItem('opsbox.next', location.hash); } catch {} location.hash = server.setupRequired ? '#/setup' : '#/login'; return; }
+  // Real server: setup exists only until the first admin is enrolled, and a signed-in
+  // person has no use for the sign-in page.
+  if (api.MODE === 'http') {
+    if (name === 'setup' && !server.setupRequired) { location.hash = session.user ? '#/' : '#/login'; return; }
+    if (name === 'login' && session.user) { location.hash = '#/'; return; }
+    if (name === 'login' && server.setupRequired) { location.hash = '#/setup'; return; }
+  }
   let root;
   if (bare) { app.innerHTML = '<div id="view" style="flex:1;display:flex;flex-direction:column"></div>'; root = document.getElementById('view'); shellUp = false; }
   else { if (!shellUp || !document.getElementById('nav')) { root = mountShell(app); shellUp = true; } else root = document.getElementById('view'); }
@@ -64,4 +71,23 @@ function markSampleData(host, page) {
 // live metrics tick (drives status bar + pages that subscribe)
 setInterval(() => { api.tick(); if (shellUp) refreshStatus(); api.quiet(() => listeners.forEach((f) => f())); }, 2000);
 window.addEventListener('unhandledrejection', (e) => toast(e.reason?.message || 'Request failed', 'err'));
-navigate();
+
+// The server decides who is signed in. Ask it once at start-up (http mode) so the first
+// screen is right: sign-in, first-run setup, or the app.
+async function boot() {
+  if (api.MODE === 'http') {
+    try {
+      const s = await api.auth.session();
+      server.setupRequired = !!s.setupRequired;
+      if (s.authenticated) session.set(s.user); else session.clear();
+      if (s.enrollRequired && !/^#\/enroll/.test(location.hash)) location.hash = '#/enroll';
+    } catch { session.clear(); }
+  }
+  navigate();
+}
+// A 401 from any call means the session ended: back to the sign-in page.
+window.addEventListener('opsbox:unauthorized', () => {
+  if (api.MODE !== 'http' || !session.user) return;
+  session.clear(); toast('Your session ended. Sign in again.', 'err'); location.hash = '#/login';
+});
+boot();

@@ -25,6 +25,10 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[priv] allowed_uids` | `[]` | `--allow-uid UID` (repeatable, or comma list) | `OPSBOX_PRIV_ALLOW_UIDS` | priv |
 | `[priv] socket_mode` | `"0660"` | `--socket-mode MODE` | `OPSBOX_PRIV_SOCKET_MODE` | priv |
 | `[priv] socket_group` | `"opsbox"` (`""` for none) | `--socket-group GROUP` | `OPSBOX_PRIV_SOCKET_GROUP` | priv |
+| `[api] secure_cookies` | `"auto"` (`"always"`, `"never"`) | `--secure-cookies MODE` | `OPSBOX_SECURE_COOKIES` | serve |
+| `[priv] master_key` | `/etc/opsbox/master.key` | `--master-key PATH` | `OPSBOX_PRIV_MASTER_KEY` | priv |
+| `[auth] argon2_memory_kib` | `65536` | | | serve, CLI |
+| `[auth] argon2_iterations` | `3` | | | serve, CLI |
 | `[store] db_path` | `/var/lib/opsbox/opsbox.db` | `--db PATH` | `OPSBOX_DB` | serve |
 | `[log] level` | `"info"` | `--log-level FILTER` | `OPSBOX_LOG_LEVEL` | all |
 | `[log] format` | `"text"` (`"json"`) | `--log-format text\|json` | `OPSBOX_LOG_FORMAT` | all |
@@ -39,6 +43,12 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 The default includes `root` so an administrator can run `sudo opsbox status`. Remove it if you do not want that.
 
 `socket_mode` and `socket_group` are the first gate (who may open the socket at all); the user check is the second.
+
+### Sign-in settings
+
+- `secure_cookies`: `auto` marks the session cookies `Secure` only when a request arrives through an HTTPS proxy (`X-Forwarded-Proto: https`); `always` and `never` force it. Plain HTTP on loopback cannot use `Secure`, because the browser would then not send the cookie back.
+- `master_key`: the 32-byte key that seals TOTP secrets (and later other secrets). `priv` creates it with mode 0600 the first time it is needed and refuses a key file that others can read. Back it up with the database: without it, sealed values cannot be opened, and every user would need `opsbox user reset-2fa`.
+- `argon2_memory_kib` and `argon2_iterations`: password hashing cost (default 64 MB, 3 passes, one lane; the spec's values). A sign-in should take well under a third of a second. On a very small machine lower the memory (for example `16384`) rather than the passes. Existing hashes keep working after a change, because each hash records its own cost. Two sign-ins may hash at once, so peak use is about twice the memory setting.
 
 ### Example
 
@@ -70,6 +80,9 @@ ssh -L 8443:127.0.0.1:8443 you@server
 | `opsbox serve` | Opens the database, applies migrations, listens. |
 | `opsbox priv` | Creates the socket (and `/run/opsbox` if missing). |
 | `opsbox status` | Probes `serve` over HTTP and `priv` over its socket. Exit status 0 only if both are healthy, 1 otherwise. |
+| `opsbox setup-token` | Prints a one-time token while no admin exists. Run as root, it switches to the `opsbox` user before opening the database. |
+| `opsbox user reset-2fa\|unlock\|password NAME` | Account recovery over SSH. `password` asks twice on a terminal and reads one line from standard input when piped. |
+| `opsbox audit verify` | Walks the hash chain of the audit log; exit status 1 and the first bad entry if it was altered. |
 | `opsbox selftest` | Ignores the configuration; uses a temporary directory. Exit status 0 if every check passes. |
 
 Commands that exist but are not built yet (`pair`, `web`, `doctor`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.

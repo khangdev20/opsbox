@@ -100,6 +100,44 @@ Choices made while building the backend where `BACKEND_SPEC.md` left room or whe
 
 `MODE` is `'mock'` unless the page is opened with `?mode=http`, so the real agent can be tried without editing or rebuilding. Only `getHost()` is real in `http` mode; every other function keeps using the mock. No page module was changed.
 
+## Phase 1
+
+### M1: honest UI
+
+`api.js` has one `REAL` set; a function is real in http mode only if its name is in it. Every mock function records when it is called, and `PAGE_USES` (generated from what each page references) adds data a page only fetches on a click or shows from static sample constants. `main.js` badges a page with "sample data" (or "partly sample data") from the union, so wiring a function removes the badge on every page that no longer depends on a mock. The badge is per page, not per section: pages are not split into sections that know their data source, and the badge's tooltip lists exactly which functions are still sample.
+
+### M2: auth and first run
+
+**TOTP lives in `priv`, not in `serve`.** Spec 5 and 4 say `priv` decrypts secrets on request for `serve` (`SecretDecrypt`). Doing that would let a compromised `serve` read every TOTP secret. Instead `priv` has two narrow operations: `TotpNewSecret` (returns the sealed value to store, plus the plaintext once, for the QR code) and `TotpVerify` (sealed secret + code in, matching time step out). `serve` never holds a secret except for that single enrolment response. Generic `SecretSeal/SecretOpen` will be added when something needs them (API tokens, backup credentials). Secret-bearing protocol fields use a `Secret` type whose `Debug` prints `[redacted]`.
+
+**Master key.** `/etc/opsbox/master.key`, 32 random bytes, created by `priv` with `create_new` and mode 0600 on first use, read only by `priv`; a key file readable by group or others, or of the wrong size, is refused (and never overwritten). Sealing is XChaCha20-Poly1305 with a random 192-bit nonce and the owner (`totp:<user id>`) as authenticated data, so a sealed value cannot be moved to another row. Format `enc:v1:<nonce>:<ciphertext>` as the spec says.
+
+**Crates.** `argon2` 0.6, `chacha20poly1305` 0.11, `hmac` 0.13 and `sha1` 0.11 (RFC 6238 implemented directly and checked against the RFC's test vectors instead of `totp-rs`: it is 40 lines, and `priv` stays free of extra dependencies), `getrandom` 0.4, `subtle`, `zeroize`, `rpassword` 7. QR codes: `qrcode-generator` 2.0.4 (MIT), vendored in `web/vendor/qrcode` with its licence, loaded only by the setup and enrolment pages. The QR output was checked by decoding it with an independent reader (jsQR).
+
+**Passwords.** Argon2id at the spec's cost (64 MB, 3 passes, 1 lane), configurable in `[auth]`; at most two hashes run at once so concurrent sign-ins cannot exhaust memory (`MemoryMax=256M`). Policy (the spec names none): at least 12 characters, at most 256 bytes, not one repeated character, not containing the username. Unknown user names are verified against a dummy hash so response time does not reveal which accounts exist.
+
+**TOTP.** SHA-1, 6 digits, 30 s, accepted from one step before to one step after. The newest accepted step is stored per user and only a newer step is accepted, enforced by an atomic `UPDATE ... WHERE totp_last_step < ?`, so two simultaneous sign-ins with one code cannot both win (tested).
+
+**Lockout** (spec 6.2): failures are rows in `login_failures`. Five in 15 minutes for a user name, or for an address, locks it for 30 s, doubling with each further failure up to 15 minutes. Attempts made while locked are not counted, so an attacker cannot extend a lock indefinitely; a nonexistent user name is counted too. This does allow someone to lock a known admin name out; `opsbox user unlock` is the answer. The failed-attempt audit entry names the account if it exists; for unknown names it records the typed name only if it looks like a valid user name, so a password typed into the username box never reaches the log.
+
+**Sessions.** 256-bit random tokens; only their SHA-256 is stored. 12 h idle, 7 d absolute (the spec's), `last_seen` refreshed at most once a minute, expired rows purged hourly. Kinds: `web`, and `enroll` for an account whose second factor was reset (15 minutes; it opens only the two enrolment endpoints). Times in the auth tables are unix seconds, because expiry and lockout are SQL comparisons and RFC 3339 strings with a variable number of fractional digits do not sort.
+
+**CSRF and Origin.** The CSRF token is derived from the session token (`sha256("opsbox-csrf-v1:" + token)`), not an independent random value, so it cannot be planted by an attacker who does not already hold the session. The page reads it from the `opsbox_csrf` cookie and sends it in `X-Opsbox-CSRF`. Every state-changing request that uses the cookie must carry the token and an `Origin` header naming this host; a missing Origin is refused. Pre-login requests (sign-in, setup) have no session to protect, so their Origin is checked only when present (a browser always sends it on cross-site POSTs).
+
+**Roles by extractor, not middleware.** A handler takes `Viewer`, `Deployer` or `Admin` as a parameter; the extractor authenticates, enforces the role and applies CSRF/Origin. This is the same guarantee as "each handler declares the permission it needs" with no way to forget the check on a handler that takes one, and a handler with none is visibly public.
+
+**Cookies.** Session: `HttpOnly; SameSite=Strict; Path=/`. `Secure` is on when `secure_cookies` says so or, in `auto`, when `X-Forwarded-Proto: https` is present. The client address comes from the TCP peer; behind a local proxy (peer on loopback) from the rightmost `X-Forwarded-For` entry.
+
+**First-run setup** (spec 6.3): `serve` creates a token at start-up if none is live and no admin exists, and prints it to the journal and `/dev/console`; `opsbox setup-token` and `install.sh` print a fresh one. Tokens are 12 characters from a 32-symbol alphabet (60 bits), stored hashed, single use, valid one hour; claiming it yields a 30-minute setup session in a cookie scoped to `/api/v1/setup`. Setup finishes when the first admin confirms a TOTP code. After that the setup endpoints return 404 for everybody, before any cookie, Origin or body check.
+
+**Flaw found while testing the first version:** setup was defined as "no admin has finished two-factor enrolment". `opsbox user reset-2fa` leaves the only admin unenrolled, which re-opened setup, and creating an admin deletes unfinished ones, so a setup token could have replaced the admin. Setup now completes permanently (`setup.complete`), with a regression test.
+
+**Recovery.** `reset-2fa` clears the secret and ends the user's sessions; the next sign-in with the password alone yields an `enroll` session and the UI shows the enrolment page. `opsbox user ...`, `setup-token` and `audit verify` open the database directly, and when run as root first switch to the `opsbox` user: running as root would create root-owned `-wal`/`-shm` files that `serve` could then not open.
+
+**`GET /api/v1/session` is public** and says whether setup is required, so the page knows what to show first.
+
+**Tests depend on the real clock** for TOTP (`priv` uses it, and a step is 30 s wide). The tests use steps 0 and +1 relative to now; a test that straddles a step boundary could fail, a chance of well under one in a thousand per run.
+
 ## Problems found in the spec
 
 1. **Privilege escalation in the file layout (section 4).** Root runs `/usr/local/bin/opsbox`, a symlink into `/var/lib/opsbox/bin/`, while the unprivileged `opsbox` user must own `/var/lib/opsbox` (database, `ReadWritePaths`). A compromised `serve` could rename `bin/` and put its own binary in its place; root would run it on the next restart. Mitigation implemented: sticky bit (mode 1770, root-owned) so `opsbox` cannot rename or delete entries it does not own. Phase 2 (self-update) should keep the slots out of any directory that `opsbox` can write, or this property must be tested.

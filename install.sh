@@ -318,6 +318,16 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 say "opsbox $VER is installed and running."
+# First run: a one-time token proves you can read this machine's console. It is
+# printed here, on /dev/console and in the journal. Once an admin exists this prints
+# nothing and setup is closed.
+if setup_out="$("$PREFIX_BIN" setup-token 2>/dev/null)"; then
+  say ""
+  say "$setup_out"
+else
+  say "An admin account already exists; first-run setup is closed."
+fi
+say ""
 say "It listens on 127.0.0.1:8443 only. To open the UI from your computer:"
 say "    ssh -L 8443:127.0.0.1:8443 <user>@<this-server>"
 say "then browse to http://127.0.0.1:8443/?mode=http"

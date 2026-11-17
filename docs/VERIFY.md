@@ -39,3 +39,52 @@ Then open <http://127.0.0.1:8443/?mode=http>. Without `?mode=http` the UI runs o
 4. Open `http://127.0.0.1:8443/?mode=mock`: no badges, the old demo data, `mock data` in the status bar.
 
 Wiring a function later is a one-line change: add its name to `REAL` in `web/js/api.js`. The badge on every page that depends only on real functions then disappears by itself.
+
+---
+
+## M2. Auth and first run
+
+Reinstall as in the preamble. The installer now ends by printing the first-run setup block:
+
+```
+opsbox first-run setup
+  setup url    http://127.0.0.1:8443/#/setup
+  setup token  XXXX-XXXX-XXXX   (single use, valid for 1 hour)
+```
+
+The same block is in the journal (`sudo journalctl -u opsbox | grep -A3 "first-run setup"`) and `sudo opsbox setup-token` prints a fresh one at any time while no admin exists.
+
+**Setup in the UI** (open `http://127.0.0.1:8443/?mode=http` through the tunnel):
+
+1. You land on the **Set up** page without signing in. A wrong token shows "That token is not right…"; the right one (lower case is fine) goes to step 2.
+2. Create the admin: a short password, or two passwords that differ, are refused with a sentence. Use 12+ characters.
+3. Step 3 shows a **QR code** (drawn in the page, no network request) and the key. Scan it with an authenticator app. A wrong code is refused; the right one signs you in and opens Overview.
+4. Open `#/setup` again: you are sent back to the app. From a private window the page goes to sign-in. Setup is closed for good (`curl -i -X POST http://127.0.0.1:8443/api/v1/setup/claim -H 'Content-Type: application/json' -d '{"token":"AAAA-BBBB-CCCC"}'` answers 404).
+
+**Sign-in and sessions**
+
+5. Click **admin · sign out** (top right): you land on Sign in. Sign in with password + a code. The same code cannot be used twice: sign out and in again within the same 30 seconds with the same code, and it is refused. Wait for the next code.
+6. Five wrong attempts in a row: "Too many attempts. Try again in 30 seconds." (and a longer wait after more).
+7. In the browser dev tools (Application → Cookies): `opsbox_session` is **HttpOnly** and **SameSite=Strict**; `opsbox_csrf` is readable. `Secure` appears only behind an HTTPS proxy.
+8. Security → Sign out all sessions ends every session, including this one.
+
+**Command line** (in the VM):
+
+```sh
+sudo opsbox status                          # still ok / ok
+sudo opsbox audit verify                    # "Audit log is intact: N entries"
+sudo opsbox user unlock admin               # clears a lockout
+sudo opsbox user reset-2fa admin            # forget the authenticator, end sessions
+# Sign in with the password only: you are taken to a page that sets up a new authenticator.
+echo 'a new long passphrase' | sudo opsbox user password admin
+sudo opsbox setup-token                     # refuses: an admin exists, setup is closed
+```
+
+**Check the files and the audit log**
+
+```sh
+ls -l /etc/opsbox/master.key                # -rw------- root root 32 bytes (created on first sign-up)
+sudo -u opsbox sqlite3 /var/lib/opsbox/opsbox.db "select seq,actor,action,result from audit order by seq" | tail
+```
+
+You should see `setup.*`, `auth.login` (ok and denied), `auth.lockout`, `user.*` entries, and `audit verify` stays intact.

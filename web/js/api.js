@@ -34,6 +34,8 @@ function pickMode() {
 // this set get a "sample data" badge (main.js); the badge disappears by itself.
 const REAL = new Set([
   'getHost',
+  'auth.session', 'auth.login', 'auth.logout', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
+  'auth.enroll', 'auth.enrollConfirm', 'signOutAll',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -57,12 +59,13 @@ export const PAGE_USES = {
   containers: ['containerAction', 'containerLogs', 'listContainers', 'listDocker'],
   files: ['chmod', 'listDir', 'mkdir', 'readFile', 'removePaths', 'upload', 'writeFile'],
   login: ['auth.login'],
+  enroll: ['auth.enroll', 'auth.enrollConfirm'],
   newservice: ['getRepos'],
   overview: ['getAttention', 'getHost', 'getMetrics'],
   recovery: ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'setAllowIps', 'signOutAll', 'toggleCheck'],
   settings: ['createToken', 'disconnectGithub', 'exportConfig', 'getSettings', 'growFs', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setSwap'],
-  setup: ['auth.claim'],
+  setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['TEMPLATES', 'addTemplate', 'deployCompose'],
   terminal: ['HOSTS', 'termExec'],
@@ -78,15 +81,25 @@ export function usageFor(page) {
 // Run `fn` without attributing its API calls to the page (status bar, polling).
 export function quiet(fn) { const was = untracked; untracked = true; try { return fn(); } finally { untracked = was; } }
 
+function cookie(name) {
+  try { return document.cookie.split('; ').find((c) => c.startsWith(name + '='))?.slice(name.length + 1) || ''; } catch { return ''; }
+}
+
 // One fetch helper for every real endpoint. Errors carry the server's own
 // sentence (docs/BACKEND_SPEC.md 6.1), which the UI shows verbatim.
 async function http(path, { method = 'GET', body } = {}) {
   let res;
   try {
+    // Double-submit CSRF: the page echoes the (script-readable) cookie in a header.
+    const csrf = method === 'GET' ? '' : cookie('opsbox_csrf');
     res = await fetch('/api/v1' + path, {
       method,
       credentials: 'same-origin',
-      headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: {
+        Accept: 'application/json',
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(csrf ? { 'X-Opsbox-CSRF': csrf } : {}),
+      },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -97,6 +110,10 @@ async function http(path, { method = 'GET', body } = {}) {
   if (!res.ok) {
     const err = new Error(data?.error?.message || `The server answered with an error (HTTP ${res.status}).`);
     err.code = data?.error?.code; err.field = data?.error?.field; err.status = res.status;
+    // The session ended (expired, signed out elsewhere): let the app send the person to sign in.
+    if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/session')) {
+      try { dispatchEvent(new Event('opsbox:unauthorized')); } catch { /* no window */ }
+    }
     throw err;
   }
   return data;
@@ -226,16 +243,56 @@ function audit(action, user = 'admin', warn = false) { S.audit.unshift({ t: now(
 
 // ---------------------------------------------------------------- auth
 export const auth = {
+  // GET /api/v1/session -> { authenticated, enrollRequired, setupRequired, user?, role? }
+  async session() {
+    if (real('auth.session')) return http('/session');
+    sample('auth.session'); return { authenticated: !!sessionStorage.getItem('opsbox.user'), enrollRequired: false, setupRequired: false, user: sessionStorage.getItem('opsbox.user') };
+  },
+  // POST /api/v1/auth/login -> { user, role, enrollRequired }
   async login(user, pass, code) {
-    await lag(300);
+    if (real('auth.login')) return http('/auth/login', { method: 'POST', body: { username: user, password: pass, code: (code || '').trim() } });
+    sample('auth.login'); await lag(300);
     if (!user || !pass) throw new Error('Enter a username and password.');
     if (!/^\d{6}$/.test(code || '')) throw new Error('Enter the 6-digit authentication code.');
-    audit('sign-in', user); return { user };
+    audit('sign-in', user); return { user, role: 'admin', enrollRequired: false };
   },
+  // POST /api/v1/auth/logout
+  async logout() {
+    if (real('auth.logout')) return http('/auth/logout', { method: 'POST' });
+    sample('auth.logout'); return { ok: true };
+  },
+  // POST /api/v1/setup/claim
   async claim(token) {
-    await lag(300);
+    if (real('auth.claim')) return http('/setup/claim', { method: 'POST', body: { token: (token || '').trim() } });
+    sample('auth.claim'); await lag(300);
     if (!/^[A-Z0-9]{4}(-[A-Z0-9]{4}){2}$/i.test((token || '').trim())) throw new Error('That token does not look right. Format: XXXX-XXXX-XXXX');
     return { ok: true };
+  },
+  // POST /api/v1/setup/admin -> { secret, otpauthUri, account }
+  async setupAdmin(username, password) {
+    if (real('auth.setupAdmin')) return http('/setup/admin', { method: 'POST', body: { username, password } });
+    sample('auth.setupAdmin'); await lag(300);
+    return { secret: 'JBSWY3DPEHPK3PXP', otpauthUri: `otpauth://totp/opsbox:${username}?secret=JBSWY3DPEHPK3PXP`, account: username };
+  },
+  // POST /api/v1/setup/totp/confirm -> signed in
+  async setupConfirm(code) {
+    if (real('auth.setupConfirm')) return http('/setup/totp/confirm', { method: 'POST', body: { code: (code || '').trim() } });
+    sample('auth.setupConfirm'); await lag(300);
+    if (!/^\d{6}$/.test(code || '')) throw new Error('Enter the 6-digit code from your authenticator app.');
+    return { user: 'admin', role: 'admin' };
+  },
+  // POST /api/v1/auth/totp/enroll -> { secret, otpauthUri, account }   (enrolment sessions only)
+  async enroll() {
+    if (real('auth.enroll')) return http('/auth/totp/enroll', { method: 'POST' });
+    sample('auth.enroll'); await lag(200);
+    return { secret: 'JBSWY3DPEHPK3PXP', otpauthUri: 'otpauth://totp/opsbox:admin?secret=JBSWY3DPEHPK3PXP', account: 'admin' };
+  },
+  // POST /api/v1/auth/totp/confirm -> full session
+  async enrollConfirm(code) {
+    if (real('auth.enrollConfirm')) return http('/auth/totp/confirm', { method: 'POST', body: { code: (code || '').trim() } });
+    sample('auth.enrollConfirm'); await lag(300);
+    if (!/^\d{6}$/.test(code || '')) throw new Error('Enter the 6-digit code from your authenticator app.');
+    return { user: 'admin', role: 'admin' };
   },
 };
 
@@ -424,7 +481,10 @@ export async function setAllowIps(v) { sample('setAllowIps');
   if (bad) throw new Error(`"${bad}" is not a valid IP or CIDR.`); S.allowIps = v; audit('update allowed IPs');
 }
 export async function inviteUser(name) { sample('inviteUser'); await lag(250); if (!/^[a-z][a-z0-9._-]{2,}$/.test(name)) throw new Error('Username: at least 3 characters, lowercase.'); S.users.push({ name, role: 'Deploy and view logs, no terminal', tfa: false }); audit(`invite ${name}`); }
-export async function signOutAll() { sample('signOutAll'); await lag(300); audit('sign out all sessions'); }
+export async function signOutAll() {
+  if (real('signOutAll')) return http('/auth/sessions/revoke-all', { method: 'POST' }); // POST /api/v1/auth/sessions/revoke-all
+  sample('signOutAll'); await lag(300); audit('sign out all sessions');
+}
 
 // ---------------------------------------------------------------- recovery
 export async function getRecovery() { sample('getRecovery');
