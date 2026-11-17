@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{AuditAction, Cli, Command};
 use crate::config::{Config, Overrides};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -54,6 +54,20 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             logging::init(&config)?;
             cmd::serve::run(config)?;
+        }
+        Command::SetupToken => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            cmd::admin::setup_token(&config)?;
+        }
+        Command::User { action } => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            cmd::admin::user(&config, action)?;
+        }
+        Command::Audit {
+            action: AuditAction::Verify,
+        } => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            return Ok(ok_or_failure(cmd::admin::audit_verify(&config)?));
         }
         Command::Priv(_) => {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;

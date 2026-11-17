@@ -1,0 +1,384 @@
+//! Who is calling: cookies, role checks, CSRF and Origin checks.
+//!
+//! A handler declares what it needs by taking one of the extractors [`Viewer`],
+//! [`Deployer`] or [`Admin`] as a parameter. The extractor authenticates the
+//! session, refuses roles that are too weak and, for anything that changes state,
+//! verifies the CSRF token and the Origin header. A handler that takes none of them
+//! is public; there is no way to forget the check on a handler that takes one.
+
+use std::net::{IpAddr, SocketAddr};
+
+use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::http::header::{COOKIE, HOST, ORIGIN, SET_COOKIE};
+use axum::http::request::Parts;
+use axum::http::{HeaderMap, HeaderValue, Method};
+use axum::response::{AppendHeaders, IntoResponseParts};
+use opsbox_auth::tokens::{self, csrf_token};
+use opsbox_auth::{Principal, SessionKindView};
+use opsbox_proto::{ErrorCode, Role};
+
+use crate::{AppState, HttpError};
+
+pub const SESSION_COOKIE: &str = "opsbox_session";
+pub const CSRF_COOKIE: &str = "opsbox_csrf";
+pub const SETUP_COOKIE: &str = "opsbox_setup";
+pub const CSRF_HEADER: &str = "x-opsbox-csrf";
+
+/// When to mark cookies `Secure` (browsers then send them over HTTPS only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecureCookies {
+    /// When the request came through an HTTPS proxy (`X-Forwarded-Proto: https`).
+    Auto,
+    Always,
+    Never,
+}
+
+pub fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find_map(|(k, v)| (k == name).then_some(v))
+}
+
+fn is_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("https"))
+}
+
+/// Cookie attributes shared by all of ours.
+fn attrs(
+    secure: SecureCookies,
+    headers: &HeaderMap,
+    http_only: bool,
+    max_age: i64,
+    path: &str,
+) -> String {
+    let mut s = format!("; Path={path}; SameSite=Strict; Max-Age={max_age}");
+    if http_only {
+        s.push_str("; HttpOnly");
+    }
+    if secure == SecureCookies::Always || (secure == SecureCookies::Auto && is_https(headers)) {
+        s.push_str("; Secure");
+    }
+    s
+}
+
+fn header(value: String) -> HeaderValue {
+    // Tokens are base64url or hex and attribute text is ASCII.
+    HeaderValue::from_str(&value).expect("cookie is plain ASCII")
+}
+
+/// `Set-Cookie` headers that start a session: the secret cookie (not readable by
+/// scripts) and the CSRF cookie (read by the page and sent back in a header).
+pub fn session_cookies(
+    secure: SecureCookies,
+    req_headers: &HeaderMap,
+    token: &str,
+    max_age: i64,
+) -> impl IntoResponseParts + use<> {
+    AppendHeaders([
+        (
+            SET_COOKIE,
+            header(format!(
+                "{SESSION_COOKIE}={token}{}",
+                attrs(secure, req_headers, true, max_age, "/")
+            )),
+        ),
+        (
+            SET_COOKIE,
+            header(format!(
+                "{CSRF_COOKIE}={}{}",
+                csrf_token(token),
+                attrs(secure, req_headers, false, max_age, "/")
+            )),
+        ),
+    ])
+}
+
+pub fn clear_session_cookies(
+    secure: SecureCookies,
+    req_headers: &HeaderMap,
+) -> impl IntoResponseParts + use<> {
+    AppendHeaders([
+        (
+            SET_COOKIE,
+            header(format!(
+                "{SESSION_COOKIE}={}",
+                attrs(secure, req_headers, true, 0, "/")
+            )),
+        ),
+        (
+            SET_COOKIE,
+            header(format!(
+                "{CSRF_COOKIE}={}",
+                attrs(secure, req_headers, false, 0, "/")
+            )),
+        ),
+    ])
+}
+
+/// The first-run setup cookie only goes to the setup endpoints.
+pub fn setup_cookie(
+    secure: SecureCookies,
+    req_headers: &HeaderMap,
+    token: &str,
+    max_age: i64,
+) -> impl IntoResponseParts + use<> {
+    AppendHeaders([(
+        SET_COOKIE,
+        header(format!(
+            "{SETUP_COOKIE}={token}{}",
+            attrs(secure, req_headers, true, max_age, "/api/v1/setup")
+        )),
+    )])
+}
+
+/// The caller's address. Behind a local proxy the address comes from
+/// `X-Forwarded-For` (its rightmost entry, the one the proxy added); otherwise it is
+/// the TCP peer. Unknown in tests that call the router directly.
+pub fn client_ip(parts: &Parts) -> String {
+    let peer = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip());
+    if peer.is_some_and(|ip| ip.is_loopback())
+        && let Some(fwd) = parts
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.rsplit(',').next())
+            .and_then(|v| v.trim().parse::<IpAddr>().ok())
+    {
+        return fwd.to_string();
+    }
+    peer.map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
+}
+
+pub fn user_agent(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// A browser sends `Origin` on every cross-site request. It must name this server.
+pub fn origin_matches_host(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return false;
+    };
+    let authority = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"));
+    let host = headers.get(HOST).and_then(|v| v.to_str().ok());
+    matches!((authority, host), (Some(a), Some(h)) if a.eq_ignore_ascii_case(h))
+}
+
+fn forbidden(message: &str) -> HttpError {
+    HttpError::new(ErrorCode::Forbidden, message)
+}
+
+fn unauthorized() -> HttpError {
+    HttpError::new(ErrorCode::Unauthorized, "Sign in to continue.")
+}
+
+fn is_safe(method: &Method) -> bool {
+    matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
+}
+
+/// Pre-login requests (sign in, setup) have no session to protect, but a page on
+/// another site must not be able to submit them from a visitor's browser.
+pub fn check_origin_if_present(headers: &HeaderMap) -> Result<(), HttpError> {
+    if headers.contains_key(ORIGIN) && !origin_matches_host(headers) {
+        return Err(forbidden(
+            "This request came from another site and was refused.",
+        ));
+    }
+    Ok(())
+}
+
+/// Authenticate the caller with `role` at least, applying CSRF rules to unsafe methods.
+async fn authorize(
+    parts: &mut Parts,
+    state: &AppState,
+    role: Role,
+    allow_enrol: bool,
+) -> Result<Principal, HttpError> {
+    let token = cookie_value(&parts.headers, SESSION_COOKIE)
+        .ok_or_else(unauthorized)?
+        .to_owned();
+    let who = {
+        let auth = state.auth.clone();
+        let t = token.clone();
+        tokio::task::spawn_blocking(move || auth.authenticate(&t))
+            .await
+            .map_err(|_| HttpError::internal())??
+    }
+    .ok_or_else(unauthorized)?;
+
+    if who.kind == SessionKindView::Enroll && !allow_enrol {
+        return Err(forbidden(
+            "Finish setting up two-factor authentication first.",
+        ));
+    }
+    if !who.user.role.allows(role) {
+        return Err(forbidden("Your account is not allowed to do this."));
+    }
+    if !is_safe(&parts.method) {
+        let sent = parts
+            .headers
+            .get(CSRF_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !tokens::ct_eq(sent, &csrf_token(&token)) || !origin_matches_host(&parts.headers) {
+            return Err(forbidden(
+                "The request could not be verified. Reload the page and try again.",
+            ));
+        }
+    }
+    Ok(who)
+}
+
+macro_rules! role_extractor {
+    ($(#[$doc:meta])* $name:ident, $role:expr) => {
+        $(#[$doc])*
+        pub struct $name(pub Principal);
+
+        impl FromRequestParts<AppState> for $name {
+            type Rejection = HttpError;
+            async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, HttpError> {
+                authorize(parts, state, $role, false).await.map($name)
+            }
+        }
+    };
+}
+
+role_extractor!(
+    /// Any signed-in account (read-only access is enough).
+    Viewer,
+    Role::Viewer
+);
+role_extractor!(
+    /// Deployers and admins.
+    Deployer,
+    Role::Deployer
+);
+role_extractor!(
+    /// Admins only.
+    Admin,
+    Role::Admin
+);
+
+/// A session that may only finish two-factor enrolment.
+pub struct Enrolling(pub Principal);
+
+impl FromRequestParts<AppState> for Enrolling {
+    type Rejection = HttpError;
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, HttpError> {
+        let who = authorize(parts, state, Role::Viewer, true).await?;
+        if who.kind != SessionKindView::Enroll {
+            return Err(forbidden("Two-factor authentication is already set up."));
+        }
+        Ok(Self(who))
+    }
+}
+
+/// The caller's address and user agent, for audit entries and sessions.
+pub struct Client {
+    pub ip: String,
+    pub user_agent: Option<String>,
+    pub headers: HeaderMap,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Client {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
+        Ok(Self {
+            ip: client_ip(parts),
+            user_agent: user_agent(&parts.headers),
+            headers: parts.headers.clone(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.append(*k, HeaderValue::from_str(v).unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn cookies_are_found_by_exact_name() {
+        let h = headers(&[
+            ("cookie", "a=1; opsbox_session=tok; opsbox_session_x=no"),
+            ("cookie", "b=2"),
+        ]);
+        assert_eq!(cookie_value(&h, "opsbox_session"), Some("tok"));
+        assert_eq!(cookie_value(&h, "b"), Some("2"));
+        assert_eq!(cookie_value(&h, "missing"), None);
+    }
+
+    #[test]
+    fn origin_must_name_this_host() {
+        let ok = headers(&[
+            ("origin", "http://127.0.0.1:8443"),
+            ("host", "127.0.0.1:8443"),
+        ]);
+        assert!(origin_matches_host(&ok));
+        assert!(origin_matches_host(&headers(&[
+            ("origin", "https://Panel.Example.com"),
+            ("host", "panel.example.com")
+        ])));
+        for (o, h) in [
+            ("http://evil.example", "127.0.0.1:8443"),
+            ("http://127.0.0.1:8443.evil.example", "127.0.0.1:8443"),
+            ("null", "127.0.0.1:8443"),
+            ("ftp://127.0.0.1:8443", "127.0.0.1:8443"),
+        ] {
+            assert!(
+                !origin_matches_host(&headers(&[("origin", o), ("host", h)])),
+                "{o} vs {h}"
+            );
+        }
+        assert!(
+            !origin_matches_host(&headers(&[("host", "127.0.0.1:8443")])),
+            "missing Origin"
+        );
+    }
+
+    #[test]
+    fn pre_login_origin_check_allows_absent_but_not_foreign() {
+        assert!(check_origin_if_present(&headers(&[("host", "x")])).is_ok());
+        assert!(
+            check_origin_if_present(&headers(&[("origin", "http://x"), ("host", "x")])).is_ok()
+        );
+        assert!(
+            check_origin_if_present(&headers(&[("origin", "http://evil"), ("host", "x")])).is_err()
+        );
+    }
+
+    #[test]
+    fn secure_attribute_follows_the_policy() {
+        let plain = HeaderMap::new();
+        let via_https = headers(&[("x-forwarded-proto", "https")]);
+        assert!(!attrs(SecureCookies::Auto, &plain, true, 10, "/").contains("Secure"));
+        assert!(attrs(SecureCookies::Auto, &via_https, true, 10, "/").contains("Secure"));
+        assert!(attrs(SecureCookies::Always, &plain, true, 10, "/").contains("Secure"));
+        assert!(!attrs(SecureCookies::Never, &via_https, true, 10, "/").contains("Secure"));
+        let a = attrs(SecureCookies::Never, &plain, true, 10, "/");
+        assert!(
+            a.contains("HttpOnly") && a.contains("SameSite=Strict") && a.contains("Max-Age=10")
+        );
+        assert!(!attrs(SecureCookies::Never, &plain, false, 10, "/").contains("HttpOnly"));
+    }
+}

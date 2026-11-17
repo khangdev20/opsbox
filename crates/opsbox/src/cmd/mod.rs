@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod install;
 pub mod privileged;
 pub mod selftest;

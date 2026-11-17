@@ -29,6 +29,7 @@ pub fn run(config: Config) -> Result<()> {
     let mut priv_config = PrivConfig::new(&config.priv_socket, uids);
     priv_config.socket_mode = config.socket_mode;
     priv_config.socket_group.clone_from(&config.socket_group);
+    priv_config.master_key_path.clone_from(&config.master_key);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

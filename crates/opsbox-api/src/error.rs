@@ -3,17 +3,18 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use opsbox_auth::AuthError;
 use opsbox_priv::ClientError;
 use opsbox_proto::{ApiError, ErrorCode, PrivErrorCode};
 use tracing::error;
 
 /// An error ready to be sent: status code plus the JSON body.
 #[derive(Debug)]
-pub struct HttpError(pub ApiError);
+pub struct HttpError(pub ApiError, pub Option<u64>);
 
 impl HttpError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self(ApiError::new(code, message))
+        Self(ApiError::new(code, message), None)
     }
 
     pub fn not_found() -> Self {
@@ -32,7 +33,11 @@ impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let status = StatusCode::from_u16(self.0.error.code.http_status())
             .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        (status, Json(self.0)).into_response()
+        let mut response = (status, Json(self.0)).into_response();
+        if let Some(secs) = self.1 {
+            response.headers_mut().insert("retry-after", secs.into());
+        }
+        response
     }
 }
 
@@ -64,4 +69,27 @@ pub(crate) async fn method_not_allowed() -> HttpError {
         ErrorCode::MethodNotAllowed,
         "This address does not accept that kind of request.",
     )
+}
+
+impl From<AuthError> for HttpError {
+    fn from(e: AuthError) -> Self {
+        match e {
+            AuthError::InvalidCredentials => Self::new(ErrorCode::Unauthorized, e.to_string()),
+            AuthError::Locked(secs) => {
+                let mut err = Self::new(ErrorCode::RateLimited, e.to_string());
+                err.1 = Some(secs);
+                err
+            }
+            AuthError::Invalid { field, message } => Self(
+                ApiError::new(ErrorCode::Validation, message).with_field(field),
+                None,
+            ),
+            AuthError::NotFound => Self::not_found(),
+            AuthError::HelperUnavailable => Self::new(ErrorCode::Unavailable, e.to_string()),
+            AuthError::Internal(detail) => {
+                error!(detail, "internal auth error");
+                Self::internal()
+            }
+        }
+    }
 }

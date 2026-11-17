@@ -848,3 +848,34 @@ async fn the_helper_being_down_is_reported_not_treated_as_a_bad_code() {
     // It must not count as a failed guess either.
     assert_eq!(env.store.failures_for_user("admin", 0).unwrap().0, 0);
 }
+
+#[tokio::test]
+async fn losing_the_second_factor_never_reopens_first_run_setup() {
+    // Regression: reset-2fa leaves the only admin "not enrolled", which used to make
+    // setup look necessary again, letting a setup token replace that admin.
+    let env = Env::new().await;
+    env.setup_admin().await;
+    env.auth.reset_2fa("admin", "cli:root").unwrap();
+
+    assert!(!env.auth.setup_required().unwrap());
+    assert!(matches!(
+        env.auth.issue_setup_token(),
+        Err(AuthError::NotFound)
+    ));
+    assert!(matches!(env.auth.ensure_setup_token(), Ok(None)));
+    assert!(matches!(
+        env.auth.claim_setup("AAAA-BBBB-CCCC", IP),
+        Err(AuthError::NotFound)
+    ));
+    assert!(matches!(
+        env.auth
+            .create_admin("r", "anything", "evil", PASSWORD, "h", IP)
+            .await,
+        Err(AuthError::NotFound)
+    ));
+    assert_eq!(
+        env.store.list_users().unwrap().len(),
+        1,
+        "the admin was not replaced"
+    );
+}

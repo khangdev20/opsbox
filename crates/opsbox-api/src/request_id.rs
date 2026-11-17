@@ -33,6 +33,11 @@ pub(crate) async fn middleware(mut req: Request, next: Next) -> Response {
     if let Ok(value) = HeaderValue::from_str(&id) {
         response.headers_mut().insert(HEADER, value);
     }
+    if path.starts_with("/api/") || path == "/readyz" || path == "/healthz" {
+        response
+            .headers_mut()
+            .insert("cache-control", HeaderValue::from_static("no-store"));
+    }
     let status = response.status().as_u16();
     let latency_ms = started.elapsed().as_secs_f64() * 1000.0;
     span.in_scope(|| {

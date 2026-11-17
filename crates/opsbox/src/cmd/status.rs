@@ -299,11 +299,13 @@ mod tests {
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listen = listener.local_addr().unwrap();
-        let state = AppState {
-            store: Arc::new(Store::open_in_memory().unwrap()),
-            priv_client: PrivClient::new(&socket),
-            version: VERSION,
-        };
+        let state = AppState::new(
+            Arc::new(Store::open_in_memory().unwrap()),
+            PrivClient::new(&socket),
+            VERSION,
+            opsbox_api::SecureCookies::Never,
+            opsbox_auth::AuthConfig::default(),
+        );
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(opsbox_api::serve(listener, state, async {
             let _ = rx.await;

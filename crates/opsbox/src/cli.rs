@@ -59,7 +59,7 @@ pub enum Command {
         #[command(subcommand)]
         action: WebAction,
     },
-    /// Print a new setup token if no admin exists
+    /// Print a new one-time setup token (only while no admin exists)
     SetupToken,
     /// Print a one-time code for safe mode
     RecoveryCode,
@@ -118,6 +118,9 @@ pub struct ServeArgs {
     /// SQLite database file [default: /var/lib/opsbox/opsbox.db]
     #[arg(long, env = "OPSBOX_DB", value_name = "PATH")]
     pub db: Option<PathBuf>,
+    /// Mark cookies Secure: auto (behind an HTTPS proxy), always or never [default: auto]
+    #[arg(long, env = "OPSBOX_SECURE_COOKIES", value_enum)]
+    pub secure_cookies: Option<crate::config::SecureCookiesSetting>,
 }
 
 #[derive(Debug, Args)]
@@ -147,6 +150,9 @@ pub struct PrivArgs {
     /// Group that owns the socket; empty for none [default: opsbox]
     #[arg(long, env = "OPSBOX_PRIV_SOCKET_GROUP", value_name = "GROUP")]
     pub socket_group: Option<String>,
+    /// File with the key that seals secrets [default: /etc/opsbox/master.key]
+    #[arg(long, env = "OPSBOX_PRIV_MASTER_KEY", value_name = "PATH")]
+    pub master_key: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -217,9 +223,10 @@ impl Command {
             | Self::Status(_)
             | Self::Version
             | Self::Install(_)
-            | Self::Selftest => {
-                return None;
-            }
+            | Self::Selftest
+            | Self::SetupToken
+            | Self::User { .. }
+            | Self::Audit { .. } => return None,
             Self::Pair => "pair",
             Self::Web {
                 action: WebAction::Enable { .. },
@@ -227,17 +234,7 @@ impl Command {
             Self::Web {
                 action: WebAction::Disable,
             } => "web disable",
-            Self::SetupToken => "setup-token",
             Self::RecoveryCode => "recovery-code",
-            Self::User {
-                action: UserAction::Reset2fa { .. },
-            } => "user reset-2fa",
-            Self::User {
-                action: UserAction::Unlock { .. },
-            } => "user unlock",
-            Self::User {
-                action: UserAction::Password { .. },
-            } => "user password",
             Self::Update { .. } => "update",
             Self::Rollback => "rollback",
             Self::Backup {
@@ -247,9 +244,6 @@ impl Command {
                 action: BackupAction::List,
             } => "backup list",
             Self::Restore { .. } => "restore",
-            Self::Audit {
-                action: AuditAction::Verify,
-            } => "audit verify",
             Self::Doctor => "doctor",
             Self::Uninstall { .. } => "uninstall",
             Self::Proxy => "proxy",
@@ -323,9 +317,14 @@ mod tests {
         }
         assert_eq!(parse("doctor").unimplemented_name(), Some("doctor"));
         assert_eq!(parse("web enable").unimplemented_name(), Some("web enable"));
-        assert_eq!(
-            parse("audit verify").unimplemented_name(),
-            Some("audit verify")
-        );
+        for done in [
+            "setup-token",
+            "user unlock a",
+            "user reset-2fa a",
+            "user password a",
+            "audit verify",
+        ] {
+            assert_eq!(parse(done).unimplemented_name(), None, "{done}");
+        }
     }
 }

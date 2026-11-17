@@ -24,12 +24,23 @@ pub enum LogFormat {
     Json,
 }
 
+/// When session cookies get the `Secure` attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum SecureCookiesSetting {
+    /// Behind an HTTPS proxy (`X-Forwarded-Proto: https`).
+    Auto,
+    Always,
+    Never,
+}
+
 // ------------------------------------------------------------------ file model
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct FileConfig {
     api: ApiSection,
+    auth: AuthSection,
     #[serde(rename = "priv")]
     privileged: PrivSection,
     store: StoreSection,
@@ -40,12 +51,14 @@ struct FileConfig {
 #[serde(default, deny_unknown_fields)]
 struct ApiSection {
     listen: SocketAddr,
+    secure_cookies: SecureCookiesSetting,
 }
 
 impl Default for ApiSection {
     fn default() -> Self {
         Self {
             listen: DEFAULT_LISTEN.parse().expect("valid default"),
+            secure_cookies: SecureCookiesSetting::Auto,
         }
     }
 }
@@ -58,6 +71,7 @@ struct PrivSection {
     allowed_uids: Vec<u32>,
     socket_mode: String,
     socket_group: String,
+    master_key: PathBuf,
 }
 
 impl Default for PrivSection {
@@ -69,6 +83,25 @@ impl Default for PrivSection {
             allowed_uids: Vec::new(),
             socket_mode: "0660".into(),
             socket_group: "opsbox".into(),
+            master_key: opsbox_priv::DEFAULT_MASTER_KEY_PATH.into(),
+        }
+    }
+}
+
+/// Password hashing cost (docs/BACKEND_SPEC.md 6.2: 64 MB, 3 passes). Lower it on a
+/// very small machine if a sign-in takes noticeably longer than a third of a second.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AuthSection {
+    argon2_memory_kib: u32,
+    argon2_iterations: u32,
+}
+
+impl Default for AuthSection {
+    fn default() -> Self {
+        Self {
+            argon2_memory_kib: 64 * 1024,
+            argon2_iterations: 3,
         }
     }
 }
@@ -113,6 +146,10 @@ pub struct Config {
     pub allowed_uids: Vec<u32>,
     pub socket_mode: u32,
     pub socket_group: Option<String>,
+    pub master_key: PathBuf,
+    pub secure_cookies: SecureCookiesSetting,
+    pub argon2_memory_kib: u32,
+    pub argon2_iterations: u32,
     pub db_path: PathBuf,
     pub log_level: String,
     pub log_format: LogFormat,
@@ -130,6 +167,8 @@ pub struct Overrides {
     pub allow_users: Vec<String>,
     pub socket_mode: Option<String>,
     pub socket_group: Option<String>,
+    pub master_key: Option<PathBuf>,
+    pub secure_cookies: Option<SecureCookiesSetting>,
     pub log_level: Option<String>,
     pub log_format: Option<LogFormat>,
 }
@@ -146,6 +185,7 @@ impl Overrides {
                 o.listen = a.listen;
                 o.priv_socket.clone_from(&a.socket);
                 o.db_path.clone_from(&a.db);
+                o.secure_cookies = a.secure_cookies;
             }
             Command::Priv(a) => {
                 o.priv_socket.clone_from(&a.socket);
@@ -153,6 +193,7 @@ impl Overrides {
                 o.allow_users.clone_from(&a.allow_users);
                 o.socket_mode.clone_from(&a.socket_mode);
                 o.socket_group.clone_from(&a.socket_group);
+                o.master_key.clone_from(&a.master_key);
             }
             Command::Status(a) => {
                 o.listen = a.listen;
@@ -188,6 +229,10 @@ impl Config {
             allowed_uids,
             socket_mode: parse_mode(&mode)?,
             socket_group: (!socket_group.is_empty()).then_some(socket_group),
+            master_key: o.master_key.unwrap_or(file.privileged.master_key),
+            secure_cookies: o.secure_cookies.unwrap_or(file.api.secure_cookies),
+            argon2_memory_kib: file.auth.argon2_memory_kib,
+            argon2_iterations: file.auth.argon2_iterations,
             db_path: o.db_path.unwrap_or(file.store.db_path),
             log_level: o.log_level.unwrap_or(file.log.level),
             log_format: o.log_format.unwrap_or(file.log.format),
@@ -245,6 +290,9 @@ mod tests {
         assert_eq!(c.socket_group.as_deref(), Some("opsbox"));
         assert_eq!(c.log_level, "info");
         assert_eq!(c.log_format, LogFormat::Text);
+        assert_eq!(c.master_key, Path::new("/etc/opsbox/master.key"));
+        assert_eq!(c.secure_cookies, SecureCookiesSetting::Auto);
+        assert_eq!((c.argon2_memory_kib, c.argon2_iterations), (65536, 3));
     }
 
     #[test]

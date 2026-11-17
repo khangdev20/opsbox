@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use opsbox_api::AppState;
+use opsbox_api::{AppState, SecureCookies};
+use opsbox_auth::AuthConfig;
 use opsbox_priv::PrivClient;
 use opsbox_store::{ActorKind, AuditResult, NewAudit, Store};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
 use crate::VERSION;
-use crate::config::Config;
+use crate::config::{Config, SecureCookiesSetting};
 
 pub fn run(config: Config) -> Result<()> {
     // Two workers are plenty for a loopback control plane and keep idle memory low.
@@ -57,14 +58,46 @@ async fn serve(config: Config) -> Result<()> {
         "opsbox serve started"
     );
 
-    let state = AppState {
-        store,
-        priv_client: PrivClient::new(&config.priv_socket),
-        version: VERSION,
+    let mut auth_cfg = AuthConfig::default();
+    auth_cfg.hash_params.memory_kib = config.argon2_memory_kib;
+    auth_cfg.hash_params.iterations = config.argon2_iterations;
+    let secure = match config.secure_cookies {
+        SecureCookiesSetting::Auto => SecureCookies::Auto,
+        SecureCookiesSetting::Always => SecureCookies::Always,
+        SecureCookiesSetting::Never => SecureCookies::Never,
     };
+    let state = AppState::new(
+        store,
+        PrivClient::new(&config.priv_socket),
+        VERSION,
+        secure,
+        auth_cfg,
+    );
+
+    // First run: make sure there is a setup token and show it where the person who
+    // installed opsbox will look: the console and the journal.
+    if let Some(token) = state
+        .auth
+        .ensure_setup_token()
+        .context("cannot create the setup token")?
+    {
+        announce_setup_token(&config, &token);
+    }
+
     opsbox_api::serve(listener, state, super::shutdown_signal())
         .await
         .context("the HTTP server failed")?;
     info!("opsbox serve stopped");
     Ok(())
+}
+
+/// Write the setup banner to standard error (the journal) and, if possible, to the
+/// system console, as docs/BACKEND_SPEC.md 6.3 asks.
+fn announce_setup_token(config: &Config, token: &str) {
+    let banner = super::admin::setup_banner(config, token);
+    eprint!("{banner}");
+    if let Ok(mut console) = std::fs::OpenOptions::new().write(true).open("/dev/console") {
+        use std::io::Write;
+        let _ = console.write_all(banner.as_bytes());
+    }
 }

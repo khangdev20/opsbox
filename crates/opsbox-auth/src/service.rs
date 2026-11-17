@@ -16,6 +16,9 @@ use crate::tokens::{self, csrf_token, hash_token, new_token};
 
 const SETUP_TOKEN_KEY: &str = "setup.token";
 const SETUP_SESSION_KEY: &str = "setup.session";
+/// Set once the first admin has finished enrolment. After that, setup never reopens,
+/// even if that admin later loses their second factor (`opsbox user reset-2fa`).
+const SETUP_COMPLETE_KEY: &str = "setup.complete";
 const SETUP_TOKEN_TTL: i64 = 60 * 60;
 const SETUP_SESSION_TTL: i64 = 30 * 60;
 /// Sessions that can only finish two-factor enrolment are short.
@@ -620,9 +623,15 @@ impl Auth {
 
     // --------------------------------------------------------------- setup
 
-    /// First run: no admin has finished two-factor enrolment yet.
+    /// First run: setup has not been completed. It is completed exactly once, when an
+    /// admin confirms their first two-factor code, and never reopens afterwards.
     pub fn setup_required(&self) -> Result<bool, AuthError> {
-        Ok(self.inner.store.enrolled_admin_count()? == 0)
+        let done = self
+            .inner
+            .store
+            .get_setting(SETUP_COMPLETE_KEY)?
+            .is_some_and(|v| v == json!(true));
+        Ok(!done && self.inner.store.enrolled_admin_count()? == 0)
     }
 
     /// Make a new single-use token, valid one hour. Any earlier token or setup
@@ -809,6 +818,9 @@ impl Auth {
         self.confirm_totp(request_id, &user, code, ip).await?;
         self.inner.store.delete_setting(SETUP_SESSION_KEY)?;
         self.inner.store.delete_setting(SETUP_TOKEN_KEY)?;
+        self.inner
+            .store
+            .set_setting(SETUP_COMPLETE_KEY, &json!(true))?;
         let issued = self.issue(&user, SessionKind::Web, Some(ip), ua)?;
         self.audit_user(
             &user,
