@@ -10,7 +10,46 @@ const hhmm = (t = now()) => new Date(t).toTimeString().slice(0, 5);
 const hhmmss = (t = now()) => new Date(t).toTimeString().slice(0, 8);
 const MIN = 60000, HOUR = 3600000, DAY = 86400000;
 
-export const MODE = 'mock';
+// How this module gets its data.
+//   'mock'  in-memory demo data (default; works from any static file server).
+//   'http'  the opsbox agent on the same origin. Phase 0: only getHost() is real,
+//           everything else keeps using the mock until its endpoint exists.
+// To try http mode without editing this file, open the UI with ?mode=http
+// (and ?mode=mock to go back).
+const DEFAULT_MODE = 'mock';
+export const MODE = pickMode();
+
+function pickMode() {
+  try {
+    const wanted = new URLSearchParams(location.search).get('mode');
+    if (wanted === 'http' || wanted === 'mock') return wanted;
+  } catch { /* no location (tests, workers): use the default */ }
+  return DEFAULT_MODE;
+}
+
+// One fetch helper for every real endpoint. Errors carry the server's own
+// sentence (docs/BACKEND_SPEC.md 6.1), which the UI shows verbatim.
+async function http(path, { method = 'GET', body } = {}) {
+  let res;
+  try {
+    res = await fetch('/api/v1' + path, {
+      method,
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    throw new Error('Cannot reach the opsbox server. Check that it is running.');
+  }
+  let data = null;
+  try { data = await res.json(); } catch { /* empty or non-JSON body */ }
+  if (!res.ok) {
+    const err = new Error(data?.error?.message || `The server answered with an error (HTTP ${res.status}).`);
+    err.code = data?.error?.code; err.field = data?.error?.field; err.status = res.status;
+    throw err;
+  }
+  return data;
+}
 
 // ---------------------------------------------------------------- state
 const S = {
@@ -161,7 +200,10 @@ export function tick() {
   S.procs.forEach((p) => { p.cpu = Math.max(0.1, walk(p.cpu, p.cpu * .4 + .2, 0.1, 30)); });
   S.containers.forEach((c) => { if (c.state === 'running') c.cpu = Math.max(0.1, walk(c.cpu, c.cpu * .3 + .2, 0.1, 40)); });
 }
-export async function getHost() { await lag(30); return clone(S.host); }
+export async function getHost() {
+  if (MODE === 'http') return http('/host'); // GET /api/v1/host: name, os, kernel, cores, memTotal (GB), upDays, version
+  await lag(30); return clone(S.host);
+}
 export async function getMetrics() {
   const m = S.metrics;
   return { cpu: [...m.cpu], mem: [...m.mem], cpuNow: m.cpu[m.cpu.length - 1], memUsed: m.memUsed, memTotal: S.host.memTotal, cache: m.cache,
