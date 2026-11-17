@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    CommandOutcome, DirListing, FileContent, FirewallChange, FirewallState, HostInfo, JobInfo,
-    JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
-    PrivResponse, PrivResult, PtyFrame, RawSample, Secret, Staged, SystemFacts, SystemUser,
-    UnitActionKind, UnitInfo,
+    CleanupFreed, CleanupScan, CommandOutcome, DirListing, FileContent, FirewallChange,
+    FirewallState, HostInfo, JobInfo, JournalEntry, NewRule, PkgSelect, PkgState, PrivError,
+    PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, PtyFrame, RawSample, Secret, Staged,
+    SystemFacts, SystemUser, UnitActionKind, UnitInfo,
 };
 use tokio::net::{
     UnixStream,
@@ -520,6 +520,37 @@ impl PrivClient {
             o => Err(o),
         })
         .await
+    }
+
+    pub async fn cleanup_scan(&self, rid: &str) -> Result<CleanupScan, ClientError> {
+        self.expect(rid, None, PrivOp::CleanupScan, |r| match r {
+            PrivReply::Cleanup(s) => Ok(s),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn cleanup_run(
+        &self,
+        rid: &str,
+        actor: &str,
+        ids: &[String],
+    ) -> Result<Vec<CleanupFreed>, ClientError> {
+        let op = PrivOp::CleanupRun { ids: ids.to_vec() };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::CleanupFreed(f) => Ok(f),
+            o => Err(o),
+        })
+        .await
+    }
+
+    pub async fn cleanup_auto_set(
+        &self,
+        rid: &str,
+        actor: &str,
+        on: bool,
+    ) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::CleanupAutoSet { on }).await
     }
 
     /// Local accounts.

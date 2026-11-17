@@ -55,6 +55,7 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             logging::init(&config)?;
             cmd::serve::run(config)?;
         }
+        Command::Cleanup { .. } => return Ok(ok_or_failure(cmd::cleanup::run())),
         Command::SetupToken => {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             cmd::admin::setup_token(&config)?;

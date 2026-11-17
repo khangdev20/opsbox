@@ -25,7 +25,7 @@ use crate::{AppState, HttpError, RequestId};
 
 const MB: f64 = (1u64 << 20) as f64;
 
-fn invalid(field: &'static str, msg: &str) -> HttpError {
+pub(crate) fn invalid(field: &'static str, msg: &str) -> HttpError {
     HttpError(
         opsbox_proto::ApiError::new(ErrorCode::Validation, msg).with_field(field),
         None,
@@ -33,14 +33,14 @@ fn invalid(field: &'static str, msg: &str) -> HttpError {
 }
 
 /// A client for operations that can take minutes (installing packages, creating swap).
-fn patient(state: &AppState, secs: u64) -> PrivClient {
+pub(crate) fn patient(state: &AppState, secs: u64) -> PrivClient {
     state
         .priv_client
         .clone()
         .with_timeout(Duration::from_secs(secs))
 }
 
-fn audit(
+pub(crate) fn audit(
     state: &AppState,
     who: &Principal,
     ip: &str,
@@ -156,7 +156,7 @@ pub(crate) async fn install_updates(
 
 #[derive(Deserialize)]
 pub(crate) struct OnBody {
-    on: bool,
+    pub(crate) on: bool,
 }
 
 pub(crate) async fn set_auto_updates(

@@ -50,6 +50,12 @@ pub enum Command {
     Install(InstallArgs),
     /// Check that this binary works on this machine (used by the updater)
     Selftest,
+    /// Free disk space now: the safe set of the Cleanup page (run by the weekly timer; needs root)
+    Cleanup {
+        /// Only what is safe to run unattended (the default; there is no other mode yet)
+        #[arg(long)]
+        safe: bool,
+    },
 
     // ------------------------------------------------- not implemented yet
     /// Print a new pairing code
@@ -230,6 +236,7 @@ impl Command {
             | Self::Version
             | Self::Install(_)
             | Self::Selftest
+            | Self::Cleanup { .. }
             | Self::SetupToken
             | Self::User { .. }
             | Self::Audit { .. } => return None,

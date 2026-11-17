@@ -184,6 +184,16 @@ pub enum PrivOp {
         overwrite: bool,
         jail: Option<String>,
     },
+    /// Look for things that can be cleaned and estimate what each frees.
+    CleanupScan,
+    /// Clean the named things, in a fixed order. Unknown or unavailable ones are reported, not run.
+    CleanupRun {
+        ids: Vec<String>,
+    },
+    /// Switch the weekly automatic clean (a systemd timer) on or off.
+    CleanupAutoSet {
+        on: bool,
+    },
     /// Local accounts, for the terminal and the Access page.
     UserList,
     /// Start a login shell on a new PTY as `user`. On success the connection becomes a
@@ -233,6 +243,9 @@ impl PrivOp {
             Self::FileRemove { .. } => "file_remove",
             Self::FileStageDownload { .. } => "file_stage_download",
             Self::FileInstallUpload { .. } => "file_install_upload",
+            Self::CleanupScan => "cleanup_scan",
+            Self::CleanupRun { .. } => "cleanup_run",
+            Self::CleanupAutoSet { .. } => "cleanup_auto_set",
             Self::UserList => "user_list",
             Self::PtyOpen { .. } => "pty_open",
         }
@@ -321,6 +334,8 @@ pub enum PrivReply {
         mtime: i64,
     },
     Users(Vec<crate::pty::SystemUser>),
+    Cleanup(crate::cleanup::CleanupScan),
+    CleanupFreed(Vec<crate::cleanup::CleanupFreed>),
     /// A shell is running; the connection now carries the PTY stream.
     PtyStarted {
         user: String,

@@ -5,6 +5,7 @@
 //! and exposes nothing but non-secret host facts.
 
 mod auth;
+mod cleanup;
 mod error;
 mod files;
 mod health;
@@ -151,6 +152,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/metrics", get(metrics::get_metrics))
         .route("/api/v1/attention", get(metrics::get_attention))
         .route("/api/v1/stream/metrics", get(metrics::stream))
+        .route("/api/v1/cleanup/scan", get(cleanup::scan))
+        .route("/api/v1/cleanup/run", post(cleanup::run))
+        .route("/api/v1/cleanup/auto", put(cleanup::set_auto))
         .route("/api/v1/terminal/users", get(terminal::users))
         .route("/api/v1/stream/terminal", get(terminal::stream))
         .route("/api/v1/session", get(auth::session))

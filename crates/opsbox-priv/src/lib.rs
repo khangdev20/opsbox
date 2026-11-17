@@ -21,7 +21,7 @@ pub use config::{
     resolve_users,
 };
 pub use io::PtyIoError;
-pub use ops::{base32_encode, code_at, verify_at};
+pub use ops::{base32_encode, cleanup, code_at, verify_at};
 pub use server::{PrivServer, ServerError};
 
 /// Version reported by `Ping`, so `status` can notice a stale helper after an update.

@@ -41,6 +41,7 @@ const REAL = new Set([
   'getJobs', 'runJob', 'addJob', 'removeJob', 'getFirewall', 'addRule', 'removeRule', 'confirmFirewall', 'openSsh',
   'listDir', 'readFile', 'writeFile', 'chmod', 'mkdir', 'removePaths', 'upload',
   'getTerminalUsers', 'openTerminal',
+  'scanCleanup', 'runCleanup', 'setAutoCleanup',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -596,16 +597,18 @@ export async function openSsh() { sample('openSsh');
 
 // ---------------------------------------------------------------- cleanup
 export async function scanCleanup() { sample('scanCleanup');
+  if (real('scanCleanup')) return http('/cleanup/scan');
   await lag(500);
   return { items: clone(S.cleanup), disk: S.metrics.disk, total: S.host.diskTotal, system: 41, auto: S.autoCleanup, scanned: hhmm() };
 }
 export async function runCleanup(ids) { sample('runCleanup');
+  if (real('runCleanup')) { const { task } = await http('/cleanup/run', { method: 'POST', body: { ids } }); const t = await waitTask(task, { every: 1000, max: 30 * 60 * 1000 }); return { freed: t.result?.freed ?? 0, bytes: t.result?.bytes ?? 0, items: t.result?.items ?? [] }; }
   await lag(1200);
   const hit = S.cleanup.filter((c) => ids.includes(c.id)); const freed = hit.reduce((a, c) => a + c.gb, 0);
   S.cleanup = S.cleanup.filter((c) => !ids.includes(c.id)); S.metrics.disk = Math.max(20, S.metrics.disk - freed);
   audit(`cleanup ${hit.map((c) => c.id).join(', ')} −${freed.toFixed(1)} GB`); return { freed };
 }
-export async function setAutoCleanup(on) { sample('setAutoCleanup'); await lag(150); S.autoCleanup = on; }
+export async function setAutoCleanup(on) { sample('setAutoCleanup'); if (real('setAutoCleanup')) return http('/cleanup/auto', { method: 'PUT', body: { on } }); await lag(150); S.autoCleanup = on; }
 
 // ---------------------------------------------------------------- files
 export async function listDir(path) { sample('listDir');
