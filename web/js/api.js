@@ -53,6 +53,7 @@ const REAL = new Set([
   'disconnectGithub', 'getRepos', 'inspectPublicRepo', 'listDeployKeys', 'createDeployKey', 'deleteDeployKey',
   'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'buildLog', 'addVar', 'removeVar', 'removeService',
   'getDomains', 'addDomain', 'checkDns', 'issueDomainCert', 'updateDomain', 'removeDomain', 'makePrimary',
+  'getTemplates', 'addTemplate', 'deployCompose',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -86,7 +87,7 @@ export const PAGE_USES = {
   settings: ['checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
-  templates: ['TEMPLATES', 'addTemplate', 'deployCompose'],
+  templates: ['getTemplates', 'addTemplate', 'deployCompose'],
   // In http mode the page shows only this server (the demo hosts and shell are mock-only).
   terminal: ['getTerminalUsers', 'openTerminal'],
 };
@@ -1055,35 +1056,80 @@ export async function setQuiet(q) { sample('setQuiet'); await lag(150); AL.quiet
 // ---------------------------------------------------------------- templates
 export const TEMPLATES = {
   databases: [
-    { id: 'postgres', name: 'PostgreSQL', desc: 'Relational database · daily backup on by default', res: '≈ 100 MB RAM · 1 GB disk', versions: ['16.4', '16.3', '15.8'], port: 5432 },
-    { id: 'mysql', name: 'MySQL', desc: 'Relational database', res: '≈ 400 MB RAM · 1 GB disk', versions: ['8.4', '8.0'], port: 3306 },
-    { id: 'mariadb', name: 'MariaDB', desc: 'MySQL-compatible database', res: '≈ 150 MB RAM · 1 GB disk', versions: ['11.4'], port: 3306 },
-    { id: 'redis', name: 'Redis', desc: 'Cache and queues', res: '≈ 20 MB RAM', versions: ['7.4'], port: 6379 },
-    { id: 'mongo', name: 'MongoDB', desc: 'Document database', res: '≈ 300 MB RAM · 1 GB disk', versions: ['7.0'], port: 27017 },
+    { id: 'postgres', name: 'PostgreSQL', desc: 'Relational database · daily backup on by default', res: '≈ 100 MB RAM · 1 GB disk', versions: ['16.4', '16.3', '15.8'], port: 5432, internalByDefault: true, backup: { enabledByDefault: true } },
+    { id: 'mysql', name: 'MySQL', desc: 'Relational database', res: '≈ 400 MB RAM · 1 GB disk', versions: ['8.4', '8.0'], port: 3306, internalByDefault: true, backup: { enabledByDefault: true } },
+    { id: 'mariadb', name: 'MariaDB', desc: 'MySQL-compatible database', res: '≈ 150 MB RAM · 1 GB disk', versions: ['11.4'], port: 3306, internalByDefault: true, backup: { enabledByDefault: true } },
+    { id: 'redis', name: 'Redis', desc: 'Cache and queues', res: '≈ 20 MB RAM', versions: ['7.4'], port: 6379, internalByDefault: true, backup: { enabledByDefault: true } },
+    { id: 'mongo', name: 'MongoDB', desc: 'Document database', res: '≈ 300 MB RAM · 1 GB disk', versions: ['7.0'], port: 27017, internalByDefault: true, backup: { enabledByDefault: true } },
   ],
   tools: [
-    { id: 'minio', name: 'MinIO', desc: 'S3-compatible file storage', res: '≈ 150 MB RAM', versions: ['latest'], port: 9000 },
-    { id: 'kuma', name: 'Uptime Kuma', desc: 'Watch your public URLs from outside', res: '≈ 100 MB RAM', versions: ['1'], port: 3001 },
-    { id: 'umami', name: 'Umami', desc: 'Privacy-friendly analytics (needs PostgreSQL)', res: '≈ 150 MB RAM', versions: ['latest'], port: 3000 },
-    { id: 'n8n', name: 'n8n', desc: 'Workflow automation', res: '≈ 250 MB RAM', versions: ['latest'], port: 5678 },
-    { id: 'grafana', name: 'Grafana', desc: 'Dashboards for your own metrics', res: '≈ 200 MB RAM', versions: ['11'], port: 3000 },
+    { id: 'minio', name: 'MinIO', desc: 'S3-compatible file storage', res: '≈ 150 MB RAM', versions: ['latest'], port: 9000, internalByDefault: true, backup: { enabledByDefault: false } },
+    { id: 'kuma', name: 'Uptime Kuma', desc: 'Watch your public URLs from outside', res: '≈ 100 MB RAM', versions: ['1', '2'], port: 3001, internalByDefault: true, backup: { enabledByDefault: false } },
+    { id: 'umami', name: 'Umami', desc: 'Privacy-friendly analytics (needs PostgreSQL)', res: '≈ 150 MB RAM', versions: ['postgresql-latest', 'latest'], port: 3000, internalByDefault: true, requiresDatabase: true, backup: { enabledByDefault: false } },
+    { id: 'n8n', name: 'n8n', desc: 'Workflow automation', res: '≈ 250 MB RAM', versions: ['latest'], port: 5678, internalByDefault: true, backup: { enabledByDefault: false } },
+    { id: 'grafana', name: 'Grafana', desc: 'Dashboards for your own metrics', res: '≈ 200 MB RAM', versions: ['11', 'latest'], port: 3000, internalByDefault: true, backup: { enabledByDefault: false } },
   ],
 };
-export async function addTemplate(id, cfg) { sample('addTemplate');
+export async function getTemplates() {
+  sample('getTemplates');
+  if (real('getTemplates')) return http('/templates');
+  await lag();
+  return clone(TEMPLATES);
+}
+export async function addTemplate(id, cfg) {
+  sample('addTemplate');
+  if (real('addTemplate')) {
+    const r = await http(`/templates/${encodeURIComponent(id)}/instances`, {
+      method: 'POST',
+      body: {
+        name: cfg.name,
+        version: cfg.version,
+        disk: cfg.disk,
+        backup: cfg.backup,
+        internalOnly: cfg.internalOnly,
+        databaseUrl: cfg.databaseUrl || undefined,
+      },
+    });
+    if (r.task) await waitTask(r.task, { every: 500, max: 5 * 60 * 1000 });
+    return r;
+  }
   await lag(700);
   const t = [...TEMPLATES.databases, ...TEMPLATES.tools].find((x) => x.id === id); if (!t) throw new Error('Unknown template');
   const name = (cfg.name || '').trim();
   if (!/^[a-z][a-z0-9-]{1,30}$/.test(name)) throw new Error('Name: lowercase letters, numbers and dashes, starting with a letter.');
   if (S.project.services.some((x) => x.id === name)) throw new Error(`A service named "${name}" already exists.`);
   const idx = S.project.services.length;
-  S.project.services.push({ id: name, kind: 'db', state: 'active', repo: `${t.name} ${cfg.version || t.versions[0]} · volume ${cfg.disk || '1 GB'}`, domain: '', x: 370 * (idx % 3), y: 10 + 176 * Math.floor(idx / 3), note: cfg.backup ? 'backup daily 02:00' : 'no backup', deploys: [], vars: [] });
-  audit(`add ${t.name} as ${name}`); return { id: name };
+  S.project.services.push({ id: name, kind: t.id === 'minio' || t.id === 'kuma' || t.id === 'umami' || t.id === 'n8n' || t.id === 'grafana' ? 'tool' : 'db', state: 'active', repo: `${t.name} ${cfg.version || t.versions[0]} · volume ${cfg.disk || '1 GB'}`, domain: '', x: 370 * (idx % 3), y: 10 + 176 * Math.floor(idx / 3), note: cfg.backup ? 'backup daily 02:00' : 'no backup', deploys: [], vars: [] });
+  audit(`add ${t.name} as ${name}`);
+  return { id: name, connectionVar: 'DATABASE_URL', connectionUrl: t.id === 'postgres' ? `postgresql://app:demo@${name}:5432/app` : undefined };
 }
-export async function deployCompose(text) { sample('deployCompose');
+export async function deployCompose(yamlOrOpts, maybeOpts = {}, confirmed = false) {
+  sample('deployCompose');
+  const text = typeof yamlOrOpts === 'string' ? yamlOrOpts : yamlOrOpts?.yaml;
+  const opts = typeof yamlOrOpts === 'string' ? maybeOpts : (yamlOrOpts || {});
+  if (real('deployCompose')) {
+    try {
+      const r = await http('/compose', {
+        method: 'POST',
+        body: {
+          stack: opts.stack || undefined,
+          yaml: text,
+          confirm: !!confirmed,
+        },
+      });
+      if (r.task) await waitTask(r.task, { every: 500, max: 5 * 60 * 1000 });
+      return r;
+    } catch (e) {
+      if (e.code === 'confirmation_required' && !confirmed && hooks.confirm && await hooks.confirm(e.message, 'Allow elevated Compose access?')) {
+        return deployCompose(text, opts, true);
+      }
+      throw e;
+    }
+  }
   await lag(700);
   const names = [...(text || '').matchAll(/^ {2}([a-z][a-z0-9_-]*):\s*$/gm)].map((m) => m[1]);
   if (!/^services:/m.test(text || '') || !names.length) throw new Error('This does not look like a Compose file: it needs a "services:" section.');
-  names.forEach((n, i) => { if (!S.project.services.some((x) => x.id === n)) S.project.services.push({ id: n, kind: 'app', state: 'active', repo: 'compose', branch: '', build: 'docker compose', domain: '', port: 0, x: 370 * ((S.project.services.length) % 3), y: 10 + 176 * Math.floor(S.project.services.length / 3), vars: [], deploys: [{ id: Math.random().toString(16).slice(2, 9), msg: 'Compose deploy', status: 'live', at: now(), secs: 20 }] }); });
+  names.forEach((n) => { if (!S.project.services.some((x) => x.id === n)) S.project.services.push({ id: n, kind: 'compose', state: 'active', repo: 'compose', branch: n, build: 'Compose', domain: '', port: 0, x: 370 * ((S.project.services.length) % 3), y: 10 + 176 * Math.floor(S.project.services.length / 3), vars: [], deploys: [{ id: Math.random().toString(16).slice(2, 9), msg: 'Compose deploy', status: 'live', at: now(), secs: 20 }] }); });
   audit(`deploy compose (${names.join(', ')})`); return { names };
 }
 

@@ -21,6 +21,7 @@ mod ping;
 mod pkg;
 mod sealed;
 mod security;
+pub(crate) mod templates_compose;
 pub(crate) mod terminal;
 mod totp;
 mod units;
@@ -282,5 +283,23 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             image_refs,
         } => deploy::delete_service_with(env, service, container_ids, image_refs)
             .map(|()| PrivReply::Done),
+        PrivOp::TemplateStart(req) => {
+            templates_compose::start_template_with(env, req).map(PrivReply::DeployStarted)
+        }
+        PrivOp::ComposeValidate(req) => {
+            templates_compose::validate_compose_with(env, req).map(PrivReply::ComposeValidated)
+        }
+        PrivOp::ComposeDeploy(req) => {
+            templates_compose::deploy_compose_with(env, req).map(PrivReply::ComposeDeployed)
+        }
+        PrivOp::ComposeDown {
+            stack,
+            remove_files,
+        } => templates_compose::down_compose_with(env, stack, *remove_files)
+            .map(|()| PrivReply::Done),
+        PrivOp::ComposeRemoveService { stack, service } => {
+            templates_compose::remove_compose_service_with(env, stack, service)
+                .map(|()| PrivReply::Done)
+        }
     }
 }

@@ -3,7 +3,7 @@ import * as api from '../api.js';
 import { server } from '../store.js';
 
 export async function view({ query = {} } = {}) {
-  let tab = query.tab === 'deploy-key' ? 1 : query.tab === 'public' ? 2 : 0;
+  let tab = query.tab === 'deploy-key' ? 1 : query.tab === 'public' ? 2 : query.tab === 'image' ? 3 : 0;
   let q = '';
   let gh = await api.getGithubStatus();
   let repoRes = gh.connected && gh.installed ? await api.getRepos() : { connected: gh.connected, installed: gh.installed, account: gh.account, installUrl: gh.installUrl, manageUrl: gh.manageUrl, repos: [] };

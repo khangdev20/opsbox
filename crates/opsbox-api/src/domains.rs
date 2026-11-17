@@ -268,10 +268,16 @@ pub(crate) async fn add_domain(
             "You cannot manage domains for this service.",
         ));
     }
-    if svc.kind != ServiceKind::App {
+    if svc.kind == ServiceKind::Db {
         return Err(val_err(
             "service",
-            "Only app services can have public domains.",
+            "Database services cannot have public domains.",
+        ));
+    }
+    if svc.internal_only {
+        return Err(val_err(
+            "service",
+            "This service is marked internal-only and has no loopback host port for public domains.",
         ));
     }
     if svc.port == 0 {

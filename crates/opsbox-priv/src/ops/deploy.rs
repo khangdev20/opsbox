@@ -35,14 +35,18 @@ use crate::secrets::Secrets;
 const MAX_LOG_LINE_BYTES: usize = 4096;
 const KEEP_RECENT_SOURCES: usize = 5;
 
-fn err(code: PrivErrorCode, message: impl Into<String>) -> PrivError {
+pub(crate) fn err(code: PrivErrorCode, message: impl Into<String>) -> PrivError {
     PrivError {
         code,
         message: message.into(),
     }
 }
 
-fn find_binary(custom: Option<&Path>, names: &[&str], candidates: &[&str]) -> Option<PathBuf> {
+pub(crate) fn find_binary(
+    custom: Option<&Path>,
+    names: &[&str],
+    candidates: &[&str],
+) -> Option<PathBuf> {
     if let Some(p) = custom.filter(|p| p.exists()) {
         return Some(p.to_path_buf());
     }
@@ -132,13 +136,14 @@ fn validate_repo_url(
     }
 }
 
-struct OpenedVar {
-    key: String,
-    value: String,
-    is_secret: bool,
+pub(crate) struct OpenedVar {
+    pub(crate) key: String,
+    pub(crate) value: String,
+    #[allow(dead_code)]
+    pub(crate) is_secret: bool,
 }
 
-fn open_deploy_vars(
+pub(crate) fn open_deploy_vars(
     secrets: &Secrets,
     specs: &[DeployEnvSpec],
 ) -> Result<(Vec<OpenedVar>, Vec<String>), PrivError> {
@@ -408,7 +413,7 @@ fn unsafe_free_process_group(cmd: &mut tokio::process::Command) {
     cmd.as_std_mut().process_group(0);
 }
 
-fn safe_env_base(cmd: &mut tokio::process::Command, extra_env: &[(&str, &str)]) {
+pub(crate) fn safe_env_base(cmd: &mut tokio::process::Command, extra_env: &[(&str, &str)]) {
     cmd.env_clear();
     let path = std::env::var_os("PATH")
         .filter(|p| !p.is_empty())
@@ -1076,7 +1081,7 @@ pub fn pull_image_with(env: &Env, req: &DeployPullRequest) -> Result<(), PrivErr
     .map_err(|e| map_docker_err(e, env.docker.socket_path()))
 }
 
-fn short_deploy_suffix(deploy_id: &str) -> String {
+pub(crate) fn short_deploy_suffix(deploy_id: &str) -> String {
     deploy_id
         .chars()
         .filter(char::is_ascii_alphanumeric)
@@ -1085,20 +1090,21 @@ fn short_deploy_suffix(deploy_id: &str) -> String {
         .to_ascii_lowercase()
 }
 
-async fn http_health_probe(port: u16, path: &str) -> Result<u16, String> {
-    let mut stream = tokio::time::timeout(
-        Duration::from_secs(2),
-        TcpStream::connect(("127.0.0.1", port)),
-    )
-    .await
-    .map_err(|_| "TCP connect timed out".to_owned())?
-    .map_err(|e| format!("TCP connect failed: {e}"))?;
+pub(crate) async fn http_health_probe_host(
+    host: &str,
+    port: u16,
+    path: &str,
+) -> Result<u16, String> {
+    let mut stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect((host, port)))
+        .await
+        .map_err(|_| "TCP connect timed out".to_owned())?
+        .map_err(|e| format!("TCP connect failed: {e}"))?;
 
     if path == "tcp" {
         return Ok(200);
     }
 
-    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
     tokio::time::timeout(Duration::from_secs(2), async {
         stream
             .write_all(req.as_bytes())
@@ -1120,6 +1126,10 @@ async fn http_health_probe(port: u16, path: &str) -> Result<u16, String> {
     })
     .await
     .map_err(|_| "HTTP health probe timed out".to_owned())?
+}
+
+async fn http_health_probe(port: u16, path: &str) -> Result<u16, String> {
+    http_health_probe_host("127.0.0.1", port, path).await
 }
 
 /// Start a release container and run HTTP (`2xx`/`3xx`) or TCP / worker health checks.

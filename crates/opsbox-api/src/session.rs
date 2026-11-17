@@ -355,6 +355,7 @@ async fn authorize(
                                         | "/api/v1/stream/journal"
                                         | "/api/v1/github"
                                         | "/api/v1/github/repos"
+                                        | "/api/v1/templates"
                                 )
                                 || path.starts_with("/api/v1/docker/")
                                 || path.starts_with("/api/v1/stream/containers/")))

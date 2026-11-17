@@ -5,14 +5,15 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    AccessState, CleanupFreed, CleanupScan, CommandOutcome, DeployBuildFrame, DeployBuildRequest,
-    DeployPullRequest, DeployStartRequest, DeployStartResult, DirListing, DockerContainer,
-    DockerContainerAction, DockerContainerInspect, DockerContainerStat, DockerExecOutput,
-    DockerExecRequest, DockerImage, DockerLogFrame, DockerLogLine, DockerNetwork, DockerStatus,
-    DockerVolume, FileContent, FirewallChange, FirewallState, HostInfo, HostSettings, JobInfo,
-    JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
+    AccessState, CleanupFreed, CleanupScan, CommandOutcome, ComposeDeployRequest,
+    ComposeDeployResult, ComposeValidateRequest, ComposeValidationResult, DeployBuildFrame,
+    DeployBuildRequest, DeployPullRequest, DeployStartRequest, DeployStartResult, DirListing,
+    DockerContainer, DockerContainerAction, DockerContainerInspect, DockerContainerStat,
+    DockerExecOutput, DockerExecRequest, DockerImage, DockerLogFrame, DockerLogLine, DockerNetwork,
+    DockerStatus, DockerVolume, FileContent, FirewallChange, FirewallState, HostInfo, HostSettings,
+    JobInfo, JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
     PrivResponse, PrivResult, PtyFrame, RawSample, Secret, SecurityScan, Staged, SystemFacts,
-    SystemUser, UnitActionKind, UnitInfo, WatchdogStatus,
+    SystemUser, TemplateStartRequest, UnitActionKind, UnitInfo, WatchdogStatus,
 };
 use tokio::net::{
     UnixStream,
@@ -1402,6 +1403,96 @@ impl PrivClient {
                     service: service.to_owned(),
                     container_ids,
                     image_refs,
+                },
+            )
+            .await
+    }
+
+    pub async fn template_start(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: TemplateStartRequest,
+    ) -> Result<DeployStartResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(300))
+            .expect(rid, Some(actor), PrivOp::TemplateStart(req), |r| match r {
+                PrivReply::DeployStarted(v) => Ok(v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn compose_validate(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: ComposeValidateRequest,
+    ) -> Result<ComposeValidationResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(45))
+            .expect(
+                rid,
+                Some(actor),
+                PrivOp::ComposeValidate(req),
+                |r| match r {
+                    PrivReply::ComposeValidated(v) => Ok(v),
+                    o => Err(o),
+                },
+            )
+            .await
+    }
+
+    pub async fn compose_deploy(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: ComposeDeployRequest,
+    ) -> Result<ComposeDeployResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(330))
+            .expect(rid, Some(actor), PrivOp::ComposeDeploy(req), |r| match r {
+                PrivReply::ComposeDeployed(v) => Ok(v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn compose_down(
+        &self,
+        rid: &str,
+        actor: &str,
+        stack: &str,
+        remove_files: bool,
+    ) -> Result<(), ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(120))
+            .done(
+                rid,
+                actor,
+                PrivOp::ComposeDown {
+                    stack: stack.to_owned(),
+                    remove_files,
+                },
+            )
+            .await
+    }
+
+    pub async fn compose_remove_service(
+        &self,
+        rid: &str,
+        actor: &str,
+        stack: &str,
+        service: &str,
+    ) -> Result<(), ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(60))
+            .done(
+                rid,
+                actor,
+                PrivOp::ComposeRemoveService {
+                    stack: stack.to_owned(),
+                    service: service.to_owned(),
                 },
             )
             .await

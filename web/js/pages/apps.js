@@ -81,18 +81,22 @@ export async function view({ query }) {
     if (!proj.services.length) {
       return section('Services', html`<div class="col gap12"><p class="muted">No services deployed yet.</p><div><a class="btn primary" href="#/apps/new">Deploy your first service</a></div></div>`);
     }
-    const edges = [['web', 'api'], ['web', 'postgres'], ['api', 'postgres'], ['api', 'redis'], ['worker', 'redis'], ['worker', 'postgres']]
+    const rawEdges = Array.isArray(proj.edges)
+      ? proj.edges
+      : [['web', 'api'], ['web', 'postgres'], ['api', 'postgres'], ['api', 'redis'], ['worker', 'redis'], ['worker', 'postgres']];
+    const edges = rawEdges
       .map(([a, b]) => [proj.services.find((s) => s.id === a), proj.services.find((s) => s.id === b)]).filter(([a, b]) => a && b);
     const ed = edges.map(([a, b]) => {
       const x1 = a.x + 220, y1 = a.y + 52, x2 = b.x, y2 = b.y + 52, mx = (x1 + x2) / 2;
       const seg = (l, t, w, h) => `<div class="edge topo-edge ${h > w ? 'v' : 'h'}" style="left:${l}px;top:${t}px;width:${Math.max(2, w)}px;height:${Math.max(2, h)}px;animation-delay:-${((l + t) % 9) / 10}s"></div>`;
       return seg(x1, y1, mx - x1, 1) + seg(mx, Math.min(y1, y2), 1, Math.abs(y2 - y1)) + seg(mx, y2, x2 - mx, 1);
     }).join('');
+    const maxY = Math.max(300, ...proj.services.map((s) => (s.y || 0) + 140));
     const nodes = proj.services.map((s) => {
       const [k, t] = KIND[s.state] || KIND.idle;
-      return html`<button type="button" class="node topo-node ${entered ? '' : 'enter'} ${s.id === sel ? 'on' : ''}" style="left:${s.x}px;top:${s.y}px;animation-delay:${((s.x + s.y) / 2000).toFixed(2)}s" data-act="select" data-id="${s.id}" aria-pressed="${s.id === sel}"><b>${s.id}</b><span class="sm muted">${s.repo}</span>${st(k, s.kind === 'db' ? 'running' : t)}</button>`;
+      return html`<button type="button" class="node topo-node ${entered ? '' : 'enter'} ${s.id === sel ? 'on' : ''}" style="left:${s.x}px;top:${s.y}px;animation-delay:${((s.x + s.y) / 2000).toFixed(2)}s" data-act="select" data-id="${s.id}" aria-pressed="${s.id === sel}"><b>${s.id}</b><span class="sm muted">${s.repo}</span>${st(k, t)}</button>`;
     });
-    return html`<div style="overflow-x:auto"><div class="graph">${raw(ed)}${nodes}</div></div>`;
+    return html`<div style="overflow-x:auto"><div class="graph" style="height:${maxY}px">${raw(ed)}${nodes}</div></div>`;
   };
 
   const dnsSt = (d) => {
@@ -179,10 +183,36 @@ export async function view({ query }) {
   const detail = () => {
     const s = svc();
     if (!s) return '';
-    const items = s.kind === 'db' ? ['Overview'] : ['Deploys', 'Variables', 'Domains & SSL', 'Settings'];
+    const isDb = s.kind === 'db';
+    const items = isDb ? ['Overview', 'Variables', 'Settings'] : ['Deploys', 'Variables', 'Domains & SSL', 'Settings'];
     const t = Math.min(tab, items.length - 1);
+    const varsBody = () => html`${s.vars.length ? table('Variables', [['Name'], ['Value'], ['', 'r']], s.vars.map(([k, v, isSec]) => [
+      html`<span class="mono">${k}</span>${isSec ? html` <span class="tag-sm">secret</span>` : ''}`,
+      html`<span class="mono muted">${isSec === true || (isSec === undefined && /URL|SECRET|KEY|PASS/.test(k)) ? '••••••••' : v}</span>`,
+      btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' }),
+    ])) : html`<p class="muted">No variables yet.</p>`}<div style="margin-top:12px">${btn('Add variable', { act: 'addvar' })}</div>`;
+    const settingsBody = () => html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
+        <dt class="muted">Source</dt><dd class="mono">${s.templateId ? `template:${s.templateId}` : s.composeStack ? `compose:${s.composeStack}` : (s.sourceKind || 'github')} · ${s.repo}</dd>
+        <dt class="muted">Branch / Version</dt><dd class="mono">${s.branch || '—'}</dd>
+        <dt class="muted">Build</dt><dd>${s.build || '—'}</dd>
+        <dt class="muted">Health check</dt><dd class="mono">${s.healthPath || '/'}</dd>
+        <dt class="muted">Network</dt><dd class="mono">${s.internalOnly ? 'Project network only (internal)' : 'Loopback proxy enabled'}</dd>
+        <dt class="muted">Auto-deploy</dt><dd>${s.autoDeploy === false ? 'Off' : 'On'}</dd>
+        <dt class="muted">Domain</dt><dd class="mono">${s.domain || '—'}</dd>
+        <dt class="muted">Port</dt><dd class="mono">${s.port || '—'}${s.hostPort ? ` (127.0.0.1:${s.hostPort})` : ''}</dd>
+      </dl>
+      <div class="row" style="margin-top:16px">
+        ${s.sourceKind !== 'docker_image' && !s.templateId && !s.composeStack ? btn(s.autoDeploy === false ? 'Enable auto-deploy' : 'Disable auto-deploy', { act: 'toggleAuto' }) : ''}
+        ${btn('Delete service', { act: 'delsvc', kind: 'danger' })}
+      </div>`;
     let body;
-    if (s.kind === 'db') body = html`<p class="muted">${s.repo}</p><p class="sm muted">${s.note}. Connection string is available to services in this project as an environment variable.</p>`;
+    if (isDb && t === 0) body = html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
+      <dt class="muted">Engine</dt><dd class="mono">${s.repo}</dd>
+      <dt class="muted">Host on network</dt><dd class="mono">${s.id}:${s.port || '—'}</dd>
+      <dt class="muted">Volume / Backup</dt><dd>${s.note || 'Persistent named volume'}${s.backup ? ` · ${s.backup.enabled ? `auto ${s.backup.method} (${s.backup.cron})` : 'auto backup off'}` : ''}</dd>
+    </dl><p class="sm muted" style="margin-top:12px">Credentials are encrypted at rest. Reach this database from services in the same project via <span class="mono">${s.id}:${s.port || ''}</span>.</p>`;
+    else if (isDb && t === 1) body = varsBody();
+    else if (isDb) body = settingsBody();
     else if (t === 0) body = html`${s.deploys.length ? table('Deploys', [['Commit'], ['Message'], ['Status'], ['When'], ['', 'r']], s.deploys.map((d) => {
         const [k, l] = DST[d.status] || ['off', d.status];
         const shortCommit = d.commit ? d.commit.slice(0, 7) : d.id.slice(0, 7);
@@ -197,26 +227,13 @@ export async function view({ query }) {
         ];
       })) : html`<p class="muted">No deploys yet.</p>`}
       ${logDeploy ? html`<div style="margin-top:14px"><pre class="code" id="build-log" aria-label="Build log">${logLoading ? 'Loading build log…' : (logLines.join('\n') || '(no log lines yet)')}</pre></div>` : ''}`;
-    else if (t === 1) body = html`${s.vars.length ? table('Variables', [['Name'], ['Value'], ['', 'r']], s.vars.map(([k, v, isSec]) => [
-        html`<span class="mono">${k}</span>${isSec ? html` <span class="tag-sm">secret</span>` : ''}`,
-        html`<span class="mono muted">${isSec === true || (isSec === undefined && /URL|SECRET|KEY|PASS/.test(k)) ? '••••••••' : v}</span>`,
-        btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' }),
-      ])) : html`<p class="muted">No variables yet.</p>`}<div style="margin-top:12px">${btn('Add variable', { act: 'addvar' })}</div>`;
-    else if (t === 2) body = domainsTab(s);
-    else body = html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
-        <dt class="muted">Source</dt><dd class="mono">${s.sourceKind || 'github'} · ${s.repo}</dd>
-        <dt class="muted">Branch</dt><dd class="mono">${s.branch || '—'}</dd>
-        <dt class="muted">Build</dt><dd>${s.build}</dd>
-        <dt class="muted">Health check</dt><dd class="mono">${s.healthPath || '/'}</dd>
-        <dt class="muted">Auto-deploy</dt><dd>${s.autoDeploy === false ? 'Off' : 'On'}</dd>
-        <dt class="muted">Domain</dt><dd class="mono">${s.domain || '—'}</dd>
-        <dt class="muted">Port</dt><dd class="mono">${s.port || '—'}${s.hostPort ? ` (127.0.0.1:${s.hostPort})` : ''}</dd>
-      </dl>
-      <div class="row" style="margin-top:16px">
-        ${s.sourceKind !== 'docker_image' ? btn(s.autoDeploy === false ? 'Enable auto-deploy' : 'Disable auto-deploy', { act: 'toggleAuto' }) : ''}
-        ${btn('Delete service', { act: 'delsvc', kind: 'danger' })}
-      </div>`;
-    return section(s.id, html`${tabs(items, t, 'tab')}<div style="padding-top:16px">${body}</div>`, s.kind === 'app' ? html`<span class="row">${btn('Domains', { act: 'gotodomains', kind: 'link' })}${s.domain ? html`<a class="btn link mono" href="${s.domainScheme || 'http'}://${s.domain}" target="_blank" rel="noopener">${s.domain} ↗</a>` : ''}${btn('Redeploy', { act: 'redeploy', kind: 'primary' })}</span>` : '');
+    else if (t === 1) body = varsBody();
+    else if (t === 2) body = s.internalOnly
+      ? html`<p class="muted">This service runs on the internal project network only (<span class="mono">${s.id}:${s.port || '—'}</span>) without an internet-facing host port.</p>`
+      : domainsTab(s);
+    else body = settingsBody();
+    const canDomain = !isDb && !s.internalOnly && s.port > 0;
+    return section(s.id, html`${tabs(items, t, 'tab')}<div style="padding-top:16px">${body}</div>`, html`<span class="row">${canDomain ? btn('Domains', { act: 'gotodomains', kind: 'link' }) : ''}${s.domain ? html`<a class="btn link mono" href="${s.domainScheme || 'http'}://${s.domain}" target="_blank" rel="noopener">${s.domain} ↗</a>` : ''}${btn('Redeploy', { act: 'redeploy', kind: 'primary' })}</span>`);
   };
 
   const loadDomains = async (targetSvc) => {

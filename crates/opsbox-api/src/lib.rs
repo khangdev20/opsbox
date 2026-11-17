@@ -28,6 +28,7 @@ pub mod session;
 mod setup;
 mod system;
 mod tasks;
+mod templates;
 mod terminal;
 pub mod tls;
 mod tokens;
@@ -382,6 +383,16 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/stream/deploys/{id}",
             get(deploy::stream_deploy_log),
+        )
+        .route("/api/v1/templates", get(templates::list_templates))
+        .route(
+            "/api/v1/templates/{id}/instances",
+            post(templates::create_template_instance),
+        )
+        .route("/api/v1/compose", post(templates::deploy_compose))
+        .route(
+            "/api/v1/compose/{stack}",
+            delete(templates::delete_compose_stack),
         )
         .route("/api/v1/terminal/users", get(terminal::users))
         .route("/api/v1/stream/terminal", get(terminal::stream))

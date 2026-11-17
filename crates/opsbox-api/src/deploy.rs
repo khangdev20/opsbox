@@ -20,9 +20,9 @@ use opsbox_auth::Principal;
 use opsbox_deploy::{looks_secret_var_key, normalize_repo_source, validate_public_repo_url};
 use opsbox_proto::{
     DeployBuildFrame, DeployBuildRequest, DeployEnvSpec, DeployGitSource, DeployPullRequest,
-    DeployStartRequest, ErrorCode, Role, Secret, valid_commit_sha, valid_docker_image_ref,
-    valid_domain_name, valid_env_key, valid_git_branch, valid_health_path, valid_rel_repo_path,
-    valid_service_name,
+    DeployStartRequest, ErrorCode, Role, Secret, TemplateStartRequest, valid_commit_sha,
+    valid_docker_image_ref, valid_domain_name, valid_env_key, valid_git_branch, valid_health_path,
+    valid_rel_repo_path, valid_service_name,
 };
 use opsbox_store::{
     ActorKind, AuditResult, DeployRecord, DeployStatus, DeployTrigger, NewAudit, NewService,
@@ -64,26 +64,26 @@ impl Default for DeploySettings {
 
 #[derive(Clone, Default)]
 pub struct DeployHub {
-    inner: Arc<DeployHubInner>,
+    pub(crate) inner: Arc<DeployHubInner>,
 }
 
 #[derive(Default)]
-struct DeployHubInner {
-    active_service_tasks: Mutex<HashMap<String, (String, u64)>>,
-    next_nonce: AtomicU64,
-    streams: Mutex<HashMap<String, Arc<DeployStream>>>,
+pub(crate) struct DeployHubInner {
+    pub(crate) active_service_tasks: Mutex<HashMap<String, (String, u64)>>,
+    pub(crate) next_nonce: AtomicU64,
+    pub(crate) streams: Mutex<HashMap<String, Arc<DeployStream>>>,
 }
 
-struct DeployStream {
-    sender: broadcast::Sender<Value>,
-    history: Mutex<Vec<Value>>,
-    finished: Mutex<bool>,
+pub(crate) struct DeployStream {
+    pub(crate) sender: broadcast::Sender<Value>,
+    pub(crate) history: Mutex<Vec<Value>>,
+    pub(crate) finished: Mutex<bool>,
 }
 
-struct ActiveDeployGuard {
-    hub: DeployHub,
-    service_id: String,
-    nonce: u64,
+pub(crate) struct ActiveDeployGuard {
+    pub(crate) hub: DeployHub,
+    pub(crate) service_id: String,
+    pub(crate) nonce: u64,
 }
 
 impl Drop for ActiveDeployGuard {
@@ -99,7 +99,11 @@ impl Drop for ActiveDeployGuard {
 }
 
 impl DeployHub {
-    fn try_acquire(&self, service_id: &str, task_id: &str) -> Result<ActiveDeployGuard, String> {
+    pub(crate) fn try_acquire(
+        &self,
+        service_id: &str,
+        task_id: &str,
+    ) -> Result<ActiveDeployGuard, String> {
         let mut active = self.inner.active_service_tasks.lock().unwrap();
         if let Some((running, _)) = active.get(service_id) {
             return Err(running.clone());
@@ -113,7 +117,7 @@ impl DeployHub {
         })
     }
 
-    fn set_task_id(&self, service_id: &str, nonce: u64, real_task_id: String) {
+    pub(crate) fn set_task_id(&self, service_id: &str, nonce: u64, real_task_id: String) {
         let mut active = self.inner.active_service_tasks.lock().unwrap();
         if let Some((tid, cur_nonce)) = active.get_mut(service_id)
             && *cur_nonce == nonce
@@ -122,7 +126,7 @@ impl DeployHub {
         }
     }
 
-    fn register_stream(&self, deploy_id: &str) -> Arc<DeployStream> {
+    pub(crate) fn register_stream(&self, deploy_id: &str) -> Arc<DeployStream> {
         let mut streams = self.inner.streams.lock().unwrap();
         // Keep active streams and recent finished ones bounded so memory stays tiny.
         if streams.len() > 64 {
@@ -154,7 +158,7 @@ impl DeployHub {
         Some((history, finished, rx))
     }
 
-    fn emit(
+    pub(crate) fn emit(
         &self,
         store: &opsbox_store::Store,
         stream: &DeployStream,
@@ -173,7 +177,7 @@ impl DeployHub {
         let _ = stream.sender.send(msg);
     }
 
-    fn finish(&self, stream: &DeployStream, status: &str, error: Option<&str>) {
+    pub(crate) fn finish(&self, stream: &DeployStream, status: &str, error: Option<&str>) {
         let msg = json!({ "type": "done", "status": status, "error": error });
         *stream.finished.lock().unwrap() = true;
         {
@@ -192,14 +196,61 @@ pub(crate) fn now_secs() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
-fn invalid(field: &'static str, msg: impl Into<String>) -> HttpError {
+pub(crate) fn next_graph_pos(idx: usize) -> (i64, i64) {
+    let col = i64::try_from(idx % DEPLOY_GRAPH_COLS).unwrap_or(0);
+    let row = i64::try_from(idx / DEPLOY_GRAPH_COLS).unwrap_or(0);
+    (col * DEPLOY_GRAPH_STEP_X, row * DEPLOY_GRAPH_STEP_Y + 20)
+}
+
+pub(crate) fn resolve_owner_id(
+    state: &AppState,
+    who: &Principal,
+    requested_owner: Option<&str>,
+) -> Result<Option<String>, HttpError> {
+    if who.user.role == Role::Deployer {
+        return Ok(Some(who.user.id.clone()));
+    }
+    let Some(owner_ref) = requested_owner.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let u = state
+        .store
+        .user_by_name(owner_ref)
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| invalid("owner", "That user account does not exist."))?;
+    Ok(Some(u.id))
+}
+
+pub(crate) async fn seal_and_store_vars(
+    state: &AppState,
+    rid: &str,
+    actor: &str,
+    service_id: &str,
+    vars: &[(String, String, bool)],
+    now: i64,
+) -> Result<(), HttpError> {
+    for (k, val, is_secret) in vars {
+        let ctx = var_seal_context(service_id, k);
+        let sealed = state
+            .priv_client
+            .secret_seal(rid, Some(actor), &ctx, Secret::new(val.clone()))
+            .await?;
+        state
+            .store
+            .upsert_service_var(service_id, k, &sealed, *is_secret, now)
+            .map_err(|_| HttpError::internal())?;
+    }
+    Ok(())
+}
+
+pub(crate) fn invalid(field: &'static str, msg: impl Into<String>) -> HttpError {
     HttpError(
         opsbox_proto::ApiError::new(ErrorCode::Validation, msg.into()).with_field(field),
         None,
     )
 }
 
-fn forbidden(msg: &str) -> HttpError {
+pub(crate) fn forbidden(msg: &str) -> HttpError {
     HttpError::new(ErrorCode::Forbidden, msg)
 }
 
@@ -273,7 +324,7 @@ pub(crate) fn audit_user(
     });
 }
 
-async fn fetch_live_cert_domains(state: &AppState) -> HashSet<String> {
+pub(crate) async fn fetch_live_cert_domains(state: &AppState) -> HashSet<String> {
     let mut set = HashSet::new();
     let Some(ref proxy) = state.proxy else {
         return set;
@@ -296,7 +347,7 @@ async fn fetch_live_cert_domains(state: &AppState) -> HashSet<String> {
     set
 }
 
-async fn resolve_service_view(
+pub(crate) async fn resolve_service_view(
     state: &AppState,
     rid: &str,
     actor: &str,
@@ -305,10 +356,18 @@ async fn resolve_service_view(
 ) -> Result<Value, HttpError> {
     let store = state.store.clone();
     let svc_id = svc.id.clone();
-    let (vars, deploys) = tokio::task::spawn_blocking(move || {
+    let stack_id = svc.compose_stack_id.clone();
+    let (vars, deploys, stack_name, backup) = tokio::task::spawn_blocking(move || {
+        let stack_name = stack_id
+            .as_deref()
+            .and_then(|sid| store.get_compose_stack(sid).ok().flatten())
+            .map(|st| st.name);
+        let backup = store.get_backup_job_for_service(&svc_id).ok().flatten();
         (
             store.list_service_vars(&svc_id).unwrap_or_default(),
             store.list_deploys(&svc_id, 30).unwrap_or_default(),
+            stack_name,
+            backup,
         )
     })
     .await
@@ -358,6 +417,16 @@ async fn resolve_service_view(
         .filter(|d| live_certs.contains(&d.to_ascii_lowercase()))
         .map_or("http", |_| "https");
 
+    let backup_json = backup.map(|b| {
+        json!({
+            "method": b.method,
+            "cron": b.cron,
+            "enabled": b.enabled,
+            "retainDaily": b.retain_daily,
+            "retainWeekly": b.retain_weekly,
+        })
+    });
+
     Ok(json!({
         "id": svc.name,
         "uid": svc.id,
@@ -384,6 +453,10 @@ async fn resolve_service_view(
         "x": svc.graph_x,
         "y": svc.graph_y,
         "note": svc.note,
+        "templateId": svc.template_id,
+        "composeStack": stack_name,
+        "internalOnly": svc.internal_only,
+        "backup": backup_json,
         "vars": rendered_vars,
         "deploys": rendered_deploys,
     }))
@@ -410,17 +483,38 @@ pub(crate) async fn get_project(
     let store = state.store.clone();
     let pid = proj.id.clone();
     let eid = env.id.clone();
-    let services = tokio::task::spawn_blocking(move || store.list_services(&pid, &eid))
-        .await
-        .map_err(|_| HttpError::internal())?
-        .map_err(|_| HttpError::internal())?;
+    let (services, compose_stacks) = tokio::task::spawn_blocking(move || {
+        Ok::<_, opsbox_store::StoreError>((
+            store.list_services(&pid, &eid)?,
+            store.list_compose_stacks(&pid, &eid)?,
+        ))
+    })
+    .await
+    .map_err(|_| HttpError::internal())?
+    .map_err(|_| HttpError::internal())?;
 
     let live_certs = fetch_live_cert_domains(&state).await;
     let mut out_services = Vec::new();
+    let mut compose_node_map: HashMap<(String, String), String> = HashMap::new();
     for svc in services {
         if service_readable(&who, &svc) {
+            if let Some(ref stack_id) = svc.compose_stack_id {
+                compose_node_map.insert((stack_id.clone(), svc.branch.clone()), svc.name.clone());
+            }
             out_services
                 .push(resolve_service_view(&state, &rid, &who.user.name, &svc, &live_certs).await?);
+        }
+    }
+
+    let mut edges = Vec::new();
+    for stack in compose_stacks {
+        for (from_raw, to_raw) in stack.depends_edges {
+            if let (Some(from_id), Some(to_id)) = (
+                compose_node_map.get(&(stack.id.clone(), from_raw)),
+                compose_node_map.get(&(stack.id.clone(), to_raw)),
+            ) {
+                edges.push(json!([from_id, to_id]));
+            }
         }
     }
 
@@ -429,6 +523,7 @@ pub(crate) async fn get_project(
         "name": proj.name,
         "env": env.name,
         "services": out_services,
+        "edges": edges,
     })))
 }
 
@@ -480,7 +575,9 @@ fn parse_port(val: Option<&Value>, default_port: u16) -> Result<u16, HttpError> 
     n.ok_or_else(|| invalid("port", "Port must be between 0 and 65535."))
 }
 
-fn parse_vars_input(raw: Option<&Value>) -> Result<Vec<(String, String, bool)>, HttpError> {
+pub(crate) fn parse_vars_input(
+    raw: Option<&Value>,
+) -> Result<Vec<(String, String, bool)>, HttpError> {
     let Some(v) = raw else {
         return Ok(Vec::new());
     };
@@ -748,25 +845,7 @@ pub(crate) async fn create_service(
     }
 
     let initial_vars = parse_vars_input(body.vars.as_ref())?;
-
-    // Resolve owner: Admin may assign owner by id/name, Deployer always owns created service.
-    let owner_id: Option<String> = if who.user.role == Role::Deployer {
-        Some(who.user.id.clone())
-    } else if let Some(owner_ref) = body
-        .owner
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let u = state
-            .store
-            .user_by_name(owner_ref)
-            .map_err(|_| HttpError::internal())?
-            .ok_or_else(|| invalid("owner", "That user account does not exist."))?;
-        Some(u.id)
-    } else {
-        None
-    };
+    let owner_id = resolve_owner_id(&state, &who, body.owner.as_deref())?;
 
     let project_key = body
         .project
@@ -818,11 +897,7 @@ pub(crate) async fn create_service(
         }
     }
 
-    let idx = existing.len();
-    let col = i64::try_from(idx % DEPLOY_GRAPH_COLS).unwrap_or(0);
-    let row = i64::try_from(idx / DEPLOY_GRAPH_COLS).unwrap_or(0);
-    let graph_x = col * DEPLOY_GRAPH_STEP_X;
-    let graph_y = row * DEPLOY_GRAPH_STEP_Y + 20;
+    let (graph_x, graph_y) = next_graph_pos(existing.len());
 
     // Ensure /var/lib/opsbox/apps/<svc> exists via opsbox-priv before inserting DB row.
     state
@@ -859,17 +934,7 @@ pub(crate) async fn create_service(
         })
         .map_err(|_| HttpError::internal())?;
 
-    for (k, val, is_secret) in initial_vars {
-        let ctx = var_seal_context(&svc.id, &k);
-        let sealed = state
-            .priv_client
-            .secret_seal(&rid, Some(&who.user.name), &ctx, Secret::new(val))
-            .await?;
-        state
-            .store
-            .upsert_service_var(&svc.id, &k, &sealed, is_secret, now)
-            .map_err(|_| HttpError::internal())?;
-    }
+    seal_and_store_vars(&state, &rid, &who.user.name, &svc.id, &initial_vars, now).await?;
 
     audit_user(
         &state,
@@ -1006,6 +1071,12 @@ pub(crate) async fn update_service(
     let domain_upd = match body.domain {
         Some(ref d) if d.trim().is_empty() => Some(None),
         Some(ref d) => {
+            if svc.kind == ServiceKind::Db || svc.internal_only {
+                return Err(invalid(
+                    "domain",
+                    "Internal or database services cannot have public domains.",
+                ));
+            }
             let clean = d.trim().to_ascii_lowercase();
             if !valid_domain_name(&clean) {
                 return Err(invalid("domain", "Enter a valid domain name."));
@@ -1168,15 +1239,44 @@ pub(crate) async fn delete_service(
         .list_service_domains(&svc.id)
         .map_err(|_| HttpError::internal())?;
 
-    state
-        .priv_client
-        .deploy_delete_service(&rid, &who.user.name, &svc.name, cids, imgs)
-        .await?;
+    if svc.kind == ServiceKind::Compose
+        && let Some(ref stack_id) = svc.compose_stack_id
+        && let Ok(Some(stack)) = state.store.get_compose_stack(stack_id)
+    {
+        let siblings = state
+            .store
+            .list_services_by_compose_stack(stack_id)
+            .map_err(|_| HttpError::internal())?;
+        if siblings.len() <= 1 {
+            state
+                .priv_client
+                .compose_down(&rid, &who.user.name, &stack.name, true)
+                .await?;
+            state
+                .store
+                .delete_compose_stack(&stack.id)
+                .map_err(|_| HttpError::internal())?;
+        } else {
+            state
+                .priv_client
+                .compose_remove_service(&rid, &who.user.name, &stack.name, &svc.branch)
+                .await?;
+            state
+                .store
+                .delete_service(&svc.id)
+                .map_err(|_| HttpError::internal())?;
+        }
+    } else {
+        state
+            .priv_client
+            .deploy_delete_service(&rid, &who.user.name, &svc.name, cids, imgs)
+            .await?;
 
-    state
-        .store
-        .delete_service(&svc.id)
-        .map_err(|_| HttpError::internal())?;
+        state
+            .store
+            .delete_service(&svc.id)
+            .map_err(|_| HttpError::internal())?;
+    }
     if let Some(ref proxy) = state.proxy {
         for d in svc_domains {
             let _ = proxy.remove_cert(&rid, &d.domain).await;
@@ -1661,7 +1761,7 @@ pub(crate) async fn trigger_webhook_deploys(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn enqueue_deploy(
+pub(crate) async fn enqueue_deploy(
     state: &AppState,
     rid: &str,
     svc: &ServiceRecord,
@@ -1882,6 +1982,83 @@ async fn run_deploy_pipeline(
 
     let vars_specs = service_env_specs(&state, &svc.id);
     let mut detected_method: Option<String> = None;
+
+    if let Some(ref stack_id) = svc.compose_stack_id {
+        return crate::templates::run_compose_service_redeploy(
+            &state,
+            &rid,
+            &svc,
+            stack_id,
+            &project_name,
+            &deploy_id,
+            &actor,
+            via_token,
+            ip.as_deref(),
+            &stream,
+        )
+        .await;
+    }
+
+    if let Some(ref template_id) = svc.template_id {
+        let tmpl_image = svc.image_ref.clone().unwrap_or_else(|| svc.repo.clone());
+        let tmpl_version = svc.branch.clone();
+        state.deploy_hub.emit(
+            &state.store,
+            &stream,
+            &deploy_id,
+            &format!("Starting {template_id} ({tmpl_image})..."),
+        );
+        let started = match state
+            .priv_client
+            .template_start(
+                &rid,
+                &actor,
+                TemplateStartRequest {
+                    project: project_name.clone(),
+                    service: svc.name.clone(),
+                    deploy_id: deploy_id.clone(),
+                    template_id: template_id.clone(),
+                    version: tmpl_version,
+                    image_ref: tmpl_image.clone(),
+                    internal_only: svc.internal_only,
+                    vars: vars_specs,
+                    memory_limit_mb: svc.memory_limit_mb,
+                    cpu_limit_millis: svc.cpu_limit_millis,
+                },
+            )
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                return fail_and_report(
+                    &state,
+                    &svc,
+                    &deploy_id,
+                    &actor,
+                    via_token,
+                    ip.as_deref(),
+                    &stream,
+                    e.to_string(),
+                );
+            }
+        };
+
+        return finalize_release_switch(
+            &state,
+            &rid,
+            &svc,
+            &deploy_id,
+            &tmpl_image,
+            started,
+            None,
+            &actor,
+            via_token,
+            ip.as_deref(),
+            &stream,
+            false,
+        )
+        .await;
+    }
 
     if svc.source_kind == SourceKind::DockerImage {
         let src_image = svc.image_ref.clone().unwrap_or_else(|| svc.repo.clone());
@@ -2178,14 +2355,48 @@ async fn run_release_switch_flow(
         }
     };
 
+    finalize_release_switch(
+        state,
+        rid,
+        svc,
+        deploy_id,
+        image_ref,
+        started,
+        detected_method,
+        actor,
+        via_token,
+        ip,
+        stream,
+        is_rollback,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finalize_release_switch(
+    state: &AppState,
+    rid: &str,
+    svc: &ServiceRecord,
+    deploy_id: &str,
+    image_ref: &str,
+    started: opsbox_proto::DeployStartResult,
+    detected_method: Option<&str>,
+    actor: &str,
+    via_token: bool,
+    ip: Option<&str>,
+    stream: &Arc<DeployStream>,
+    is_rollback: bool,
+) -> Result<crate::tasks::Outcome, HttpError> {
+    let endpoint_desc = if started.host_port > 0 {
+        format!("127.0.0.1:{}", started.host_port)
+    } else {
+        "project network".to_owned()
+    };
     state.deploy_hub.emit(
         &state.store,
         stream,
         deploy_id,
-        &format!(
-            "Health check passed on 127.0.0.1:{}. Switching traffic...",
-            started.host_port
-        ),
+        &format!("Health check passed on {endpoint_desc}. Switching traffic..."),
     );
 
     let prev_container = match state.store.complete_deploy_switch(
@@ -2283,7 +2494,7 @@ async fn run_release_switch_flow(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn fail_and_report(
+pub(crate) fn fail_and_report(
     state: &AppState,
     svc: &ServiceRecord,
     deploy_id: &str,
@@ -2312,7 +2523,7 @@ fn fail_and_report(
     Err(HttpError::new(ErrorCode::Internal, reason))
 }
 
-fn service_env_specs(state: &AppState, service_id: &str) -> Vec<DeployEnvSpec> {
+pub(crate) fn service_env_specs(state: &AppState, service_id: &str) -> Vec<DeployEnvSpec> {
     state
         .store
         .list_service_vars(service_id)

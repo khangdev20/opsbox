@@ -83,7 +83,17 @@ fn owned_service_names(state: &AppState, who: &Principal) -> Result<Vec<String>,
         .store
         .list_services_by_owner(&who.user.id)
         .map_err(|_| HttpError::internal())?;
-    Ok(svcs.into_iter().map(|s| s.name).collect())
+    let mut names: Vec<String> = svcs.into_iter().map(|s| s.name).collect();
+    let stacks = state
+        .store
+        .list_compose_stacks_by_owner(&who.user.id)
+        .map_err(|_| HttpError::internal())?;
+    for st in stacks {
+        if !names.contains(&st.name) {
+            names.push(st.name);
+        }
+    }
+    Ok(names)
 }
 
 fn apps_roots(apps_dir: &Path) -> Vec<PathBuf> {
