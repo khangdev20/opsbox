@@ -1,28 +1,24 @@
-[package]
-name = "opsbox"
-version = "0.1.0"
-edition = "2021"
-description = "All-in-one Linux server manager: web UI, terminal, files, docker, cleanup, monitoring"
-license = "Apache-2.0"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
 
-[dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "process", "time", "sync", "signal"] }
-axum = { version = "0.7", default-features = false, features = ["http1", "tokio", "ws", "json", "query", "multipart"] }
-tower-http = { version = "0.5", features = ["limit"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sysinfo = { version = "0.30", default-features = false }
-portable-pty = "0.8"
-argon2 = "0.5"
-rand = "0.8"
-sha2 = "0.10"
-hex = "0.4"
-base64 = "0.22"
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }
-libc = "0.2"
-subtle = "2"
-axum-server = { version = "0.6", features = ["tls-rustls"] }
-rcgen = "0.13"
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/khangdev20/opsbox"
+
+[workspace.dependencies]
+# internal
+opsbox-proto = { path = "crates/opsbox-proto" }
+opsbox-store = { path = "crates/opsbox-store" }
+opsbox-priv = { path = "crates/opsbox-priv" }
+opsbox-api = { path = "crates/opsbox-api" }
+
+[workspace.lints.rust]
+# No unsafe code anywhere. If a future change truly needs it, relax this per crate
+# with a comment explaining why.
+unsafe_code = "forbid"
 
 [profile.release]
 opt-level = "z"

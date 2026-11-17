@@ -1,0 +1,11 @@
+[package]
+name = "opsbox-backup"
+description = "restic orchestration, destinations, schedules and restore (Phase 5)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

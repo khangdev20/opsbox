@@ -1,0 +1,11 @@
+[package]
+name = "opsbox-watchdog"
+description = "Health checks, restart and rollback policy, and the safe-mode server (Phase 2)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

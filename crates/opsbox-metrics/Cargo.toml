@@ -1,0 +1,11 @@
+[package]
+name = "opsbox-metrics"
+description = "Sampling, ring buffers, downsampling and attention rules (Phase 1)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

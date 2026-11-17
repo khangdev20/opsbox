@@ -2,3 +2,14 @@
 *.log
 .DS_Store
 node_modules
+
+# databases and secrets must never be committed
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.key
+*.pem
+.env
+.env.*

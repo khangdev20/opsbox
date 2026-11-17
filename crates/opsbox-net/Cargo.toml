@@ -1,0 +1,11 @@
+[package]
+name = "opsbox-net"
+description = "WireGuard interface, peers, network rules and pairing (Phase 6)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "opsbox-auth"
+description = "Users, passwords, TOTP, sessions, API tokens, device keys, roles and lockout (Phase 1)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
