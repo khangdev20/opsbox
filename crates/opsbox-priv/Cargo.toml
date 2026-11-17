@@ -1,0 +1,25 @@
+[package]
+name = "opsbox-priv"
+description = "Privileged helper: a Unix-socket server that runs a closed set of typed operations as root, and the client `serve` uses to call it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+opsbox-proto.workspace = true
+nix = { version = "0.32", default-features = false, features = ["user"] }
+serde = "1.0"
+serde_json = "1.0"
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+thiserror = "2.0"
+tokio = { version = "1.54", features = ["rt", "net", "io-util", "time", "sync", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.27"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros", "fs"] }
+
+[lints]
+workspace = true
