@@ -1,17 +1,16 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/06-watchdog-safe-mode.md` (Watchdog and safe mode)
+Last completed prompt: `docs/prompts/archive/07-docker-containers.md` (Docker and Containers page)
 
 ## What works
-- `crates/opsbox-watchdog` + `opsbox watchdog` (`opsbox-watchdog.service`, root, `MemoryMax=32M`, `Nice=-5`, `Before=` all opsbox services): probes `serve` `/healthz`, `priv` ping, `proxy` ping, `/` and `/var/lib/opsbox` disk space every 10s, and SQLite `PRAGMA quick_check` on start via `ReadOnlyStore`.
-- Auto-recovery & rollback policy: restarts failed units; frees opsbox space first on 3 failures in 10 min with critical disk; takes over post-update verification/schema-checked rollback from `opsbox-rollback-check` when active; enters safe-mode alert state and backs off restarts to 60s.
-- Standalone HTTPS Safe Mode (`:8444`, shared panel TLS cert, zero shared code with `serve` beyond `opsbox-proto` & read-only `opsbox-store`): admin password+TOTP (offloading 64 MiB Argon2id via stdin to a 128M transient systemd scope when constrained) or single-use `opsbox recovery-code`; actions for logs, free disk space, restart, conditional rollback, 1h emergency SSH, and reboot.
-- Panel recovery screen & Security check: `PrivOp::WatchdogStatus`, `GET /api/v1/recovery`, Security `"watchdog"` check, `web/js/pages/recovery.js` wired cleanly without `"sample data"` badge.
+- `crates/opsbox-docker` + `opsbox-priv` (`ops/docker.rs`, `ops/cleanup.rs`, `ops/facts.rs`, `ops/doctor.rs`): pure-Rust `bollard` Unix-socket Docker Engine client isolated inside `priv`, covering status/install (signed apt/dnf repos with GPG fingerprint verification or distro packages, never convenience scripts), container list/inspect (secret env vars masked)/start/stop/restart/remove, log snapshot and live follow stream, container stats, `DockerExec` primitive, images/volumes/networks listing, restarting-container facts, and `opsbox-docker`-backed Cleanup scanners & pruning.
+- `crates/opsbox-metrics`: polls running container stats every 2 s (backing off to 15 s when Docker is missing/stopped), attaches top running containers to `Snapshot`, and emits `"containers"` Attention alerts (`#/containers`) when containers are restarting.
+- `crates/opsbox-api` (`docker.rs`, `metrics.rs`, `session.rs`): `/api/v1/docker/{status,install,containers,containers/{id},containers/{id}/{action},containers/{id}/logs,images,volumes,networks}` and `WS /api/v1/stream/containers/{id}/logs`, container stats on `/api/v1/metrics`, audit logging, strict ref/action validation, 501 vs 503 missing/stopped daemon mapping, and read-only `deploy` token scope.
+- `web/js`: Containers page wired live (`api.js` `REAL` map updated, sample-data badge removed) with Install Docker / Start Docker cards, Containers/Images/Volumes/Networks tabs, unmanaged container display/control, confirmation dialogs on `stop`/`restart`/`delete`, inspect modal, live streaming logs, and running container stats + restarting alerts on Overview.
 
 ## Partial / Found, not fixed
-- Pre-existing `cargo::unused_dependencies` warning for `futures-util` in `crates/opsbox-priv/Cargo.toml` on non-Linux hosts (`futures-util` is only used inside `#[cfg(target_os = "linux")]`).
-- Linux-only checks (`tools/check-idle-memory.py`, `musl` target build, systemd `MemoryMax=32M` + `systemd-run` Argon2 offload, live restart/rollback in VM) cannot run natively on macOS and remain for Linux CI / `opsbox-vm`.
+- Linux-only runtime/CI checks (`tools/check-idle-memory.py`, `musl` static build, `cargo-deny`, real `/var/run/docker.sock` Engine daemon, and real apt/dnf signed Docker installation) cannot run natively on macOS and remain for Linux CI / `opsbox-vm`.
 
 ## Next
-- Verify `opsbox-watchdog.service`, Safe Mode `:8444`, `opsbox recovery-code`, and failure/rollback recovery in `opsbox-vm`.
-- Next prompt: `docs/prompts/07-docker-containers.md`.
+- Verify missing-Docker install, Start Docker, managed/unmanaged containers, live WS logs, Inspect, Cleanup Docker scanners, and Overview container stats/attention in `opsbox-vm`.
+- Next prompt: `docs/prompts/08-github-connection.md`.

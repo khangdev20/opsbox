@@ -10,8 +10,8 @@ The inventory below is generated from the actual axum router. Run `python3 tools
 - Login: `POST /auth/login {username,password,code}`. Password + six-digit TOTP; an account with reset 2FA gets an enrolment-only session. `/auth/totp/enroll` returns `{secret,otpauthUri,account}`; `/auth/totp/confirm {code}` upgrades it.
 - First run: `/setup/claim {token}`, `/setup/admin {username,password}`, `/setup/totp/confirm {code}`. Each step uses the setup cookie; all return 404 permanently after the first admin finishes enrolment.
 - The session cookie is `HttpOnly; SameSite=Strict; Path=/`, `Secure` according to configuration/HTTPS forwarding. Mutations using cookies require same-host `Origin` and `X-Opsbox-CSRF` equal to the script-readable `opsbox_csrf` cookie. Every browser WebSocket requires a same-host `Origin`.
-- Scripts may send `Authorization: Bearer ops_…` without cookies/CSRF. Scopes: `read` permits host, metrics, attention; `deploy` adds journal reads and has no mutation capability in Phase 1; `full` permits administrator operations except account, token, SSH-key and terminal management. Cookie authentication takes precedence. A token cannot be used as a cookie. Tokens are hashed at rest, returned once, explicitly revoked and have no expiry yet. Per-service deployment scopes wait for Phase 3.
-- System/metrics reads require viewer; system mutations require admin. Files require deployer, confined to the apps directory in `priv`; viewers have no file access. Cleanup, Access, Settings, token management and Terminal require admin. Security checks are readable by signed-in accounts; fixes, invitations and account removal require admin.
+- Scripts may send `Authorization: Bearer ops_…` without cookies/CSRF. Scopes: `read` permits host, metrics, attention; `deploy` adds journal and read-only Docker container/log reads and has no mutation capability before app deployment arrives; `full` permits administrator operations except account, token, SSH-key and terminal management. Cookie authentication takes precedence. A token cannot be used as a cookie. Tokens are hashed at rest, returned once, explicitly revoked and have no expiry yet. Per-service deployment scopes follow in Phase 3.
+- System/metrics/Docker reads require viewer; system and Docker mutations (install, container start/stop/restart/delete) require admin. Files require deployer, confined to the apps directory in `priv`; viewers have no file access. Cleanup, Access, Settings, token management and Terminal require admin. Security checks are readable by signed-in accounts; fixes, invitations and account removal require admin.
 
 ## Payloads and streams
 
@@ -28,7 +28,8 @@ The inventory below is generated from the actual axum router. Run `python3 tools
 - Settings: `GET /settings` returns `{hostname,tz,timezones,swapMb,tokens,opsboxUpdate,panel}`. General settings save through the specific hostname/timezone endpoints; no generic PUT silently accepts future-phase fields. Tokens: create `{name,scope:"read"|"deploy"|"full"}` returns `{token,secret}`, listing exposes metadata only, DELETE revokes immediately.
 - Panel domain: `GET /panel` returns `{domain,activeDomain,certStatus,certExpiresAt,certDaysRemaining,certIssuer,certStaging,certError,proxyReachable,rawPortOpen,listen}`. `POST /panel/dns-check {domain}` verifies public A/AAAA records via `hickory-resolver` and returns `{domain,status:"points_here"|"waiting",pointsHere,message,resolvedIps,serverIps,cname,records}`. `POST /panel/certificate {domain}` starts an ACME HTTP-01 issuance task (`202 {task}`). `DELETE /panel/domain {confirm?}` detaches the panel domain and certificate (requires confirmation if raw `:8443` is closed). `POST /panel/local-only {localOnly,confirm?}` moves `serve` between `127.0.0.1:8443` and `0.0.0.0:8443` via `priv` and schedules a panel service restart (requires confirmation when closing `:8443` without a live certificate).
 - Recovery & watchdog: `GET /recovery` (admin only) reads the watchdog status published at `/run/opsbox-watchdog/status.json` via `priv` (`PrivOp::WatchdogStatus`) plus `opsbox-watchdog` journal entries and returns `{running,failed,degraded,updatedAt,currentVersion,previousVersion,canRollback,updateMessage,safeModeListen,sshOpenUntil,checks,events,log}`. Recovery mutations (`free`, `restart`, `rollback`, `ssh`, `reboot`) are served exclusively by `opsbox-watchdog`'s standalone HTTPS Safe Mode server on `:8444`.
-- Metrics: `GET /metrics?window=48s` accepts 1 second through 1 hour (`s`, `m`, `h`), returns percentages, memory/disk GB and network MB/s. `/stream/metrics` sends `{type:"metrics",ts,data}` once per second, with the same data shape.
+- Metrics: `GET /metrics?window=48s` accepts 1 second through 1 hour (`s`, `m`, `h`), returns percentages, memory/disk GB, network MB/s, top processes (`procs`), and running container stats (`containers`). `/stream/metrics` sends `{type:"metrics",ts,data}` once per second, with the same data shape.
+- Docker & Containers: `GET /docker/status` returns `{installed,running,version,apiVersion,canInstall,installMethod,error}`. `POST /docker/install` (`202 {task}`) installs Docker Engine from verified distro or signed official Docker apt/dnf repositories (never the convenience script). `GET /docker/containers` lists managed and unmanaged containers with live CPU/memory counters; `GET /docker/containers/{id}` returns detailed inspect state with secret-looking environment variables masked; `POST /docker/containers/{id}/{action}` accepts `start`, `stop`, `restart`, or `delete`; `GET /docker/containers/{id}/logs?tail=200` fetches a log snapshot; `GET /stream/containers/{id}/logs?tail=200` upgrades to WebSocket and streams `{type:"logs",entries:[{ts,stream,text}]}`, `{type:"end"}`, or `{type:"error",message}`; `GET /docker/images`, `/docker/volumes`, and `/docker/networks` list Engine resources. Every Docker Engine call runs exclusively inside `priv`.
 - Long operations return `202 {task}`; `GET /tasks/{id}` gives `running|ok|failed`, log tail, result and error. The UI polls it. Tasks are in memory, kept up to 24 hours/256 entries and are lost on restart. Task/event WebSocket streams are not part of this implementation.
 
 ## Errors and limits
@@ -60,6 +61,15 @@ Streams revalidate their session/token, role and allowed address every five seco
 | `POST` | `/api/v1/cleanup/run` | [cleanup::run](../crates/opsbox-api/src/cleanup.rs) |
 | `GET` | `/api/v1/cleanup/scan` | [cleanup::scan](../crates/opsbox-api/src/cleanup.rs) |
 | `GET` | `/api/v1/cleanup/volumes` | [cleanup::volume_sizes](../crates/opsbox-api/src/cleanup.rs) |
+| `GET` | `/api/v1/docker/containers` | [docker::list_containers](../crates/opsbox-api/src/docker.rs) |
+| `GET` | `/api/v1/docker/containers/{id}` | [docker::inspect_container](../crates/opsbox-api/src/docker.rs) |
+| `GET` | `/api/v1/docker/containers/{id}/logs` | [docker::container_logs](../crates/opsbox-api/src/docker.rs) |
+| `POST` | `/api/v1/docker/containers/{id}/{action}` | [docker::container_action](../crates/opsbox-api/src/docker.rs) |
+| `GET` | `/api/v1/docker/images` | [docker::list_images](../crates/opsbox-api/src/docker.rs) |
+| `POST` | `/api/v1/docker/install` | [docker::install](../crates/opsbox-api/src/docker.rs) |
+| `GET` | `/api/v1/docker/networks` | [docker::list_networks](../crates/opsbox-api/src/docker.rs) |
+| `GET` | `/api/v1/docker/status` | [docker::status](../crates/opsbox-api/src/docker.rs) |
+| `GET` | `/api/v1/docker/volumes` | [docker::list_volumes](../crates/opsbox-api/src/docker.rs) |
 | `GET` | `/api/v1/files` | [files::list](../crates/opsbox-api/src/files.rs) |
 | `POST` | `/api/v1/files/chmod` | [files::chmod](../crates/opsbox-api/src/files.rs) |
 | `GET` | `/api/v1/files/content` | [files::read](../crates/opsbox-api/src/files.rs) |
@@ -96,6 +106,7 @@ Streams revalidate their session/token, role and allowed address every five seco
 | `GET` | `/api/v1/setup/status` | [setup::status](../crates/opsbox-api/src/setup.rs) |
 | `POST` | `/api/v1/setup/totp/confirm` | [setup::confirm](../crates/opsbox-api/src/setup.rs) |
 | `POST` | `/api/v1/ssh/emergency` | [system::ssh_emergency](../crates/opsbox-api/src/system.rs) |
+| `GET` | `/api/v1/stream/containers/{id}/logs` | [docker::stream_logs](../crates/opsbox-api/src/docker.rs) |
 | `GET` | `/api/v1/stream/journal` | [system::stream_journal](../crates/opsbox-api/src/system.rs) |
 | `GET` | `/api/v1/stream/metrics` | [metrics::stream](../crates/opsbox-api/src/metrics.rs) |
 | `GET` | `/api/v1/stream/terminal` | [terminal::stream](../crates/opsbox-api/src/terminal.rs) |
@@ -127,4 +138,4 @@ Streams revalidate their session/token, role and allowed address every five seco
 
 ## Future phases (sample UI)
 
-Docker management, deployments, GitHub, templates and Compose: Phase 3. App domains and per-app certificates: Phase 4 (panel domain and ACME certificate are implemented). Backups/alerts: Phase 5. WireGuard, desktop device authentication and other-server terminals: Phase 6. These APIs are not implemented; their UI retains sample-data labels. (Self-update, watchdog, and Safe Mode from Phase 2 are implemented.)
+Deployments, GitHub, templates and Compose: Phase 3 (Docker & Containers management is implemented). App domains and per-app certificates: Phase 4 (panel domain and ACME certificate are implemented). Backups/alerts: Phase 5. WireGuard, desktop device authentication and other-server terminals: Phase 6. Unimplemented routes are marked in `web/js/api.js` and retain sample-data labels. (Self-update, watchdog, Safe Mode, and Docker management are implemented.)
