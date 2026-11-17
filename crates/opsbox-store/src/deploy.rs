@@ -281,6 +281,55 @@ pub struct DeployLogRow {
     pub line: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceDomainRecord {
+    pub id: String,
+    pub service_id: String,
+    pub domain: String,
+    pub is_primary: bool,
+    pub redirect_to: Option<String>,
+    pub force_https: bool,
+    pub hsts: bool,
+    pub dns_status: String,
+    pub dns_checked_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewServiceDomain<'a> {
+    pub domain: &'a str,
+    pub is_primary: bool,
+    pub redirect_to: Option<&'a str>,
+    pub force_https: bool,
+    pub hsts: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UpdateServiceDomain<'a> {
+    pub redirect_to: Option<Option<&'a str>>,
+    pub force_https: Option<bool>,
+    pub hsts: Option<bool>,
+    pub dns_status: Option<&'a str>,
+    pub dns_checked_at: Option<Option<i64>>,
+    pub now: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveServiceRoute {
+    pub service_id: String,
+    pub service_name: String,
+    pub domain: String,
+    pub host_port: Option<u16>,
+    pub redirect_to: Option<String>,
+    pub force_https: bool,
+    pub hsts: bool,
+}
+
+const DOMAIN_COLS: &str = "\
+    id, service_id, domain, is_primary, redirect_to, force_https, hsts, \
+    dns_status, dns_checked_at, created_at, updated_at";
+
 const SERVICE_COLS: &str = "\
     id, project_id, env_id, name, kind, owner_id, source_kind, repo, branch, \
     build_method, dockerfile_path, start_cmd, port, health_path, domain, image_ref, \
@@ -377,6 +426,80 @@ fn deploy_from_row(r: &Row<'_>) -> rusqlite::Result<DeployRecord> {
         started_at: r.get(10)?,
         finished_at: r.get(11)?,
     })
+}
+
+fn domain_from_row(r: &Row<'_>) -> rusqlite::Result<ServiceDomainRecord> {
+    let prim_i: i64 = r.get(3)?;
+    let force_i: i64 = r.get(5)?;
+    let hsts_i: i64 = r.get(6)?;
+    Ok(ServiceDomainRecord {
+        id: r.get(0)?,
+        service_id: r.get(1)?,
+        domain: r.get(2)?,
+        is_primary: prim_i != 0,
+        redirect_to: r.get(4)?,
+        force_https: force_i != 0,
+        hsts: hsts_i != 0,
+        dns_status: r.get(7)?,
+        dns_checked_at: r.get(8)?,
+        created_at: r.get(9)?,
+        updated_at: r.get(10)?,
+    })
+}
+
+fn sync_primary_domain_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    service_id: &str,
+    now: i64,
+) -> Result<Option<String>, StoreError> {
+    let cur_primary: Option<(String, String, Option<String>)> = tx
+        .query_row(
+            "SELECT id, domain, redirect_to FROM service_domains
+             WHERE service_id = ?1 AND is_primary = 1
+             ORDER BY created_at ASC LIMIT 1",
+            params![service_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+
+    let chosen: Option<String> = if let Some((id, dom, redir)) = cur_primary
+        && redir.is_none()
+    {
+        tx.execute(
+            "UPDATE service_domains SET is_primary = CASE WHEN id = ?2 THEN 1 ELSE 0 END WHERE service_id = ?1",
+            params![service_id, id],
+        )?;
+        Some(dom)
+    } else {
+        tx.execute(
+            "UPDATE service_domains SET is_primary = 0 WHERE service_id = ?1",
+            params![service_id],
+        )?;
+        let candidate: Option<(String, String)> = tx
+            .query_row(
+                "SELECT id, domain FROM service_domains
+                 WHERE service_id = ?1 AND redirect_to IS NULL
+                 ORDER BY created_at ASC, id ASC LIMIT 1",
+                params![service_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let Some((cid, cdom)) = candidate {
+            tx.execute(
+                "UPDATE service_domains SET is_primary = 1, updated_at = ?2 WHERE id = ?1",
+                params![cid, now],
+            )?;
+            Some(cdom)
+        } else {
+            None
+        }
+    };
+
+    tx.execute(
+        "UPDATE services SET domain = ?2, updated_at = ?3 WHERE id = ?1",
+        params![service_id, chosen, now],
+    )?;
+    Ok(chosen)
 }
 
 fn ensure_env_in_tx(
@@ -489,8 +612,14 @@ impl Store {
 
     pub fn create_service(&self, new: NewService<'_>) -> Result<ServiceRecord, StoreError> {
         let id = ulid::Ulid::generate().to_string();
-        let conn = self.lock();
-        conn.execute(
+        let norm_domain = new
+            .domain
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_lowercase);
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
             "INSERT INTO services (
                 id, project_id, env_id, name, kind, owner_id, source_kind, repo, branch,
                 build_method, dockerfile_path, start_cmd, port, health_path, domain, image_ref,
@@ -517,7 +646,7 @@ impl Store {
                 new.start_cmd,
                 i64::from(new.port),
                 new.health_path,
-                new.domain,
+                norm_domain,
                 new.image_ref,
                 new.deploy_key_id,
                 i64::from(new.auto_deploy),
@@ -529,11 +658,23 @@ impl Store {
                 new.now,
             ],
         )?;
-        Ok(conn.query_row(
+        if let Some(ref dom) = norm_domain {
+            let dom_id = ulid::Ulid::generate().to_string();
+            tx.execute(
+                "INSERT INTO service_domains (
+                    id, service_id, domain, is_primary, redirect_to, force_https, hsts,
+                    dns_status, dns_checked_at, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, 1, NULL, 1, 1, 'pending', NULL, ?4, ?4)",
+                params![dom_id, id, dom, new.now],
+            )?;
+        }
+        let rec = tx.query_row(
             &format!("SELECT {SERVICE_COLS} FROM services WHERE id = ?1"),
             params![id],
             service_from_row,
-        )?)
+        )?;
+        tx.commit()?;
+        Ok(rec)
     }
 
     pub fn get_service(&self, id_or_name: &str) -> Result<Option<ServiceRecord>, StoreError> {
@@ -671,6 +812,57 @@ impl Store {
                 upd.now,
             ],
         )?;
+        if let Some(dom_opt) = upd.domain {
+            match dom_opt.map(str::trim).filter(|s| !s.is_empty()) {
+                None => {
+                    tx.execute(
+                        "DELETE FROM service_domains WHERE service_id = ?1 AND is_primary = 1",
+                        params![service_id],
+                    )?;
+                    sync_primary_domain_in_tx(&tx, service_id, upd.now)?;
+                }
+                Some(raw) => {
+                    let clean = raw.to_ascii_lowercase();
+                    let existing_for_svc: Option<(String, Option<String>)> = tx
+                        .query_row(
+                            "SELECT id, redirect_to FROM service_domains WHERE service_id = ?1 AND domain = ?2",
+                            params![service_id, clean],
+                            |r| Ok((r.get(0)?, r.get(1)?)),
+                        )
+                        .optional()?;
+                    if let Some((dom_id, _)) = existing_for_svc {
+                        tx.execute(
+                            "UPDATE service_domains SET is_primary = CASE WHEN id = ?2 THEN 1 ELSE 0 END, redirect_to = CASE WHEN id = ?2 THEN NULL ELSE redirect_to END, updated_at = ?3 WHERE service_id = ?1",
+                            params![service_id, dom_id, upd.now],
+                        )?;
+                    } else {
+                        let cur_prim_id: Option<String> = tx
+                            .query_row(
+                                "SELECT id FROM service_domains WHERE service_id = ?1 AND is_primary = 1 LIMIT 1",
+                                params![service_id],
+                                |r| r.get(0),
+                            )
+                            .optional()?;
+                        if let Some(pid) = cur_prim_id {
+                            tx.execute(
+                                "UPDATE service_domains SET domain = ?2, dns_status = 'pending', dns_checked_at = NULL, updated_at = ?3 WHERE id = ?1",
+                                params![pid, clean, upd.now],
+                            )?;
+                        } else {
+                            let new_id = ulid::Ulid::generate().to_string();
+                            tx.execute(
+                                "INSERT INTO service_domains (
+                                    id, service_id, domain, is_primary, redirect_to, force_https, hsts,
+                                    dns_status, dns_checked_at, created_at, updated_at
+                                ) VALUES (?1, ?2, ?3, 1, NULL, 1, 1, 'pending', NULL, ?4, ?4)",
+                                params![new_id, service_id, clean, upd.now],
+                            )?;
+                        }
+                    }
+                    sync_primary_domain_in_tx(&tx, service_id, upd.now)?;
+                }
+            }
+        }
         let updated = tx.query_row(
             &format!("SELECT {SERVICE_COLS} FROM services WHERE id = ?1"),
             params![service_id],
@@ -998,10 +1190,12 @@ impl Store {
     pub fn list_active_service_domains(&self) -> Result<Vec<(String, u16)>, StoreError> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT domain, active_host_port FROM services
-             WHERE domain IS NOT NULL AND domain != ''
-               AND active_host_port IS NOT NULL AND active_host_port > 0
-             ORDER BY name ASC",
+            "SELECT sd.domain, s.active_host_port
+             FROM service_domains sd
+             JOIN services s ON s.id = sd.service_id
+             WHERE sd.redirect_to IS NULL
+               AND s.active_host_port IS NOT NULL AND s.active_host_port > 0
+             ORDER BY s.name ASC, sd.is_primary DESC, sd.created_at ASC",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -1012,6 +1206,340 @@ impl Store {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Return all active service domain proxy routes (serving + redirect domains).
+    pub fn list_active_service_routes(&self) -> Result<Vec<ActiveServiceRoute>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT sd.service_id, s.name, sd.domain, s.active_host_port,
+                    sd.redirect_to, sd.force_https, sd.hsts
+             FROM service_domains sd
+             JOIN services s ON s.id = sd.service_id
+             WHERE (sd.redirect_to IS NOT NULL AND s.kind = 'app')
+                OR (s.active_host_port IS NOT NULL AND s.active_host_port > 0)
+             ORDER BY s.name ASC, sd.is_primary DESC, sd.created_at ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                let port_i: Option<i64> = r.get(3)?;
+                let host_port = port_i
+                    .filter(|p| *p > 0)
+                    .map(u16::try_from)
+                    .transpose()
+                    .map_err(|_| invalid_col(3, "active_host_port"))?;
+                let force_i: i64 = r.get(5)?;
+                let hsts_i: i64 = r.get(6)?;
+                Ok(ActiveServiceRoute {
+                    service_id: r.get(0)?,
+                    service_name: r.get(1)?,
+                    domain: r.get(2)?,
+                    host_port,
+                    redirect_to: r.get(4)?,
+                    force_https: force_i != 0,
+                    hsts: hsts_i != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_service_domains(
+        &self,
+        service_id: &str,
+    ) -> Result<Vec<ServiceDomainRecord>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {DOMAIN_COLS} FROM service_domains
+             WHERE service_id = ?1
+             ORDER BY is_primary DESC, created_at ASC, id ASC"
+        ))?;
+        let rows = stmt
+            .query_map(params![service_id], domain_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn get_service_domain(
+        &self,
+        domain: &str,
+    ) -> Result<Option<ServiceDomainRecord>, StoreError> {
+        Ok(self
+            .lock()
+            .query_row(
+                &format!("SELECT {DOMAIN_COLS} FROM service_domains WHERE domain = ?1 LIMIT 1"),
+                params![domain.trim().to_ascii_lowercase()],
+                domain_from_row,
+            )
+            .optional()?)
+    }
+
+    pub fn list_all_service_domains_with_services(
+        &self,
+    ) -> Result<Vec<(ServiceDomainRecord, ServiceRecord)>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT sd.id, sd.service_id, sd.domain, sd.is_primary, sd.redirect_to,
+                    sd.force_https, sd.hsts, sd.dns_status, sd.dns_checked_at,
+                    sd.created_at, sd.updated_at,
+                    s.id, s.project_id, s.env_id, s.name, s.kind, s.owner_id, s.source_kind, s.repo, s.branch,
+                    s.build_method, s.dockerfile_path, s.start_cmd, s.port, s.health_path, s.domain, s.image_ref,
+                    s.deploy_key_id, s.auto_deploy, s.memory_limit_mb, s.cpu_limit_millis, s.state,
+                    s.active_deploy_id, s.active_container, s.active_host_port, s.graph_x, s.graph_y, s.note,
+                    s.created_at, s.updated_at
+             FROM service_domains sd
+             JOIN services s ON s.id = sd.service_id
+             ORDER BY s.name ASC, sd.is_primary DESC, sd.created_at ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                let dom = ServiceDomainRecord {
+                    id: r.get(0)?,
+                    service_id: r.get(1)?,
+                    domain: r.get(2)?,
+                    is_primary: r.get::<_, i64>(3)? != 0,
+                    redirect_to: r.get(4)?,
+                    force_https: r.get::<_, i64>(5)? != 0,
+                    hsts: r.get::<_, i64>(6)? != 0,
+                    dns_status: r.get(7)?,
+                    dns_checked_at: r.get(8)?,
+                    created_at: r.get(9)?,
+                    updated_at: r.get(10)?,
+                };
+                let kind_s: String = r.get(15)?;
+                let source_s: String = r.get(17)?;
+                let port_i: i64 = r.get(23)?;
+                let auto_i: i64 = r.get(28)?;
+                let state_s: String = r.get(31)?;
+                let host_port_i: Option<i64> = r.get(34)?;
+                let svc = ServiceRecord {
+                    id: r.get(11)?,
+                    project_id: r.get(12)?,
+                    env_id: r.get(13)?,
+                    name: r.get(14)?,
+                    kind: ServiceKind::parse(&kind_s)
+                        .ok_or_else(|| invalid_col(15, "service kind"))?,
+                    owner_id: r.get(16)?,
+                    source_kind: SourceKind::parse(&source_s)
+                        .ok_or_else(|| invalid_col(17, "source kind"))?,
+                    repo: r.get(18)?,
+                    branch: r.get(19)?,
+                    build_method: r.get(20)?,
+                    dockerfile_path: r.get(21)?,
+                    start_cmd: r.get(22)?,
+                    port: u16::try_from(port_i).map_err(|_| invalid_col(23, "port"))?,
+                    health_path: r.get(24)?,
+                    domain: r.get(25)?,
+                    image_ref: r.get(26)?,
+                    deploy_key_id: r.get(27)?,
+                    auto_deploy: auto_i != 0,
+                    memory_limit_mb: r.get(29)?,
+                    cpu_limit_millis: r.get(30)?,
+                    state: ServiceState::parse(&state_s)
+                        .ok_or_else(|| invalid_col(31, "service state"))?,
+                    active_deploy_id: r.get(32)?,
+                    active_container: r.get(33)?,
+                    active_host_port: host_port_i
+                        .map(u16::try_from)
+                        .transpose()
+                        .map_err(|_| invalid_col(34, "host port"))?,
+                    graph_x: r.get(35)?,
+                    graph_y: r.get(36)?,
+                    note: r.get(37)?,
+                    created_at: r.get(38)?,
+                    updated_at: r.get(39)?,
+                };
+                Ok((dom, svc))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn add_service_domains(
+        &self,
+        service_id: &str,
+        entries: &[NewServiceDomain<'_>],
+        now: i64,
+    ) -> Result<Vec<ServiceDomainRecord>, StoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut has_primary: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM service_domains WHERE service_id = ?1 AND is_primary = 1 AND redirect_to IS NULL)",
+                params![service_id],
+                |r| r.get(0),
+            )?;
+        let mut inserted_ids = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let clean = entry.domain.trim().to_ascii_lowercase();
+            let redir = entry
+                .redirect_to
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty());
+            let want_primary = redir.is_none() && (entry.is_primary || !has_primary);
+            if want_primary {
+                tx.execute(
+                    "UPDATE service_domains SET is_primary = 0 WHERE service_id = ?1",
+                    params![service_id],
+                )?;
+                has_primary = true;
+            }
+            let id = ulid::Ulid::generate().to_string();
+            tx.execute(
+                "INSERT INTO service_domains (
+                    id, service_id, domain, is_primary, redirect_to, force_https, hsts,
+                    dns_status, dns_checked_at, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending', NULL, ?8, ?8)",
+                params![
+                    id,
+                    service_id,
+                    clean,
+                    i64::from(want_primary),
+                    redir,
+                    i64::from(entry.force_https),
+                    i64::from(entry.hsts),
+                    now,
+                ],
+            )?;
+            inserted_ids.push(id);
+        }
+        sync_primary_domain_in_tx(&tx, service_id, now)?;
+        let mut out = Vec::with_capacity(inserted_ids.len());
+        for id in inserted_ids {
+            let rec = tx.query_row(
+                &format!("SELECT {DOMAIN_COLS} FROM service_domains WHERE id = ?1"),
+                params![id],
+                domain_from_row,
+            )?;
+            out.push(rec);
+        }
+        tx.commit()?;
+        Ok(out)
+    }
+
+    pub fn update_service_domain(
+        &self,
+        domain: &str,
+        upd: UpdateServiceDomain<'_>,
+    ) -> Result<Option<ServiceDomainRecord>, StoreError> {
+        let clean = domain.trim().to_ascii_lowercase();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(cur) = tx
+            .query_row(
+                &format!("SELECT {DOMAIN_COLS} FROM service_domains WHERE domain = ?1 LIMIT 1"),
+                params![clean],
+                domain_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let redirect_to = match upd.redirect_to {
+            Some(v) => v.map(|s| s.trim().to_ascii_lowercase()),
+            None => cur.redirect_to,
+        };
+        let force_https = upd.force_https.unwrap_or(cur.force_https);
+        let hsts = upd.hsts.unwrap_or(cur.hsts);
+        let dns_status = upd.dns_status.unwrap_or(&cur.dns_status);
+        let dns_checked_at = upd.dns_checked_at.unwrap_or(cur.dns_checked_at);
+        let is_primary = if redirect_to.is_some() {
+            false
+        } else {
+            cur.is_primary
+        };
+        tx.execute(
+            "UPDATE service_domains SET
+                is_primary = ?2,
+                redirect_to = ?3,
+                force_https = ?4,
+                hsts = ?5,
+                dns_status = ?6,
+                dns_checked_at = ?7,
+                updated_at = ?8
+             WHERE id = ?1",
+            params![
+                cur.id,
+                i64::from(is_primary),
+                redirect_to,
+                i64::from(force_https),
+                i64::from(hsts),
+                dns_status,
+                dns_checked_at,
+                upd.now,
+            ],
+        )?;
+        sync_primary_domain_in_tx(&tx, &cur.service_id, upd.now)?;
+        let updated = tx.query_row(
+            &format!("SELECT {DOMAIN_COLS} FROM service_domains WHERE id = ?1"),
+            params![cur.id],
+            domain_from_row,
+        )?;
+        tx.commit()?;
+        Ok(Some(updated))
+    }
+
+    pub fn make_primary_service_domain(
+        &self,
+        service_id: &str,
+        domain: &str,
+        now: i64,
+    ) -> Result<Option<ServiceDomainRecord>, StoreError> {
+        let clean = domain.trim().to_ascii_lowercase();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(cur) = tx
+            .query_row(
+                &format!(
+                    "SELECT {DOMAIN_COLS} FROM service_domains
+                     WHERE service_id = ?1 AND domain = ?2 LIMIT 1"
+                ),
+                params![service_id, clean],
+                domain_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if cur.redirect_to.is_some() {
+            return Ok(None);
+        }
+        tx.execute(
+            "UPDATE service_domains SET is_primary = CASE WHEN id = ?2 THEN 1 ELSE 0 END, updated_at = ?3 WHERE service_id = ?1",
+            params![service_id, cur.id, now],
+        )?;
+        sync_primary_domain_in_tx(&tx, service_id, now)?;
+        let updated = tx.query_row(
+            &format!("SELECT {DOMAIN_COLS} FROM service_domains WHERE id = ?1"),
+            params![cur.id],
+            domain_from_row,
+        )?;
+        tx.commit()?;
+        Ok(Some(updated))
+    }
+
+    pub fn remove_service_domain(
+        &self,
+        domain: &str,
+        now: i64,
+    ) -> Result<Option<(ServiceDomainRecord, Option<String>)>, StoreError> {
+        let clean = domain.trim().to_ascii_lowercase();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(cur) = tx
+            .query_row(
+                &format!("SELECT {DOMAIN_COLS} FROM service_domains WHERE domain = ?1 LIMIT 1"),
+                params![clean],
+                domain_from_row,
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        tx.execute("DELETE FROM service_domains WHERE id = ?1", params![cur.id])?;
+        let next_primary = sync_primary_domain_in_tx(&tx, &cur.service_id, now)?;
+        tx.commit()?;
+        Ok(Some((cur, next_primary)))
     }
 
     /// Return services whose latest deploy has `status = 'failed'`.

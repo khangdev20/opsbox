@@ -56,6 +56,7 @@ struct MockAcmeState {
     orders: Mutex<HashMap<String, MockOrder>>,
     nonces: Mutex<u64>,
     chal_checks: Mutex<u32>,
+    fail_challenges: Mutex<bool>,
 }
 
 #[derive(Clone)]
@@ -86,6 +87,7 @@ impl MockAcmeState {
             orders: Mutex::new(HashMap::new()),
             nonces: Mutex::new(0),
             chal_checks: Mutex::new(0),
+            fail_challenges: Mutex::new(false),
         })
     }
 
@@ -217,6 +219,16 @@ impl HttpClient for MockAcmeClient {
                 );
             }
             if let Some(oid) = uri.strip_prefix("https://acme.test/chal/") {
+                if *state.fail_challenges.lock().unwrap() {
+                    return make_json(
+                        StatusCode::BAD_REQUEST,
+                        json!({
+                            "type": "urn:ietf:params:acme:error:connection",
+                            "detail": "simulated HTTP-01 timeout"
+                        }),
+                        None,
+                    );
+                }
                 let (domain, token) = {
                     let g = state.orders.lock().unwrap();
                     let o = g.get(oid).unwrap();
@@ -479,6 +491,7 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
             cert_sha256: Some(upstream_sha256),
         },
         redirect_www: false,
+        redirect_to: None,
         redirect_https: true,
         hsts: true,
         max_body_bytes: 1024 * 1024,
@@ -694,6 +707,7 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
                 upstream: plain_up_addr.to_string(),
                 upstream_tls: UpstreamTls::Plain,
                 redirect_www: false,
+                redirect_to: None,
                 redirect_https: false,
                 hsts: false,
                 max_body_bytes: 0,
@@ -724,6 +738,287 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
 
     let _ = proxy_stop2.send(());
     proxy_task2.await.unwrap();
+    let _ = priv_stop.send(());
+    priv_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn app_domains_redirect_to_force_https_hsts_and_renewal_failure_persistence() {
+    let _ = ring::default_provider().install_default();
+    let dir = tempfile::tempdir().unwrap();
+    let probe = dir.path().join("probe");
+    std::fs::write(&probe, b"").unwrap();
+    let uid = std::fs::metadata(&probe).unwrap().uid();
+
+    let priv_sock = dir.path().join("priv.sock");
+    let mut priv_cfg = PrivConfig::new(&priv_sock, vec![uid]);
+    priv_cfg.master_key_path = dir.path().join("master.key");
+    let priv_server = PrivServer::bind(priv_cfg).unwrap();
+    let (priv_stop, priv_stopped) = oneshot::channel::<()>();
+    let priv_task = tokio::spawn(priv_server.run(async {
+        let _ = priv_stopped.await;
+    }));
+
+    // Plain upstream HTTP server for an app container.
+    let up_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let up_addr = up_listener.local_addr().unwrap();
+    let up_task = tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = up_listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 512];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\napp-ok!",
+                    )
+                    .await;
+            });
+        }
+    });
+
+    let acme_state = MockAcmeState::new(15); // within 30d renewal window
+    let acme_for_factory = Arc::clone(&acme_state);
+    let state_dir = dir.path().join("proxy-state");
+    let proxy_sock = dir.path().join("proxy.sock");
+    let mut cfg = ProxyConfig::new(&priv_sock);
+    cfg.listen_http = "127.0.0.1:0".parse().unwrap();
+    cfg.listen_https = "127.0.0.1:0".parse().unwrap();
+    cfg.socket_path = proxy_sock.clone();
+    cfg.state_dir = state_dir.clone();
+    cfg.acme_directory = AcmeDirectory::Custom("https://acme.test/dir".into());
+    cfg.custom_http = Some(Arc::new(move || {
+        Box::new(MockAcmeClient {
+            state: Arc::clone(&acme_for_factory),
+        })
+    }));
+
+    let server = ProxyServer::bind(cfg.clone()).await.unwrap();
+    let http_addr = server.http_addr();
+    let https_addr = server.https_addr();
+    *acme_state.proxy_http_addr.write().await = Some(http_addr);
+    let (proxy_stop, proxy_stopped) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        server
+            .run(async {
+                let _ = proxy_stopped.await;
+            })
+            .await
+            .unwrap();
+    });
+
+    let client = ProxyClient::new(&proxy_sock).with_timeout(Duration::from_secs(30));
+
+    // Set routes BEFORE any cert exists: `redirect_https = true` must NOT redirect into a broken TLS port yet.
+    client
+        .set_routes(
+            "r1",
+            vec![
+                Route {
+                    host: "app.example.com".into(),
+                    upstream: up_addr.to_string(),
+                    upstream_tls: UpstreamTls::Plain,
+                    redirect_www: false,
+                    redirect_to: None,
+                    redirect_https: true,
+                    hsts: false,
+                    max_body_bytes: 0,
+                    is_panel: false,
+                },
+                Route {
+                    host: "www.app.example.com".into(),
+                    upstream: up_addr.to_string(),
+                    upstream_tls: UpstreamTls::Plain,
+                    redirect_www: false,
+                    redirect_to: Some("app.example.com".into()),
+                    redirect_https: true,
+                    hsts: true,
+                    max_body_bytes: 0,
+                    is_panel: false,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    // Before cert: HTTP serves app directly, and www redirects via HTTP 301.
+    let mut c1 = TcpStream::connect(http_addr).await.unwrap();
+    c1.write_all(b"GET /hi HTTP/1.1\r\nHost: app.example.com\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut b1 = Vec::new();
+    c1.read_to_end(&mut b1).await.unwrap();
+    let t1 = String::from_utf8_lossy(&b1);
+    assert!(
+        t1.starts_with("HTTP/1.1 200 OK") && t1.ends_with("app-ok!"),
+        "{t1}"
+    );
+
+    let mut c2 = TcpStream::connect(http_addr).await.unwrap();
+    c2.write_all(b"GET /hi?x=1 HTTP/1.1\r\nHost: www.app.example.com\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut b2 = Vec::new();
+    c2.read_to_end(&mut b2).await.unwrap();
+    let t2 = String::from_utf8_lossy(&b2);
+    assert!(
+        t2.starts_with("HTTP/1.1 301") && t2.contains("location: http://app.example.com/hi?x=1"),
+        "{t2}"
+    );
+
+    // Issue certs for both domains.
+    client.issue_cert("ic1", "app.example.com").await.unwrap();
+    client
+        .issue_cert("ic2", "www.app.example.com")
+        .await
+        .unwrap();
+
+    // Now HTTP redirects 308 -> HTTPS for both!
+    let mut c3 = TcpStream::connect(http_addr).await.unwrap();
+    c3.write_all(b"GET /hi HTTP/1.1\r\nHost: app.example.com\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut b3 = Vec::new();
+    c3.read_to_end(&mut b3).await.unwrap();
+    let t3 = String::from_utf8_lossy(&b3);
+    assert!(
+        t3.starts_with("HTTP/1.1 308") && t3.contains("location: https://app.example.com/hi"),
+        "{t3}"
+    );
+
+    let mut c4 = TcpStream::connect(http_addr).await.unwrap();
+    c4.write_all(b"GET /hi HTTP/1.1\r\nHost: www.app.example.com\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut b4 = Vec::new();
+    c4.read_to_end(&mut b4).await.unwrap();
+    let t4 = String::from_utf8_lossy(&b4);
+    assert!(
+        t4.starts_with("HTTP/1.1 308") && t4.contains("location: https://app.example.com/hi"),
+        "{t4}"
+    );
+
+    // HTTPS to app.example.com has hsts: false -> NO Strict-Transport-Security header.
+    let mut roots = RootCertStore::empty();
+    for der in CertificateDer::pem_slice_iter(acme_state.ca_cert_pem.as_bytes()) {
+        roots.add(der.unwrap()).unwrap();
+    }
+    let tls_cfg = Arc::new(
+        ClientConfig::builder_with_provider(Arc::new(ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+    let connector = TlsConnector::from(tls_cfg);
+
+    let tcp_app = TcpStream::connect(https_addr).await.unwrap();
+    let tls_app = connector
+        .connect(ServerName::try_from("app.example.com").unwrap(), tcp_app)
+        .await
+        .unwrap();
+    let (mut s_app, conn_app) = hyper::client::conn::http1::handshake(TokioIo::new(tls_app))
+        .await
+        .unwrap();
+    tokio::spawn(conn_app);
+    let r_app = s_app
+        .send_request(
+            Request::get("/")
+                .header("host", "app.example.com")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r_app.status(), StatusCode::OK);
+    assert!(r_app.headers().get("strict-transport-security").is_none());
+
+    // HTTPS to www.app.example.com -> 308 redirect to https://app.example.com/ WITH HSTS.
+    let tcp_www = TcpStream::connect(https_addr).await.unwrap();
+    let tls_www = connector
+        .connect(
+            ServerName::try_from("www.app.example.com").unwrap(),
+            tcp_www,
+        )
+        .await
+        .unwrap();
+    let (mut s_www, conn_www) = hyper::client::conn::http1::handshake(TokioIo::new(tls_www))
+        .await
+        .unwrap();
+    tokio::spawn(conn_www);
+    let r_www = s_www
+        .send_request(
+            Request::get("/p?q=1")
+                .header("host", "www.app.example.com")
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r_www.status(), StatusCode::PERMANENT_REDIRECT);
+    assert_eq!(
+        r_www.headers().get("location").unwrap().to_str().unwrap(),
+        "https://app.example.com/p?q=1"
+    );
+    assert_eq!(
+        r_www
+            .headers()
+            .get("strict-transport-security")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "max-age=31536000"
+    );
+
+    // Simulate renewal failure on app.example.com -> persists across restart.
+    *acme_state.fail_challenges.lock().unwrap() = true;
+    assert!(client.issue_cert("rf1", "app.example.com").await.is_err());
+    let st_err = client.status("st-err").await.unwrap();
+    let app_cert = st_err
+        .certs
+        .iter()
+        .find(|c| c.domain == "app.example.com")
+        .unwrap();
+    assert_eq!(app_cert.consecutive_failures, 1);
+    assert!(app_cert.last_error.is_some());
+
+    let _ = proxy_stop.send(());
+    proxy_task.await.unwrap();
+
+    // Restart proxy -> renewal failure still persisted!
+    let server2 = ProxyServer::bind(cfg).await.unwrap();
+    *acme_state.proxy_http_addr.write().await = Some(server2.http_addr());
+    let (proxy_stop2, proxy_stopped2) = oneshot::channel::<()>();
+    let proxy_task2 = tokio::spawn(async move {
+        server2
+            .run(async {
+                let _ = proxy_stopped2.await;
+            })
+            .await
+            .unwrap();
+    });
+    let st_err2 = client.status("st-err2").await.unwrap();
+    let app_cert2 = st_err2
+        .certs
+        .iter()
+        .find(|c| c.domain == "app.example.com")
+        .unwrap();
+    assert_eq!(app_cert2.consecutive_failures, 1);
+    assert!(app_cert2.last_error.is_some());
+
+    // Subsequent successful renewal clears failure count & error.
+    *acme_state.fail_challenges.lock().unwrap() = false;
+    *acme_state.validity_days.lock().unwrap() = 90;
+    let renewed = client.issue_cert("rf2", "app.example.com").await.unwrap();
+    assert_eq!(renewed.consecutive_failures, 0);
+    assert!(renewed.last_error.is_none());
+    assert_eq!(renewed.status, CertState::Valid);
+
+    let _ = proxy_stop2.send(());
+    proxy_task2.await.unwrap();
+    up_task.abort();
     let _ = priv_stop.send(());
     priv_task.await.unwrap();
 }

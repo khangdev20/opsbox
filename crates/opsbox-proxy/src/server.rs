@@ -247,8 +247,11 @@ impl ProxyServer {
                         Ok((stream, peer)) => {
                             let routes = self.routes.clone();
                             let challenges = self.challenges.clone();
+                            let certs = Arc::clone(&self.resolver);
                             let max_body = self.config.max_body_bytes;
-                            tokio::spawn(serve_http_connection(stream, peer, routes, challenges, max_body));
+                            tokio::spawn(serve_http_connection(
+                                stream, peer, routes, challenges, certs, max_body,
+                            ));
                         }
                         Err(e) => {
                             warn!(error = %e, "HTTP accept failed");
@@ -437,6 +440,18 @@ async fn dispatch_ctrl(
             for r in &new_routes {
                 if let Err(e) = validate_domain(&r.host) {
                     return ProxyResponse::failure(id, ProxyErrorCode::Invalid, e.0);
+                }
+                if let Some(ref target) = r.redirect_to {
+                    if let Err(e) = validate_domain(target) {
+                        return ProxyResponse::failure(id, ProxyErrorCode::Invalid, e.0);
+                    }
+                    if target.eq_ignore_ascii_case(&r.host) {
+                        return ProxyResponse::failure(
+                            id,
+                            ProxyErrorCode::Invalid,
+                            format!("Domain '{}' cannot redirect to itself.", r.host),
+                        );
+                    }
                 }
                 if r.upstream.parse::<SocketAddr>().is_err() {
                     return ProxyResponse::failure(

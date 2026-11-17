@@ -32,7 +32,7 @@ use tokio_rustls::rustls::{
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{debug, warn};
 
-use crate::acme::ChallengeMap;
+use crate::acme::{ChallengeMap, DynamicCertResolver};
 use crate::proto::{Route, UpstreamTls};
 
 pub const DEFAULT_MAX_BODY_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
@@ -162,6 +162,7 @@ pub async fn handle_http(
     peer: SocketAddr,
     routes: RouteTable,
     challenges: ChallengeMap,
+    certs: Arc<DynamicCertResolver>,
     default_max_body: u64,
 ) -> Result<Response<ProxyBody>, Infallible> {
     let path = req.uri().path();
@@ -190,12 +191,22 @@ pub async fn handle_http(
     let Some((route, is_www)) = routes.lookup(&host) else {
         return Ok(text_response(StatusCode::NOT_FOUND, "Unknown host."));
     };
-    if route.redirect_https {
-        let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
+    let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
+    if let Some(ref target) = route.redirect_to {
+        if route.redirect_https && (certs.has(&route.host) || certs.has(target)) {
+            return Ok(redirect_https_response(target, pq, false));
+        }
+        let location = format!("http://{target}{pq}");
+        return Ok(Response::builder()
+            .status(StatusCode::MOVED_PERMANENTLY)
+            .header(LOCATION, location)
+            .body(empty_body())
+            .unwrap_or_else(|_| Response::new(empty_body())));
+    }
+    if route.redirect_https && certs.has(&route.host) {
         return Ok(redirect_https_response(&route.host, pq, false));
     }
     if is_www {
-        let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
         let location = format!("http://{}{}", route.host, pq);
         return Ok(Response::builder()
             .status(StatusCode::MOVED_PERMANENTLY)
@@ -421,6 +432,10 @@ pub async fn handle_https(
     let Some((route, is_www)) = routes.lookup(&host) else {
         return Ok(text_response(StatusCode::NOT_FOUND, "Unknown host."));
     };
+    if let Some(ref target) = route.redirect_to {
+        let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
+        return Ok(redirect_https_response(target, pq, route.hsts));
+    }
     if is_www {
         let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
         return Ok(redirect_https_response(&route.host, pq, route.hsts));
@@ -633,6 +648,7 @@ pub async fn serve_http_connection(
     peer: SocketAddr,
     routes: RouteTable,
     challenges: ChallengeMap,
+    certs: Arc<DynamicCertResolver>,
     default_max_body: u64,
 ) {
     let io = TokioIo::new(stream);
@@ -642,6 +658,7 @@ pub async fn serve_http_connection(
             peer,
             routes.clone(),
             challenges.clone(),
+            Arc::clone(&certs),
             default_max_body,
         )
     });

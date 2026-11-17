@@ -248,6 +248,12 @@ struct PersistedCert {
     issuer: String,
     staging: bool,
     issued_at: i64,
+    #[serde(default)]
+    consecutive_failures: u32,
+    #[serde(default)]
+    last_error: Option<String>,
+    #[serde(default)]
+    next_retry_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -365,11 +371,16 @@ impl AcmeManager {
                         .domains
                         .write()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let failures = rec.consecutive_failures;
+                    let last_err = rec.last_error.clone();
+                    let next_retry = rec.next_retry_at;
                     guard.insert(
                         rec.domain.clone(),
                         DomainRuntime {
+                            consecutive_failures: failures,
+                            last_error: last_err,
+                            next_retry_at: next_retry,
                             persisted: Some(rec),
-                            ..DomainRuntime::default()
                         },
                     );
                 }
@@ -379,12 +390,15 @@ impl AcmeManager {
                         .domains
                         .write()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let failures = rec.consecutive_failures.max(1);
+                    let next_retry = rec.next_retry_at;
                     guard.insert(
                         rec.domain.clone(),
                         DomainRuntime {
+                            consecutive_failures: failures,
                             last_error: Some(format!("Cannot unlock certificate key: {e}")),
+                            next_retry_at: next_retry,
                             persisted: Some(rec),
-                            ..DomainRuntime::default()
                         },
                     );
                 }
@@ -422,6 +436,7 @@ impl AcmeManager {
                         staging: p.staging,
                         last_error: rt.last_error.clone(),
                         issued_at: Some(p.issued_at),
+                        consecutive_failures: rt.consecutive_failures,
                     }
                 }
                 None => CertInfo {
@@ -438,6 +453,7 @@ impl AcmeManager {
                     staging: self.directory.is_staging(),
                     last_error: rt.last_error.clone(),
                     issued_at: None,
+                    consecutive_failures: rt.consecutive_failures,
                 },
             },
             None => CertInfo {
@@ -450,6 +466,7 @@ impl AcmeManager {
                 staging: self.directory.is_staging(),
                 last_error: None,
                 issued_at: None,
+                consecutive_failures: 0,
             },
         }
     }
@@ -578,29 +595,44 @@ impl AcmeManager {
             }
             Err(e) => {
                 let msg = e.to_string();
-                let mut map = self
-                    .domains
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let rt = map.entry(domain.clone()).or_default();
-                rt.consecutive_failures = rt.consecutive_failures.saturating_add(1);
-                rt.last_error = Some(msg.clone());
-                let backoff_secs = match rt.consecutive_failures {
-                    1 => 5 * 60,
-                    2 => 15 * 60,
-                    3 => 3600,
-                    _ => 6 * 3600,
+                let updated_persisted = {
+                    let mut map = self
+                        .domains
+                        .write()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let rt = map.entry(domain.clone()).or_default();
+                    rt.consecutive_failures = rt.consecutive_failures.saturating_add(1);
+                    rt.last_error = Some(msg.clone());
+                    let backoff_secs = match rt.consecutive_failures {
+                        1 => 5 * 60,
+                        2 => 15 * 60,
+                        3 => 3600,
+                        _ => 6 * 3600,
+                    };
+                    rt.next_retry_at = now + backoff_secs;
+                    if rt.consecutive_failures >= 3 {
+                        error!(
+                            domain = %domain,
+                            failures = rt.consecutive_failures,
+                            error = %msg,
+                            "ACME certificate issuance/renewal failed 3 or more times"
+                        );
+                    } else {
+                        warn!(domain = %domain, error = %msg, "ACME certificate issuance failed");
+                    }
+                    if let Some(ref mut p) = rt.persisted {
+                        p.consecutive_failures = rt.consecutive_failures;
+                        p.last_error = Some(msg.clone());
+                        p.next_retry_at = rt.next_retry_at;
+                        Some(p.clone())
+                    } else {
+                        None
+                    }
                 };
-                rt.next_retry_at = now + backoff_secs;
-                if rt.consecutive_failures >= 3 {
-                    error!(
-                        domain = %domain,
-                        failures = rt.consecutive_failures,
-                        error = %msg,
-                        "ACME certificate issuance/renewal failed 3 or more times"
-                    );
-                } else {
-                    warn!(domain = %domain, error = %msg, "ACME certificate issuance failed");
+                if let Some(p) = updated_persisted
+                    && let Ok(path) = self.cert_path(&domain)
+                {
+                    let _ = write_private_json(&path, &p);
                 }
                 Err(e)
             }
@@ -689,6 +721,9 @@ impl AcmeManager {
             issuer: meta.issuer,
             staging: self.directory.is_staging(),
             issued_at: now_secs(),
+            consecutive_failures: 0,
+            last_error: None,
+            next_retry_at: 0,
         };
         let path = self.cert_path(domain)?;
         write_private_json(&path, &persisted)?;

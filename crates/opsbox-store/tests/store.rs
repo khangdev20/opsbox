@@ -43,6 +43,7 @@ fn migrates_an_empty_database() {
             "metrics_minute",
             "projects",
             "schema_migrations",
+            "service_domains",
             "service_vars",
             "services",
             "sessions",
@@ -795,4 +796,162 @@ fn deploy_pipeline_tables_switch_fail_rollback_and_prune() {
     assert!(store.delete_service_var(&svc.id, "DATABASE_URL").unwrap());
     assert!(store.delete_service(&svc.id).unwrap().is_some());
     assert!(store.get_service("web").unwrap().is_none());
+}
+
+#[test]
+fn service_domains_crud_primary_and_routes() {
+    use opsbox_store::{
+        NewService, NewServiceDomain, ServiceKind, SourceKind, UpdateServiceDomain,
+    };
+
+    let store = Store::open_in_memory().unwrap();
+    let (proj, env) = store.ensure_default_project(100).unwrap();
+
+    let svc = store
+        .create_service(NewService {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "shop",
+            kind: ServiceKind::App,
+            owner_id: None,
+            source_kind: SourceKind::DockerImage,
+            repo: "nginx:1.27-alpine",
+            branch: "main",
+            build_method: "Docker image",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 80,
+            health_path: "/",
+            domain: Some("Shop.Example.COM"),
+            image_ref: Some("nginx:1.27-alpine"),
+            deploy_key_id: None,
+            auto_deploy: false,
+            memory_limit_mb: None,
+            cpu_limit_millis: None,
+            graph_x: 0,
+            graph_y: 0,
+            note: None,
+            now: 100,
+        })
+        .unwrap();
+    assert_eq!(svc.domain.as_deref(), Some("shop.example.com"));
+
+    let initial = store.list_service_domains(&svc.id).unwrap();
+    assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].domain, "shop.example.com");
+    assert!(initial[0].is_primary);
+    assert!(initial[0].force_https);
+    assert!(initial[0].hsts);
+
+    // Add a www redirect and a secondary custom domain.
+    store
+        .add_service_domains(
+            &svc.id,
+            &[
+                NewServiceDomain {
+                    domain: "www.shop.example.com",
+                    is_primary: false,
+                    redirect_to: Some("shop.example.com"),
+                    force_https: true,
+                    hsts: true,
+                },
+                NewServiceDomain {
+                    domain: "shop.acme.co",
+                    is_primary: false,
+                    redirect_to: None,
+                    force_https: false,
+                    hsts: false,
+                },
+            ],
+            200,
+        )
+        .unwrap();
+
+    // Redirecting domain cannot be promoted to primary.
+    assert!(
+        store
+            .make_primary_service_domain(&svc.id, "www.shop.example.com", 210)
+            .unwrap()
+            .is_none()
+    );
+
+    // Promoting shop.acme.co updates primary flags and services.domain.
+    let promoted = store
+        .make_primary_service_domain(&svc.id, "shop.acme.co", 220)
+        .unwrap()
+        .unwrap();
+    assert!(promoted.is_primary);
+    assert_eq!(
+        store
+            .get_service(&svc.id)
+            .unwrap()
+            .unwrap()
+            .domain
+            .as_deref(),
+        Some("shop.acme.co")
+    );
+
+    // Update DNS status and toggles.
+    let updated = store
+        .update_service_domain(
+            "shop.acme.co",
+            UpdateServiceDomain {
+                dns_status: Some("ok"),
+                dns_checked_at: Some(Some(230)),
+                force_https: Some(true),
+                hsts: Some(true),
+                now: 230,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.dns_status, "ok");
+    assert!(updated.force_https);
+    assert!(updated.hsts);
+
+    // Make container active and verify active routes include all 3 domains.
+    let dep = store
+        .create_deploy(
+            &svc.id,
+            None,
+            "init",
+            opsbox_store::DeployTrigger::Manual,
+            "boss",
+            240,
+        )
+        .unwrap();
+    store
+        .complete_deploy_switch(
+            &svc.id,
+            &dep.id,
+            "nginx:1.27-alpine",
+            "c1",
+            40123,
+            None,
+            245,
+        )
+        .unwrap();
+
+    let routes = store.list_active_service_routes().unwrap();
+    assert_eq!(routes.len(), 3);
+    assert_eq!(routes[0].domain, "shop.acme.co");
+    assert_eq!(routes[0].host_port, Some(40123));
+
+    // Removing primary auto-promotes remaining non-redirect domain (shop.example.com).
+    let (removed, next_prim) = store
+        .remove_service_domain("shop.acme.co", 250)
+        .unwrap()
+        .unwrap();
+    assert_eq!(removed.domain, "shop.acme.co");
+    assert_eq!(next_prim.as_deref(), Some("shop.example.com"));
+    assert_eq!(
+        store
+            .get_service(&svc.id)
+            .unwrap()
+            .unwrap()
+            .domain
+            .as_deref(),
+        Some("shop.example.com")
+    );
 }

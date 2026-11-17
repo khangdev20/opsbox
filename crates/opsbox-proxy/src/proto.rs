@@ -41,6 +41,9 @@ pub struct Route {
     pub upstream_tls: UpstreamTls,
     #[serde(default)]
     pub redirect_www: bool,
+    /// Optional canonical host to permanently redirect requests for `host` to.
+    #[serde(default)]
+    pub redirect_to: Option<String>,
     #[serde(default = "default_true")]
     pub redirect_https: bool,
     #[serde(default = "default_true")]
@@ -73,6 +76,8 @@ pub struct CertInfo {
     pub staging: bool,
     pub last_error: Option<String>,
     pub issued_at: Option<i64>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,6 +376,7 @@ mod tests {
                         cert_sha256: Some("abcd".into()),
                     },
                     redirect_www: false,
+                    redirect_to: None,
                     redirect_https: true,
                     hsts: true,
                     max_body_bytes: 0,

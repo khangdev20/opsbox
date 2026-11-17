@@ -54,7 +54,7 @@ pub fn validate_domain(domain: &str) -> Result<(), DomainError> {
     }
     if domain.starts_with("*.") || domain.contains('*') {
         return Err(DomainError(
-            "Wildcard domains require DNS-01 and are not supported for the panel domain.".into(),
+            "Wildcard domains require DNS-01 and are not supported yet.".into(),
         ));
     }
     if domain.parse::<IpAddr>().is_ok() {
