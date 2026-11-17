@@ -12,6 +12,7 @@ pub enum ErrorCode {
     Unauthorized,
     Forbidden,
     NotFound,
+    MethodNotAllowed,
     Conflict,
     RateLimited,
     /// A dependency (for example the privileged helper) is not reachable.
@@ -27,6 +28,7 @@ impl ErrorCode {
             Self::Unauthorized => 401,
             Self::Forbidden => 403,
             Self::NotFound => 404,
+            Self::MethodNotAllowed => 405,
             Self::Conflict => 409,
             Self::RateLimited => 429,
             Self::Unavailable => 503,
