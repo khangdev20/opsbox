@@ -1,9 +1,9 @@
 [Unit]
 Description=opsbox server
 Documentation=https://github.com/khangdev20/opsbox
-After=opsbox-priv.service
-# Wants, not Requires: serve keeps running (and reports "not ready") if priv restarts.
-Wants=opsbox-priv.service
+After=opsbox-priv.service opsbox-proxy.service
+# Wants, not Requires: serve keeps running (and reports "not ready") if priv or proxy restarts.
+Wants=opsbox-priv.service opsbox-proxy.service
 StartLimitIntervalSec=0
 
 [Service]

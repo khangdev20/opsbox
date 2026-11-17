@@ -82,7 +82,12 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         Command::Priv(_) => {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             logging::init(&config)?;
-            cmd::privileged::run(config)?;
+            cmd::privileged::run(config, cli.config.as_deref())?;
+        }
+        Command::Proxy(_) => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            logging::init(&config)?;
+            cmd::proxy::run(config)?;
         }
         Command::Update { channel, version } => {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
@@ -104,6 +109,16 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             action: WebAction::LocalOnly { mode },
         } => {
             cmd::web::local_only(cli.config.as_deref(), *mode)?;
+        }
+        Command::Web {
+            action:
+                WebAction::Domain {
+                    name,
+                    skip_dns_check,
+                },
+        } => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            cmd::web::domain(&config, name, *skip_dns_check)?;
         }
         // Handled above; listed so adding a command forces a decision here.
         _ => unreachable!("unimplemented commands return before this match"),

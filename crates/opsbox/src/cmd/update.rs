@@ -135,7 +135,12 @@ pub fn run_update_verify(config: &Config, from: Option<&str>, to: &str) -> bool 
             });
             let _ = layout.write_state(&state);
             let _ = Command::new("systemctl")
-                .args(["restart", "opsbox-priv.service", "opsbox.service"])
+                .args([
+                    "restart",
+                    "opsbox-priv.service",
+                    "opsbox-proxy.service",
+                    "opsbox.service",
+                ])
                 .status();
         }
         Err(e) => {

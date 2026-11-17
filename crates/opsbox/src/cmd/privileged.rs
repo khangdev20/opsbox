@@ -3,9 +3,9 @@ use nix::unistd::geteuid;
 use opsbox_priv::{PrivConfig, PrivServer, resolve_users};
 use tracing::warn;
 
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_CONFIG_PATH};
 
-pub fn run(config: Config) -> Result<()> {
+pub fn run(config: Config, explicit_config: Option<&std::path::Path>) -> Result<()> {
     if !geteuid().is_root() {
         warn!(
             "not running as root: this is fine for development, but real privileged operations will fail"
@@ -32,6 +32,10 @@ pub fn run(config: Config) -> Result<()> {
     priv_config.master_key_path.clone_from(&config.master_key);
     priv_config.xfer_dir.clone_from(&config.xfer_dir);
     priv_config.trash_dir.clone_from(&config.trash_dir);
+    priv_config.config_path = explicit_config
+        .map(std::path::Path::to_path_buf)
+        .or(config.loaded_from)
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_CONFIG_PATH));
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

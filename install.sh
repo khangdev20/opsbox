@@ -71,7 +71,7 @@ Usage: install.sh [options]
 
 Development:
   --binary PATH       install this local binary instead of downloading a release
-  --units-dir DIR     directory with opsbox.service and opsbox-priv.service
+  --units-dir DIR     directory with opsbox.service, opsbox-priv.service and opsbox-proxy.service
                       (default: packaging/systemd next to this script)
   --dev               skip signature verification. Required with --binary. Unsafe:
                       never use it for a server that matters.
@@ -245,7 +245,7 @@ else
   [ -f "$NEW_BIN" ] || die "the release archive does not contain opsbox"
 fi
 
-[ -f "$UNITS_DIR/opsbox.service" ] && [ -f "$UNITS_DIR/opsbox-priv.service" ] ||
+[ -f "$UNITS_DIR/opsbox.service" ] && [ -f "$UNITS_DIR/opsbox-priv.service" ] && [ -f "$UNITS_DIR/opsbox-proxy.service" ] ||
   die "systemd unit files not found in $UNITS_DIR"
 
 # Check the binary runs on this machine before touching anything.
@@ -279,6 +279,7 @@ run install -d -m 0755 -o root -g root "$CONF_DIR"
 # 1770 means it can create files here but cannot rename or delete entries it does
 # not own, such as bin/.
 run install -d -m 1770 -o root -g "$SVC_USER" "$STATE_DIR"
+run install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$STATE_DIR/proxy"
 run install -d -m 0755 -o root -g root "$SLOT_DIR"
 
 # ------------------------------------------------------------------ install
@@ -301,6 +302,12 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 # socket = "/run/opsbox/priv.sock"
 # allowed_users = ["opsbox", "root"]
 
+# [proxy]
+# listen_http = "0.0.0.0:80"
+# listen_https = "0.0.0.0:443"
+# socket = "/run/opsbox-proxy/proxy.sock"
+# state_dir = "/var/lib/opsbox/proxy"
+
 # [store]
 # db_path = "/var/lib/opsbox/opsbox.db"
 
@@ -317,11 +324,13 @@ if [ "$LOCAL_ONLY" -eq 1 ]; then
 fi
 
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-priv.service" "$UNIT_DIR/opsbox-priv.service"
+run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-proxy.service" "$UNIT_DIR/opsbox-proxy.service"
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox.service" "$UNIT_DIR/opsbox.service"
 run systemctl daemon-reload
-run systemctl enable opsbox-priv.service opsbox.service
+run systemctl enable opsbox-priv.service opsbox-proxy.service opsbox.service
 # restart (not start) so that re-running the installer upgrades a running install.
 run systemctl restart opsbox-priv.service
+run systemctl restart opsbox-proxy.service
 run systemctl restart opsbox.service
 
 # Flags that `opsbox install` will act on in a later phase. Accepted so cloud-init
@@ -370,4 +379,4 @@ else
   say "and accept the self-signed certificate warning."
   say "To restrict to localhost only, run: sudo opsbox web local-only on"
 fi
-say "Logs: journalctl -u opsbox -u opsbox-priv"
+say "Logs: journalctl -u opsbox -u opsbox-priv -u opsbox-proxy"

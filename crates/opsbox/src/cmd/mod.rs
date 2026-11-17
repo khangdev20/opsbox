@@ -3,6 +3,7 @@ pub mod cleanup;
 pub mod doctor;
 pub mod install;
 pub mod privileged;
+pub mod proxy;
 pub mod selftest;
 pub mod serve;
 pub mod status;

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use opsbox_priv::{ClientError, PrivClient};
 use opsbox_proto::PrivErrorCode;
+use opsbox_proxy::{ProxyClient, ProxyClientError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -40,6 +41,18 @@ pub enum PrivState {
     Denied(String),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProxyState {
+    Ok {
+        version: String,
+        routes: usize,
+        certs: usize,
+    },
+    /// Proxy is not installed/configured on this machine (dev/no domain yet).
+    NotConfigured,
+    Down(String),
+}
+
 #[derive(Debug)]
 pub struct Report {
     pub config_file: Option<PathBuf>,
@@ -47,12 +60,15 @@ pub struct Report {
     pub serve: ServeState,
     pub priv_socket: PathBuf,
     pub privileged: PrivState,
+    pub proxy_socket: PathBuf,
+    pub proxy: ProxyState,
 }
 
 impl Report {
     pub fn healthy(&self) -> bool {
         matches!(self.serve, ServeState::Ready { .. })
             && matches!(self.privileged, PrivState::Ok { .. })
+            && !matches!(self.proxy, ProxyState::Down(_))
     }
 
     pub fn render(&self) -> String {
@@ -88,6 +104,27 @@ impl Report {
             PrivState::Denied(why) => ("DENIED  ", why.clone()),
         };
         let _ = writeln!(out, "priv     {tag} {}  {text}", self.priv_socket.display());
+
+        let (tag, text) = match &self.proxy {
+            ProxyState::Ok {
+                version,
+                routes,
+                certs,
+            } => (
+                "ok      ",
+                format!("v{version}, {routes} route(s), {certs} cert(s)"),
+            ),
+            ProxyState::NotConfigured => (
+                "off     ",
+                "not running (no proxy unit/domain configured)".to_owned(),
+            ),
+            ProxyState::Down(why) => ("DOWN    ", why.clone()),
+        };
+        let _ = writeln!(
+            out,
+            "proxy    {tag} {}  {text}",
+            self.proxy_socket.display()
+        );
         out
     }
 }
@@ -110,8 +147,12 @@ pub fn run(config: &Config) -> bool {
 
 pub async fn collect(config: &Config) -> Report {
     let serve_addr = config.listen;
-    let (mut serve, privileged) =
-        tokio::join!(probe_serve(serve_addr), probe_priv(&config.priv_socket));
+    let proxy_expected = Path::new("/etc/systemd/system/opsbox-proxy.service").exists();
+    let (mut serve, privileged, proxy) = tokio::join!(
+        probe_serve(serve_addr),
+        probe_priv(&config.priv_socket),
+        probe_proxy(&config.proxy_socket, proxy_expected)
+    );
     if matches!(serve, ServeState::Degraded { ref detail, .. } if detail == "/readyz answered HTTP 403")
         && matches!(privileged, PrivState::Ok { .. })
         && let ServeState::Degraded { version, .. } = serve
@@ -124,6 +165,34 @@ pub async fn collect(config: &Config) -> Report {
         serve,
         priv_socket: config.priv_socket.clone(),
         privileged,
+        proxy_socket: config.proxy_socket.clone(),
+        proxy,
+    }
+}
+
+async fn probe_proxy(socket: &Path, expected: bool) -> ProxyState {
+    let client = ProxyClient::new(socket).with_timeout(PROBE_TIMEOUT);
+    match client.status("status").await {
+        Ok(st) => ProxyState::Ok {
+            version: st.version,
+            routes: st.routes_count,
+            certs: st.certs.len(),
+        },
+        Err(ProxyClientError::Connect { source, .. }) => match source.kind() {
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+                if expected {
+                    ProxyState::Down("not running (no process is listening on the socket)".into())
+                } else {
+                    ProxyState::NotConfigured
+                }
+            }
+            io::ErrorKind::PermissionDenied => {
+                ProxyState::Down("permission denied opening proxy socket".into())
+            }
+            _ => ProxyState::Down(format!("cannot connect: {source}")),
+        },
+        Err(ProxyClientError::Timeout) => ProxyState::Down("did not answer in time".into()),
+        Err(e) => ProxyState::Down(e.to_string()),
     }
 }
 
@@ -432,6 +501,8 @@ mod tests {
                 version: VERSION.into(),
                 millis: 1,
             },
+            proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
+            proxy: ProxyState::NotConfigured,
         };
         assert!(!report.healthy());
         let text = report.render();

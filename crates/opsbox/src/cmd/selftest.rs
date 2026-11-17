@@ -39,6 +39,7 @@ pub fn run() -> bool {
     report("embedded web UI", check_ui());
     report("database and audit chain", check_database());
     report("privileged protocol", check_protocol());
+    report("reverse proxy checks", check_proxy());
     report(
         "privileged socket and peer check",
         runtime.block_on(check_priv_roundtrip()),
@@ -89,6 +90,24 @@ fn check_protocol() -> Result<String> {
         bail!("request changed in transit");
     }
     Ok("frame round trip".into())
+}
+
+fn check_proxy() -> Result<String> {
+    let normalized = opsbox_proxy::normalize_domain("https://Panel.Example.com/")
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    if normalized != "panel.example.com" {
+        bail!("unexpected domain normalization: {normalized}");
+    }
+    let req = opsbox_proxy::ProxyRequest {
+        id: "selftest".into(),
+        op: opsbox_proxy::ProxyOp::Ping,
+    };
+    let encoded = frame::encode(&req)?;
+    let decoded: opsbox_proxy::ProxyRequest = frame::decode(&encoded[4..])?;
+    if decoded != req {
+        bail!("proxy request changed in transit");
+    }
+    Ok("domain & protocol ok".into())
 }
 
 /// Start a private helper on a temporary socket, call it as ourselves, and check

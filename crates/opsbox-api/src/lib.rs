@@ -16,6 +16,7 @@ mod host;
 mod json;
 mod limits;
 mod metrics;
+pub mod panel;
 mod request_id;
 mod security;
 pub mod session;
@@ -49,6 +50,7 @@ use tower_http::timeout::TimeoutLayer;
 
 pub use error::HttpError;
 pub use files::FilesSettings;
+pub use panel::sync_proxy_routes;
 pub use request_id::RequestId;
 pub use session::SecureCookies;
 pub use terminal::{DEFAULT_IDLE as DEFAULT_TERMINAL_IDLE, TerminalSettings};
@@ -78,6 +80,9 @@ pub struct AppState {
     pub allow: allowlist::AllowList,
     pub secure_cookies: SecureCookies,
     pub tls: bool,
+    pub tls_cert_sha256: Option<String>,
+    pub proxy: Option<opsbox_proxy::ProxyClient>,
+    pub public_ips: Vec<std::net::IpAddr>,
     pub version: &'static str,
     pub updater: update::Updater,
 }
@@ -115,6 +120,9 @@ impl AppState {
             allow,
             secure_cookies,
             tls: false,
+            tls_cert_sha256: None,
+            proxy: None,
+            public_ips: Vec::new(),
             version,
             updater,
         }
@@ -162,6 +170,20 @@ impl AppState {
         self.terminal = TerminalSettings::new(idle);
         self
     }
+
+    /// Connect `serve` to `opsbox-proxy` for panel domain routing and TLS certificates.
+    #[must_use]
+    pub fn with_proxy(
+        mut self,
+        client: opsbox_proxy::ProxyClient,
+        tls_cert_sha256: Option<String>,
+        public_ips: Vec<std::net::IpAddr>,
+    ) -> Self {
+        self.proxy = Some(client);
+        self.tls_cert_sha256 = tls_cert_sha256;
+        self.public_ips = public_ips;
+        self
+    }
 }
 
 /// Build the full application: API routes, the embedded UI as the fallback, and the
@@ -207,6 +229,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/attention", get(metrics::get_attention))
         .route("/api/v1/stream/metrics", get(metrics::stream))
         .route("/api/v1/settings", get(tokens::get_settings))
+        .route("/api/v1/panel", get(panel::status))
+        .route("/api/v1/panel/dns-check", post(panel::check_dns))
+        .route("/api/v1/panel/certificate", post(panel::issue_cert))
+        .route("/api/v1/panel/domain", delete(panel::remove_domain))
+        .route("/api/v1/panel/local-only", post(panel::set_local_only))
         .route("/api/v1/updates/self", get(update::get_status))
         .route("/api/v1/updates/check", post(update::check))
         .route("/api/v1/updates/apply", post(update::apply))

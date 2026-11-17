@@ -66,6 +66,7 @@ async fn serve(config: Config) -> Result<()> {
     };
     let acceptor = opsbox_api::tls::load_tls_acceptor(&cert_path, &key_path)
         .context("cannot load TLS certificate")?;
+    let cert_sha256 = opsbox_api::tls::cert_sha256_hex(&cert_path);
 
     info!(
         version = VERSION,
@@ -103,7 +104,29 @@ async fn serve(config: Config) -> Result<()> {
     .with_tls(true)
     .with_terminal_idle(std::time::Duration::from_secs(
         config.terminal_idle_min * 60,
-    ));
+    ))
+    .with_proxy(
+        opsbox_proxy::ProxyClient::new(&config.proxy_socket),
+        cert_sha256,
+        config.public_ips.clone(),
+    );
+
+    // Push the panel route table to `opsbox-proxy` on startup (with brief retries if proxy is still starting).
+    let sync_state = state.clone();
+    tokio::spawn(async move {
+        for attempt in 0..10 {
+            match opsbox_api::sync_proxy_routes(&sync_state).await {
+                Ok(()) => break,
+                Err(e) => {
+                    if attempt == 9 {
+                        tracing::debug!(error = %e, "opsbox-proxy not reachable during startup route sync");
+                    } else {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    });
 
     // First run: make sure there is a setup token and show it where the person who
     // installed opsbox will look: the console and the journal.

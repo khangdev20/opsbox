@@ -21,7 +21,7 @@ use crate::config::Config;
 const SERVICE_USER: &str = "opsbox";
 
 /// Give up root, if we have it, in favour of the service account.
-fn drop_to_service_user() -> Result<()> {
+pub(super) fn drop_to_service_user() -> Result<()> {
     if !geteuid().is_root() {
         return Ok(());
     }
@@ -66,7 +66,7 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
 }
 
 /// Who to record in the audit log for a command run from the shell.
-fn actor() -> String {
+pub(super) fn actor() -> String {
     let who = std::env::var("SUDO_USER")
         .ok()
         .filter(|s| !s.is_empty())

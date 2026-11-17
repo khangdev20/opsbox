@@ -1,5 +1,7 @@
 //! `/healthz` (is the process alive) and `/readyz` (are its dependencies usable).
 
+use std::time::Duration;
+
 use axum::Json;
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -32,14 +34,16 @@ pub(crate) struct Readiness {
 struct Checks {
     database: &'static str,
     privileged_helper: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy: Option<&'static str>,
 }
 
 fn label(ok: bool) -> &'static str {
     if ok { "ok" } else { "failing" }
 }
 
-/// 200 when the database and the privileged helper both answer, else 503.
-/// (The proxy joins the checks in Phase 4.)
+/// 200 when the database, privileged helper, and (when a panel domain is active)
+/// `opsbox-proxy` answer, else 503.
 pub(crate) async fn readyz(
     State(state): State<AppState>,
     Extension(RequestId(request_id)): Extension<RequestId>,
@@ -67,9 +71,35 @@ pub(crate) async fn readyz(
             }
         }
     };
-    let (db_ok, helper_ok) = tokio::join!(db, helper);
+    let proxy_required =
+        state.proxy.is_some() && crate::panel::active_panel_domain(&state).is_some();
+    let proxy_check = async {
+        let client = state.proxy.as_ref()?;
+        match client
+            .clone()
+            .with_timeout(Duration::from_secs(2))
+            .ping(&request_id)
+            .await
+        {
+            Ok(_) => Some(true),
+            Err(e) => {
+                if proxy_required {
+                    warn!(error = %e, "readiness: reverse proxy check failed");
+                }
+                Some(false)
+            }
+        }
+    };
 
-    let ready = db_ok && helper_ok;
+    let (db_ok, helper_ok, proxy_opt) = tokio::join!(db, helper, proxy_check);
+    let proxy_ok = !proxy_required || proxy_opt == Some(true);
+    let proxy_label = match (proxy_opt, proxy_required) {
+        (Some(true), _) => Some("ok"),
+        (Some(false), true) => Some("failing"),
+        _ => None,
+    };
+
+    let ready = db_ok && helper_ok && proxy_ok;
     (
         if ready {
             StatusCode::OK
@@ -81,6 +111,7 @@ pub(crate) async fn readyz(
             checks: Checks {
                 database: label(db_ok),
                 privileged_helper: label(helper_ok),
+                proxy: proxy_label,
             },
         }),
     )

@@ -164,6 +164,15 @@ pub fn ensure_self_signed_cert(
     Ok((cert_path.to_path_buf(), key_path.to_path_buf()))
 }
 
+/// Compute the lowercase hex SHA-256 fingerprint of the leaf certificate in `cert_path`.
+pub fn cert_sha256_hex(cert_path: &Path) -> Option<String> {
+    let leaf = CertificateDer::pem_file_iter(cert_path)
+        .ok()?
+        .next()?
+        .ok()?;
+    Some(opsbox_proxy::sha256_hex(leaf.as_ref()))
+}
+
 /// Load a `tokio_rustls::TlsAcceptor` from PEM certificate and private key files.
 pub fn load_tls_acceptor(cert_path: &Path, key_path: &Path) -> io::Result<TlsAcceptor> {
     let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert_path)

@@ -4,7 +4,7 @@
 //! clap resolves "flag over environment variable" itself, so by the time values
 //! reach [`Overrides`] there is one optional value per setting. See docs/CONFIG.md.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -43,6 +43,7 @@ struct FileConfig {
     auth: AuthSection,
     files: FilesSection,
     terminal: TerminalSection,
+    proxy: ProxySection,
     #[serde(rename = "priv")]
     privileged: PrivSection,
     store: StoreSection,
@@ -147,6 +148,39 @@ impl Default for TerminalSection {
     }
 }
 
+/// Reverse proxy, ACME, and public IP settings.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ProxySection {
+    listen_http: SocketAddr,
+    listen_https: SocketAddr,
+    socket: PathBuf,
+    state_dir: PathBuf,
+    acme_staging: bool,
+    acme_directory: Option<String>,
+    acme_email: Option<String>,
+    public_ips: Vec<IpAddr>,
+}
+
+impl Default for ProxySection {
+    fn default() -> Self {
+        Self {
+            listen_http: opsbox_proxy::DEFAULT_HTTP_ADDR
+                .parse()
+                .expect("valid default"),
+            listen_https: opsbox_proxy::DEFAULT_HTTPS_ADDR
+                .parse()
+                .expect("valid default"),
+            socket: opsbox_proxy::DEFAULT_SOCKET_PATH.into(),
+            state_dir: opsbox_proxy::DEFAULT_STATE_DIR.into(),
+            acme_staging: false,
+            acme_directory: None,
+            acme_email: None,
+            public_ips: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct StoreSection {
@@ -196,6 +230,14 @@ pub struct Config {
     pub apps_dir: PathBuf,
     pub max_upload_mb: u64,
     pub terminal_idle_min: u64,
+    pub proxy_listen_http: SocketAddr,
+    pub proxy_listen_https: SocketAddr,
+    pub proxy_socket: PathBuf,
+    pub proxy_state_dir: PathBuf,
+    pub acme_staging: bool,
+    pub acme_directory: Option<String>,
+    pub acme_email: Option<String>,
+    pub public_ips: Vec<IpAddr>,
     pub db_path: PathBuf,
     pub log_level: String,
     pub log_format: LogFormat,
@@ -216,6 +258,11 @@ pub struct Overrides {
     pub master_key: Option<PathBuf>,
     pub xfer_dir: Option<PathBuf>,
     pub secure_cookies: Option<SecureCookiesSetting>,
+    pub proxy_listen_http: Option<SocketAddr>,
+    pub proxy_listen_https: Option<SocketAddr>,
+    pub proxy_socket: Option<PathBuf>,
+    pub proxy_state_dir: Option<PathBuf>,
+    pub acme_staging: bool,
     pub log_level: Option<String>,
     pub log_format: Option<LogFormat>,
 }
@@ -234,6 +281,7 @@ impl Overrides {
                 o.db_path.clone_from(&a.db);
                 o.secure_cookies = a.secure_cookies;
                 o.xfer_dir.clone_from(&a.xfer_dir);
+                o.proxy_socket.clone_from(&a.proxy_socket);
             }
             Command::Priv(a) => {
                 o.priv_socket.clone_from(&a.socket);
@@ -244,9 +292,18 @@ impl Overrides {
                 o.master_key.clone_from(&a.master_key);
                 o.xfer_dir.clone_from(&a.xfer_dir);
             }
+            Command::Proxy(a) => {
+                o.proxy_listen_http = a.http;
+                o.proxy_listen_https = a.https;
+                o.proxy_socket.clone_from(&a.proxy_socket);
+                o.proxy_state_dir.clone_from(&a.state_dir);
+                o.priv_socket.clone_from(&a.socket);
+                o.acme_staging = a.staging;
+            }
             Command::Status(a) => {
                 o.listen = a.listen;
                 o.priv_socket.clone_from(&a.socket);
+                o.proxy_socket.clone_from(&a.proxy_socket);
             }
             _ => {}
         }
@@ -295,6 +352,14 @@ impl Config {
             apps_dir: file.files.apps_dir,
             max_upload_mb: file.files.max_upload_mb,
             terminal_idle_min: file.terminal.idle_timeout_min.clamp(1, 24 * 60),
+            proxy_listen_http: o.proxy_listen_http.unwrap_or(file.proxy.listen_http),
+            proxy_listen_https: o.proxy_listen_https.unwrap_or(file.proxy.listen_https),
+            proxy_socket: o.proxy_socket.unwrap_or(file.proxy.socket),
+            proxy_state_dir: o.proxy_state_dir.unwrap_or(file.proxy.state_dir),
+            acme_staging: o.acme_staging || file.proxy.acme_staging,
+            acme_directory: file.proxy.acme_directory,
+            acme_email: file.proxy.acme_email,
+            public_ips: file.proxy.public_ips,
             db_path: o.db_path.unwrap_or(file.store.db_path),
             log_level: o.log_level.unwrap_or(file.log.level),
             log_format: o.log_format.unwrap_or(file.log.format),
@@ -474,5 +539,49 @@ mod tests {
         let c = Config::load(Some(&path), Overrides::default()).unwrap();
         assert_eq!(c.listen.port(), 1234);
         assert_eq!(c.loaded_from.as_deref(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn proxy_config_file_and_overrides() {
+        let c = load_str(
+            r#"
+            [proxy]
+            listen_http = "127.0.0.1:8080"
+            listen_https = "127.0.0.1:8444"
+            socket = "/tmp/proxy.sock"
+            state_dir = "/tmp/proxy-state"
+            acme_staging = true
+            acme_directory = "https://acme-staging-v02.api.letsencrypt.org/directory"
+            acme_email = "ops@example.com"
+            public_ips = ["203.0.113.10", "2001:db8::10"]
+            "#,
+            Overrides::default(),
+        )
+        .unwrap();
+        assert_eq!(c.proxy_listen_http.port(), 8080);
+        assert_eq!(c.proxy_listen_https.port(), 8444);
+        assert_eq!(c.proxy_socket, Path::new("/tmp/proxy.sock"));
+        assert_eq!(c.proxy_state_dir, Path::new("/tmp/proxy-state"));
+        assert!(c.acme_staging);
+        assert_eq!(
+            c.acme_directory.as_deref(),
+            Some("https://acme-staging-v02.api.letsencrypt.org/directory")
+        );
+        assert_eq!(c.acme_email.as_deref(), Some("ops@example.com"));
+        assert_eq!(c.public_ips.len(), 2);
+
+        let c2 = load_str(
+            "[proxy]\nlisten_http = \"127.0.0.1:8080\"\nacme_staging = false\n",
+            Overrides {
+                proxy_listen_http: Some("127.0.0.1:9080".parse().unwrap()),
+                proxy_socket: Some("/tmp/cli-proxy.sock".into()),
+                acme_staging: true,
+                ..Overrides::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(c2.proxy_listen_http.port(), 9080);
+        assert_eq!(c2.proxy_socket, Path::new("/tmp/cli-proxy.sock"));
+        assert!(c2.acme_staging);
     }
 }

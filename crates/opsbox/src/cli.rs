@@ -122,9 +122,35 @@ pub enum Command {
         keep_data: bool,
     },
     /// Run the reverse proxy (internal)
-    Proxy,
+    Proxy(ProxyArgs),
     /// Run the watchdog (internal)
     Watchdog,
+}
+
+#[derive(Debug, Args)]
+pub struct ProxyArgs {
+    /// Address for HTTP and ACME HTTP-01 challenges [default: 0.0.0.0:80]
+    #[arg(long, env = "OPSBOX_PROXY_HTTP", value_name = "ADDR")]
+    pub http: Option<SocketAddr>,
+    /// Address for HTTPS [default: 0.0.0.0:443]
+    #[arg(long, env = "OPSBOX_PROXY_HTTPS", value_name = "ADDR")]
+    pub https: Option<SocketAddr>,
+    /// Reverse proxy control socket [default: /run/opsbox-proxy/proxy.sock]
+    #[arg(
+        long = "proxy-socket",
+        env = "OPSBOX_PROXY_SOCKET",
+        value_name = "PATH"
+    )]
+    pub proxy_socket: Option<PathBuf>,
+    /// Directory for proxy state and encrypted certificates [default: /var/lib/opsbox/proxy]
+    #[arg(long, env = "OPSBOX_PROXY_STATE_DIR", value_name = "PATH")]
+    pub state_dir: Option<PathBuf>,
+    /// Privileged helper socket [default: /run/opsbox/priv.sock]
+    #[arg(long, env = "OPSBOX_PRIV_SOCKET", value_name = "PATH")]
+    pub socket: Option<PathBuf>,
+    /// Use Let's Encrypt staging environment
+    #[arg(long, env = "OPSBOX_ACME_STAGING")]
+    pub staging: bool,
 }
 
 #[derive(Debug, Args)]
@@ -144,6 +170,13 @@ pub struct ServeArgs {
     /// Mark cookies Secure: auto (behind an HTTPS proxy), always or never [default: auto]
     #[arg(long, env = "OPSBOX_SECURE_COOKIES", value_enum)]
     pub secure_cookies: Option<crate::config::SecureCookiesSetting>,
+    /// Reverse proxy control socket [default: /run/opsbox-proxy/proxy.sock]
+    #[arg(
+        long = "proxy-socket",
+        env = "OPSBOX_PROXY_SOCKET",
+        value_name = "PATH"
+    )]
+    pub proxy_socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -189,6 +222,13 @@ pub struct StatusArgs {
     /// Privileged helper socket [default: /run/opsbox/priv.sock]
     #[arg(long, env = "OPSBOX_PRIV_SOCKET", value_name = "PATH")]
     pub socket: Option<PathBuf>,
+    /// Reverse proxy control socket [default: /run/opsbox-proxy/proxy.sock]
+    #[arg(
+        long = "proxy-socket",
+        env = "OPSBOX_PROXY_SOCKET",
+        value_name = "PATH"
+    )]
+    pub proxy_socket: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -223,6 +263,14 @@ pub enum WebAction {
     LocalOnly {
         #[arg(value_enum)]
         mode: Toggle,
+    },
+    /// Attach a domain name to the panel with a Let's Encrypt HTTPS certificate
+    Domain {
+        /// Domain name (for example panel.example.com)
+        name: String,
+        /// Continue issuing even if the DNS check shows waiting
+        #[arg(long)]
+        skip_dns_check: bool,
     },
 }
 
@@ -280,8 +328,9 @@ impl Command {
             | Self::Update { .. }
             | Self::Rollback
             | Self::UpdateVerify { .. }
+            | Self::Proxy(_)
             | Self::Web {
-                action: WebAction::LocalOnly { .. },
+                action: WebAction::LocalOnly { .. } | WebAction::Domain { .. },
             } => return None,
             Self::Pair => "pair",
             Self::Web {
@@ -299,7 +348,6 @@ impl Command {
             } => "backup list",
             Self::Restore { .. } => "restore",
             Self::Uninstall { .. } => "uninstall",
-            Self::Proxy => "proxy",
             Self::Watchdog => "watchdog",
         })
     }
@@ -327,6 +375,7 @@ mod tests {
             "web disable",
             "web local-only on",
             "web local-only off",
+            "web domain panel.example.com",
             "setup-token",
             "recovery-code",
             "user reset-2fa alice",
