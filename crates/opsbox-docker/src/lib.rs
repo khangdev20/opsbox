@@ -14,12 +14,18 @@ use std::time::Duration;
 
 use bollard::container::LogOutput;
 use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
+use bollard::models::{
+    ContainerCreateBody, EndpointSettings, HostConfig, NetworkCreateRequest, NetworkingConfig,
+    PortBinding, RestartPolicy, RestartPolicyNameEnum,
+};
 use bollard::query_parameters::{
-    InspectContainerOptions, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions,
+    InspectNetworkOptions, ListContainersOptionsBuilder, ListImagesOptionsBuilder,
     ListNetworksOptionsBuilder, ListVolumesOptions, ListVolumesOptionsBuilder, LogsOptionsBuilder,
     PruneBuildOptionsBuilder, PruneContainersOptionsBuilder, PruneImagesOptionsBuilder,
-    PruneVolumesOptionsBuilder, RemoveContainerOptionsBuilder, RestartContainerOptionsBuilder,
-    StatsOptionsBuilder, StopContainerOptionsBuilder,
+    PruneVolumesOptionsBuilder, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
+    RestartContainerOptionsBuilder, StartContainerOptions, StatsOptionsBuilder,
+    StopContainerOptionsBuilder, TagImageOptionsBuilder,
 };
 use bollard::{API_DEFAULT_VERSION, ClientVersion, Docker};
 use futures_util::future::join_all;
@@ -1086,6 +1092,293 @@ impl DockerClient {
                 parse::clean_name(c.names.as_deref(), &full_id)
             })
             .collect()
+    }
+
+    /// Ensure an internal bridge network (`opsbox-<project>`) exists.
+    pub async fn ensure_network(&self, name: &str, project: &str) -> Result<(), DockerError> {
+        let docker = self.connect().await?;
+        match docker
+            .inspect_network(name, None::<InspectNetworkOptions>)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => {}
+            Err(e) => return Err(DockerError::from_bollard(e, "inspect network")),
+        }
+        let mut labels = HashMap::new();
+        labels.insert("opsbox.managed".into(), "true".into());
+        labels.insert("opsbox.project".into(), project.to_owned());
+        let req = NetworkCreateRequest {
+            name: name.to_owned(),
+            driver: Some("bridge".into()),
+            labels: Some(labels),
+            ..Default::default()
+        };
+        match docker.create_network(req).await {
+            Ok(_) => Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 409, ..
+            }) => Ok(()),
+            Err(e) => Err(DockerError::from_bollard(e, "create network")),
+        }
+    }
+
+    /// Create and start a managed release container bound on loopback `127.0.0.1:0:<port>`
+    /// (or no port binding when `port == 0` for workers). Returns `(container_id, host_port)`.
+    pub async fn create_and_start_service_container(
+        &self,
+        spec: &ServiceContainerSpec<'_>,
+    ) -> Result<(String, u16), DockerError> {
+        self.ensure_network(spec.network_name, spec.project).await?;
+        let docker = self.connect().await?;
+
+        let mut labels = HashMap::new();
+        labels.insert("opsbox.managed".into(), "true".into());
+        labels.insert("opsbox.project".into(), spec.project.to_owned());
+        labels.insert("opsbox.service".into(), spec.service.to_owned());
+        labels.insert("opsbox.deploy".into(), spec.deploy_id.to_owned());
+
+        let (exposed_ports, port_bindings) = if spec.port > 0 {
+            let key = format!("{}/tcp", spec.port);
+            let mut pb = HashMap::new();
+            pb.insert(
+                key.clone(),
+                Some(vec![PortBinding {
+                    host_ip: Some("127.0.0.1".into()),
+                    host_port: Some("0".into()),
+                }]),
+            );
+            (Some(vec![key]), Some(pb))
+        } else {
+            (None, None)
+        };
+
+        let mut endpoints = HashMap::new();
+        endpoints.insert(
+            spec.network_name.to_owned(),
+            EndpointSettings {
+                aliases: Some(vec![spec.service.to_owned()]),
+                ..Default::default()
+            },
+        );
+
+        let body = ContainerCreateBody {
+            image: Some(spec.image_ref.to_owned()),
+            env: (!spec.env.is_empty()).then(|| spec.env.to_vec()),
+            exposed_ports,
+            labels: Some(labels),
+            host_config: Some(HostConfig {
+                memory: spec
+                    .memory_limit_mb
+                    .map(|mb| mb.saturating_mul(1024 * 1024)),
+                nano_cpus: spec.cpu_limit_millis.map(|ms| ms.saturating_mul(1_000_000)),
+                port_bindings,
+                restart_policy: Some(RestartPolicy {
+                    name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            networking_config: Some(NetworkingConfig {
+                endpoints_config: Some(endpoints),
+            }),
+            ..Default::default()
+        };
+
+        let create_opts = CreateContainerOptionsBuilder::default()
+            .name(spec.container_name)
+            .build();
+        let created = docker
+            .create_container(Some(create_opts), body)
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "create container"))?;
+
+        if let Err(e) = docker
+            .start_container(&created.id, None::<StartContainerOptions>)
+            .await
+        {
+            let _ = self.force_stop_and_remove_container(&created.id).await;
+            return Err(DockerError::from_bollard(e, "start container"));
+        }
+
+        if spec.port == 0 {
+            return Ok((created.id, 0));
+        }
+
+        let inspected = match docker
+            .inspect_container(&created.id, None::<InspectContainerOptions>)
+            .await
+        {
+            Ok(info) => info,
+            Err(e) => {
+                let _ = self.force_stop_and_remove_container(&created.id).await;
+                return Err(DockerError::from_bollard(e, "inspect new container"));
+            }
+        };
+
+        let key = format!("{}/tcp", spec.port);
+        let host_port = inspected
+            .network_settings
+            .as_ref()
+            .and_then(|ns| ns.ports.as_ref())
+            .and_then(|ports| ports.get(&key))
+            .and_then(|opt| opt.as_ref())
+            .and_then(|bindings| bindings.first())
+            .and_then(|b| b.host_port.as_deref())
+            .and_then(|p| p.parse::<u16>().ok())
+            .filter(|p| *p > 0);
+
+        match host_port {
+            Some(p) => Ok((created.id, p)),
+            None => {
+                let _ = self.force_stop_and_remove_container(&created.id).await;
+                Err(DockerError::Internal(format!(
+                    "Container started without an assigned host port for {key}."
+                )))
+            }
+        }
+    }
+
+    /// Return whether a container is currently running in Docker.
+    pub async fn is_container_running(&self, container_id: &str) -> Result<bool, DockerError> {
+        let docker = self.connect().await?;
+        let inspected = docker
+            .inspect_container(container_id, None::<InspectContainerOptions>)
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "inspect container"))?;
+        Ok(inspected.state.and_then(|s| s.running).unwrap_or(false))
+    }
+
+    /// Pull a remote Docker image and tag it as `target_tag` (`repo:tag`).
+    pub async fn pull_and_tag_image(
+        &self,
+        source_image: &str,
+        target_tag: &str,
+    ) -> Result<(), DockerError> {
+        let docker = self.connect().await?;
+        let mut opts_builder = CreateImageOptionsBuilder::default();
+        if source_image.contains('@') {
+            opts_builder = opts_builder.from_image(source_image);
+        } else {
+            let (repo, tag) = split_image_repo_tag(source_image);
+            opts_builder = opts_builder.from_image(repo).tag(tag);
+        }
+        let mut stream = docker.create_image(Some(opts_builder.build()), None, None);
+        while let Some(item) = stream.next().await {
+            let info = item.map_err(|e| DockerError::from_bollard(e, "pull image"))?;
+            if let Some(detail) = info.error_detail
+                && let Some(msg) = detail.message
+            {
+                return Err(DockerError::Internal(format!(
+                    "Failed to pull image '{source_image}': {msg}"
+                )));
+            }
+        }
+
+        let (target_repo, target_ver) = target_tag
+            .rsplit_once(':')
+            .ok_or_else(|| DockerError::Invalid("Target tag must include ':tag'.".into()))?;
+        docker
+            .tag_image(
+                source_image,
+                Some(
+                    TagImageOptionsBuilder::default()
+                        .repo(target_repo)
+                        .tag(target_ver)
+                        .build(),
+                ),
+            )
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "tag pulled image"))?;
+        Ok(())
+    }
+
+    /// Check if a local Docker image tag exists.
+    pub async fn image_exists(&self, image_ref: &str) -> Result<bool, DockerError> {
+        let docker = self.connect().await?;
+        match docker.inspect_image(image_ref).await {
+            Ok(_) => Ok(true),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(false),
+            Err(e) => Err(DockerError::from_bollard(e, "inspect image")),
+        }
+    }
+
+    /// Remove a local Docker image tag, returning `true` if removed or `false` if already absent/in use.
+    pub async fn remove_image(&self, image_ref: &str) -> Result<bool, DockerError> {
+        let docker = self.connect().await?;
+        let opts = RemoveImageOptionsBuilder::default().force(false).build();
+        match docker.remove_image(image_ref, Some(opts), None).await {
+            Ok(_) => Ok(true),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404 | 409,
+                ..
+            }) => Ok(false),
+            Err(e) => Err(DockerError::from_bollard(e, "remove image")),
+        }
+    }
+
+    /// Stop and forcibly remove a container, ignoring 404/304 if already gone or stopped.
+    pub async fn force_stop_and_remove_container(
+        &self,
+        container_id: &str,
+    ) -> Result<(), DockerError> {
+        let docker = self.connect().await?;
+        match docker
+            .stop_container(
+                container_id,
+                Some(StopContainerOptionsBuilder::default().t(5).build()),
+            )
+            .await
+        {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304 | 404,
+                ..
+            }) => {}
+            Err(e) => return Err(DockerError::from_bollard(e, "stop container")),
+        }
+        match docker
+            .remove_container(
+                container_id,
+                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+            )
+            .await
+        {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(e) => Err(DockerError::from_bollard(e, "remove container")),
+        }
+    }
+}
+
+/// Parameters required to create and start a managed service container.
+#[derive(Debug, Clone)]
+pub struct ServiceContainerSpec<'a> {
+    pub project: &'a str,
+    pub service: &'a str,
+    pub deploy_id: &'a str,
+    pub container_name: &'a str,
+    pub network_name: &'a str,
+    pub image_ref: &'a str,
+    pub env: &'a [String],
+    pub port: u16,
+    pub memory_limit_mb: Option<i64>,
+    pub cpu_limit_millis: Option<i64>,
+}
+
+fn split_image_repo_tag(image: &str) -> (&str, &str) {
+    let last_slash = image.rfind('/');
+    match image.rfind(':') {
+        Some(colon) if last_slash.is_none_or(|s| colon > s) => {
+            (&image[..colon], &image[colon + 1..])
+        }
+        _ => (image, "latest"),
     }
 }
 

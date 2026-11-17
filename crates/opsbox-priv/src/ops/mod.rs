@@ -5,6 +5,7 @@
 mod access;
 pub mod cleanup;
 pub(crate) mod cron;
+pub(crate) mod deploy;
 pub mod docker;
 mod doctor;
 pub(crate) mod exec;
@@ -41,7 +42,10 @@ pub(crate) struct Env {
     pub master_key: std::path::PathBuf,
     pub config_path: std::path::PathBuf,
     pub files: files::Dirs,
+    pub apps_dir: std::path::PathBuf,
     pub docker: opsbox_docker::DockerClient,
+    pub docker_bin: Option<std::path::PathBuf>,
+    pub allow_test_git: bool,
 }
 
 /// Blocking; the server runs it on a blocking thread.
@@ -251,5 +255,32 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::DockerListNetworks => {
             docker::list_networks_with(&env.docker).map(PrivReply::DockerNetworks)
         }
+        PrivOp::DeployEnsureDir { service } => {
+            deploy::ensure_service_dir(&env.apps_dir, service).map(|_| PrivReply::Done)
+        }
+        PrivOp::DeployBuild(_) => Err(PrivError {
+            code: opsbox_proto::PrivErrorCode::Internal,
+            message: "Deploy builds stream on their own connection.".into(),
+        }),
+        PrivOp::DeployPullImage(req) => deploy::pull_image_with(env, req).map(|()| PrivReply::Done),
+        PrivOp::DeployStartAndCheck(req) => {
+            deploy::start_and_check_with(env, req).map(PrivReply::DeployStarted)
+        }
+        PrivOp::DeployStopContainer { container_id } => {
+            deploy::stop_container_with(env, container_id).map(|()| PrivReply::Done)
+        }
+        PrivOp::DeployImageExists { image_ref } => {
+            deploy::image_exists_with(env, image_ref).map(PrivReply::Bool)
+        }
+        PrivOp::DeployPruneImages {
+            service,
+            image_refs,
+        } => deploy::prune_images_with(env, service, image_refs).map(PrivReply::PrunedImages),
+        PrivOp::DeployDeleteService {
+            service,
+            container_ids,
+            image_refs,
+        } => deploy::delete_service_with(env, service, container_ids, image_refs)
+            .map(|()| PrivReply::Done),
     }
 }

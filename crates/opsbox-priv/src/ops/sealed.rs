@@ -48,16 +48,23 @@ pub(crate) fn seal(
     Ok(PrivReply::Sealed { sealed })
 }
 
-pub(crate) fn open(secrets: &Secrets, context: &str, sealed: &str) -> Result<PrivReply, PrivError> {
+pub(crate) fn open_secret(
+    secrets: &Secrets,
+    context: &str,
+    sealed: &str,
+) -> Result<Secret, PrivError> {
     valid_context(context)?;
     let plain = secrets.open(sealed, context).map_err(secret_err)?;
     let text = String::from_utf8(plain.to_vec()).map_err(|_| PrivError {
         code: PrivErrorCode::Invalid,
         message: "Sealed value is not valid UTF-8.".into(),
     })?;
-    Ok(PrivReply::Opened {
-        plaintext: Secret::new(text),
-    })
+    Ok(Secret::new(text))
+}
+
+pub(crate) fn open(secrets: &Secrets, context: &str, sealed: &str) -> Result<PrivReply, PrivError> {
+    let plaintext = open_secret(secrets, context, sealed)?;
+    Ok(PrivReply::Opened { plaintext })
 }
 
 fn secret_err(e: SecretError) -> PrivError {

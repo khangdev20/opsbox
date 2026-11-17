@@ -32,6 +32,7 @@ pub fn run(config: Config, explicit_config: Option<&std::path::Path>) -> Result<
     priv_config.master_key_path.clone_from(&config.master_key);
     priv_config.xfer_dir.clone_from(&config.xfer_dir);
     priv_config.trash_dir.clone_from(&config.trash_dir);
+    priv_config.apps_dir.clone_from(&config.apps_dir);
     priv_config.config_path = explicit_config
         .map(std::path::Path::to_path_buf)
         .or(config.loaded_from)

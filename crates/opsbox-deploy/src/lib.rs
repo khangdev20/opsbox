@@ -5,6 +5,7 @@ pub mod detect;
 pub mod github;
 pub mod jwt;
 pub mod manifest;
+pub mod pipeline;
 pub mod public_repo;
 pub mod webhook;
 
@@ -18,6 +19,10 @@ pub use github::{
 };
 pub use jwt::sign_app_jwt;
 pub use manifest::{ManifestStart, build_manifest, random_hex, validate_org};
+pub use pipeline::{
+    CheckoutBuildPlan, looks_secret_var_key, plan_checkout_build, scrub_secrets,
+    static_site_dockerfile,
+};
 pub use public_repo::{PublicRepoTarget, validate_public_repo_url};
 pub use webhook::{WebhookEvent, parse_webhook_event, verify_github_signature};
 

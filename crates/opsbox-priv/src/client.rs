@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    AccessState, CleanupFreed, CleanupScan, CommandOutcome, DirListing, DockerContainer,
+    AccessState, CleanupFreed, CleanupScan, CommandOutcome, DeployBuildFrame, DeployBuildRequest,
+    DeployPullRequest, DeployStartRequest, DeployStartResult, DirListing, DockerContainer,
     DockerContainerAction, DockerContainerInspect, DockerContainerStat, DockerExecOutput,
     DockerExecRequest, DockerImage, DockerLogFrame, DockerLogLine, DockerNetwork, DockerStatus,
     DockerVolume, FileContent, FirewallChange, FirewallState, HostInfo, HostSettings, JobInfo,
@@ -97,6 +98,26 @@ impl DockerLogSession {
             return Ok(None);
         };
         let frame: DockerLogFrame =
+            frame::decode(&body).map_err(|e| ClientError::Protocol(e.to_string()))?;
+        Ok(Some(frame))
+    }
+}
+
+/// Streaming deploy build session returned by [`PrivClient::deploy_build`].
+#[derive(Debug)]
+pub struct DeployBuildSession {
+    pub deploy_id: String,
+    reader: OwnedReadHalf,
+    _writer: OwnedWriteHalf,
+}
+
+impl DeployBuildSession {
+    /// Read the next [`DeployBuildFrame`]; `Ok(None)` means the stream closed.
+    pub async fn recv(&mut self) -> Result<Option<DeployBuildFrame>, ClientError> {
+        let Some(body) = read_body(&mut self.reader).await? else {
+            return Ok(None);
+        };
+        let frame: DeployBuildFrame =
             frame::decode(&body).map_err(|e| ClientError::Protocol(e.to_string()))?;
         Ok(Some(frame))
     }
@@ -1209,5 +1230,180 @@ impl PrivClient {
             o => Err(o),
         })
         .await
+    }
+
+    pub async fn deploy_ensure_dir(
+        &self,
+        rid: &str,
+        actor: &str,
+        service: &str,
+    ) -> Result<(), ClientError> {
+        self.done(
+            rid,
+            actor,
+            PrivOp::DeployEnsureDir {
+                service: service.to_owned(),
+            },
+        )
+        .await
+    }
+
+    pub async fn deploy_build(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DeployBuildRequest,
+    ) -> Result<DeployBuildSession, ClientError> {
+        let handshake = async {
+            let mut stream = UnixStream::connect(&*self.socket_path)
+                .await
+                .map_err(|source| ClientError::Connect {
+                    path: self.socket_path.display().to_string(),
+                    source,
+                })?;
+            let request = PrivRequest {
+                id: rid.to_owned(),
+                actor: Some(actor.to_owned()),
+                op: PrivOp::DeployBuild(req),
+            };
+            write_frame(&mut stream, &request).await?;
+            let body = read_body(&mut stream).await?.ok_or_else(|| {
+                ClientError::Protocol("connection closed without an answer".into())
+            })?;
+            let response: PrivResponse =
+                frame::decode(&body).map_err(|e| ClientError::Protocol(e.to_string()))?;
+            match response.result {
+                PrivResult::Failure { error } => Err(ClientError::Remote(error)),
+                PrivResult::Success {
+                    reply: PrivReply::DeployBuildStreamStarted { deploy_id },
+                } => {
+                    let (reader, _writer) = stream.into_split();
+                    Ok(DeployBuildSession {
+                        deploy_id,
+                        reader,
+                        _writer,
+                    })
+                }
+                PrivResult::Success { reply } => {
+                    Err(ClientError::Protocol(format!("unexpected reply {reply:?}")))
+                }
+            }
+        };
+        tokio::time::timeout(self.timeout, handshake)
+            .await
+            .map_err(|_| ClientError::Timeout)?
+    }
+
+    pub async fn deploy_pull_image(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DeployPullRequest,
+    ) -> Result<(), ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(300))
+            .done(rid, actor, PrivOp::DeployPullImage(req))
+            .await
+    }
+
+    pub async fn deploy_start_and_check(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DeployStartRequest,
+    ) -> Result<DeployStartResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(120))
+            .expect(
+                rid,
+                Some(actor),
+                PrivOp::DeployStartAndCheck(req),
+                |r| match r {
+                    PrivReply::DeployStarted(res) => Ok(res),
+                    o => Err(o),
+                },
+            )
+            .await
+    }
+
+    pub async fn deploy_stop_container(
+        &self,
+        rid: &str,
+        actor: &str,
+        container_id: &str,
+    ) -> Result<(), ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(60))
+            .done(
+                rid,
+                actor,
+                PrivOp::DeployStopContainer {
+                    container_id: container_id.to_owned(),
+                },
+            )
+            .await
+    }
+
+    pub async fn deploy_image_exists(
+        &self,
+        rid: &str,
+        image_ref: &str,
+    ) -> Result<bool, ClientError> {
+        self.expect(
+            rid,
+            None,
+            PrivOp::DeployImageExists {
+                image_ref: image_ref.to_owned(),
+            },
+            |r| match r {
+                PrivReply::Bool(b) => Ok(b),
+                o => Err(o),
+            },
+        )
+        .await
+    }
+
+    pub async fn deploy_prune_images(
+        &self,
+        rid: &str,
+        actor: &str,
+        service: &str,
+        image_refs: Vec<String>,
+    ) -> Result<Vec<String>, ClientError> {
+        self.expect(
+            rid,
+            Some(actor),
+            PrivOp::DeployPruneImages {
+                service: service.to_owned(),
+                image_refs,
+            },
+            |r| match r {
+                PrivReply::PrunedImages(v) => Ok(v),
+                o => Err(o),
+            },
+        )
+        .await
+    }
+
+    pub async fn deploy_delete_service(
+        &self,
+        rid: &str,
+        actor: &str,
+        service: &str,
+        container_ids: Vec<String>,
+        image_refs: Vec<String>,
+    ) -> Result<(), ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(90))
+            .done(
+                rid,
+                actor,
+                PrivOp::DeployDeleteService {
+                    service: service.to_owned(),
+                    container_ids,
+                    image_refs,
+                },
+            )
+            .await
     }
 }

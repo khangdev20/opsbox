@@ -94,7 +94,10 @@ impl PrivServer {
                 xfer: self.config.xfer_dir.clone(),
                 trash: self.config.trash_dir.clone(),
             },
+            apps_dir: self.config.apps_dir.clone(),
             docker: opsbox_docker::DockerClient::new(&self.config.docker_socket),
+            docker_bin: self.config.docker_bin.clone(),
+            allow_test_git: self.config.allow_test_git,
         });
         let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         info!(
@@ -235,6 +238,10 @@ async fn handle_connection(mut stream: UnixStream, allowed: &[u32], env: &Arc<En
             follow_docker_logs(stream, env, &request, id, *tail).await;
             return;
         }
+        if let PrivOp::DeployBuild(req) = &request.op {
+            run_deploy_build(stream, env, &request, req).await;
+            return;
+        }
         let response = process(request, uid, env).await;
         if write_frame(&mut stream, &response).await.is_err() {
             return;
@@ -326,6 +333,26 @@ async fn follow_docker_logs(
         actor = request.actor.as_deref().unwrap_or("-")
     );
     ops::docker::follow_logs_with(&env.docker, &mut stream, request, id, tail)
+        .instrument(span)
+        .await;
+}
+
+/// Stream a deploy fetch + build operation (`DeployBuildStreamStarted`, followed by `DeployBuildFrame`s).
+async fn run_deploy_build(
+    mut stream: UnixStream,
+    env: &Arc<Env>,
+    request: &PrivRequest,
+    req: &opsbox_proto::DeployBuildRequest,
+) {
+    let span = info_span!(
+        "priv_request",
+        request_id = %request.id,
+        op = "deploy_build",
+        service = %req.service,
+        deploy_id = %req.deploy_id,
+        actor = request.actor.as_deref().unwrap_or("-")
+    );
+    ops::deploy::handle_deploy_build_stream(env, &mut stream, request, req)
         .instrument(span)
         .await;
 }

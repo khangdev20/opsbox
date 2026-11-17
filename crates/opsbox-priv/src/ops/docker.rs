@@ -44,7 +44,7 @@ pub(crate) fn client() -> &'static DockerClient {
     CLIENT.get_or_init(DockerClient::default)
 }
 
-fn map_docker_err(e: DockerError, socket_path: &Path) -> PrivError {
+pub(crate) fn map_docker_err(e: DockerError, socket_path: &Path) -> PrivError {
     match e {
         DockerError::DaemonUnavailable(_) => {
             if is_docker_installed(socket_path) {

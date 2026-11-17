@@ -84,6 +84,9 @@ async fn write_http_empty(stream: &mut UnixStream, status: u16, reason: &str) {
 struct DaemonState {
     actions: Vec<String>,
     container_state: HashMap<String, String>,
+    created_container_bodies: Vec<serde_json::Value>,
+    networks_created: Vec<String>,
+    images: Vec<String>,
 }
 
 fn strip_api_prefix(path: &str) -> &str {
@@ -111,7 +114,7 @@ async fn spawn_mock_daemon(
         while let Ok((mut stream, _)) = listener.accept().await {
             let state = state.clone();
             tokio::spawn(async move {
-                let Some((method, target, _body)) = read_http_req(&mut stream).await else {
+                let Some((method, target, body)) = read_http_req(&mut stream).await else {
                     return;
                 };
                 let (raw_path, query) = target.split_once('?').unwrap_or((&target, ""));
@@ -418,6 +421,109 @@ async fn spawn_mock_daemon(
                         write_http_json(&mut stream, 200, "OK", &json!({"SpaceReclaimed": 5000}))
                             .await;
                     }
+                    ("POST", "/networks/create") => {
+                        let parsed: serde_json::Value =
+                            serde_json::from_slice(&body).unwrap_or_default();
+                        if let Some(name) = parsed["Name"].as_str() {
+                            state.lock().unwrap().networks_created.push(name.to_owned());
+                        }
+                        write_http_json(
+                            &mut stream,
+                            201,
+                            "Created",
+                            &json!({"Id": "net-new", "Warning": ""}),
+                        )
+                        .await;
+                    }
+                    ("POST", "/containers/create") => {
+                        let parsed: serde_json::Value =
+                            serde_json::from_slice(&body).unwrap_or_default();
+                        state.lock().unwrap().created_container_bodies.push(parsed);
+                        write_http_json(
+                            &mut stream,
+                            201,
+                            "Created",
+                            &json!({"Id": "cid-deploy-1", "Warnings": []}),
+                        )
+                        .await;
+                    }
+                    ("POST", "/containers/cid-deploy-1/start") => {
+                        state
+                            .lock()
+                            .unwrap()
+                            .actions
+                            .push("start:cid-deploy-1".into());
+                        write_http_empty(&mut stream, 204, "No Content").await;
+                    }
+                    ("GET", "/containers/cid-deploy-1/json") => {
+                        write_http_json(
+                            &mut stream,
+                            200,
+                            "OK",
+                            &json!({
+                                "Id": "cid-deploy-1",
+                                "Name": "/opsbox-web-d1",
+                                "State": { "Running": true, "Restarting": false },
+                                "NetworkSettings": {
+                                    "Ports": {
+                                        "3000/tcp": [{ "HostIp": "127.0.0.1", "HostPort": "45123" }]
+                                    }
+                                }
+                            }),
+                        )
+                        .await;
+                    }
+                    ("POST", "/containers/cid-deploy-1/stop") => {
+                        state
+                            .lock()
+                            .unwrap()
+                            .actions
+                            .push("stop:cid-deploy-1".into());
+                        write_http_empty(&mut stream, 204, "No Content").await;
+                    }
+                    ("DELETE", "/containers/cid-deploy-1") => {
+                        state.lock().unwrap().actions.push("rm:cid-deploy-1".into());
+                        write_http_empty(&mut stream, 204, "No Content").await;
+                    }
+                    ("POST", "/images/create") => {
+                        state.lock().unwrap().images.push("pulled:latest".into());
+                        let payload = b"{\"status\":\"Pull complete\"}\r\n";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            payload.len()
+                        );
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                        let _ = stream.write_all(payload).await;
+                        let _ = stream.flush().await;
+                    }
+                    ("POST", p) if p.starts_with("/images/") && p.ends_with("/tag") => {
+                        state.lock().unwrap().images.push(format!("tag:{query}"));
+                        write_http_empty(&mut stream, 201, "Created").await;
+                    }
+                    ("GET", p) if p.starts_with("/images/") && p.ends_with("/json") => {
+                        if p.contains("missing") {
+                            write_http_json(
+                                &mut stream,
+                                404,
+                                "Not Found",
+                                &json!({"message": "No such image"}),
+                            )
+                            .await;
+                        } else {
+                            write_http_json(&mut stream, 200, "OK", &json!({"Id": "sha256:abcd"}))
+                                .await;
+                        }
+                    }
+                    ("DELETE", p) if p.starts_with("/images/") => {
+                        state.lock().unwrap().actions.push(format!("rmi:{p}"));
+                        write_http_json(
+                            &mut stream,
+                            200,
+                            "OK",
+                            &json!([{"Deleted": "sha256:abcd"}]),
+                        )
+                        .await;
+                    }
                     _ => {
                         write_http_json(
                             &mut stream,
@@ -578,4 +684,62 @@ async fn missing_socket_reports_daemon_unavailable() {
         client.ping_version().await,
         Err(DockerError::DaemonUnavailable(_))
     ));
+}
+
+#[tokio::test]
+async fn deploy_container_lifecycle_and_images_work_over_unix_socket() {
+    use opsbox_docker::ServiceContainerSpec;
+
+    let state = Arc::new(Mutex::new(DaemonState::default()));
+    let (_dir, sock, server) = spawn_mock_daemon(state.clone()).await;
+    let client = DockerClient::new(&sock);
+
+    let (cid, host_port) = client
+        .create_and_start_service_container(&ServiceContainerSpec {
+            project: "default",
+            service: "web",
+            deploy_id: "dep-1",
+            container_name: "opsbox-web-dep1",
+            network_name: "opsbox-default",
+            image_ref: "opsbox/web:dep1",
+            env: &["NODE_ENV=production".into()],
+            port: 3000,
+            memory_limit_mb: Some(512),
+            cpu_limit_millis: Some(1500),
+        })
+        .await
+        .unwrap();
+    assert_eq!(cid, "cid-deploy-1");
+    assert_eq!(host_port, 45123);
+
+    {
+        let st = state.lock().unwrap();
+        assert_eq!(st.networks_created, vec!["opsbox-default"]);
+        let body = &st.created_container_bodies[0];
+        assert_eq!(body["Labels"]["opsbox.service"], "web");
+        assert_eq!(body["HostConfig"]["Memory"], 512 * 1024 * 1024);
+        assert_eq!(body["HostConfig"]["NanoCpus"], 1_500_000_000);
+        assert_eq!(
+            body["HostConfig"]["PortBindings"]["3000/tcp"][0]["HostIp"],
+            "127.0.0.1"
+        );
+        assert_eq!(
+            body["NetworkingConfig"]["EndpointsConfig"]["opsbox-default"]["Aliases"][0],
+            "web"
+        );
+    }
+
+    assert!(client.is_container_running("cid-deploy-1").await.unwrap());
+    client
+        .pull_and_tag_image("nginx:1.27-alpine", "opsbox/web:dep2")
+        .await
+        .unwrap();
+    assert!(client.image_exists("opsbox/web:dep1").await.unwrap());
+    assert!(!client.image_exists("opsbox/web:missing").await.unwrap());
+    assert!(client.remove_image("opsbox/web:dep1").await.unwrap());
+    client
+        .force_stop_and_remove_container("cid-deploy-1")
+        .await
+        .unwrap();
+    server.abort();
 }

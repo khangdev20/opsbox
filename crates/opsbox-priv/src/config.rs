@@ -6,6 +6,7 @@ pub const DEFAULT_SOCKET_PATH: &str = "/run/opsbox/priv.sock";
 pub const DEFAULT_MASTER_KEY_PATH: &str = "/etc/opsbox/master.key";
 pub const DEFAULT_XFER_DIR: &str = "/var/lib/opsbox/xfer";
 pub const DEFAULT_TRASH_DIR: &str = "/var/lib/opsbox/trash";
+pub const DEFAULT_APPS_DIR: &str = "/var/lib/opsbox/apps";
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/opsbox/config.toml";
 
 /// Everything the server needs, already resolved (no user names left).
@@ -24,10 +25,16 @@ pub struct PrivConfig {
     pub xfer_dir: PathBuf,
     /// Where deleted files wait for seven days.
     pub trash_dir: PathBuf,
+    /// Where service source checkouts and app files live.
+    pub apps_dir: PathBuf,
     /// Path to `config.toml` updated by `WebLocalOnly`.
     pub config_path: PathBuf,
     /// Docker Engine Unix socket path (defaults to `/var/run/docker.sock`).
     pub docker_socket: PathBuf,
+    /// Optional explicit Docker CLI binary path (defaults to searching system PATH).
+    pub docker_bin: Option<PathBuf>,
+    /// Allow `file://` git clones inside integration tests (never enabled in production).
+    pub allow_test_git: bool,
 }
 
 impl PrivConfig {
@@ -40,8 +47,11 @@ impl PrivConfig {
             master_key_path: DEFAULT_MASTER_KEY_PATH.into(),
             xfer_dir: DEFAULT_XFER_DIR.into(),
             trash_dir: DEFAULT_TRASH_DIR.into(),
+            apps_dir: DEFAULT_APPS_DIR.into(),
             config_path: DEFAULT_CONFIG_PATH.into(),
             docker_socket: opsbox_docker::DEFAULT_SOCKET_PATH.into(),
+            docker_bin: None,
+            allow_test_git: false,
         }
     }
 }
