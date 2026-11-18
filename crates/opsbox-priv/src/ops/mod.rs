@@ -323,5 +323,19 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::BackupCheck(req) => {
             backup::check_with(env, req.clone()).map(|v| PrivReply::BackupCheck(Box::new(v)))
         }
+        PrivOp::BackupTestDestination(req) => {
+            backup::test_destination_with(env, req.clone()).map(PrivReply::BackupTestDestination)
+        }
+        PrivOp::BackupGenerateSftpKey(req) => {
+            backup::generate_sftp_key_with(env, req).map(PrivReply::BackupSftpKey)
+        }
+        PrivOp::BackupRecoveryKey => {
+            backup::recovery_key_with(env).map(PrivReply::BackupRecoveryKey)
+        }
+        PrivOp::BackupRestore(req) => {
+            backup::restore_with(env, req.clone()).map(|v| PrivReply::BackupRestore(Box::new(v)))
+        }
+        PrivOp::BackupRestoreTest(req) => backup::restore_test_with(env, req.clone())
+            .map(|v| PrivReply::BackupRestoreTest(Box::new(v))),
     }
 }

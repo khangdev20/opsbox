@@ -226,7 +226,7 @@ pub fn start_template_with(
     })
 }
 
-async fn wait_for_template_health(
+pub(crate) async fn wait_for_template_health(
     docker: &opsbox_docker::DockerClient,
     cid: &str,
     tmpl: &opsbox_deploy::templates::TemplateSpec,

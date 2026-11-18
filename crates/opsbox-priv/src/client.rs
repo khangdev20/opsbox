@@ -1595,4 +1595,88 @@ impl PrivClient {
             })
             .await
     }
+
+    pub async fn backup_test_destination(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        req: opsbox_proto::BackupDestinationTestRequest,
+    ) -> Result<opsbox_proto::BackupDestinationTestResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(180))
+            .expect(
+                rid,
+                actor,
+                PrivOp::BackupTestDestination(req),
+                |r| match r {
+                    PrivReply::BackupTestDestination(v) => Ok(v),
+                    o => Err(o),
+                },
+            )
+            .await
+    }
+
+    pub async fn backup_generate_sftp_key(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        req: opsbox_proto::BackupGenerateSftpKeyRequest,
+    ) -> Result<opsbox_proto::BackupSftpKeyResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(30))
+            .expect(
+                rid,
+                actor,
+                PrivOp::BackupGenerateSftpKey(req),
+                |r| match r {
+                    PrivReply::BackupSftpKey(v) => Ok(v),
+                    o => Err(o),
+                },
+            )
+            .await
+    }
+
+    pub async fn backup_recovery_key(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+    ) -> Result<opsbox_proto::BackupRecoveryKeyResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(30))
+            .expect(rid, actor, PrivOp::BackupRecoveryKey, |r| match r {
+                PrivReply::BackupRecoveryKey(v) => Ok(v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn backup_restore(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        req: opsbox_proto::BackupRestoreRequest,
+    ) -> Result<opsbox_proto::BackupRestoreResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(31 * 60))
+            .expect(rid, actor, PrivOp::BackupRestore(req), |r| match r {
+                PrivReply::BackupRestore(v) => Ok(*v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn backup_restore_test(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        req: opsbox_proto::BackupRestoreTestRequest,
+    ) -> Result<opsbox_proto::BackupRestoreTestResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(31 * 60))
+            .expect(rid, actor, PrivOp::BackupRestoreTest(req), |r| match r {
+                PrivReply::BackupRestoreTest(v) => Ok(*v),
+                o => Err(o),
+            })
+            .await
+    }
 }

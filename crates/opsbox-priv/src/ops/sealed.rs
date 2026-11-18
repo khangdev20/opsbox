@@ -7,7 +7,7 @@ use opsbox_proto::{PrivError, PrivErrorCode, PrivReply, Secret};
 
 use crate::secrets::{SecretError, Secrets};
 
-const ALLOWED_PREFIXES: &[&str] = &["proxy:", "deploy:"];
+const ALLOWED_PREFIXES: &[&str] = &["proxy:", "deploy:", "backup:"];
 const MAX_PLAINTEXT_BYTES: usize = 64 * 1024;
 
 pub(crate) fn valid_context(context: &str) -> Result<(), PrivError> {
@@ -106,6 +106,15 @@ mod tests {
         assert!(valid_context("deploy:github_app:private_key").is_ok());
         assert!(valid_context("deploy:github_app:webhook_secret").is_ok());
         assert!(valid_context("deploy:deploy_key:01J9ABCDEFGHJKMNPQRSTVWXYZ").is_ok());
+        assert!(valid_context("backup:dest:01J9ABCDEFGHJKMNPQRSTVWXYZ").is_ok());
+        assert_eq!(
+            valid_context("backup:").unwrap_err().code,
+            PrivErrorCode::Refused
+        );
+        assert_eq!(
+            valid_context("backup:../totp").unwrap_err().code,
+            PrivErrorCode::Refused
+        );
         assert_eq!(
             valid_context("deploy:").unwrap_err().code,
             PrivErrorCode::Refused
