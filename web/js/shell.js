@@ -517,6 +517,8 @@ const ACTIONS = () => [
   { label: 'Add a database or template', hint: 'apps', run: () => { location.hash = '#/apps/new/templates'; } },
   { label: 'Users and SSH keys', hint: 'security', run: () => { location.hash = '#/security/access'; } },
   { label: 'New service from GitHub', hint: 'apps', run: () => { location.hash = '#/apps/new'; } },
+  { label: 'Capacity', hint: 'system', run: () => { location.hash = '#/system/capacity'; } },
+  { label: 'Add swap', hint: 'system', run: () => { location.hash = '#/system/capacity'; } },
   { label: 'Toggle light / dark theme', hint: 'theme', run: () => { toggleTheme(); paintTheme(); } },
   { label: 'Open emergency SSH for 1 hour', hint: 'security', run: async () => { await api.openSsh(); toast('Port 22 is open to your IP for one hour.'); } },
   { label: 'Open safe mode page', hint: 'recovery', run: () => { location.hash = '#/recovery'; } },

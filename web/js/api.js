@@ -91,12 +91,12 @@ export const PAGE_USES = {
   invite: ['auth.inviteInfo', 'auth.claimInvite'],
   enroll: ['auth.enroll', 'auth.enrollConfirm'],
   newservice: ['createDeployKey', 'deleteDeployKey', 'getGithubStatus', 'getRepos', 'inspectPublicRepo', 'listDeployKeys'],
-  overview: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
+  overview: ['getCapacity', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
   settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
-  system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
+  system: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'listContainers', 'updateService', 'addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
   // In http mode the page shows only this server (the demo hosts and shell are mock-only).
   terminal: ['getTerminalUsers', 'openTerminal'],
@@ -1902,7 +1902,28 @@ export async function keepProxyPorts(confirm = false) {
 export async function getCapacity() {
   sample('getCapacity');
   if (real('getCapacity')) return http('/capacity');
-  return {profile:{memory_mb:1024,swap_mb:0,cpu_millis:1000},allocatable:{os_mb:192,opsbox_mb:128,docker_mb:150,reserved_mb:0,allocatable_mb:554,database_allocatable_mb:554,swap_credit_mb:0},reservations:[],features:[],pressure:false,swap_offer_mb:1024};
+  const features = [
+    { feature: 'install', minimum_mb: 512, recommended_mb: 1024, disk_mb: 2048, fit: { status: 'ok' } },
+    { feature: 'docker', minimum_mb: 768, recommended_mb: 1024, disk_mb: 0, fit: { status: 'ok' } },
+    { feature: 'app', minimum_mb: 128, recommended_mb: 256, disk_mb: 0, fit: { status: 'ok' } },
+    { feature: 'build', minimum_mb: 1536, recommended_mb: 2048, disk_mb: 5120, fit: { status: 'blocked', reasons: ['Needs 1536 MB, 170 MB allocatable'], suggestions: ['Build in GitHub Actions instead.'] } },
+    { feature: 'database', minimum_mb: 256, recommended_mb: 512, disk_mb: 0, fit: { status: 'blocked', reasons: ['Needs 256 MB physical RAM; swap does not count for databases.'] } },
+    { feature: 'template', minimum_mb: 128, recommended_mb: 256, disk_mb: 0, fit: { status: 'tight', reasons: ['Fits, but tight: 170 MB available; 256 MB recommended.'] } },
+    { feature: 'backup', minimum_mb: 256, recommended_mb: 256, disk_mb: 0, fit: { status: 'tight', reasons: ['Fits, but tight: 170 MB available; 256 MB recommended.'] } },
+    { feature: 'image_pull', minimum_mb: 0, recommended_mb: 0, disk_mb: 0, fit: { status: 'ok' } },
+  ];
+  return {
+    profile: { memory_mb: 1024, swap_mb: 0, cpu_millis: 1000, available_mb: 400 },
+    allocatable: { os_mb: 192, opsbox_mb: 128, docker_mb: 150, reserved_mb: 384, allocatable_mb: 170, database_allocatable_mb: 170, swap_credit_mb: 0, allocatable_cpu_millis: 650, pressure: false },
+    reservations: [
+      { name: 'web', memory_mb: 128, cpu_millis: 100, database: false },
+      { name: 'api', memory_mb: 128, cpu_millis: 100, database: false },
+      { name: 'worker', memory_mb: 128, cpu_millis: 100, database: false },
+    ],
+    features,
+    pressure: false,
+    swap_offer_mb: 1024,
+  };
 }
 export async function checkCapacity(request = {}) {
   sample('checkCapacity');

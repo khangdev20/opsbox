@@ -5,7 +5,32 @@ import { html, raw, st, btn, sw, tabs, table, section, empty, sk, skeletonSectio
   initUi, reportPoll, liveState, logo, iconAct } from './ui.js';
 import { accountMenu, navMarkup, notificationBell } from './shell.js';
 import { procRow } from './pages/overview.js';
+import { memoryMap, featureTable, capacityFooter, fitBadge, featureLabel, FEATURE_LABELS } from './capacity.js';
 import { applyTheme, initialTheme, toggleTheme } from './store.js';
+
+const KIT_CAP = {
+  profile: { memory_mb: 1024, swap_mb: 2048, cpu_millis: 1000 },
+  allocatable: { os_mb: 192, opsbox_mb: 128, docker_mb: 150, reserved_mb: 384, allocatable_mb: 170, database_allocatable_mb: 170, swap_credit_mb: 914, allocatable_cpu_millis: 650, pressure: false },
+  reservations: [
+    { name: 'web', memory_mb: 128, cpu_millis: 100, database: false },
+    { name: 'api', memory_mb: 128, cpu_millis: 100, database: false },
+    { name: 'worker', memory_mb: 128, cpu_millis: 100, database: false },
+  ],
+  features: Object.keys(FEATURE_LABELS).map((feature) => ({
+    feature,
+    minimum_mb: feature === 'build' ? 1536 : feature === 'database' ? 256 : 128,
+    recommended_mb: feature === 'build' ? 2048 : 256,
+    disk_mb: feature === 'build' ? 5120 : 0,
+    fit: feature === 'build' || feature === 'database'
+      ? { status: 'blocked', reasons: [`Needs more memory for ${featureLabel(feature)}.`] }
+      : feature === 'template' || feature === 'backup'
+        ? { status: 'tight', reasons: ['Fits, but tight.'] }
+        : { status: 'ok' },
+  })),
+  pressure: false,
+  swap_offer_mb: 1024,
+};
+const KIT_CAP_WARN = { ...KIT_CAP, pressure: true, allocatable: { ...KIT_CAP.allocatable, pressure: true, allocatable_mb: 64 } };
 
 applyTheme(initialTheme());
 initUi();
@@ -110,7 +135,10 @@ const pane = (theme, s) => {
       <div class="kit-row"><span class="kit-l">Radio</span>${[['off', ''], ['on', ' checked'], ['hover', ''], ['focus', ''], ['disabled', ' disabled']].map(([x, a]) => cell(x, html`<label class="opt"><input type="radio" name="rd-${s}-${x}" class="${x === 'hover' ? 'is-hover' : x === 'focus' ? 'is-focus' : ''}"${raw(a)}> Option</label>`))}</div>
       <div class="kit-row"><span class="kit-l">Switch</span>${cell('off', sw('Off', false, 'noop'))}${cell('on', sw('On', true, 'noop'))}${cell('pending (to on)', html`<button type="button" class="switch pending" role="switch" aria-checked="false" aria-label="Pending"><span class="knob"></span></button>`)}${cell('disabled', html`<button type="button" class="switch" role="switch" aria-checked="true" aria-label="Disabled" disabled><span class="knob"></span></button>`)}${cell('click: works', sw('Works', false, 'swok'))}${cell('click: fails, reverts', sw('Fails', true, 'swfail'))}</div>`)}
     ${sub('Tabs and segmented control', html`<div class="kit-row">${cell('tabs: the pill slides', tabs(['Overview', 'Domains', 'Settings'], 0, 'kittab'))}${cell('segmented', html`<div class="segctl" role="tablist"><span class="ind" aria-hidden="true"></span>${['Hour', 'Day', 'Week'].map((t, i) => html`<button type="button" role="tab" aria-selected="${String(i === 1)}" data-act="kittab" data-i="${i}">${t}</button>`)}</div>`)}</div>`)}
-    ${sub('Status chips, check rows', html`<div class="kit-row">${cell('ok (still)', st('ok', 'running 3 d'))}${cell('warn', st('warn', 'degraded'))}${cell('fail', st('fail', 'failed'))}${cell('off', st('off', 'exited'))}${cell('building (pulse)', st('build', 'building'))}${cell('pending (pulse)', st('warn', 'pending'))}${cell('running task (pulse)', st('warn', 'running'))}${cell('check ok', chk('ok', 'All good'))}${cell('check warn', chk('warn', 'Needs a look'))}</div>`)}
+    ${sub('Status chips, check rows', html`<div class="kit-row">${cell('ok (still)', st('ok', 'running 3 d'))}${cell('warn', st('warn', 'degraded'))}${cell('fail', st('fail', 'failed'))}${cell('off', st('off', 'exited'))}${cell('building (pulse)', st('build', 'building'))}${cell('pending (pulse)', st('warn', 'pending'))}${cell('running task (pulse)', st('warn', 'running'))}${cell('check ok', chk('ok', 'All good'))}${cell('check warn', chk('warn', 'Needs a look'))}${cell('fit Fits', fitBadge({ status: 'ok' }))}${cell('fit Tight', fitBadge({ status: 'tight' }))}${cell('fit Blocked', fitBadge({ status: 'blocked' }))}</div>`)}
+    ${sub('Capacity', html`<div class="kit-row">${cell('memory map', html`<div class="kit-w2">${memoryMap(KIT_CAP)}</div>`)}</div>
+      <div class="kit-row">${cell('feature table (Fits / Tight / Blocked)', html`<div class="kit-w2">${featureTable(KIT_CAP)}</div>`)}</div>
+      <div class="kit-row">${cell('Overview Memory footer · normal', html`<div class="kpi kit-w">${capacityFooter(KIT_CAP).html}</div>`)}${cell('Overview Memory footer · warning', html`<div class="kpi kit-w warn-foot">${capacityFooter(KIT_CAP_WARN).html}</div>`)}</div>`, 'Shared labels and badges from capacity.js; Overview keeps a one-line footer with a deep link to #/system/capacity.')}
     ${sub('Bars, skeletons', html`<div class="kit-row">${cell('ok 40%', html`<div class="kit-w">${bar(.4, 'Disk')}</div>`)}${cell('warn 80%', html`<div class="kit-w">${bar(.8, 'Disk')}</div>`)}${cell('danger 95%', html`<div class="kit-w">${bar(.95, 'Disk')}</div>`)}${cell('indeterminate', html`<div class="kit-w"><div class="bar indet" aria-hidden="true"><i></i></div></div>`)}${cell('segments', html`<div class="kit-w">${segBar([[30, 'var(--muted)'], [20, 'var(--accent)'], [12, 'var(--warn)'], [38, 'var(--line)']], 'Usage')}</div>`)}</div>
       <div class="kit-row">${cell('skeleton line / block', html`<div class="kit-w col gap6">${sk(16, '60%')}${sk(40, '100%')}</div>`)}${cell('skeleton section', html`<div class="kit-w">${skeletonSection(2)}</div>`)}</div>`)}
     ${sub('Feedback: toasts, dialogs, tooltip', html`<div class="kit-row">${btn('Toast ok', { act: 'toast-ok' })}${btn('Toast warn', { act: 'toast-warn' })}${btn('Toast error', { act: 'toast-err' })}${btn('Confirm dialog', { act: 'dlg-confirm' })}${btn('Danger confirm', { act: 'dlg-danger' })}${btn('Typed confirm', { act: 'dlg-typed' })}${btn('Form dialog', { act: 'dlg-form' })}${btn('Keep or undo', { act: 'dlg-keep' })}

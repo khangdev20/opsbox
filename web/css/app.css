@@ -760,3 +760,32 @@ tbody[data-flip]>tr{will-change:transform;background:var(--hl)}
 .kit-flip-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
 .kit-flip-box{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--hl)}
 .kit-flip-box h3{font-size:13px;font-weight:600;margin-bottom:8px;color:var(--muted)}
+
+/* ---------- Capacity tab + Overview Memory footer (16g) ---------- */
+.cap-page{display:flex;flex-direction:column;gap:16px}
+.cap-summary{margin-bottom:4px}
+.cap-swap{gap:12px;align-items:center;padding:4px 0 8px}
+.cap-seg .seg{height:12px;border-radius:6px}
+.cap-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.cap-chip{display:inline-flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border:1px solid var(--line);border-radius:999px;background:var(--hl);color:var(--text);font:400 13px var(--mono);cursor:pointer;text-decoration:none;transition:border-color var(--dur-1) var(--ease-out),opacity var(--dur-1) var(--ease-out),background-color var(--dur-1) var(--ease-out)}
+.cap-chip i{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
+.cap-chip:hover,.cap-chip:focus-visible,.cap-chip.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--hl))}
+.cap-chip.dim,.cap-seg .seg i.dim{opacity:.35}
+.cap-seg .seg i.on{outline:2px solid var(--text);outline-offset:1px;z-index:1}
+.cap-why{max-width:36ch}
+.cap-why summary{cursor:pointer;list-style:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cap-why summary::-webkit-details-marker{display:none}
+.cap-why[open] summary{white-space:normal}
+.cap-why ul{margin:6px 0 0;padding-left:18px}
+.cap-sort{background:transparent;border:0;padding:0;color:inherit;font:inherit;cursor:pointer;text-align:inherit}
+.cap-sort:hover{color:var(--text)}
+.cap-press{font-size:28px!important;letter-spacing:-.03em}
+.cap-press.ok{color:var(--ok)}.cap-press.warn{color:var(--warn)}.cap-press.fail{color:var(--danger)}
+.kpi-foot{display:block;margin-top:2px;font:500 13px var(--ui);color:var(--muted);text-decoration:none}
+.kpi-foot:hover{color:var(--text)}
+.kpi-foot.warn,.kpi.warn-foot .kpi-foot{color:var(--warn)}
+.kpi.warn-foot{border-color:color-mix(in srgb,var(--warn) 35%,var(--line))}
+@media (max-width:420px){
+  .cap-summary{grid-template-columns:1fr}
+  .cap-chip{min-height:44px}
+}

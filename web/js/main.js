@@ -17,7 +17,7 @@ api.setUiHooks({
 const BARE = new Set(['login', 'setup', 'enroll', 'invite', 'recovery']);
 const ROUTES = [
   [/^\/?$/, 'overview'], [/^\/apps\/?$/, 'apps'], [/^\/apps\/new\/?$/, 'newservice'], [/^\/apps\/new\/configure\/?$/, 'configure'],
-  [/^\/containers\/?$/, 'containers'], [/^\/system\/?$/, 'system'], [/^\/cleanup\/?$/, 'cleanup'], [/^\/terminal\/?$/, 'terminal'],
+  [/^\/containers\/?$/, 'containers'], [/^\/system(?:\/[^/]+)?\/?$/, 'system'], [/^\/cleanup\/?$/, 'cleanup'], [/^\/terminal\/?$/, 'terminal'],
   [/^\/files\/?$/, 'files'], [/^\/backups\/?$/, 'backups'], [/^\/backups\/new\/?$/, 'backupdest'], [/^\/alerts\/?$/, 'alerts'], [/^\/apps\/new\/templates\/?$/, 'templates'], [/^\/databases\/[^/]+\/?$/, 'database'], [/^\/security\/access\/?$/, 'access'], [/^\/settings\/?$/, 'settings'], [/^\/security\/?$/, 'security'], [/^\/login\/?$/, 'login'], [/^\/setup\/?$/, 'setup'], [/^\/enroll\/?$/, 'enroll'], [/^\/invite\/?$/, 'invite'], [/^\/recovery\/?$/, 'recovery'],
 ];
 const app = document.getElementById('app');

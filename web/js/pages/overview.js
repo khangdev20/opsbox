@@ -1,6 +1,6 @@
 import { html, raw, legend, section, header, bindActions, num, patch, createChart, poll, refreshing, segBar, st, empty, ago, clock, bar, liveState } from '../ui.js';
 import * as api from '../api.js';
-import { capacityCard, addSwap } from '../capacity.js';
+import { capacityFooter } from '../capacity.js';
 import { networkBanner, networkActions } from '../network.js';
 import { sharedAttention, onAttention, openNotifications } from '../shell.js';
 import { listeners } from '../store.js';
@@ -19,7 +19,7 @@ function criticalBanner(att) {
   </div>`;
 }
 
-const kpi = (l, v, u, p, extra = '', thresholds = true) => html`<div class="kpi"><span class="l">${l}</span><span class="v">${v}<small>${u}</small></span>${bar(p / 100, l, { thresholds })}${extra}</div>`;
+const kpi = (l, v, u, p, extra = '', thresholds = true, foot = '', id = '') => html`<div class="kpi${foot && foot.warn ? ' warn-foot' : ''}"${raw(id ? ` id="${id}" data-key="${id}"` : '')}><span class="l">${l}</span><span class="v">${v}<small>${u}</small></span>${bar(p / 100, l, { thresholds })}${extra}${foot ? html`<span id="cap-foot" data-key="cap-foot">${foot.html}</span>` : ''}</div>`;
 
 const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 const hue = (name) => { let h = 0; for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return (h % 6) + 1; };
@@ -79,11 +79,10 @@ function activitySection(rows) {
 }
 
 export async function view() {
-  const [h, m, att] = await Promise.all([api.getHost(), api.getMetrics(), sharedAttention()]);
-  const capacity = await api.getCapacity().catch(() => null);
+  const [h, m, att, capacity] = await Promise.all([api.getHost(), api.getMetrics(), sharedAttention(), api.getCapacity().catch(() => null)]);
   const network = await api.getProxyNetwork().catch(() => null);
   const m0 = m;
-  let sortBy = 'cpu', lastM = m;
+  let sortBy = 'cpu', lastM = m, lastCap = capacity;
   const extras = async () => {
     const [cs, cl, sec] = await Promise.all([api.listContainers().catch(() => null), api.scanCleanup().catch(() => null), api.getSecurity().catch(() => null)]);
     return { cs, cl, audit: sec && sec.audit };
@@ -91,10 +90,11 @@ export async function view() {
   const row2 = (x) => html`${containersSection(x.cs || (lastM.containers || []).map((c) => ({ ...c, state: 'running' })))}${reclaimSection(x.cl)}${activitySection(x.audit)}`;
   const x0 = await extras();
   const procBadge = () => liveState().ok ? html`<span class="live-badge">● live</span>` : html`<span class="live-badge stale">● paused</span>`;
-  const body = (m) => html`
+  const memKpi = (m, cap = lastCap) => kpi('Memory', num(m.memUsed, 'dec1'), ` / ${m.memTotal} GB`, m.memUsed / m.memTotal * 100, html`<span class="sm muted mono">cache ${num(m.cache, 'dec1')} GB</span>`, true, capacityFooter(cap), 'mem-kpi');
+  const body = (m, cap = lastCap) => html`
     <div class="kpis" id="kpis">
       ${kpi(`CPU · ${h.cores} cores`, num(m.cpuNow, 'int'), '%', m.cpuNow, html`<span class="sm muted mono">load ${m.load.map((x, i) => html`${i ? ' ' : ''}${num(x, 'dec2')}`)}</span>`)}
-      ${kpi('Memory', num(m.memUsed, 'dec1'), ` / ${m.memTotal} GB`, m.memUsed / m.memTotal * 100, html`<span class="sm muted mono">cache ${num(m.cache, 'dec1')} GB</span>`)}
+      ${memKpi(m, cap)}
       ${kpi('Disk /', num(m.disk, 'int'), ` / ${m.diskTotal} GB`, m.disk / m.diskTotal * 100, html`<span class="sm muted mono">${num(m.diskTotal - m.disk, 'gb0')} free</span>`)}
       ${kpi('Network', num(m.netIn, 'dec1'), ' MB/s in', Math.min(100, m.netIn * 8), html`<span class="sm muted mono">out ${num(m.netOut, 'dec1')} MB/s · ${num(m.conns, 'int')} conns</span>`, false)}
     </div>
@@ -108,29 +108,37 @@ export async function view() {
     html: html`<main>${header('Overview', `${h.name} · ${h.os} · kernel ${h.kernel} · up ${h.upDays} days · ${h.cores} cores`, html`<a class="btn primary" href="#/apps/new">New service</a>`)}
       <div id="crit-banner">${criticalBanner(att)}</div>
       <div id="proxy-network-banner">${networkBanner(network)}</div>
-      <div id="capacity-card">${capacityCard(capacity)}</div>
       <div class="ov"><div id="live">${body(m)}</div><div class="ov-grid" id="ov-row2">${row2(x0)}</div></div></main>`,
     mount(root) {
-      const card = () => root.querySelector('#capacity-card');
       const refreshNetwork = async () => { const b = root.querySelector('#proxy-network-banner'); if (b) patch(b, networkBanner(await api.getProxyNetwork()).toString()); };
       bindActions(root, {
         ...networkActions(refreshNetwork, () => {}),
         'open-bell': () => openNotifications(),
-        'capacity-swap': async (el) => { await addSwap(Number(el.dataset.mb)); const c = card(); if (c) patch(c, capacityCard(await api.getCapacity()).toString()); },
         'ps-sort': (el) => { sortBy = el.dataset.by; repaint(lastM); },
       });
       this._unsubAttn = onAttention((next) => { const b = root.querySelector('#crit-banner'); if (b) patch(b, criticalBanner(next).toString()); });
       const live = root.querySelector('#live');
       const chart = createChart(root.querySelector('#cpu-chart'), { label: 'CPU and memory over time', series: [{ color: 'var(--muted)', width: 1.5, dash: '5 4' }, { color: 'var(--text)', width: 2 }], cap: 100, floor: 20, h: 300 });
       const draw = (m) => chart.update([m.mem, m.cpu]);
-      const repaint = (m) => { lastM = m; patch(live, body(m).toString()); draw(m); };
+      const repaint = (m, cap = lastCap) => { lastM = m; patch(live, body(m, cap).toString()); draw(m); };
       draw(m0);
       const f = async () => { if (!live.isConnected) return; repaint(await api.getMetrics()); };
       listeners.add(f); this._f = f;
       this._stopPoll = poll(async () => {
+        // One capacity fetch per poll; Memory KPI footer shares it (no second request).
         const [data, cap, x] = await Promise.all([api.getProxyNetwork().catch(() => null), api.getCapacity().catch(() => null), extras()]);
-        const c = card(), b = root.querySelector('#proxy-network-banner'), r2 = root.querySelector('#ov-row2');
-        await refreshing(c, async () => { if (c) patch(c, capacityCard(cap).toString()); if (b) patch(b, networkBanner(data).toString()); if (r2) patch(r2, row2(x).toString()); });
+        lastCap = cap;
+        const b = root.querySelector('#proxy-network-banner'), r2 = root.querySelector('#ov-row2');
+        const footHost = root.querySelector('#cap-foot'), memTile = root.querySelector('#mem-kpi');
+        await refreshing(footHost || r2, async () => {
+          if (footHost && memTile) {
+            const foot = capacityFooter(cap);
+            memTile.classList.toggle('warn-foot', !!foot.warn);
+            patch(footHost, foot.html.toString());
+          }
+          if (b) patch(b, networkBanner(data).toString());
+          if (r2) patch(r2, row2(x).toString());
+        });
       }, 5000);
     },
     unmount() { listeners.delete(this._f); if (this._stopPoll) this._stopPoll(); if (this._unsubAttn) this._unsubAttn(); },
