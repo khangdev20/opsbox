@@ -106,7 +106,7 @@ pub(crate) async fn swap(
         .await?;
     crate::deploy::audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         false,
         None,
         "capacity.swap",
@@ -550,7 +550,7 @@ async fn guard_inner(state: AppState, req: Request, next: Next) -> Result<Respon
             .map_err(|_| HttpError::internal())?;
         crate::deploy::audit_user(
             &state,
-            &who.user.name,
+            &who.user.actor_label(),
             false,
             None,
             "capacity.override",

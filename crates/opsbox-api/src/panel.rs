@@ -324,7 +324,7 @@ pub(crate) async fn issue_cert(
     let _ = state.store.set_setting(KEY_PANEL_DRAFT, &json!(domain));
 
     let state_clone = state.clone();
-    let actor_name = who.user.name.clone();
+    let actor_name = who.user.actor_label();
     let actor_kind = if who.via_token {
         ActorKind::Token
     } else {

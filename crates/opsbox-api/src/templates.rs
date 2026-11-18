@@ -350,7 +350,7 @@ pub(crate) async fn create_template_instance(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "template.create",
@@ -364,7 +364,7 @@ pub(crate) async fn create_template_instance(
         &svc,
         &proj.name,
         DeployTrigger::Manual,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         None,
@@ -1057,7 +1057,7 @@ pub(crate) async fn delete_compose_stack(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "compose.delete",
@@ -1174,7 +1174,7 @@ pub(crate) async fn rotate_database(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.database.rotate",
@@ -1299,7 +1299,7 @@ pub(crate) async fn set_service_exposure(
     };
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.exposure.update",

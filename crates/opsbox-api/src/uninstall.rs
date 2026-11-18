@@ -75,8 +75,9 @@ pub(crate) async fn exec(
 ) -> Result<Json<Value>, HttpError> {
     deny_token(&who)?;
     let audit = |result: AuditResult, detail: Value| {
+        let actor = who.user.actor_label();
         state.auth.audit(
-            &who.user.name,
+            &actor,
             ActorKind::User,
             Some(&client.ip),
             "system.uninstall",

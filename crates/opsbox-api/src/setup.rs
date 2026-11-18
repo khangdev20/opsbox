@@ -68,6 +68,8 @@ fn setup_session(client: &Client) -> Result<&str, HttpError> {
 pub(crate) struct AdminBody {
     username: String,
     password: String,
+    #[serde(default)]
+    display_name: Option<String>,
 }
 
 /// `POST /api/v1/setup/admin`: create the admin account; returns what the authenticator needs.
@@ -88,6 +90,7 @@ pub(crate) async fn admin(
             &session,
             &body.username,
             &body.password,
+            body.display_name.as_deref(),
             &host,
             &client.ip,
         )

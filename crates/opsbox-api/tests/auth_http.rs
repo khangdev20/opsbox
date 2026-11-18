@@ -122,10 +122,21 @@ async fn session_endpoint_tells_the_page_what_to_show() {
         (
             v["authenticated"].clone(),
             v["user"].clone(),
+            v["displayName"].clone(),
             v["role"].clone(),
-            v["setupRequired"].clone()
+            v["setupRequired"].clone(),
+            v["totp"]["enabled"].clone(),
+            v["totp"]["method"].clone(),
         ),
-        (json!(true), json!("admin"), json!("admin"), json!(false))
+        (
+            json!(true),
+            json!("admin"),
+            json!(null),
+            json!("admin"),
+            json!(false),
+            json!(true),
+            json!("app"),
+        )
     );
     let v = b.get("/api/v1/session").await.json();
     assert_eq!(v["authenticated"], false);

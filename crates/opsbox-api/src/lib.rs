@@ -376,7 +376,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/security/allow-ips", put(security::set_allow_ips))
         .route("/api/v1/security/checks/{id}/fix", post(security::fix))
         .route("/api/v1/users/invites", post(users::invite))
-        .route("/api/v1/users/{name}", delete(users::remove))
+        .route(
+            "/api/v1/users/{name}",
+            delete(users::remove).patch(users::update),
+        )
         .route("/api/v1/invites/claim", post(users::claim))
         .route("/api/v1/invites/{token}", get(users::info))
         .route("/api/v1/access", get(access::get))

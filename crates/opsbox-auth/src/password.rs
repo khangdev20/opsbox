@@ -95,6 +95,29 @@ pub fn check_username(name: &str) -> Result<(), String> {
     }
 }
 
+pub const MAX_DISPLAY_NAME_CHARS: usize = 64;
+
+/// Optional display name: trimmed, at most 64 characters, no control characters.
+/// Empty / whitespace-only becomes `None` (cleared).
+pub fn check_display_name(raw: Option<&str>) -> Result<Option<String>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_DISPLAY_NAME_CHARS {
+        return Err(format!(
+            "Display name: at most {MAX_DISPLAY_NAME_CHARS} characters."
+        ));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err("Display name must not contain control characters.".into());
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +199,27 @@ mod tests {
         ] {
             assert!(check_username(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn display_name_rules() {
+        assert_eq!(check_display_name(None).unwrap(), None);
+        assert_eq!(check_display_name(Some("")).unwrap(), None);
+        assert_eq!(check_display_name(Some("   ")).unwrap(), None);
+        assert_eq!(
+            check_display_name(Some("  Minh  ")).unwrap().as_deref(),
+            Some("Minh")
+        );
+        assert!(check_display_name(Some(&"x".repeat(65))).is_err());
+        assert!(check_display_name(Some("ok\nname")).is_err());
+        assert!(check_display_name(Some("ok\u{0000}")).is_err());
+        assert_eq!(
+            check_display_name(Some(&"字".repeat(64)))
+                .unwrap()
+                .unwrap()
+                .chars()
+                .count(),
+            64
+        );
     }
 }

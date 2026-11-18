@@ -11,6 +11,8 @@ use crate::{Store, StoreError};
 pub struct User {
     pub id: String,
     pub name: String,
+    /// Optional human-facing name (trimmed, no control characters, ≤ 64 chars).
+    pub display_name: Option<String>,
     pub role: Role,
     pub password_hash: String,
     /// Sealed by `priv`; `None` until enrolment starts.
@@ -20,6 +22,22 @@ pub struct User {
     pub locked_until: Option<i64>,
     pub failed_count: u32,
     pub created_at: i64,
+}
+
+impl User {
+    /// How this account appears in the audit log: `Display (username)` when a display
+    /// name is set, otherwise just the sign-in name.
+    pub fn actor_label(&self) -> String {
+        match self
+            .display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(d) => format!("{d} ({})", self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +65,7 @@ pub struct Session {
     pub last_seen: i64,
 }
 
-pub(crate) const USER_COLS: &str = "id, name, role, password_hash, totp_secret, totp_enabled, totp_last_step, locked_until, failed_count, created_at";
+pub(crate) const USER_COLS: &str = "id, name, display_name, role, password_hash, totp_secret, totp_enabled, totp_last_step, locked_until, failed_count, created_at";
 
 fn user_row(r: &Row<'_>) -> rusqlite::Result<User> {
     user_row_at(r, 0)
@@ -124,6 +142,20 @@ impl Store {
         self.lock().execute(
             "UPDATE users SET password_hash = ?2, updated_at = ?3 WHERE id = ?1",
             params![user_id, hash, now],
+        )?;
+        Ok(())
+    }
+
+    /// Set or clear the optional display name. Pass `None` to clear it.
+    pub fn set_display_name(
+        &self,
+        user_id: &str,
+        display_name: Option<&str>,
+        now: i64,
+    ) -> Result<(), StoreError> {
+        self.lock().execute(
+            "UPDATE users SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
+            params![user_id, display_name, now],
         )?;
         Ok(())
     }
@@ -360,23 +392,24 @@ impl Store {
 }
 
 pub(crate) fn user_row_at(r: &Row<'_>, base: usize) -> rusqlite::Result<User> {
-    let role: String = r.get(base + 2)?;
+    let role: String = r.get(base + 3)?;
     Ok(User {
         id: r.get(base)?,
         name: r.get(base + 1)?,
+        display_name: r.get(base + 2)?,
         role: Role::parse(&role).ok_or_else(|| {
             rusqlite::Error::FromSqlConversionFailure(
-                base + 2,
+                base + 3,
                 rusqlite::types::Type::Text,
                 "unknown role".into(),
             )
         })?,
-        password_hash: r.get(base + 3)?,
-        totp_secret: r.get(base + 4)?,
-        totp_enabled: r.get::<_, i64>(base + 5)? != 0,
-        totp_last_step: u64::try_from(r.get::<_, i64>(base + 6)?).unwrap_or(0),
-        locked_until: r.get(base + 7)?,
-        failed_count: u32::try_from(r.get::<_, i64>(base + 8)?).unwrap_or(u32::MAX),
-        created_at: r.get(base + 9)?,
+        password_hash: r.get(base + 4)?,
+        totp_secret: r.get(base + 5)?,
+        totp_enabled: r.get::<_, i64>(base + 6)? != 0,
+        totp_last_step: u64::try_from(r.get::<_, i64>(base + 7)?).unwrap_or(0),
+        locked_until: r.get(base + 8)?,
+        failed_count: u32::try_from(r.get::<_, i64>(base + 9)?).unwrap_or(u32::MAX),
+        created_at: r.get(base + 10)?,
     })
 }

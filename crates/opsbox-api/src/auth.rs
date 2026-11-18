@@ -45,7 +45,12 @@ pub(crate) async fn session(
             "authenticated": p.kind == SessionKindView::Web,
             "enrollRequired": p.kind == SessionKindView::Enroll,
             "user": p.user.name,
+            "displayName": p.user.display_name,
             "role": p.user.role,
+            "totp": {
+                "enabled": p.user.totp_enabled,
+                "method": if p.user.totp_enabled { json!("app") } else { json!(null) },
+            },
             "setupRequired": setup_required,
         }),
         None => {

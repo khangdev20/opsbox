@@ -438,7 +438,7 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 
 **`gen.py` is the source; the canvas was not consulted.** Boards render statically through `design/preview.py` (own mini resolver for `dc-import`, `sc-if`, `{{theme}}`), so hover, the open menu and the collapsed sidebar come from `gen.py`. The owner's concurrent edits to `design/` were left untouched and uncommitted.
 
-**Real data only.** The session has no display name or process type, so the account menu shows the sign-in name and role, and Top processes shows PID only. "2FA on" is shown because every browser session passed a TOTP code. Overview row 2 reuses `listContainers`, `scanCleanup` and `getSecurity().audit` (all real), each failing independently into an empty state. The Memory sort reorders the processes the API returned.
+**Real data only.** At the time of 16d the session had no display name or process type, so the account menu showed the sign-in name and role, and Top processes showed PID only. "2FA on" was shown because every browser session passed a TOTP code. (Prompt 16k adds `display_name` and real `totp` state to the session.) Overview row 2 reuses `listContainers`, `scanCleanup` and `getSecurity().audit` (all real), each failing independently into an empty state. The Memory sort reorders the processes the API returned.
 
 **Components.** Brand, account menu, sidebar groups and `iconAct` are shared (`ui.js`, `shell.js`); inline styles in page modules became classes (`form-err`, `err-t`, `row.end`, `mt*`/`mb*`). Process tiles use new `--c1..--c6` tokens; `--brand` is `#FC5801` in both themes (about 3.3:1 on the light background, accepted as large bold text by the design).
 
@@ -497,3 +497,7 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **Adopted web restore is best-effort from receipts.** Before stopping units, uninstall re-applies backed-up config from `/etc/opsbox/web-moves` and reloads the unit or container. Full `WebUndo` needs a live Env/proxy; the receipt path is enough for ports 80/443 to return to the old server.
 
 **Reinstall reuses kept data.** `install.sh` does not wipe `/var/lib/opsbox` or `/etc/opsbox` when they already exist, so a later install picks up the database and config.
+
+## Prompt 16k (user display names)
+
+**Optional `display_name` on `users`, validated in auth.** Trimmed, at most 64 characters, no control characters; empty clears to `NULL`. Setup, invite and claim accept it; `PATCH /users/{name}` lets the person change their own and an owner change anyone's. The session payload adds `displayName` and `totp: {enabled, method}` (`"app"` when on). Audit actors use `Display (username)` via `User::actor_label()`. Profile editing lives on Access (`#/security/access`), matching the account-menu "Profile and security" link; invite UI is on both Security and Access.

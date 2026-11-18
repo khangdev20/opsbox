@@ -490,7 +490,7 @@ pub(crate) async fn add_domain(
     let added_names: Vec<&str> = inserted.iter().map(|r| r.domain.as_str()).collect();
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.domain.add",
@@ -543,7 +543,7 @@ pub(crate) async fn check_dns(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.domain.dns_check",
@@ -600,7 +600,7 @@ pub(crate) async fn issue_cert(
         .map_err(map_proxy_err)?;
 
     let state_clone = state.clone();
-    let actor_name = who.user.name.clone();
+    let actor_name = who.user.actor_label();
     let actor_kind = if who.via_token {
         ActorKind::Token
     } else {
@@ -765,7 +765,7 @@ pub(crate) async fn update_domain(
     let _ = sync_proxy_routes(&state).await;
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.domain.update",
@@ -813,7 +813,7 @@ pub(crate) async fn make_primary(
     let _ = sync_proxy_routes(&state).await;
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.domain.primary",
@@ -871,7 +871,7 @@ pub(crate) async fn remove_domain(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.domain.remove",

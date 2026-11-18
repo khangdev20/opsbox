@@ -77,7 +77,7 @@ impl Env {
         let session = self.auth.claim_setup(&token, IP).unwrap();
         let enrol = self
             .auth
-            .create_admin("r", &session, "admin", PASSWORD, "testhost", IP)
+            .create_admin("r", &session, "admin", PASSWORD, None, "testhost", IP)
             .await
             .unwrap();
         let code = code_now(&enrol.secret_base32);
@@ -186,7 +186,7 @@ async fn first_run_setup_creates_an_enrolled_admin_and_then_closes() {
     // Password rules apply to the first account too.
     let weak = env
         .auth
-        .create_admin("r", &session, "admin", "short", "h", IP)
+        .create_admin("r", &session, "admin", "short", None, "h", IP)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -198,7 +198,7 @@ async fn first_run_setup_creates_an_enrolled_admin_and_then_closes() {
     ));
     let bad_name = env
         .auth
-        .create_admin("r", &session, "Not Valid!", PASSWORD, "h", IP)
+        .create_admin("r", &session, "Not Valid!", PASSWORD, None, "h", IP)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -211,14 +211,14 @@ async fn first_run_setup_creates_an_enrolled_admin_and_then_closes() {
     // A made-up setup session is useless.
     assert!(
         env.auth
-            .create_admin("r", "forged", "admin", PASSWORD, "h", IP)
+            .create_admin("r", "forged", "admin", PASSWORD, None, "h", IP)
             .await
             .is_err()
     );
 
     let enrol = env
         .auth
-        .create_admin("r", &session, "admin", PASSWORD, "my host", IP)
+        .create_admin("r", &session, "admin", PASSWORD, None, "my host", IP)
         .await
         .unwrap();
     assert!(
@@ -275,7 +275,7 @@ async fn first_run_setup_creates_an_enrolled_admin_and_then_closes() {
     ));
     assert!(matches!(
         env.auth
-            .create_admin("r", &session, "evil", PASSWORD, "h", IP)
+            .create_admin("r", &session, "evil", PASSWORD, None, "h", IP)
             .await,
         Err(AuthError::NotFound)
     ));
@@ -324,7 +324,7 @@ async fn abandoned_setup_can_be_restarted() {
     let t1 = env.auth.issue_setup_token().unwrap();
     let s1 = env.auth.claim_setup(&t1, IP).unwrap();
     env.auth
-        .create_admin("r", &s1, "first", PASSWORD, "h", IP)
+        .create_admin("r", &s1, "first", PASSWORD, None, "h", IP)
         .await
         .unwrap();
     // The person walks away, then starts over with a new token and another name.
@@ -332,7 +332,7 @@ async fn abandoned_setup_can_be_restarted() {
     let s2 = env.auth.claim_setup(&t2, IP).unwrap();
     let e = env
         .auth
-        .create_admin("r", &s2, "second", PASSWORD, "h", IP)
+        .create_admin("r", &s2, "second", PASSWORD, None, "h", IP)
         .await
         .unwrap();
     env.auth
@@ -869,7 +869,7 @@ async fn losing_the_second_factor_never_reopens_first_run_setup() {
     ));
     assert!(matches!(
         env.auth
-            .create_admin("r", "anything", "evil", PASSWORD, "h", IP)
+            .create_admin("r", "anything", "evil", PASSWORD, None, "h", IP)
             .await,
         Err(AuthError::NotFound)
     ));
@@ -890,7 +890,7 @@ async fn an_invitation_leads_from_a_link_to_a_signed_in_second_person() {
 
     let (token, expires) = env
         .auth
-        .invite_user(&admin, " Dana ", Role::Deployer, Some(IP))
+        .invite_user(&admin, " Dana ", Role::Deployer, None, Some(IP))
         .unwrap();
     assert!(expires > real_now() + 2 * 24 * 3600, "valid for days");
     let pending = env.store.user_by_name("dana").unwrap().unwrap();
@@ -913,7 +913,7 @@ async fn an_invitation_leads_from_a_link_to_a_signed_in_second_person() {
     // Looking does not use it up; a weak password is refused and the link still works.
     let weak = env
         .auth
-        .claim_invite(&token, "short", IP, None)
+        .claim_invite(&token, "short", None, IP, None)
         .await
         .unwrap_err();
     assert!(
@@ -930,7 +930,7 @@ async fn an_invitation_leads_from_a_link_to_a_signed_in_second_person() {
 
     let issued = env
         .auth
-        .claim_invite(&token, "a long enough passphrase", IP, None)
+        .claim_invite(&token, "a long enough passphrase", None, IP, None)
         .await
         .unwrap();
     // The result is an enrolment session, which can only finish two-factor setup.
@@ -940,7 +940,7 @@ async fn an_invitation_leads_from_a_link_to_a_signed_in_second_person() {
     // Single use.
     assert!(
         env.auth
-            .claim_invite(&token, "another long passphrase", IP, None)
+            .claim_invite(&token, "another long passphrase", None, IP, None)
             .await
             .is_err()
     );
@@ -961,11 +961,11 @@ async fn invitations_expire_and_can_be_replaced() {
     let admin = env.store.user_by_name("admin").unwrap().unwrap();
     let (old, _) = env
         .auth
-        .invite_user(&admin, "erin", Role::Viewer, None)
+        .invite_user(&admin, "erin", Role::Viewer, None, None)
         .unwrap();
     let (fresh, _) = env
         .auth
-        .invite_user(&admin, "erin", Role::Viewer, None)
+        .invite_user(&admin, "erin", Role::Viewer, None, None)
         .unwrap();
     assert!(
         env.auth.invite_info(&old, IP).is_err(),
@@ -975,7 +975,7 @@ async fn invitations_expire_and_can_be_replaced() {
     // Asking again with another role changes the role of the waiting account.
     let (admin_link, _) = env
         .auth
-        .invite_user(&admin, "erin", Role::Admin, None)
+        .invite_user(&admin, "erin", Role::Admin, None, None)
         .unwrap();
     assert_eq!(
         env.auth.invite_info(&admin_link, IP).unwrap().role,
@@ -987,7 +987,7 @@ async fn invitations_expire_and_can_be_replaced() {
     assert!(err.to_string().contains("expired"), "{err}");
     assert!(
         env.auth
-            .claim_invite(&admin_link, "a long enough passphrase", IP, None)
+            .claim_invite(&admin_link, "a long enough passphrase", None, IP, None)
             .await
             .is_err()
     );
@@ -1003,12 +1003,12 @@ async fn names_in_use_cannot_be_invited_and_guessing_links_is_limited() {
     let admin = env.store.user_by_name("admin").unwrap().unwrap();
     let err = env
         .auth
-        .invite_user(&admin, "admin", Role::Viewer, None)
+        .invite_user(&admin, "admin", Role::Viewer, None, None)
         .unwrap_err();
     assert!(err.to_string().contains("already taken"), "{err}");
     assert!(
         env.auth
-            .invite_user(&admin, "A", Role::Viewer, None)
+            .invite_user(&admin, "A", Role::Viewer, None, None)
             .is_err(),
         "names need 3+ characters"
     );
@@ -1028,7 +1028,7 @@ async fn names_in_use_cannot_be_invited_and_guessing_links_is_limited() {
     // Another address is not affected.
     let (token, _) = env
         .auth
-        .invite_user(&admin, "frank", Role::Viewer, None)
+        .invite_user(&admin, "frank", Role::Viewer, None, None)
         .unwrap();
     assert!(env.auth.invite_info(&token, IP).is_ok());
 }
@@ -1044,7 +1044,7 @@ async fn removing_accounts_has_safeguards_and_is_audited() {
     );
     let (_t, _) = env
         .auth
-        .invite_user(&admin, "gina", Role::Viewer, None)
+        .invite_user(&admin, "gina", Role::Viewer, None, None)
         .unwrap();
     env.auth.remove_user(&admin, "gina", Some(IP)).unwrap();
     assert!(env.store.user_by_name("gina").unwrap().is_none());

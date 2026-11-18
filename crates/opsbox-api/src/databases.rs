@@ -457,7 +457,7 @@ pub(crate) async fn rotate_app(
         .map_err(store_err)?;
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "database.app.rotate",
@@ -550,7 +550,7 @@ pub(crate) async fn remove_app(
         .map_err(store_err)?;
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "database.app.remove",
@@ -625,7 +625,7 @@ pub(crate) async fn set_app_pooled(
     }
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "database.app.pooled",
@@ -716,7 +716,7 @@ pub(crate) async fn set_extension(
             .map_err(store_err)?;
         audit_user(
             &state,
-            &who.user.name,
+            &who.user.actor_label(),
             false,
             Some(&client.ip),
             "capacity.extension_memory",
@@ -741,7 +741,7 @@ pub(crate) async fn set_extension(
         .await?;
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "database.extension",
@@ -882,7 +882,7 @@ pub(crate) async fn set_pooler(
             s.metrics.notify_docker();
             audit_user(
                 &s,
-                &who2.user.name,
+                &who2.user.actor_label(),
                 via_token,
                 Some(&ip),
                 if body.enabled {
@@ -1195,7 +1195,7 @@ pub(crate) async fn reveal_connection_string(
         .await?;
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         false,
         Some(&client.ip),
         "database.connection_string.reveal",
@@ -1217,7 +1217,7 @@ pub(crate) async fn reveal_connection_string(
 fn audit_user_denied(state: &AppState, who: &opsbox_auth::Principal, ip: &str, db: &str) {
     use opsbox_store::{ActorKind, AuditResult, NewAudit};
     let _ = state.store.append_audit(NewAudit {
-        actor: who.user.name.clone(),
+        actor: who.user.actor_label(),
         actor_kind: ActorKind::User,
         ip: Some(ip.to_owned()),
         action: "database.connection_string.denied".to_owned(),

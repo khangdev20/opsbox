@@ -83,7 +83,7 @@ async fn change(
     state
         .store
         .append_audit(opsbox_store::NewAudit {
-            actor: who.user.name,
+            actor: who.user.actor_label(),
             actor_kind: ActorKind::User,
             ip: Some(client.ip),
             action: format!("network.{action}"),
@@ -232,7 +232,7 @@ async fn web_task(
         if let Some(receipt)=receipts.iter().filter(|r|r.active).max_by_key(|r|&r.id).or_else(||receipts.last()) {worker.tasks.progress("web_move",receipt.steps.clone());}
         let detail=match &result {Ok(PrivReply::WebMove(receipt))=>json!({"receipt":receipt}), _=>json!({"request":op,"receipts":receipts})};
         worker.store.append_audit(opsbox_store::NewAudit {
-            actor:who.user.name.clone(),actor_kind:ActorKind::User,ip:Some(client.ip),action:format!("network.{}",op.name()),target:Some("proxy".into()),
+            actor:who.user.actor_label(),actor_kind:ActorKind::User,ip:Some(client.ip),action:format!("network.{}",op.name()),target:Some("proxy".into()),
             result:if result.is_ok() {AuditResult::Ok} else {AuditResult::Failed}, detail,
         }).map_err(|_|HttpError::internal())?;
         match result? {

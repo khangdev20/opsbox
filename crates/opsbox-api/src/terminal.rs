@@ -165,7 +165,7 @@ pub(crate) async fn stream(
         };
         let audit = Audit {
             state: state.clone(),
-            who: who.user.name.clone(),
+            who: who.user.actor_label(),
             ip: client.ip.clone(),
             user: session.user.clone(),
         };

@@ -196,7 +196,7 @@ async fn audit_acceptance(
     }
     let store = state.store.clone();
     let entry = opsbox_store::NewAudit {
-        actor: who.user.name.clone(),
+        actor: who.user.actor_label(),
         actor_kind: if who.via_token {
             opsbox_store::ActorKind::Token
         } else {

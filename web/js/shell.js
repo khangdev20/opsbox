@@ -37,19 +37,28 @@ const MENU_ICONS = {
   chev: '<path d="M6 9l6 6 6-6"/>',
 };
 const ROLES = { admin: 'Owner', deployer: 'Deployer', viewer: 'Viewer' };
-// The panel only knows the sign-in name and role. Every browser session passed a 2FA code (sign-in requires one).
 export const roleLabel = () => ROLES[server.role] || (api.MODE === 'mock' ? 'Owner' : '');
 
 // `demo` (UI kit): fixed identity, menu shown open, no ids so the page-level handlers ignore it.
-export function accountMenu({ user = session.user || 'admin', role = roleLabel(), demo = false } = {}) {
+export function accountMenu({
+  user = session.user || 'admin',
+  displayName = server.displayName || null,
+  role = roleLabel(),
+  totpEnabled = server.totp?.enabled !== false,
+  demo = false,
+} = {}) {
+  const shown = displayName || user;
+  const tfa = totpEnabled
+    ? '2FA on'
+    : html`<a href="#/enroll" class="link">2FA off — enable</a>`;
   const item = (href, icon, label, extra = '') => html`<a href="${href}" role="menuitem" tabindex="-1" class="menu-item${extra}"><span class="mi">${raw(svg(MENU_ICONS[icon], 16))}</span>${label}</a>`;
   return html`<div class="acct">
-    <button type="button" class="acct-btn" ${raw(demo ? '' : 'id="acct-btn" aria-controls="acct-menu"')} aria-haspopup="menu" aria-expanded="${String(demo)}" aria-label="Account menu for ${user}">
-      <span class="avatar" aria-hidden="true">${initials(user)}</span>
-      <span class="acct-name"><span>${user}</span>${role ? html`<span class="muted">${role}</span>` : ''}</span>${raw(svg(MENU_ICONS.chev, 16))}
+    <button type="button" class="acct-btn" ${raw(demo ? '' : 'id="acct-btn" aria-controls="acct-menu"')} aria-haspopup="menu" aria-expanded="${String(demo)}" aria-label="Account menu for ${shown}">
+      <span class="avatar" aria-hidden="true">${initials(shown)}</span>
+      <span class="acct-name"><span>${shown}</span>${role ? html`<span class="muted">${role}</span>` : ''}</span>${raw(svg(MENU_ICONS.chev, 16))}
     </button>
     <div class="menu" ${raw(demo ? '' : 'id="acct-menu" hidden')} role="menu" aria-label="Account">
-      <div class="menu-head"><div class="menu-name">${user}</div><div class="muted sm">${[role, '2FA on'].filter(Boolean).join(' · ')}</div></div>
+      <div class="menu-head"><div class="menu-name">${shown}</div><div class="muted sm mono">${user}</div><div class="muted sm">${role ? html`${role} · ` : ''}${tfa}</div></div>
       ${item('#/security/access', 'profile', 'Profile and security')}${item('#/settings', 'settings', 'Server settings')}${item('#/settings?section=tokens', 'tokens', 'API tokens')}
       <div class="menu-sep" role="separator"></div>
       <button type="button" role="menuitem" tabindex="-1" class="menu-item danger" ${raw(demo ? '' : 'id="sign-out"')}><span class="mi">${raw(svg(MENU_ICONS.out, 16))}</span>Sign out</button>

@@ -47,7 +47,7 @@ const REAL = new Set([
   'getTerminalUsers', 'openTerminal',
   'scanCleanup', 'runCleanup', 'setAutoCleanup', 'getCleanupVolumes',
   'getAccess', 'addKey', 'removeKey', 'lockUser',
-  'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
+  'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'updateUser', 'auth.inviteInfo', 'auth.claimInvite',
   'dockerStatus', 'installDocker', 'listContainers', 'listDocker', 'inspectContainer', 'containerAction', 'containerLogs',
   'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs', 'exportConfig', 'uninstallPlan', 'uninstallExec',
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
@@ -93,7 +93,7 @@ export const PAGE_USES = {
   newservice: ['createDeployKey', 'deleteDeployKey', 'getGithubStatus', 'getRepos', 'inspectPublicRepo', 'listDeployKeys'],
   overview: ['getCapacity', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
-  security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
+  security: ['getSecurity', 'inviteUser', 'updateUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
   settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook', 'uninstallPlan', 'uninstallExec'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'listContainers', 'updateService', 'addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
@@ -408,10 +408,15 @@ export const auth = {
     if (MODE === 'http') return http('/setup/status');
     return { setupRequired: false };
   },
-  // GET /api/v1/session -> { authenticated, enrollRequired, setupRequired, user?, role? }
+  // GET /api/v1/session -> { authenticated, enrollRequired, setupRequired, user?, displayName?, role?, totp? }
   async session() {
     if (real('auth.session')) return http('/session');
-    sample('auth.session'); return { authenticated: !!sessionStorage.getItem('opsbox.user'), enrollRequired: false, setupRequired: false, user: sessionStorage.getItem('opsbox.user') };
+    sample('auth.session');
+    const user = sessionStorage.getItem('opsbox.user');
+    return {
+      authenticated: !!user, enrollRequired: false, setupRequired: false, user,
+      displayName: null, role: 'admin', totp: { enabled: true, method: 'app' },
+    };
   },
   // POST /api/v1/auth/login -> { user, role, enrollRequired }
   async login(user, pass, code) {
@@ -421,17 +426,17 @@ export const auth = {
     if (!/^\d{6}$/.test(code || '')) throw new Error('Enter the 6-digit authentication code.');
     audit('sign-in', user); return { user, role: 'admin', enrollRequired: false };
   },
-  // GET /api/v1/invites/{token} -> { name, role }
+  // GET /api/v1/invites/{token} -> { name, displayName?, role }
   async inviteInfo(token) {
     if (real('auth.inviteInfo')) return http('/invites/' + encodeURIComponent(token));
-    sample('auth.inviteInfo'); await lag(150); return { name: 'dana', role: 'deployer' };
+    sample('auth.inviteInfo'); await lag(150); return { name: 'dana', displayName: null, role: 'deployer' };
   },
   // POST /api/v1/invites/claim -> { user, role, enrollRequired: true } (a short enrolment session)
-  async claimInvite(token, password) {
-    if (real('auth.claimInvite')) return http('/invites/claim', { method: 'POST', body: { token, password } });
+  async claimInvite(token, password, displayName) {
+    if (real('auth.claimInvite')) return http('/invites/claim', { method: 'POST', body: { token, password, display_name: displayName || undefined } });
     sample('auth.claimInvite'); await lag(300);
     if ((password || '').length < 12) throw new Error('Use at least 12 characters for the password.');
-    return { user: 'dana', role: 'deployer', enrollRequired: true };
+    return { user: 'dana', displayName: displayName || null, role: 'deployer', enrollRequired: true };
   },
   // POST /api/v1/auth/logout
   async logout() {
@@ -446,8 +451,8 @@ export const auth = {
     return { ok: true };
   },
   // POST /api/v1/setup/admin -> { secret, otpauthUri, account }
-  async setupAdmin(username, password) {
-    if (real('auth.setupAdmin')) return http('/setup/admin', { method: 'POST', body: { username, password } });
+  async setupAdmin(username, password, displayName) {
+    if (real('auth.setupAdmin')) return http('/setup/admin', { method: 'POST', body: { username, password, display_name: displayName || undefined } });
     sample('auth.setupAdmin'); await lag(300);
     return { secret: 'JBSWY3DPEHPK3PXP', otpauthUri: `otpauth://totp/opsbox:${username}?secret=JBSWY3DPEHPK3PXP`, account: username };
   },
@@ -947,12 +952,15 @@ export async function setAllowIps(v, confirm = false) { sample('setAllowIps');
   if (bad) throw new Error(`"${bad}" is not a valid IP or CIDR.`); S.allowIps = v; audit('update allowed IPs');
 }
 // An invitation: the new account's one-time link, shown once. `role` is viewer, deployer or admin.
-export async function inviteUser(name, role = 'viewer') { sample('inviteUser');
-  if (real('inviteUser')) { const r = await http('/users/invites', { method: 'POST', body: { name, role } }); return { ...r, link: `${location.origin}${location.pathname}#/invite?token=${r.token}` }; }
-  await lag(250); if (!/^[a-z][a-z0-9._-]{2,}$/.test(name)) throw new Error('Username: at least 3 characters, lowercase.'); S.users.push({ name, role: 'Deploy and view logs, no terminal', tfa: false }); audit(`invite ${name}`); return { name, role, link: `${location.origin}${location.pathname}#/invite?token=demo-token` }; }
+export async function inviteUser(name, role = 'viewer', displayName) { sample('inviteUser');
+  if (real('inviteUser')) { const r = await http('/users/invites', { method: 'POST', body: { name, role, display_name: displayName || undefined } }); return { ...r, link: `${location.origin}${location.pathname}#/invite?token=${r.token}` }; }
+  await lag(250); if (!/^[a-z][a-z0-9._-]{2,}$/.test(name)) throw new Error('Username: at least 3 characters, lowercase.'); S.users.push({ name, role: 'Deploy and view logs, no terminal', tfa: false, displayName: displayName || null }); audit(`invite ${name}`); return { name, role, displayName: displayName || null, link: `${location.origin}${location.pathname}#/invite?token=demo-token` }; }
 export async function removeUser(name) { sample('removeUser');
   if (real('removeUser')) return http('/users/' + encodeURIComponent(name), { method: 'DELETE' });
   await lag(200); S.users = S.users.filter((u) => u.name !== name); audit(`remove ${name}`); }
+export async function updateUser(name, { displayName } = {}) { sample('updateUser');
+  if (real('updateUser')) return http('/users/' + encodeURIComponent(name), { method: 'PATCH', body: { display_name: displayName == null ? '' : displayName } });
+  await lag(200); const u = S.users.find((x) => x.name === name); if (u) u.displayName = displayName || null; audit(`update ${name}`); return { name, displayName: displayName || null }; }
 export async function signOutAll() {
   if (real('signOutAll')) return http('/auth/sessions/revoke-all', { method: 'POST' }); // POST /api/v1/auth/sessions/revoke-all
   sample('signOutAll'); await lag(300); audit('sign out all sessions');

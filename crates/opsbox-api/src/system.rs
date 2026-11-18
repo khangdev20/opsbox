@@ -48,8 +48,9 @@ pub(crate) fn audit(
     target: Option<&str>,
     detail: Value,
 ) {
+    let actor = who.user.actor_label();
     state.auth.audit(
-        &who.user.name,
+        &actor,
         if who.via_token {
             ActorKind::Token
         } else {
@@ -701,8 +702,9 @@ pub(crate) async fn ssh_emergency(
         .with_timeout(Duration::from_secs(60))
         .ssh_emergency(&rid, &who.user.name, &ip)
         .await?;
+    let actor = who.user.actor_label();
     state.auth.audit(
-        &who.user.name,
+        &actor,
         ActorKind::User,
         Some(&client.ip),
         "system.ssh.emergency",
@@ -808,8 +810,9 @@ pub(crate) async fn grow_disk(
         .await
         .map_err(|_| HttpError::internal())?;
     if !ok {
+        let actor = who.user.actor_label();
         state.auth.audit(
-            &who.user.name,
+            &actor,
             ActorKind::User,
             Some(&client.ip),
             "system.disk.grow",
@@ -848,7 +851,12 @@ pub(crate) async fn grow_disk(
             "Growing the partition needs the growpart tool (package cloud-guest-utils). Allow opsbox to install it, or install it yourself.",
         ));
     }
-    let (name, ip, s) = (who.user.name.clone(), client.ip.clone(), state.clone());
+    let (name, actor, ip, s) = (
+        who.user.name.clone(),
+        who.user.actor_label(),
+        client.ip.clone(),
+        state.clone(),
+    );
     let task = state.tasks.start(DISK_TASK, async move {
         let mut log: Vec<String> = Vec::new();
         for step in &vol.steps {
@@ -856,7 +864,7 @@ pub(crate) async fn grow_disk(
             s.tasks.progress(DISK_TASK, log.clone());
             if let Err(e) = pc.disk_grow(&rid, &name, &vol.mount, *step).await {
                 s.auth.audit(
-                    &name,
+                    &actor,
                     ActorKind::User,
                     Some(&ip),
                     "system.disk.grow",
@@ -882,7 +890,7 @@ pub(crate) async fn grow_disk(
             "after": after.as_ref().map(disk_sizes),
         });
         s.auth.audit(
-            &name,
+            &actor,
             ActorKind::User,
             Some(&ip),
             "system.disk.grow",

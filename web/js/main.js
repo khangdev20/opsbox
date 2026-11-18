@@ -1,5 +1,5 @@
 // Router + boot. Hash routes: #/ #/apps #/apps/new #/apps/new/configure #/containers ...
-import { applyTheme, initialTheme, session, server, listeners } from './store.js';
+import { applyTheme, initialTheme, session, server, listeners, applySession } from './store.js';
 import * as api from './api.js';
 import { mountShell, unmountShell, setNav, refreshStatus } from './shell.js';
 import { toast, confirmDialog, formDialog, keepOrUndoDialog, initUi, reportPoll, liveState, skeletonPage } from './ui.js';
@@ -101,8 +101,7 @@ async function boot() {
   if (api.MODE === 'http') {
     try {
       const s = await api.auth.session();
-      server.setupRequired = !!s.setupRequired; server.role = s.role || '';
-      if (s.authenticated) session.set(s.user); else session.clear();
+      applySession(s);
       if (s.enrollRequired && !/^#\/enroll/.test(location.hash)) location.hash = '#/enroll';
       // `?kit` opens the UI kit for an Owner (the server refuses anyone else).
       if (s.authenticated && s.role === 'admin' && new URLSearchParams(location.search).has('kit')) { location.replace('/kit.html'); return; }

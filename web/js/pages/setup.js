@@ -24,6 +24,7 @@ const stepClaim = () => html`<form class="r" id="f">
 const stepAdmin = () => html`<form class="r" id="f">
   <h2>Create the admin account</h2>
   <div class="field"><label for="u">Username</label><input class="input lg" id="u" autocomplete="username" placeholder="admin"><span class="hint">Lower-case letters, digits, dots and dashes.</span></div>
+  <div class="field"><label for="dn">Display name <span class="muted">(optional)</span></label><input class="input lg" id="dn" autocomplete="nickname" placeholder="Your name" maxlength="64"><span class="hint">Shown in the account menu and audit log. At most 64 characters.</span></div>
   <div class="field"><label for="p">Password</label><input class="input lg" id="p" type="password" autocomplete="new-password"><span class="hint">At least 12 characters. A few random words work well.</span></div>
   <div class="field"><label for="p2">Repeat the password</label><input class="input lg" id="p2" type="password" autocomplete="new-password"></div>
   ${err}<div class="row"><button class="btn primary" type="submit">Continue</button></div></form>`;
@@ -61,13 +62,15 @@ export async function view() {
         } else if (at === 1) {
           submit(async (f) => {
             if (f.p.value !== f.p2.value) throw new Error('The two passwords do not match.');
-            const e = await api.auth.setupAdmin(f.u.value, f.p.value);
+            const e = await api.auth.setupAdmin(f.u.value, f.p.value, f.dn.value);
             show(2, stepScan(e, await qrSvg(e.otpauthUri)));
           });
         } else {
           submit(async (f) => {
             const r = await api.auth.setupConfirm(f.c.value);
-            session.set(r.user); server.role = r.role || ''; server.setupRequired = false; location.hash = '#/';
+            session.set(r.user); server.role = r.role || ''; server.setupRequired = false;
+            try { const { applySession } = await import('../store.js'); applySession(await api.auth.session()); } catch { /* */ }
+            location.hash = '#/';
           });
         }
       }

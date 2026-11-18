@@ -11,7 +11,9 @@ use tokio::sync::Semaphore;
 use tracing::{error, warn};
 
 use crate::lockout::{self, WINDOW_SECS};
-use crate::password::{HashParams, Hasher, check_new_password, check_username};
+use crate::password::{
+    HashParams, Hasher, check_display_name, check_new_password, check_username,
+};
 use crate::setup_token;
 use crate::tokens::{self, csrf_token, hash_token, new_token};
 
@@ -343,8 +345,9 @@ impl Auth {
         result: AuditResult,
         detail: Value,
     ) {
+        let actor = user.actor_label();
         self.audit(
-            &user.name,
+            &actor,
             ActorKind::User,
             ip,
             action,
@@ -855,6 +858,7 @@ impl Auth {
         setup_session: &str,
         username: &str,
         password: &str,
+        display_name: Option<&str>,
         host: &str,
         ip: &str,
     ) -> Result<Enrolment, AuthError> {
@@ -862,6 +866,7 @@ impl Auth {
         let name = username.trim().to_lowercase();
         check_username(&name).map_err(|m| invalid("username", m))?;
         check_new_password(password, &name).map_err(|m| invalid("password", m))?;
+        let display = check_display_name(display_name).map_err(|m| invalid("display_name", m))?;
         let hash = self.hash_password(password).await?;
         // An earlier attempt that never finished enrolment is replaced.
         self.inner.store.delete_unenrolled_admins()?;
@@ -869,6 +874,16 @@ impl Auth {
             .inner
             .store
             .create_user(&name, Role::Admin, &hash, self.now())?;
+        if let Some(ref d) = display {
+            self.inner
+                .store
+                .set_display_name(&user.id, Some(d), self.now())?;
+        }
+        let user = self
+            .inner
+            .store
+            .user_by_id(&user.id)?
+            .ok_or_else(|| AuthError::Internal("admin just created".into()))?;
         let enrolment = self.begin_totp(request_id, &user, host).await?;
         let mut stored = self
             .inner
@@ -1040,6 +1055,7 @@ const INVITE_TTL: i64 = 3 * 24 * 3600;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InviteInfo {
     pub name: String,
+    pub display_name: Option<String>,
     pub role: Role,
 }
 
@@ -1059,10 +1075,12 @@ impl Auth {
         by: &User,
         name: &str,
         role: Role,
+        display_name: Option<&str>,
         ip: Option<&str>,
     ) -> Result<(String, i64), AuthError> {
         let name = name.trim().to_lowercase();
         check_username(&name).map_err(|m| invalid("name", m))?;
+        let display = check_display_name(display_name).map_err(|m| invalid("display_name", m))?;
         let store = &self.inner.store;
         let now = self.now();
         let user = match store.user_by_name(&name)? {
@@ -1080,11 +1098,13 @@ impl Auth {
             Some(_) => return Err(invalid("name", "That name is already taken.")),
             None => store.create_user(&name, role, "", now)?,
         };
+        store.set_display_name(&user.id, display.as_deref(), now)?;
         let token = new_token()?;
         let expires = now + INVITE_TTL;
         store.put_invite(&user.id, &hash_token(&token), expires, &by.name, now)?;
+        let actor = by.actor_label();
         self.audit(
-            &by.name,
+            &actor,
             ActorKind::User,
             ip,
             "user.invite",
@@ -1102,6 +1122,7 @@ impl Auth {
         match found {
             Some((inv, user)) if inv.expires_at > self.now() => Ok(InviteInfo {
                 name: user.name,
+                display_name: user.display_name,
                 role: user.role,
             }),
             _ => {
@@ -1118,6 +1139,7 @@ impl Auth {
         &self,
         token: &str,
         password: &str,
+        display_name: Option<&str>,
         ip: &str,
         ua: Option<&str>,
     ) -> Result<Issued, AuthError> {
@@ -1128,12 +1150,28 @@ impl Auth {
             return Err(Self::invite_error());
         };
         check_new_password(password, &user.name).map_err(|m| invalid("password", m))?;
+        // Only overwrite when the claimant sends a value; otherwise keep the invitee's
+        // display name set by the admin (if any).
+        let display = match display_name {
+            None => None,
+            Some(raw) => Some(check_display_name(Some(raw)).map_err(|m| invalid("display_name", m))?),
+        };
         let hash = self.hash_password(password).await?;
         // Use the link up first: two people racing with the same link cannot both win.
         self.inner.store.delete_invite(&inv.id)?;
         self.inner
             .store
             .set_password_hash(&user.id, &hash, self.now())?;
+        if let Some(d) = display {
+            self.inner
+                .store
+                .set_display_name(&user.id, d.as_deref(), self.now())?;
+        }
+        let user = self
+            .inner
+            .store
+            .user_by_id(&user.id)?
+            .ok_or_else(|| AuthError::Internal("invited user just claimed".into()))?;
         let issued = self.issue(&user, SessionKind::Enroll, Some(ip), ua)?;
         self.audit_user(
             &user,
@@ -1143,6 +1181,37 @@ impl Auth {
             json!({}),
         );
         Ok(issued)
+    }
+
+    /// Set or clear a panel account's display name. Callers enforce who may change whom;
+    /// this only validates and persists.
+    pub fn set_display_name(
+        &self,
+        by: &User,
+        name: &str,
+        display_name: Option<&str>,
+        ip: Option<&str>,
+    ) -> Result<User, AuthError> {
+        let display = check_display_name(display_name).map_err(|m| invalid("display_name", m))?;
+        let store = &self.inner.store;
+        let target = store
+            .user_by_name(name.trim())?
+            .ok_or(AuthError::NotFound)?;
+        store.set_display_name(&target.id, display.as_deref(), self.now())?;
+        let updated = store
+            .user_by_id(&target.id)?
+            .ok_or_else(|| AuthError::Internal("user just updated".into()))?;
+        let actor = by.actor_label();
+        self.audit(
+            &actor,
+            ActorKind::User,
+            ip,
+            "user.display_name",
+            Some(&target.name),
+            AuditResult::Ok,
+            json!({ "displayName": updated.display_name }),
+        );
+        Ok(updated)
     }
 
     /// Remove a panel account and end its sessions. Not yourself, and never the last
@@ -1162,8 +1231,9 @@ impl Auth {
             ));
         }
         store.delete_user(&target.id)?;
+        let actor = by.actor_label();
         self.audit(
-            &by.name,
+            &actor,
             ActorKind::User,
             ip,
             "user.remove",
@@ -1236,8 +1306,9 @@ impl Auth {
             &by.name,
             self.now(),
         )?;
+        let actor = by.actor_label();
         self.audit(
-            &by.name,
+            &actor,
             ActorKind::User,
             ip,
             "token.create",
@@ -1258,8 +1329,9 @@ impl Auth {
             .store
             .delete_api_token(id)?
             .ok_or(AuthError::NotFound)?;
+        let actor = by.actor_label();
         self.audit(
-            &by.name,
+            &actor,
             ActorKind::User,
             ip,
             "token.revoke",
@@ -1283,6 +1355,7 @@ impl Auth {
         let user = User {
             id: t.id.clone(),
             name: format!("token:{}", t.name),
+            display_name: None,
             role: scope_role(&t.scope),
             password_hash: String::new(),
             totp_secret: None,

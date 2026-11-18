@@ -26,7 +26,7 @@ export async function view({ query = {} } = {}) {
       const f = root.querySelector('#f');
       f.addEventListener('submit', async (ev) => {
         ev.preventDefault(); const b = f.querySelector('button'); if (b.hasAttribute('data-busy')) return; setBusy(b, true);
-        try { const r = await api.auth.enrollConfirm(f.c.value); session.set(r.user); server.role = r.role || ''; location.hash = '#/'; }
+        try { const r = await api.auth.enrollConfirm(f.c.value); session.set(r.user); server.role = r.role || ''; try { const { applySession } = await import('../store.js'); applySession(await api.auth.session()); } catch { /* */ } location.hash = '#/'; }
         catch (err) { root.querySelector('#err').textContent = err.message; setBusy(b, false); }
       });
       root.querySelector('#c').focus();

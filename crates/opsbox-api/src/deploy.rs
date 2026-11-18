@@ -1147,7 +1147,7 @@ pub(crate) async fn create_service(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.create",
@@ -1402,7 +1402,7 @@ pub(crate) async fn update_service(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.update",
@@ -1518,7 +1518,7 @@ pub(crate) async fn delete_service(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.delete",
@@ -1581,7 +1581,7 @@ pub(crate) async fn redeploy(
         &svc,
         &proj_name,
         trigger,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         opts.commit.as_deref().map(str::trim),
@@ -1660,7 +1660,7 @@ pub(crate) async fn rollback(
         &proj_name,
         &target,
         &target_image,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         &client.ip,
     )
@@ -1742,7 +1742,7 @@ pub(crate) async fn put_var(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.var.set",
@@ -1985,7 +1985,7 @@ pub(crate) async fn connect_database(
     let needs_redeploy = svc.active_deploy_id.is_some() || svc.active_container.is_some();
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.database.connect",
@@ -2040,7 +2040,7 @@ pub(crate) async fn disconnect_database(
 
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.database.disconnect",
@@ -2079,7 +2079,7 @@ pub(crate) async fn delete_var(
     }
     audit_user(
         &state,
-        &who.user.name,
+        &who.user.actor_label(),
         who.via_token,
         Some(&client.ip),
         "service.var.delete",

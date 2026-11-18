@@ -161,8 +161,9 @@ fn audit(
     target: Option<&str>,
     detail: Value,
 ) {
+    let actor = who.user.actor_label();
     state.auth.audit(
-        &who.user.name,
+        &actor,
         ActorKind::User,
         Some(ip),
         action,

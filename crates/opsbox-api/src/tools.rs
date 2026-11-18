@@ -138,7 +138,7 @@ pub(crate) async fn gateway(
     if rest.is_empty() && parts.method == axum::http::Method::GET {
         audit_user(
             &state,
-            &who.user.name,
+            &who.user.actor_label(),
             false,
             Some(&client.ip),
             "database.tool.open",

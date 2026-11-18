@@ -164,13 +164,92 @@ fn users_are_unique_case_insensitively_and_roles_round_trip() {
     let store = Store::open_in_memory().unwrap();
     let u = store.create_user("Alice", Role::Deployer, "h", 10).unwrap();
     assert_eq!(
-        (u.role, u.totp_enabled, u.totp_secret.clone()),
-        (Role::Deployer, false, None)
+        (u.role, u.totp_enabled, u.totp_secret.clone(), u.display_name.clone()),
+        (Role::Deployer, false, None, None)
     );
     assert!(store.create_user("alice", Role::Viewer, "h", 11).is_err());
     assert_eq!(store.user_by_name("ALICE").unwrap().unwrap().id, u.id);
     assert!(store.user_by_name("bob").unwrap().is_none());
     assert_eq!(store.list_users().unwrap().len(), 1);
+}
+
+#[test]
+fn display_name_round_trips_and_formats_audit_actor() {
+    let store = Store::open_in_memory().unwrap();
+    let u = store.create_user("alice", Role::Admin, "h", 1).unwrap();
+    assert_eq!(u.actor_label(), "alice");
+    store.set_display_name(&u.id, Some("Alice Nguyen"), 2).unwrap();
+    let u = store.user_by_id(&u.id).unwrap().unwrap();
+    assert_eq!(u.display_name.as_deref(), Some("Alice Nguyen"));
+    assert_eq!(u.actor_label(), "Alice Nguyen (alice)");
+    store.set_display_name(&u.id, None, 3).unwrap();
+    assert_eq!(
+        store.user_by_id(&u.id).unwrap().unwrap().display_name,
+        None
+    );
+}
+
+#[test]
+fn migration_thirteen_adds_display_name_on_an_existing_database() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v12.db");
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (
+                 version INTEGER PRIMARY KEY NOT NULL,
+                 name TEXT NOT NULL,
+                 applied_at TEXT NOT NULL
+             ) STRICT;",
+        )
+        .unwrap();
+        for (n, sql) in [
+            (1, include_str!("../migrations/0001_initial.sql")),
+            (2, include_str!("../migrations/0002_auth.sql")),
+            (3, include_str!("../migrations/0003_metrics.sql")),
+            (4, include_str!("../migrations/0004_invites_tokens.sql")),
+            (5, include_str!("../migrations/0005_github_sources.sql")),
+            (6, include_str!("../migrations/0006_deploy_pipeline.sql")),
+            (7, include_str!("../migrations/0007_app_domains.sql")),
+            (8, include_str!("../migrations/0008_templates_compose.sql")),
+            (9, include_str!("../migrations/0009_databases_link.sql")),
+            (10, include_str!("../migrations/0010_backups.sql")),
+            (11, include_str!("../migrations/0011_databases_manage.sql")),
+            (12, include_str!("../migrations/0012_attention_state.sql")),
+        ] {
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, 'x')",
+                rusqlite::params![n, format!("m{n}")],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO users (id, name, role, password_hash, created_at, updated_at)
+             VALUES ('u1', 'alice', 'admin', 'hash', 1, 1)",
+            [],
+        )
+        .unwrap();
+        // Column must not exist yet.
+        assert!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'display_name'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                == 0
+        );
+    }
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), LATEST_VERSION);
+    let u = store.user_by_name("alice").unwrap().unwrap();
+    assert!(u.display_name.is_none());
+    store.set_display_name(&u.id, Some("Alice"), 2).unwrap();
+    assert_eq!(
+        store.user_by_id(&u.id).unwrap().unwrap().display_name.as_deref(),
+        Some("Alice")
+    );
 }
 
 #[test]

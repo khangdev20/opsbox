@@ -391,7 +391,9 @@ pub(crate) async fn get(
 fn user_json(state: &AppState, u: &User, me: &User) -> Value {
     let pending = state.auth.is_pending(u);
     json!({
-        "name": u.name, "role": if pending { format!("{} · invitation not used yet", role_text(u.role)) } else { role_text(u.role).to_owned() },
+        "name": u.name,
+        "displayName": u.display_name,
+        "role": if pending { format!("{} · invitation not used yet", role_text(u.role)) } else { role_text(u.role).to_owned() },
         "roleKey": u.role, "tfa": u.totp_enabled, "pending": pending, "you": u.id == me.id,
     })
 }

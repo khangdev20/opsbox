@@ -494,3 +494,88 @@ async fn removing_an_account_end_its_sessions_and_has_safeguards() {
     );
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn display_name_updates_session_and_audit_actor() {
+    let h = Harness::new(true);
+    let mut admin = h.signed_in("boss", Role::Admin);
+    let bad = send(
+        &mut admin,
+        Method::PATCH,
+        "/api/v1/users/boss",
+        Some(json!({"display_name": "x".repeat(65)})),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{}", bad.text());
+    assert!(bad.text().to_lowercase().contains("64"));
+
+    let ok = send(
+        &mut admin,
+        Method::PATCH,
+        "/api/v1/users/boss",
+        Some(json!({"display_name": "  Boss Person  "})),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.text());
+    assert_eq!(ok.json()["displayName"], json!("Boss Person"));
+
+    let session = admin.get("/api/v1/session").await.json();
+    assert_eq!(session["user"], json!("boss"));
+    assert_eq!(session["displayName"], json!("Boss Person"));
+    // `signed_in` bypasses TOTP enrolment, so the session reports the real off state.
+    assert_eq!(session["totp"]["enabled"], json!(false));
+    assert_eq!(session["totp"]["method"], json!(null));
+
+    let actors: Vec<_> = h
+        .store
+        .recent_audit(20)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.action == "user.display_name")
+        .map(|e| e.actor)
+        .collect();
+    assert!(
+        actors.iter().any(|a| a == "Boss Person (boss)" || a == "boss"),
+        "expected display-name audit with boss as actor, got {actors:?}"
+    );
+    // After the name is set, a later mutation shows "Display (username)".
+    let again = send(
+        &mut admin,
+        Method::PATCH,
+        "/api/v1/users/boss",
+        Some(json!({"display_name": "Boss Person"})),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.text());
+    let labeled: Vec<_> = h
+        .store
+        .recent_audit(5)
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.action == "user.display_name")
+        .map(|e| e.actor)
+        .collect();
+    assert!(
+        labeled.iter().any(|a| a == "Boss Person (boss)"),
+        "{labeled:?}"
+    );
+
+    let mut viewer = h.signed_in("cara", Role::Viewer);
+    let self_ok = send(
+        &mut viewer,
+        Method::PATCH,
+        "/api/v1/users/cara",
+        Some(json!({"display_name": "Cara Q"})),
+    )
+    .await;
+    assert_eq!(self_ok.status, StatusCode::OK, "{}", self_ok.text());
+    let denied = send(
+        &mut viewer,
+        Method::PATCH,
+        "/api/v1/users/boss",
+        Some(json!({"display_name": "Nope"})),
+    )
+    .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text());
+    h.shutdown().await;
+}
