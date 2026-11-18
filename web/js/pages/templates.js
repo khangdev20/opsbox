@@ -24,7 +24,7 @@ export async function view() {
   const databases = catalog.databases || [];
   const tools = catalog.tools || [];
   const all = [...databases, ...tools];
-  const pgDbs = (proj.services || []).filter((s) => s.kind === 'db' && (s.templateId === 'postgres' || /postgres/i.test(s.repo || '')));
+  const pgDbs = (proj.services || []).filter((s) => s.kind === 'db' && (/^postgres|^postgis$/.test(s.templateId || '') || /postgres/i.test(s.repo || '')));
   let pick = all[0] || { id: 'postgres', name: 'PostgreSQL', versions: ['16.4'], port: 5432, category: 'databases' };
   let busy = '';
   let root;
@@ -44,6 +44,7 @@ export async function view() {
     const internalDefault = pick.internalByDefault ?? true;
     const isDb = pick.kind === 'db' || pick.category === 'databases';
     const isUmami = pick.id === 'umami' || pick.requiresDatabase;
+    const isDataTool = pick.id === 'adminer' || pick.id === 'pgweb';
     const defaultPgRef = pgDbs[0] ? `\${{ ${pgDbs[0].id}.DATABASE_URL }}` : '';
     return section(`Add ${pick.name}`, html`
       <div class="field"><label for="tn">Name</label><input class="input" id="tn" value="${pick.id}-main" autocomplete="off"><span class="hint">Other services reach it at <span class="mono">${pick.id}-main:${pick.port}</span> on the project network.</span></div>
@@ -59,6 +60,7 @@ export async function view() {
         <option value="loopback"${!internalDefault ? ' selected' : ''}>Loopback only (127.0.0.1 — reverse proxy / local SSH tunnel)</option>
         ${isDb ? html`<option value="public">Public internet port (0.0.0.0 — NOT recommended)</option>` : ''}
       </select><span class="hint">${isDb ? 'Database ports stay off the internet by default; apps connect over the internal project network.' : 'Internal-only services bind no host port.'}</span></div>
+      ${isDataTool ? html`<p class="sm muted">${pick.name} is never published on its own address. You open it from the database page or at <span class="mono">/tools/${pick.id}-main/</span>, and only while you are signed in to opsbox.</p>` : ''}
       <p class="sm muted">Credentials are generated, encrypted at rest, and shown once upon creation.</p>
       <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p>
       <div>${btn(busy === 'tpl' ? `Starting ${pick.name}…` : `Add ${pick.name}`, { act: 'add', kind: 'primary', disabled: busy === 'tpl' })}</div>`);

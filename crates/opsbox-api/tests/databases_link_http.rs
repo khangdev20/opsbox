@@ -458,7 +458,14 @@ exit 0
     let admin = store
         .create_user("alice", Role::Admin, "unused", 0)
         .unwrap();
-    store.set_pending_totp(&admin.id, "unused", 0).unwrap();
+    let (admin_totp_sealed, admin_totp_b32) = PrivClient::new(&priv_sock)
+        .with_timeout(Duration::from_secs(15))
+        .totp_new_secret("t-admin", &format!("totp:{}", admin.id))
+        .await
+        .unwrap();
+    store
+        .set_pending_totp(&admin.id, &admin_totp_sealed, 0)
+        .unwrap();
     store.enable_totp(&admin.id, 0, 0).unwrap();
     let viewer = store.create_user("bob", Role::Viewer, "unused", 0).unwrap();
     store.set_pending_totp(&viewer.id, "unused", 0).unwrap();
@@ -667,7 +674,7 @@ exit 0
         &admin_cookie,
         false,
         &admin_csrf,
-        Some(json!({ "database": "pg-main" })),
+        Some(json!({ "database": "pg-main", "perAppUser": false })),
     )
     .await;
     assert_eq!(st, StatusCode::OK, "connect failed: {conn_res}");
@@ -1031,6 +1038,231 @@ exit 0
     .await;
     assert_eq!(st_cmp, StatusCode::CONFLICT, "{cmp_val}");
     assert_eq!(cmp_val["error"]["code"], "confirmation_required");
+
+    // 15. Databases part B: connecting with the default gives the app its own database and
+    // login; the work runs in `priv` through `docker exec psql` with the admin password in the
+    // exec environment only.
+    let (st, own) = send(
+        &app,
+        Method::POST,
+        "/api/v1/services/analytics/databases",
+        &admin_cookie,
+        false,
+        &admin_csrf,
+        Some(json!({ "database": "pg-main" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "own-login connect failed: {own}");
+    let own_vars: Vec<&str> = own["vars"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v[1].as_str().unwrap())
+        .collect();
+    assert!(
+        own_vars.contains(&"${{ pg-main.OPSBOX_APP_ANALYTICS_DATABASE_URL }}"),
+        "{own_vars:?}"
+    );
+    assert!(own_vars.contains(&"${{ pg-main.OPSBOX_APP_ANALYTICS_PGUSER }}"));
+    {
+        let ds_guard = docker_state.lock().unwrap();
+        let (cid, exec_body) = ds_guard.exec_bodies.last().unwrap();
+        assert_eq!(cid, "cid-1");
+        assert_eq!(exec_body["Cmd"][0], "psql");
+        let argv = exec_body["Cmd"].to_string();
+        assert!(!argv.contains("PGPASSWORD") && !argv.contains("app_analytics"));
+    }
+    let (st, page) = send(
+        &app,
+        Method::GET,
+        "/api/v1/databases/pg-main",
+        &admin_cookie,
+        false,
+        &admin_csrf,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{page}");
+    assert_eq!(page["apps"][0]["app"], "analytics");
+    assert_eq!(page["apps"][0]["user"], "app_analytics");
+    assert_eq!(page["apps"][0]["database"], "app_analytics");
+    assert!(
+        page["upgrades"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["major"] == 17),
+        "{page}"
+    );
+    assert!(!page.to_string().contains("OPSBOX_APP"), "{page}");
+    // The per-app variables never show up in the database's own Variables tab.
+    let (_, proj4) = send(
+        &app,
+        Method::GET,
+        "/api/v1/projects/default",
+        &admin_cookie,
+        false,
+        &admin_csrf,
+        None,
+    )
+    .await;
+    assert!(
+        !proj4
+            .to_string()
+            .contains("OPSBOX_APP_ANALYTICS_PGPASSWORD\","),
+        "{proj4}"
+    );
+
+    // Revealing a connection string needs a fresh two-factor code; a wrong one is refused
+    // (403, so the panel does not mistake it for an expired session).
+    let (st, denied) = send(
+        &app,
+        Method::POST,
+        "/api/v1/databases/pg-main/connection-string",
+        &admin_cookie,
+        false,
+        &admin_csrf,
+        Some(json!({ "code": "000000" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{denied}");
+    assert!(!denied.to_string().contains("postgresql://"));
+    let denied_entries = store
+        .recent_audit(100)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.action == "database.connection_string.denied")
+        .count();
+    assert_eq!(denied_entries, 1);
+
+    // A fresh valid code shows the login's connection string once; the same code cannot be
+    // replayed, and the reveal is audited without the secret.
+    let code_now = {
+        let mut bits = 0u32;
+        let mut buf = 0u32;
+        let mut raw = Vec::new();
+        for c in admin_totp_b32.expose().bytes() {
+            let v = match c {
+                b'A'..=b'Z' => c - b'A',
+                b'2'..=b'7' => c - b'2' + 26,
+                _ => continue,
+            };
+            buf = (buf << 5) | u32::from(v);
+            bits += 5;
+            if bits >= 8 {
+                bits -= 8;
+                raw.push((buf >> bits) as u8);
+                buf &= (1 << bits) - 1;
+            }
+        }
+        let t = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        opsbox_priv::code_at(&raw, t / 30)
+    };
+    let (st, shown) = send(
+        &app,
+        Method::POST,
+        "/api/v1/databases/pg-main/connection-string",
+        &admin_cookie,
+        false,
+        &admin_csrf,
+        Some(json!({ "code": code_now, "app": "analytics" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{shown}");
+    let shown_url = shown["connectionString"].as_str().unwrap();
+    assert!(
+        shown_url.starts_with("postgresql://app_analytics:"),
+        "{shown_url}"
+    );
+    assert!(
+        shown_url.ends_with("@pg-main:5432/app_analytics"),
+        "{shown_url}"
+    );
+    let (st, replay) = send(
+        &app,
+        Method::POST,
+        "/api/v1/databases/pg-main/connection-string",
+        &admin_cookie,
+        false,
+        &admin_csrf,
+        Some(json!({ "code": code_now, "app": "analytics" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "a code must work only once: {replay}"
+    );
+    let audit = store.recent_audit(200).unwrap();
+    let reveal = audit
+        .iter()
+        .find(|e| e.action == "database.connection_string.reveal")
+        .expect("reveal must be audited");
+    assert!(!reveal.detail.to_string().contains("postgresql://"));
+
+    // Viewers cannot manage databases, and API tokens can never reveal a connection string.
+    for (method, path, body) in [
+        (Method::GET, "/api/v1/databases/pg-main", None),
+        (
+            Method::PUT,
+            "/api/v1/databases/pg-main/pooler",
+            Some(json!({ "enabled": true })),
+        ),
+        (
+            Method::POST,
+            "/api/v1/databases/pg-main/upgrade",
+            Some(json!({ "version": "17.2", "confirm": true })),
+        ),
+        (
+            Method::POST,
+            "/api/v1/databases/pg-main/connection-string",
+            Some(json!({ "code": "000000" })),
+        ),
+    ] {
+        let (st_v, _) = send(
+            &app,
+            method,
+            path,
+            &viewer_cookie,
+            false,
+            &viewer_csrf,
+            body,
+        )
+        .await;
+        assert_eq!(
+            st_v,
+            StatusCode::FORBIDDEN,
+            "viewer must be forbidden on {path}"
+        );
+    }
+    let (st_t, _) = send(
+        &app,
+        Method::POST,
+        "/api/v1/databases/pg-main/connection-string",
+        &full_token,
+        true,
+        "",
+        Some(json!({ "code": "000000" })),
+    )
+    .await;
+    assert_eq!(st_t, StatusCode::FORBIDDEN);
+
+    // A major upgrade must be confirmed before anything happens.
+    let (st, need) = send(
+        &app,
+        Method::POST,
+        "/api/v1/databases/pg-main/upgrade",
+        &admin_cookie,
+        false,
+        &admin_csrf,
+        Some(json!({ "version": "17.2" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{need}");
+    assert_eq!(need["error"]["code"], "confirmation_required");
 
     let _ = priv_stop.send(());
     let _ = priv_task.await;

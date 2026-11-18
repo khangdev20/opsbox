@@ -74,6 +74,25 @@ Evaluation runs every 15 seconds over cached metrics/facts and persisted deploy/
 
 Incidents persist `ok → pending → firing → resolved` independently per rule and target. Notifications fire on activation, warning-to-critical worsening, recovery and four-hour repeats. Warning delivery waits through quiet hours; critical bypasses quiet hours. Explicit silences suppress either level. Per-channel receipts survive restarts, failed deliveries retry after 60 seconds, and successful channels do not repeat for another channel's failure. Recovery is sent only to channels that received firing. Delivery is at least once across a crash between remote receipt and local acknowledgement. History retains 200 transitions; cleared targets expire after seven days. Overview returns `alertId` and `#/alerts?id=<encoded-id>` for active host alerts to administrators.
 
+## Databases, part B: management (prompt 16)
+
+PostgreSQL services only (`postgres`, `postgres-pgvector`, `postgis`). `{id}` is the service name or ID. Reading needs access to the service; every change needs write access to it (admin or owner) and refuses API tokens. All SQL and container actions run in `opsbox-priv` (`PrivOp::DatabaseInspect/Manage/Pooler/Upgrade`); `serve` stores sealed values and metadata only.
+
+| Request | Behaviour |
+|---|---|
+| `GET /databases/{id}?database=name` | `{id,templateId,flavor,version,state,running,live,liveError,apps,pooler,upgrades,dataVolume,credentialsRotatedAt}`. `live` (null with a sentence in `liveError` when the database is stopped) holds `serverVersion`, `databases[{name,owner,sizeBytes}]`, `users[{name,canLogin,superuser,connections,databases}]`, `grants[{role,database,connect,create,temp}]`, `extensions[{name,installed,installedVersion,defaultVersion,comment}]`, `tables[{schema,table,totalBytes,rowsEstimate}]` for `database`, `connections{current,max}`, `statStatements{loaded,enabled}` and `slowQueries[{query,calls,meanMs,totalMs,rows}]`. |
+| `POST /services/{app}/databases` | Existing connect call. For PostgreSQL the default is `perAppUser:true`: `priv` creates database and login `app_<app>` (no superuser, no create-db/role, `CONNECT` revoked from `PUBLIC` everywhere) and the app gets `${{ db.OPSBOX_APP_<APP>_DATABASE_URL }}` (+ `PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE`). `perAppUser:false` or `sourceKey/asKey` keeps the shared main login. `pooled:true` links the pooler variants. `409` when the database is not running. |
+| `POST /databases/{id}/apps/{app}/rotate` | New password for one app login; returns `{ok,app,rotatedAt,affectedApps}` and marks the app `needsRedeploy`. |
+| `POST /databases/{id}/apps/{app}/remove` | `{dropDatabase?:bool,confirm?:string}`. Removes the login; `dropDatabase` also deletes the data and needs `confirm` equal to the database name (`409 confirmation_required`). `409` while the app still references the login. |
+| `PUT /databases/{id}/apps/{app}/pooled` | `{pooled:bool}`. Re-points the app's variables at the pooler or the database; `409` if the pooler is off. |
+| `PUT /databases/{id}/extensions/{name}` | `{enabled:bool,database?:string}`. Allowlist: `vector, postgis, pg_stat_statements, pgcrypto, uuid-ossp, pg_trgm, citext, hstore`. `pg_stat_statements` needs the one-time restart on databases created before this release (new ones preload it). `409` with a sentence when the image lacks `vector`/`postgis`. |
+| `PUT /databases/{id}/pooler` | `{enabled:bool,mode?:"transaction"\|"session"}` → `202 {task}`. Starts/removes PgBouncer (`edoburu/pgbouncer`, internal network only, name `{id}-pooler:6432`) with a connect-only lookup login (`opsbox_pooler`) in the `postgres` database. |
+| `POST /databases/{id}/upgrade` | `{version,confirm:true}` → `202 {task}`. `409 confirmation_required` without `confirm`. In `priv`: backup job snapshot first (failure cancels), `pg_dumpall`, stop old container, start the new major on a **new volume** (`opsbox-{id}-data-v<major>`), restore, compare databases/roles/table counts, then switch. Any failure removes the new container and volume and restarts the old one. The old volume is kept. |
+| `POST /databases/{id}/connection-string` | `{code,app?,pooled?}`. Needs an interactive session and a **fresh two-factor code** (single use, wrong codes count toward the sign-in lockout; wrong code → `403`, never `401`). Returns `{connectionString,login,note}` with `Cache-Control: no-store`. Audit: `database.connection_string.reveal` / `.denied` (never the secret). |
+| `ANY /tools/{service}/...` | Data-tool gateway (`adminer`, `pgweb` templates; loopback-only containers). Cookie session only (no tokens), role deployer+, owner/admin of the tool. Unsafe methods need a same-host `Origin`. The panel's cookies are never forwarded; the tool's cookies are rewritten to `Path=/tools/<service>/; SameSite=Strict`. Audit: `database.tool.open`. |
+
+Per-app variables (`OPSBOX_APP_*`) and the pooler login (`OPSBOX_POOLER_PASSWORD`) live on the database service, are hidden from its Variables list and are never put in the database container's environment. Audit actions: `database.app.rotate`, `database.app.remove`, `database.app.pooled`, `database.extension`, `database.pooler.enable/disable`, `database.upgrade`, `database.upgrade.failed`. `GET /templates` adds `postgres-pgvector`, `postgis`, `adminer`, `pgweb`.
+
 ## Implemented routes
 
 <!-- GENERATED_ROUTES_START -->
@@ -121,6 +140,14 @@ Incidents persist `ok → pending → firing → resolved` independently per rul
 | `GET` | `/api/v1/cleanup/volumes` | [cleanup::volume_sizes](../crates/opsbox-api/src/cleanup.rs) |
 | `POST` | `/api/v1/compose` | [templates::deploy_compose](../crates/opsbox-api/src/templates.rs) |
 | `DELETE` | `/api/v1/compose/{stack}` | [templates::delete_compose_stack](../crates/opsbox-api/src/templates.rs) |
+| `GET` | `/api/v1/databases/{id}` | [databases::overview](../crates/opsbox-api/src/databases.rs) |
+| `PUT` | `/api/v1/databases/{id}/apps/{app}/pooled` | [databases::set_app_pooled](../crates/opsbox-api/src/databases.rs) |
+| `POST` | `/api/v1/databases/{id}/apps/{app}/remove` | [databases::remove_app](../crates/opsbox-api/src/databases.rs) |
+| `POST` | `/api/v1/databases/{id}/apps/{app}/rotate` | [databases::rotate_app](../crates/opsbox-api/src/databases.rs) |
+| `POST` | `/api/v1/databases/{id}/connection-string` | [databases::reveal_connection_string](../crates/opsbox-api/src/databases.rs) |
+| `PUT` | `/api/v1/databases/{id}/extensions/{name}` | [databases::set_extension](../crates/opsbox-api/src/databases.rs) |
+| `PUT` | `/api/v1/databases/{id}/pooler` | [databases::set_pooler](../crates/opsbox-api/src/databases.rs) |
+| `POST` | `/api/v1/databases/{id}/upgrade` | [databases::upgrade](../crates/opsbox-api/src/databases.rs) |
 | `GET` | `/api/v1/deploys/{id}/log` | [deploy::deploy_log](../crates/opsbox-api/src/deploy.rs) |
 | `GET` | `/api/v1/docker/containers` | [docker::list_containers](../crates/opsbox-api/src/docker.rs) |
 | `GET` | `/api/v1/docker/containers/{id}` | [docker::inspect_container](../crates/opsbox-api/src/docker.rs) |
@@ -232,6 +259,17 @@ Incidents persist `ok → pending → firing → resolved` independently per rul
 | `DELETE` | `/api/v1/users/{name}` | [users::remove](../crates/opsbox-api/src/users.rs) |
 | `GET` | `/healthz` | [health::healthz](../crates/opsbox-api/src/health.rs) |
 | `GET` | `/readyz` | [health::readyz](../crates/opsbox-api/src/health.rs) |
+| `GET` | `/tools/{service}` | [tools::root](../crates/opsbox-api/src/tools.rs) |
+| `DELETE` | `/tools/{service}/` | [tools::index](../crates/opsbox-api/src/tools.rs) |
+| `GET` | `/tools/{service}/` | [tools::index](../crates/opsbox-api/src/tools.rs) |
+| `PATCH` | `/tools/{service}/` | [tools::index](../crates/opsbox-api/src/tools.rs) |
+| `POST` | `/tools/{service}/` | [tools::index](../crates/opsbox-api/src/tools.rs) |
+| `PUT` | `/tools/{service}/` | [tools::index](../crates/opsbox-api/src/tools.rs) |
+| `DELETE` | `/tools/{service}/{*rest}` | [tools::gateway](../crates/opsbox-api/src/tools.rs) |
+| `GET` | `/tools/{service}/{*rest}` | [tools::gateway](../crates/opsbox-api/src/tools.rs) |
+| `PATCH` | `/tools/{service}/{*rest}` | [tools::gateway](../crates/opsbox-api/src/tools.rs) |
+| `POST` | `/tools/{service}/{*rest}` | [tools::gateway](../crates/opsbox-api/src/tools.rs) |
+| `PUT` | `/tools/{service}/{*rest}` | [tools::gateway](../crates/opsbox-api/src/tools.rs) |
 <!-- GENERATED_ROUTES_END -->
 
 ## Future phases (sample UI)

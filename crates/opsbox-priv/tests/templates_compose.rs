@@ -485,6 +485,7 @@ async fn template_start_creates_volume_keeps_internal_only_and_scrubs_failures()
                 ref_sources: vec![],
                 memory_limit_mb: Some(256),
                 cpu_limit_millis: None,
+                data_volume: None,
             },
         )
         .await
@@ -537,6 +538,7 @@ async fn template_start_creates_volume_keeps_internal_only_and_scrubs_failures()
                 ref_sources: vec![],
                 memory_limit_mb: None,
                 cpu_limit_millis: None,
+                data_volume: None,
             },
         )
         .await
@@ -867,6 +869,7 @@ async fn template_ref_resolution_public_port_guard_and_db_rotation() {
                 ref_sources: vec![],
                 memory_limit_mb: None,
                 cpu_limit_millis: None,
+                data_volume: None,
             },
         )
         .await
@@ -896,6 +899,7 @@ async fn template_ref_resolution_public_port_guard_and_db_rotation() {
                 ref_sources: vec![],
                 memory_limit_mb: None,
                 cpu_limit_millis: None,
+                data_volume: None,
             },
         )
         .await
@@ -949,6 +953,7 @@ async fn template_ref_resolution_public_port_guard_and_db_rotation() {
                 }],
                 memory_limit_mb: None,
                 cpu_limit_millis: None,
+                data_volume: None,
             },
         )
         .await

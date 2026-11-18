@@ -10,6 +10,7 @@ mod allowlist;
 mod auth;
 pub mod backups;
 mod cleanup;
+mod databases;
 pub mod deploy;
 mod docker;
 mod domains;
@@ -34,6 +35,7 @@ mod templates;
 mod terminal;
 pub mod tls;
 mod tokens;
+mod tools;
 mod ui;
 mod update;
 mod users;
@@ -407,6 +409,29 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/services/{id}/rotate",
             post(templates::rotate_database),
         )
+        .route("/api/v1/databases/{id}", get(databases::overview))
+        .route(
+            "/api/v1/databases/{id}/apps/{app}/rotate",
+            post(databases::rotate_app),
+        )
+        .route(
+            "/api/v1/databases/{id}/apps/{app}/remove",
+            post(databases::remove_app),
+        )
+        .route(
+            "/api/v1/databases/{id}/apps/{app}/pooled",
+            put(databases::set_app_pooled),
+        )
+        .route(
+            "/api/v1/databases/{id}/extensions/{name}",
+            put(databases::set_extension),
+        )
+        .route("/api/v1/databases/{id}/pooler", put(databases::set_pooler))
+        .route("/api/v1/databases/{id}/upgrade", post(databases::upgrade))
+        .route(
+            "/api/v1/databases/{id}/connection-string",
+            post(databases::reveal_connection_string),
+        )
         .route(
             "/api/v1/services/{id}/exposure",
             put(templates::set_service_exposure),
@@ -531,9 +556,34 @@ pub fn router(state: AppState) -> Router {
             TRANSFER_TIMEOUT,
         ));
 
+    // Data tools stream whatever the tool answers, so they get their own limits.
+    let tools = Router::new()
+        .route("/tools/{service}", get(tools::root))
+        .route(
+            "/tools/{service}/",
+            get(tools::index)
+                .post(tools::index)
+                .put(tools::index)
+                .patch(tools::index)
+                .delete(tools::index),
+        )
+        .route(
+            "/tools/{service}/{*rest}",
+            get(tools::gateway)
+                .post(tools::gateway)
+                .put(tools::gateway)
+                .patch(tools::gateway)
+                .delete(tools::gateway),
+        )
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(300),
+        ));
+
     let setup_guard_state = state.auth.clone();
     Router::new()
         .merge(ordinary)
+        .merge(tools)
         .merge(editor)
         .merge(transfers)
         .fallback(ui::fallback)

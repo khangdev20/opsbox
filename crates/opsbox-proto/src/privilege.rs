@@ -343,6 +343,15 @@ pub enum PrivOp {
     /// Rotate credentials inside a running database container via `docker exec` and return
     /// newly sealed variables.
     DatabaseRotate(crate::deploy::DatabaseRotateRequest),
+    /// Read databases, users, grants, extensions, table sizes, connections and slow queries
+    /// from a managed PostgreSQL container.
+    DatabaseInspect(crate::database::DatabaseInspectRequest),
+    /// Create/rotate/remove per-app logins and databases, or toggle an extension.
+    DatabaseManage(crate::database::DatabaseManageRequest),
+    /// Start or remove the PgBouncer container in front of a database.
+    DatabasePooler(crate::database::DatabasePoolerRequest),
+    /// Major version upgrade: snapshot first, then dump, new volume, restore, verify.
+    DatabaseUpgrade(Box<crate::database::DatabaseUpgradeRequest>),
     /// Validate a Compose YAML file with `docker compose config` and safety policies.
     ComposeValidate(crate::deploy::ComposeValidateRequest),
     /// Validate, write `compose.yml`, and run `docker compose -p opsbox-<stack> up -d`.
@@ -464,6 +473,10 @@ impl PrivOp {
             Self::DeployDeleteService { .. } => "deploy_delete_service",
             Self::TemplateStart(_) => "template_start",
             Self::DatabaseRotate(_) => "database_rotate",
+            Self::DatabaseInspect(_) => "database_inspect",
+            Self::DatabaseManage(_) => "database_manage",
+            Self::DatabasePooler(_) => "database_pooler",
+            Self::DatabaseUpgrade(_) => "database_upgrade",
             Self::ComposeValidate(_) => "compose_validate",
             Self::ComposeDeploy(_) => "compose_deploy",
             Self::ComposeDown { .. } => "compose_down",
@@ -633,6 +646,14 @@ pub enum PrivReply {
     ComposeDeployed(crate::deploy::ComposeDeployResult),
     /// Answer to [`PrivOp::DatabaseRotate`].
     DatabaseRotated(crate::deploy::DatabaseRotateResult),
+    /// Answer to [`PrivOp::DatabaseInspect`].
+    DatabaseInspected(Box<crate::database::DatabaseInspectResult>),
+    /// Answer to [`PrivOp::DatabaseManage`].
+    DatabaseManaged(crate::database::DatabaseManageResult),
+    /// Answer to [`PrivOp::DatabasePooler`].
+    DatabasePooler(crate::database::DatabasePoolerResult),
+    /// Answer to [`PrivOp::DatabaseUpgrade`].
+    DatabaseUpgraded(Box<crate::database::DatabaseUpgradeResult>),
     /// Answer to [`PrivOp::BackupLocalInfo`].
     BackupLocalInfo(Box<crate::backup::BackupLocalInfo>),
     /// Answer to [`PrivOp::BackupRun`].

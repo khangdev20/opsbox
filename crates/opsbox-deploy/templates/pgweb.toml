@@ -1,0 +1,18 @@
+id = "pgweb"
+name = "pgweb"
+category = "tools"
+kind = "tool"
+description = "Lightweight PostgreSQL browser, already connected to one database · opens only through opsbox sign-in"
+resources = "≈ 30 MB RAM"
+image = "sosedoff/pgweb"
+versions = ["0.16.2", "latest"]
+port = 8081
+internal_by_default = false
+
+[health]
+tcp_port = 8081
+
+[backup]
+enabled_by_default = false
+cron = "0 2 * * *"
+method = "none"

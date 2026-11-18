@@ -251,6 +251,45 @@ impl Auth {
         Ok(user.is_some() && !password.is_empty() && ok)
     }
 
+    /// Re-verify an already authenticated user's current two-factor code for a sensitive
+    /// action (for example revealing a database connection string). A code is accepted once
+    /// (the same replay rule as sign-in), wrong codes count towards the sign-in lockout, and
+    /// `Ok(false)` covers unknown users, users without two-factor, and bad codes alike.
+    pub async fn verify_user_totp(
+        &self,
+        request_id: &str,
+        user_id: &str,
+        code: &str,
+        ip: &str,
+    ) -> Result<bool, AuthError> {
+        let Some(user) = self.inner.store.user_by_id(user_id)? else {
+            return Ok(false);
+        };
+        self.check_locked(&user.name, ip)?;
+        let Some(sealed) = user.totp_secret.clone().filter(|_| user.totp_enabled) else {
+            return Ok(false);
+        };
+        let step = self
+            .inner
+            .priv_client
+            .totp_verify(
+                request_id,
+                &sealed,
+                &format!("totp:{}", user.id),
+                code.trim(),
+                user.totp_last_step,
+            )
+            .await?;
+        let accepted = match step {
+            Some(step) => self.inner.store.advance_totp_step(&user.id, step)?,
+            None => false,
+        };
+        if !accepted {
+            self.record_failure(&user.name, ip, Some(&user));
+        }
+        Ok(accepted)
+    }
+
     /// Hash a password on a blocking thread. Callers validate it first.
     pub async fn hash_password(&self, password: &str) -> Result<String, AuthError> {
         let _permit = self

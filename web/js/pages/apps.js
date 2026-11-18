@@ -5,6 +5,8 @@ import { listeners } from '../store.js';
 const KIND = { active: ['ok', 'running'], building: ['build', 'building'], failed: ['fail', 'failed'], idle: ['off', 'idle'] };
 const DST = { live: ['ok', 'live'], replaced: ['off', 'replaced'], failed: ['fail', 'failed'], building: ['build', 'building'] };
 const LINK_ICON = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"><path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5l-1 1"/><path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/></svg>';
+const OWN_LOGIN = 'Its own database and login (recommended)';
+const SHARED_LOGIN = 'The shared main login';
 const varRefTarget = (val) => {
   const m = typeof val === 'string' && val.match(/^\$\{\{\s*([a-z0-9-]+)\.([A-Z_][A-Z0-9_]*)\s*\}\}$/);
   return m ? { svc: m[1], key: m[2] } : null;
@@ -240,6 +242,7 @@ export async function view({ query }) {
       <div class="row" style="margin-top:16px">
         ${isDb ? btn('Network exposure…', { act: 'setexposure' }) : ''}
         ${s.sourceKind !== 'docker_image' && !s.templateId && !s.composeStack ? btn(s.autoDeploy === false ? 'Enable auto-deploy' : 'Disable auto-deploy', { act: 'toggleAuto' }) : ''}
+        ${/^(adminer|pgweb)$/.test(s.templateId || '') && s.state === 'active' ? html`<a class="btn primary" href="/tools/${encodeURIComponent(s.id)}/" target="_blank" rel="noopener">Open ${s.templateId}</a>` : ''}
         ${btn('Delete service', { act: 'delsvc', kind: 'danger' })}
       </div>`;
     let body;
@@ -254,6 +257,7 @@ export async function view({ query }) {
         <dt class="muted">Volume / Backup</dt><dd>${s.note || 'Persistent named volume'}${s.backup ? ` · ${s.backup.enabled ? `auto ${s.backup.method} (${s.backup.cron})` : 'auto backup off'}` : ''}</dd>
       </dl>
       <div class="row" style="margin-top:14px">
+        ${/^postgres|^postgis$/.test(s.templateId || '') ? html`<a class="btn primary" href="#/databases/${encodeURIComponent(s.id)}">Manage database</a>` : ''}
         ${btn('Rotate credentials', { act: 'rotatedb', disabled: s.state !== 'active' })}
         ${staleApps.length ? btn(`Redeploy ${staleApps.length} stale app${staleApps.length === 1 ? '' : 's'}`, { act: 'redeployStale', kind: 'primary' }) : ''}
       </div>
@@ -471,12 +475,14 @@ export async function view({ query }) {
               { name: 'database', label: 'Database', options: dbs.map((d) => d.id), value: dbs[0].id },
               { name: 'scope', label: 'Variables to inject', options: ['Primary connection URL (e.g. DATABASE_URL)', 'All connection variables (URL, host, user, password, DB)'], value: 'Primary connection URL (e.g. DATABASE_URL)' },
               { name: 'asKey', label: 'Variable name override (optional)', placeholder: 'Leave empty for default (DATABASE_URL / REDIS_URL)' },
+              ...(dbs.some((x) => /^postgres|^postgis$/.test(x.templateId || '')) ? [{ name: 'login', label: 'PostgreSQL login', options: [OWN_LOGIN, SHARED_LOGIN], value: OWN_LOGIN, hint: 'Its own database and login means this app cannot read the other apps\' data. Variable choices above apply to the shared login only.' }] : []),
             ],
             submit: 'Connect',
           }, (o) => api.connectDatabase(sel, {
             database: o.database,
             includeAll: o.scope.startsWith('All'),
             asKey: o.asKey?.trim() || undefined,
+            perAppUser: o.login === SHARED_LOGIN ? false : undefined,
           }));
           if (out !== null) {
             toast(`Connected ${out.database} to ${sel}.`);

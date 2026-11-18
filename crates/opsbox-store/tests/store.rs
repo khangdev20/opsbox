@@ -34,6 +34,8 @@ fn migrates_an_empty_database() {
             "backup_jobs",
             "backup_snapshots",
             "compose_stacks",
+            "database_apps",
+            "database_settings",
             "deploy_keys",
             "deploy_logs",
             "deploys",

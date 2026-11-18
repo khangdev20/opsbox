@@ -655,7 +655,7 @@ pub fn build_run_spec(
     })
 }
 
-async fn sync_all_snapshots(
+pub(crate) async fn sync_all_snapshots(
     store: &Arc<Store>,
     priv_client: &PrivClient,
     rid: &str,
@@ -3267,6 +3267,7 @@ pub(crate) async fn restore_snapshot(
                             ref_sources: Vec::new(),
                             memory_limit_mb: None,
                             cpu_limit_millis: None,
+                            data_volume: None,
                         },
                     )
                     .await

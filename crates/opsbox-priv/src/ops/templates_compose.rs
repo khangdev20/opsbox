@@ -132,17 +132,27 @@ pub fn start_template_with(
     let env_strings: Vec<String> = opened_vars
         .into_iter()
         .filter(|v| !conn_only_keys.contains(v.key.as_str()))
+        // Per-app logins and pooler credentials live on the service for apps to reference;
+        // the database container itself must never see them.
+        .filter(|v| !v.key.starts_with(opsbox_proto::INTERNAL_VAR_PREFIX))
         .map(|v| format!("{}={}", v.key, v.value))
         .collect();
 
+    if let Some(vol) = req.data_volume.as_deref()
+        && (!valid_docker_ref(vol) || tmpl.volumes.is_empty())
+    {
+        return Err(err(PrivErrorCode::Invalid, "Invalid data volume name."));
+    }
     let volume_binds: Vec<(String, String)> = tmpl
         .volumes
         .iter()
-        .map(|v| {
-            (
-                template_volume_name(&req.service, &v.suffix),
-                v.container_path.clone(),
-            )
+        .enumerate()
+        .map(|(i, v)| {
+            let name = match (i, req.data_volume.as_deref()) {
+                (0, Some(custom)) => custom.to_owned(),
+                _ => template_volume_name(&req.service, &v.suffix),
+            };
+            (name, v.container_path.clone())
         })
         .collect();
 
@@ -893,7 +903,7 @@ pub fn rotate_database_with(
     let scrub_refs: Vec<&str> = scrub_owned.iter().map(String::as_str).collect();
 
     let exec_req = match req.template_id.as_str() {
-        "postgres" => {
+        t if opsbox_deploy::templates::is_postgres_template(t) => {
             let user = find_var("POSTGRES_USER").unwrap_or("app");
             let db = find_var("POSTGRES_DB").unwrap_or("app");
             let old_pw = find_var(secret_key).unwrap_or("");

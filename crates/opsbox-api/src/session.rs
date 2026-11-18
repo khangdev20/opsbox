@@ -440,6 +440,39 @@ role_extractor!(
     Role::Admin
 );
 
+/// A signed-in browser session (never a token) for the data-tool gateway (`/tools/...`). The
+/// proxied tools make their own requests and cannot send the panel's CSRF header, so unsafe
+/// methods are accepted only when the browser's `Origin` names this server (the session cookie
+/// is also `SameSite=Strict`).
+pub struct ToolGateway(pub Principal);
+
+impl FromRequestParts<AppState> for ToolGateway {
+    type Rejection = HttpError;
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, HttpError> {
+        let token = cookie_value(&parts.headers, SESSION_COOKIE)
+            .ok_or_else(unauthorized)?
+            .to_owned();
+        let who = {
+            let auth = state.auth.clone();
+            tokio::task::spawn_blocking(move || auth.authenticate(&token))
+                .await
+                .map_err(|_| HttpError::internal())??
+        }
+        .ok_or_else(unauthorized)?;
+        state.limits.session(&who.session_id)?;
+        if who.kind != SessionKindView::Web || !who.user.role.allows(Role::Deployer) {
+            return Err(forbidden("Your account is not allowed to do this."));
+        }
+        if !is_safe(&parts.method) && !origin_matches_host(&parts.headers) {
+            return Err(forbidden(
+                "The request could not be verified. Reload the page and try again.",
+            ));
+        }
+        audit_acceptance(parts, state, &who).await?;
+        Ok(Self(who))
+    }
+}
+
 /// A session that may only finish two-factor enrolment.
 pub struct Enrolling(pub Principal);
 

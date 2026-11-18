@@ -7,6 +7,7 @@ pub mod access;
 pub mod api;
 pub mod backup;
 pub mod cleanup;
+pub mod database;
 pub mod deploy;
 pub mod docker;
 pub mod doctor;
@@ -35,6 +36,14 @@ pub use backup::{
     valid_restic_snapshot_id,
 };
 pub use cleanup::{CleanupFreed, CleanupItem, CleanupScan};
+pub use database::{
+    ALLOWED_EXTENSIONS, APP_CONNECTION_VARS, APP_VAR_PREFIX, DatabaseAction,
+    DatabaseInspectRequest, DatabaseInspectResult, DatabaseManageRequest, DatabaseManageResult,
+    DatabasePoolerRequest, DatabasePoolerResult, DatabaseUpgradeRequest, DatabaseUpgradeResult,
+    DbDatabaseInfo, DbExtensionInfo, DbGrantInfo, DbSlowQuery, DbTableSize, DbTarget, DbUserInfo,
+    INTERNAL_VAR_PREFIX, allowed_extension, app_connect_pairs, app_pg_name, app_var_prefix,
+    pg_major, valid_pg_name,
+};
 pub use deploy::{
     ComposeDeployRequest, ComposeDeployResult, ComposeDeployedService, ComposeServiceInfo,
     ComposeValidateRequest, ComposeValidationResult, DatabaseRotateRequest, DatabaseRotateResult,

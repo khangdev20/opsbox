@@ -1,0 +1,76 @@
+id = "postgres-pgvector"
+name = "PostgreSQL + pgvector"
+category = "databases"
+kind = "db"
+description = "PostgreSQL with the pgvector extension for AI embeddings · daily backup on by default"
+resources = "≈ 100 MB RAM · 1 GB disk"
+image = "pgvector/pgvector"
+versions = ["pg17", "pg16", "pg15"]
+port = 5432
+internal_by_default = true
+cmd = ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"]
+
+[[volumes]]
+suffix = "data"
+container_path = "/var/lib/postgresql/data"
+
+[[env]]
+key = "POSTGRES_USER"
+value = "app"
+secret = false
+generate = "none"
+
+[[env]]
+key = "POSTGRES_PASSWORD"
+value = ""
+secret = true
+generate = "password"
+
+[[env]]
+key = "POSTGRES_DB"
+value = "app"
+secret = false
+generate = "none"
+
+[connection]
+primary_var = "DATABASE_URL"
+url_template = "postgresql://{{POSTGRES_USER}}:{{POSTGRES_PASSWORD}}@{{service}}:5432/{{POSTGRES_DB}}"
+
+[[connection.vars]]
+key = "DATABASE_URL"
+value = "postgresql://{{POSTGRES_USER}}:{{POSTGRES_PASSWORD}}@{{service}}:5432/{{POSTGRES_DB}}"
+secret = true
+
+[[connection.vars]]
+key = "PGHOST"
+value = "{{service}}"
+secret = false
+
+[[connection.vars]]
+key = "PGPORT"
+value = "5432"
+secret = false
+
+[[connection.vars]]
+key = "PGUSER"
+value = "{{POSTGRES_USER}}"
+secret = false
+
+[[connection.vars]]
+key = "PGPASSWORD"
+value = "{{POSTGRES_PASSWORD}}"
+secret = true
+
+[[connection.vars]]
+key = "PGDATABASE"
+value = "{{POSTGRES_DB}}"
+secret = false
+
+[health]
+exec = ["pg_isready", "-U", "app", "-d", "app"]
+tcp_port = 5432
+
+[backup]
+enabled_by_default = true
+cron = "0 2 * * *"
+method = "pg_dump"

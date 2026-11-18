@@ -122,6 +122,10 @@ pub struct TemplateStartRequest {
     pub ref_sources: Vec<DeployRefSource>,
     pub memory_limit_mb: Option<i64>,
     pub cpu_limit_millis: Option<i64>,
+    /// Named volume to use for the template's first volume slot instead of the default
+    /// `opsbox-<service>-<suffix>` (set after a major database upgrade).
+    #[serde(default)]
+    pub data_volume: Option<String>,
 }
 
 /// Privileged credential rotation request inside a running managed database container.

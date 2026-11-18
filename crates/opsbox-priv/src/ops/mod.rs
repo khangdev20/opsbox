@@ -6,6 +6,7 @@ mod access;
 pub(crate) mod backup;
 pub mod cleanup;
 pub(crate) mod cron;
+pub(crate) mod database;
 pub(crate) mod deploy;
 pub mod docker;
 mod doctor;
@@ -294,6 +295,16 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::DatabaseRotate(req) => {
             templates_compose::rotate_database_with(env, req).map(PrivReply::DatabaseRotated)
         }
+        PrivOp::DatabaseInspect(req) => database::inspect_database_with(env, req)
+            .map(|r| PrivReply::DatabaseInspected(Box::new(r))),
+        PrivOp::DatabaseManage(req) => {
+            database::manage_database_with(env, req).map(PrivReply::DatabaseManaged)
+        }
+        PrivOp::DatabasePooler(req) => {
+            database::pooler_database_with(env, req).map(PrivReply::DatabasePooler)
+        }
+        PrivOp::DatabaseUpgrade(req) => database::upgrade_database_with(env, req)
+            .map(|r| PrivReply::DatabaseUpgraded(Box::new(r))),
         PrivOp::ComposeValidate(req) => {
             templates_compose::validate_compose_with(env, req).map(PrivReply::ComposeValidated)
         }

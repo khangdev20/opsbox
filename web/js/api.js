@@ -54,6 +54,7 @@ const REAL = new Set([
   'disconnectGithub', 'getRepos', 'inspectPublicRepo', 'listDeployKeys', 'createDeployKey', 'deleteDeployKey',
   'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'buildLog', 'addVar', 'removeVar', 'removeService',
   'connectDatabase', 'disconnectDatabase', 'rotateDatabase', 'setServiceExposure',
+  'getDatabase', 'rotateAppLogin', 'removeAppLogin', 'setAppPooled', 'setExtension', 'setPooler', 'upgradeDatabase', 'revealConnectionString',
   'getDomains', 'addDomain', 'checkDns', 'issueDomainCert', 'updateDomain', 'removeDomain', 'makePrimary',
   'getTemplates', 'addTemplate', 'deployCompose',
   'getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups',
@@ -75,6 +76,7 @@ export const PAGE_USES = {
   // (Keys opsbox uses to reach other servers arrive with the desktop app; the section is hidden until then.)
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
   alerts: ['disconnectChannel', 'connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
+  databases: ['addTemplate', 'getDatabase', 'getProject', 'removeAppLogin', 'revealConnectionString', 'rotateAppLogin', 'setAppPooled', 'setExtension', 'setPooler', 'upgradeDatabase'],
   apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
   backupdest: ['getProviders', 'saveDestination', 'testDestination', 'downloadRecoveryKey'],
   backups: ['getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination', 'downloadRecoveryKey', 'testBackupRestore'],
@@ -1002,6 +1004,8 @@ export async function connectDatabase(svc, opts = {}) {
         sourceKey: opts.sourceKey || undefined,
         asKey: opts.asKey || undefined,
         includeAll: !!opts.includeAll,
+        perAppUser: opts.perAppUser,
+        pooled: !!opts.pooled,
       },
     });
   }
@@ -1078,6 +1082,102 @@ export async function setServiceExposure(svc, opts = {}) {
   s.publicPort = mode === 'public';
   audit(`set ${svc} network exposure to ${mode}`);
   return { ok: true, mode, redeployRequired: true, service: clone(s) };
+}
+
+// ---------------------------------------------------------------- databases: management (part B)
+const DBM = {};
+function dbSample(id, database) {
+  const db = S.project.services.find((x) => x.id === id && x.kind === 'db');
+  if (!db) throw new Error('Database not found.');
+  const m = DBM[id] || (DBM[id] = {
+    pooler: { enabled: false, mode: 'transaction' },
+    apps: (db.connectedApps || []).map((c) => ({ app: c.id, database: `app_${c.id.replace(/-/g, '_')}`, user: `app_${c.id.replace(/-/g, '_')}`, pooled: false, connections: 2 })),
+    ext: { vector: false, pg_stat_statements: true, pgcrypto: true, pg_trgm: false, postgis: false },
+    version: (db.branch || '16.4'),
+  });
+  const cur = database || 'app';
+  const flavorVector = db.templateId === 'postgres-pgvector', flavorGis = db.templateId === 'postgis';
+  const available = (n) => !(n === 'vector' && !flavorVector) && !(n === 'postgis' && !flavorGis);
+  const major = parseInt(String(m.version).replace(/^pg/, ''), 10);
+  return {
+    id, name: id, templateId: db.templateId || 'postgres', flavor: db.build || 'PostgreSQL', version: m.version,
+    state: db.state, running: db.state === 'active',
+    live: db.state !== 'active' ? null : {
+      serverVersion: m.version, database: cur,
+      databases: [{ name: 'app', owner: 'app', sizeBytes: 9_400_000 }, ...m.apps.map((a) => ({ name: a.database, owner: a.user, sizeBytes: 7_100_000 }))],
+      users: [{ name: 'app', canLogin: true, superuser: true, connections: 1, databases: ['app', ...m.apps.map((a) => a.database)] }, ...m.apps.map((a) => ({ name: a.user, canLogin: true, superuser: false, connections: a.connections, databases: [a.database] }))],
+      grants: m.apps.map((a) => ({ role: a.user, database: a.database, connect: true, create: true, temp: true })),
+      extensions: Object.keys(m.ext).filter(available).map((n) => ({ name: n, installed: m.ext[n], installedVersion: m.ext[n] ? '1.0' : null, defaultVersion: '1.0', comment: '' })),
+      tables: [{ schema: 'public', table: 'orders', totalBytes: 4_800_000, rowsEstimate: 18200 }, { schema: 'public', table: 'sessions', totalBytes: 1_300_000, rowsEstimate: 5400 }, { schema: 'public', table: 'users', totalBytes: 262_144, rowsEstimate: 810 }],
+      connections: { current: 3 + m.apps.length * 2, max: 100 },
+      statStatements: { loaded: true, enabled: m.ext.pg_stat_statements },
+      slowQueries: m.ext.pg_stat_statements ? [{ query: 'SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC', calls: 412, meanMs: 38.2, totalMs: 15738, rows: 4120 }, { query: 'UPDATE sessions SET seen_at = now() WHERE id = $1', calls: 9100, meanMs: 4.1, totalMs: 37310, rows: 9100 }] : [],
+    },
+    liveError: db.state === 'active' ? null : 'Start this database first. It is not running.',
+    apps: clone(m.apps),
+    pooler: { enabled: m.pooler.enabled, mode: m.pooler.mode, host: `${id}-pooler`, port: 6432 },
+    upgrades: ['17.2'].filter(() => major < 17).map((v) => ({ version: v, major: 17 })),
+    dataVolume: `opsbox-${id}-data`,
+    credentialsRotatedAt: db.credentialsRotatedAt || null,
+  };
+}
+export async function getDatabase(id, opts = {}) {
+  sample('getDatabase');
+  if (real('getDatabase')) return http(`/databases/${encodeURIComponent(id)}${opts.database ? `?database=${encodeURIComponent(opts.database)}` : ''}`);
+  await lag(200);
+  return dbSample(id, opts.database);
+}
+export async function rotateAppLogin(dbId, app) {
+  sample('rotateAppLogin');
+  if (real('rotateAppLogin')) return http(`/databases/${encodeURIComponent(dbId)}/apps/${encodeURIComponent(app)}/rotate`, { method: 'POST' });
+  await lag(400); dbSample(dbId); audit(`rotate login of ${app} on ${dbId}`);
+  return { ok: true, app, rotatedAt: now(), affectedApps: [{ id: app, name: app, needsRedeploy: true }] };
+}
+export async function removeAppLogin(dbId, app, opts = {}) {
+  sample('removeAppLogin');
+  if (real('removeAppLogin')) return http(`/databases/${encodeURIComponent(dbId)}/apps/${encodeURIComponent(app)}/remove`, { method: 'POST', body: { dropDatabase: !!opts.dropDatabase, confirm: opts.confirm } });
+  await lag(300); dbSample(dbId); DBM[dbId].apps = DBM[dbId].apps.filter((a) => a.app !== app); audit(`remove login of ${app} on ${dbId}`);
+  return { ok: true };
+}
+export async function setAppPooled(dbId, app, pooled) {
+  sample('setAppPooled');
+  if (real('setAppPooled')) return http(`/databases/${encodeURIComponent(dbId)}/apps/${encodeURIComponent(app)}/pooled`, { method: 'PUT', body: { pooled: !!pooled } });
+  await lag(200); dbSample(dbId); const a = DBM[dbId].apps.find((x) => x.app === app); if (a) a.pooled = !!pooled;
+  return { ok: true, pooled: !!pooled, needsRedeploy: true };
+}
+export async function setExtension(dbId, name, opts = {}) {
+  sample('setExtension');
+  if (real('setExtension')) return http(`/databases/${encodeURIComponent(dbId)}/extensions/${encodeURIComponent(name)}`, { method: 'PUT', body: { enabled: !!opts.enabled, database: opts.database || undefined } });
+  await lag(250); dbSample(dbId); DBM[dbId].ext[name] = !!opts.enabled; audit(`${opts.enabled ? 'enable' : 'disable'} ${name} on ${dbId}`);
+  return { ok: true };
+}
+export async function setPooler(dbId, opts = {}) {
+  sample('setPooler');
+  if (real('setPooler')) {
+    const { task } = await http(`/databases/${encodeURIComponent(dbId)}/pooler`, { method: 'PUT', body: { enabled: !!opts.enabled, mode: opts.mode || undefined } });
+    return waitTask(task, { every: 1000, max: 10 * 60 * 1000 });
+  }
+  await lag(900); dbSample(dbId); DBM[dbId].pooler = { enabled: !!opts.enabled, mode: opts.mode || 'transaction' }; audit(`${opts.enabled ? 'enable' : 'disable'} pooler on ${dbId}`);
+  return { ok: true };
+}
+export async function upgradeDatabase(dbId, opts = {}) {
+  sample('upgradeDatabase');
+  if (real('upgradeDatabase')) {
+    const { task } = await http(`/databases/${encodeURIComponent(dbId)}/upgrade`, { method: 'POST', body: { version: opts.version, confirm: !!opts.confirm } });
+    return waitTask(task, { every: 2000, max: 4 * 60 * 60 * 1000 });
+  }
+  if (!opts.confirm) { const err = new Error('The database will be stopped for a few minutes. Confirm to continue.'); err.code = 'confirmation_required'; throw err; }
+  await lag(1800); dbSample(dbId); DBM[dbId].version = opts.version; audit(`upgrade ${dbId} to ${opts.version}`);
+  return { ok: true, result: { version: opts.version, oldVolume: `opsbox-${dbId}-data`, databases: 2 }, log: ['Safety backup saved.', 'Restored and checked 2 databases.'] };
+}
+export async function revealConnectionString(dbId, opts = {}) {
+  sample('revealConnectionString');
+  if (real('revealConnectionString')) return http(`/databases/${encodeURIComponent(dbId)}/connection-string`, { method: 'POST', body: { code: opts.code, app: opts.app || undefined, pooled: !!opts.pooled } });
+  await lag(250);
+  if (String(opts.code).trim() !== '123456') throw new Error('That code was not accepted. Codes work once, so wait for the next one and try again.');
+  audit(`reveal connection string of ${dbId}`);
+  const who = opts.app ? `app_${opts.app.replace(/-/g, '_')}` : 'app';
+  return { connectionString: `postgresql://${who}:s4mpleP4ssw0rd@${dbId}:5432/${who}`, login: opts.app || 'administrator', note: 'This name only works from other containers in the same project. Your database is not reachable from the internet.' };
 }
 
 // ---------------------------------------------------------------- backups
@@ -1321,7 +1421,9 @@ export async function setQuiet(q) { if (real('setQuiet')) return http('/alerts/q
 // ---------------------------------------------------------------- templates
 export const TEMPLATES = {
   databases: [
-    { id: 'postgres', name: 'PostgreSQL', desc: 'Relational database · daily backup on by default', res: '≈ 100 MB RAM · 1 GB disk', versions: ['16.4', '16.3', '15.8'], port: 5432, internalByDefault: true, backup: { enabledByDefault: true } },
+    { id: 'postgres', name: 'PostgreSQL', desc: 'Relational database · daily backup on by default', res: '≈ 100 MB RAM · 1 GB disk', versions: ['17.2', '16.4', '16.3', '15.8'], port: 5432, internalByDefault: true, backup: { enabledByDefault: true } },
+    { id: 'postgres-pgvector', name: 'PostgreSQL + pgvector', desc: 'PostgreSQL with the pgvector extension for AI embeddings · daily backup on by default', res: '≈ 100 MB RAM · 1 GB disk', versions: ['pg17', 'pg16', 'pg15'], port: 5432, internalByDefault: true, backup: { enabledByDefault: true } },
+    { id: 'postgis', name: 'PostgreSQL + PostGIS', desc: 'PostgreSQL with PostGIS for maps and locations · daily backup on by default', res: '≈ 200 MB RAM · 2 GB disk', versions: ['17-3.5', '16-3.4', '15-3.4'], port: 5432, internalByDefault: true, backup: { enabledByDefault: true } },
     { id: 'mysql', name: 'MySQL', desc: 'Relational database', res: '≈ 400 MB RAM · 1 GB disk', versions: ['8.4', '8.0'], port: 3306, internalByDefault: true, backup: { enabledByDefault: true } },
     { id: 'mariadb', name: 'MariaDB', desc: 'MySQL-compatible database', res: '≈ 150 MB RAM · 1 GB disk', versions: ['11.4'], port: 3306, internalByDefault: true, backup: { enabledByDefault: true } },
     { id: 'redis', name: 'Redis', desc: 'Cache and queues', res: '≈ 20 MB RAM', versions: ['7.4'], port: 6379, internalByDefault: true, backup: { enabledByDefault: true } },
@@ -1333,6 +1435,8 @@ export const TEMPLATES = {
     { id: 'umami', name: 'Umami', desc: 'Privacy-friendly analytics (needs PostgreSQL)', res: '≈ 150 MB RAM', versions: ['postgresql-latest', 'latest'], port: 3000, internalByDefault: true, requiresDatabase: true, backup: { enabledByDefault: false } },
     { id: 'n8n', name: 'n8n', desc: 'Workflow automation', res: '≈ 250 MB RAM', versions: ['latest'], port: 5678, internalByDefault: true, backup: { enabledByDefault: false } },
     { id: 'grafana', name: 'Grafana', desc: 'Dashboards for your own metrics', res: '≈ 200 MB RAM', versions: ['11', 'latest'], port: 3000, internalByDefault: true, backup: { enabledByDefault: false } },
+    { id: 'adminer', name: 'Adminer', desc: 'Browse and edit your databases in the browser · opens only through opsbox sign-in', res: '≈ 30 MB RAM', versions: ['4.17.1', 'latest'], port: 8080, internalByDefault: false, backup: { enabledByDefault: false } },
+    { id: 'pgweb', name: 'pgweb', desc: 'Lightweight PostgreSQL browser, already connected to one database · opens only through opsbox sign-in', res: '≈ 30 MB RAM', versions: ['0.16.2', 'latest'], port: 8081, internalByDefault: false, requiresDatabase: true, backup: { enabledByDefault: false } },
   ],
 };
 export async function getTemplates() {
@@ -1366,9 +1470,9 @@ export async function addTemplate(id, cfg) {
   if (!/^[a-z][a-z0-9-]{1,30}$/.test(name)) throw new Error('Name: lowercase letters, numbers and dashes, starting with a letter.');
   if (S.project.services.some((x) => x.id === name)) throw new Error(`A service named "${name}" already exists.`);
   const idx = S.project.services.length;
-  S.project.services.push({ id: name, kind: t.id === 'minio' || t.id === 'kuma' || t.id === 'umami' || t.id === 'n8n' || t.id === 'grafana' ? 'tool' : 'db', state: 'active', repo: `${t.name} ${cfg.version || t.versions[0]} · volume ${cfg.disk || '1 GB'}`, templateId: t.id, port: t.port, internalOnly: cfg.internalOnly !== false, publicPort: !!cfg.publicPort, networkMode: cfg.publicPort ? 'public' : (cfg.internalOnly !== false ? 'internal' : 'loopback'), connectedApps: [], domain: '', x: 370 * (idx % 3), y: 10 + 176 * Math.floor(idx / 3), note: cfg.backup ? 'backup daily 02:00' : 'no backup', deploys: [], vars: [] });
+  S.project.services.push({ id: name, kind: ['minio', 'kuma', 'umami', 'n8n', 'grafana', 'adminer', 'pgweb'].includes(t.id) ? 'tool' : 'db', state: 'active', repo: `${t.name} ${cfg.version || t.versions[0]} · volume ${cfg.disk || '1 GB'}`, templateId: t.id, port: t.port, internalOnly: cfg.internalOnly !== false, publicPort: !!cfg.publicPort, networkMode: cfg.publicPort ? 'public' : (cfg.internalOnly !== false ? 'internal' : 'loopback'), connectedApps: [], domain: '', x: 370 * (idx % 3), y: 10 + 176 * Math.floor(idx / 3), note: cfg.backup ? 'backup daily 02:00' : 'no backup', deploys: [], vars: [] });
   audit(`add ${t.name} as ${name}`);
-  return { id: name, connectionVar: 'DATABASE_URL', connectionUrl: t.id === 'postgres' ? `postgresql://app:demo@${name}:5432/app` : undefined };
+  return { id: name, connectionVar: 'DATABASE_URL', connectionUrl: t.id.startsWith('postgres') || t.id === 'postgis' ? `postgresql://app:demo@${name}:5432/app` : undefined };
 }
 export async function deployCompose(yamlOrOpts, maybeOpts = {}, confirmed = false) {
   sample('deployCompose');

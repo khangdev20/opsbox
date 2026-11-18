@@ -9,6 +9,13 @@ use crate::DeployError;
 
 const RAW_TEMPLATES: &[(&str, &str)] = &[
     ("postgres", include_str!("../templates/postgres.toml")),
+    (
+        "postgres-pgvector",
+        include_str!("../templates/postgres-pgvector.toml"),
+    ),
+    ("postgis", include_str!("../templates/postgis.toml")),
+    ("adminer", include_str!("../templates/adminer.toml")),
+    ("pgweb", include_str!("../templates/pgweb.toml")),
     ("mysql", include_str!("../templates/mysql.toml")),
     ("mariadb", include_str!("../templates/mariadb.toml")),
     ("redis", include_str!("../templates/redis.toml")),
@@ -284,11 +291,17 @@ pub fn template_volume_name(instance_name: &str, suffix: &str) -> String {
     format!("opsbox-{instance_name}-{suffix}")
 }
 
+/// Templates that run a PostgreSQL server (plain, pgvector and PostGIS flavours). Only these
+/// get per-app logins, extensions, a pooler and major upgrades.
+pub fn is_postgres_template(template_id: &str) -> bool {
+    matches!(template_id, "postgres" | "postgres-pgvector" | "postgis")
+}
+
 /// Primary secret environment key rotated on a database template (`postgres`, `mysql`,
 /// `mariadb`, `redis`, `mongo`). Returns `None` for non-database templates.
 pub fn rotated_secret_key(template_id: &str) -> Option<&'static str> {
     match template_id {
-        "postgres" => Some("POSTGRES_PASSWORD"),
+        t if is_postgres_template(t) => Some("POSTGRES_PASSWORD"),
         "mysql" => Some("MYSQL_PASSWORD"),
         "mariadb" => Some("MARIADB_PASSWORD"),
         "redis" => Some("REDIS_PASSWORD"),
@@ -377,12 +390,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loads_all_ten_embedded_toml_templates() {
+    fn loads_all_embedded_toml_templates() {
         let all = catalog();
-        assert_eq!(all.len(), 10);
+        assert_eq!(all.len(), 14);
         for id in [
-            "postgres", "mysql", "mariadb", "redis", "mongo", "minio", "kuma", "umami", "n8n",
+            "postgres",
+            "postgres-pgvector",
+            "postgis",
+            "mysql",
+            "mariadb",
+            "redis",
+            "mongo",
+            "minio",
+            "kuma",
+            "umami",
+            "n8n",
             "grafana",
+            "adminer",
+            "pgweb",
         ] {
             assert!(get_template(id).is_some(), "missing template {id}");
         }
@@ -426,7 +451,15 @@ mod tests {
 
     #[test]
     fn computes_rotated_database_credentials_for_all_db_templates() {
-        for id in ["postgres", "mysql", "mariadb", "redis", "mongo"] {
+        for id in [
+            "postgres",
+            "postgres-pgvector",
+            "postgis",
+            "mysql",
+            "mariadb",
+            "redis",
+            "mongo",
+        ] {
             let tmpl = get_template(id).unwrap();
             let generated = generate_instance_env(tmpl, "db-main", &[]).unwrap();
             let cur: Vec<(String, String, bool)> = generated

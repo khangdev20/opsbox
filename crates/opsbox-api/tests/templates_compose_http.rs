@@ -595,7 +595,7 @@ exit 1
         .unwrap();
     let app = router(state);
 
-    // 1. Catalog returns all 10 built-in templates.
+    // 1. Catalog returns all 14 built-in templates (databases incl. pgvector/PostGIS flavours, plus data tools).
     let (st, cat) = send(
         &app,
         Method::GET,
@@ -607,8 +607,8 @@ exit 1
     )
     .await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(cat["databases"].as_array().unwrap().len(), 5);
-    assert_eq!(cat["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(cat["databases"].as_array().unwrap().len(), 7);
+    assert_eq!(cat["tools"].as_array().unwrap().len(), 7);
 
     // 2. Viewer and non-admin bearer tokens cannot instantiate templates or compose.
     let (st, _) = send(

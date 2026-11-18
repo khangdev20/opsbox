@@ -8,7 +8,9 @@ use opsbox_proto::{
     AccessState, BackupCheckRequest, BackupCheckResult, BackupForgetRequest, BackupForgetResult,
     BackupLocalInfo, BackupRunResult, BackupRunSpec, BackupSnapshotsRequest, CleanupFreed,
     CleanupScan, CommandOutcome, ComposeDeployRequest, ComposeDeployResult, ComposeValidateRequest,
-    ComposeValidationResult, DatabaseRotateRequest, DatabaseRotateResult, DeployBuildFrame,
+    ComposeValidationResult, DatabaseInspectRequest, DatabaseInspectResult, DatabaseManageRequest,
+    DatabaseManageResult, DatabasePoolerRequest, DatabasePoolerResult, DatabaseRotateRequest,
+    DatabaseRotateResult, DatabaseUpgradeRequest, DatabaseUpgradeResult, DeployBuildFrame,
     DeployBuildRequest, DeployPullRequest, DeployStartRequest, DeployStartResult, DirListing,
     DockerContainer, DockerContainerAction, DockerContainerInspect, DockerContainerStat,
     DockerExecOutput, DockerExecRequest, DockerImage, DockerLogFrame, DockerLogLine, DockerNetwork,
@@ -1438,6 +1440,76 @@ impl PrivClient {
                 PrivReply::DatabaseRotated(v) => Ok(v),
                 o => Err(o),
             })
+            .await
+    }
+
+    pub async fn database_inspect(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DatabaseInspectRequest,
+    ) -> Result<DatabaseInspectResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(60))
+            .expect(
+                rid,
+                Some(actor),
+                PrivOp::DatabaseInspect(req),
+                |r| match r {
+                    PrivReply::DatabaseInspected(v) => Ok(*v),
+                    o => Err(o),
+                },
+            )
+            .await
+    }
+
+    pub async fn database_manage(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DatabaseManageRequest,
+    ) -> Result<DatabaseManageResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(120))
+            .expect(rid, Some(actor), PrivOp::DatabaseManage(req), |r| match r {
+                PrivReply::DatabaseManaged(v) => Ok(v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn database_pooler(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DatabasePoolerRequest,
+    ) -> Result<DatabasePoolerResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(300))
+            .expect(rid, Some(actor), PrivOp::DatabasePooler(req), |r| match r {
+                PrivReply::DatabasePooler(v) => Ok(v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn database_upgrade(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DatabaseUpgradeRequest,
+    ) -> Result<DatabaseUpgradeResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(4 * 3600))
+            .expect(
+                rid,
+                Some(actor),
+                PrivOp::DatabaseUpgrade(Box::new(req)),
+                |r| match r {
+                    PrivReply::DatabaseUpgraded(v) => Ok(*v),
+                    o => Err(o),
+                },
+            )
             .await
     }
 

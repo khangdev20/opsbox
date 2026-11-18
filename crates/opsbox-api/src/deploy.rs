@@ -18,7 +18,7 @@ use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use opsbox_auth::Principal;
 use opsbox_deploy::refs::{VarRef, canonical_ref_expr, extract_var_refs, parse_pure_var_ref};
-use opsbox_deploy::templates::get_template;
+use opsbox_deploy::templates::{get_template, is_postgres_template};
 use opsbox_deploy::{looks_secret_var_key, normalize_repo_source, validate_public_repo_url};
 use opsbox_proto::{
     DeployBuildFrame, DeployBuildRequest, DeployEnvSpec, DeployGitSource, DeployPullRequest,
@@ -525,6 +525,10 @@ pub(crate) async fn resolve_service_view(
 
     let mut rendered_vars = Vec::with_capacity(vars.len());
     for v in vars {
+        // Per-app logins and the pooler login are managed on the Database page.
+        if v.key.starts_with(opsbox_proto::INTERNAL_VAR_PREFIX) {
+            continue;
+        }
         if let Some(ref expr) = v.ref_expr {
             // Never open or resolve reference vars in `serve` — show reference syntax only.
             rendered_vars.push(json!([v.key, expr, v.is_secret, true]));
@@ -1738,6 +1742,12 @@ pub(crate) struct ConnectDatabaseBody {
     as_key: Option<String>,
     #[serde(default, alias = "include_all")]
     include_all: bool,
+    /// PostgreSQL only: give the app its own database and login (default on).
+    #[serde(default, alias = "per_app_user", alias = "ownLogin")]
+    per_app_user: Option<bool>,
+    /// Connect through the connection pooler (needs the pooler turned on).
+    #[serde(default)]
+    pooled: bool,
 }
 
 /// `POST /api/v1/services/{id}/databases`: insert `${{ db.KEY }}` reference variable(s)
@@ -1794,6 +1804,38 @@ pub(crate) async fn connect_database(
         ));
     }
 
+    // PostgreSQL: one database and one least-privilege login per app, unless the caller asks
+    // for the shared administrator login or names a specific variable.
+    let own_login = db_svc
+        .template_id
+        .as_deref()
+        .is_some_and(is_postgres_template)
+        && body.per_app_user.unwrap_or(true)
+        && body.source_key.is_none()
+        && body.as_key.is_none();
+    let mut own_pairs: Option<Vec<(String, String)>> = None;
+    if own_login {
+        if body.pooled
+            && !state
+                .store
+                .get_database_settings(&db_svc.id)
+                .map_err(|_| HttpError::internal())?
+                .pooler_enabled
+        {
+            return Err(HttpError::new(
+                ErrorCode::Conflict,
+                "Turn on the connection pooler first.",
+            ));
+        }
+        let rec =
+            crate::databases::ensure_app_login(&state, &rid, &who.user.name, &db_svc, &svc).await?;
+        state
+            .store
+            .set_database_app_pooled(&db_svc.id, &svc.id, body.pooled, now_secs())
+            .map_err(|_| HttpError::internal())?;
+        own_pairs = Some(crate::databases::app_link_pairs(&rec, body.pooled));
+    }
+
     let db_vars = state
         .store
         .list_service_vars(&db_svc.id)
@@ -1818,10 +1860,9 @@ pub(crate) async fn connect_database(
             )
         })?;
 
-    let pairs: Vec<(String, String)> = if body.source_key.is_some()
-        || body.as_key.is_some()
-        || !body.include_all
-    {
+    let pairs: Vec<(String, String)> = if let Some(p) = own_pairs {
+        p
+    } else if body.source_key.is_some() || body.as_key.is_some() || !body.include_all {
         let src_key = body
             .source_key
             .as_deref()
@@ -2496,6 +2537,11 @@ async fn run_deploy_pipeline(
                     ref_sources,
                     memory_limit_mb: svc.memory_limit_mb,
                     cpu_limit_millis: svc.cpu_limit_millis,
+                    data_volume: state
+                        .store
+                        .get_database_settings(&svc.id)
+                        .ok()
+                        .and_then(|d| d.data_volume),
                 },
             )
             .await

@@ -1,20 +1,26 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/15-alerts.md` (Alerts, Spec 7.13)
+Last completed prompt: `docs/prompts/archive/16-databases-manage.md` (Databases part B, management; tag `v0.1.0-alpha.15`)
 
 ## What works
-- `opsbox-alerts`: persistent per-rule/target ok → pending → firing → resolved state, duration thresholds, warning-to-critical escalation, dedupe, four-hour repeats, per-channel retries/receipts, per-incident timed silences and UTC quiet hours (critical bypasses quiet hours). History/cleared-target retention is bounded; unknown sources do not falsely resolve incidents.
-- Thirteen enabled defaults cover disk, CPU, memory, failed units, stopped/restarting containers, failed deploys, failed/checksum/restore-test backups, missed schedules, expiring/failed certificates, waiting security updates, repeated failed panel sign-ins, emergency SSH and unhealthy metrics/proxy. Evaluates every 15 seconds using existing priv-backed sources and SQLite events.
-- SMTP (`lettre`, verified rustls TLS/STARTTLS), Slack, Telegram and HMAC-signed HTTPS webhooks. All channel configuration is sealed/opened via `PrivOp::SecretSeal/SecretOpen` under `alerts:channel:<id>`; no alert code reads host files or `master.key`. Redirects refused, timeouts bounded, provider errors redacted; channel tests/disconnects require an interactive admin.
-- Real Alerts UI forms, delivery tests/status, rule switches, incident silences and quiet hours; Overview links to the matching incident with its fix link. All Alerts API functions are in `REAL`, removing sample-data badges. API payloads and webhook verification are documented in `docs/API.md`.
-- Required fmt, API generator check, locked workspace clippy/tests and release build pass. Additional UI contract, credential/RBAC/CSRF/context-isolation and real TLS/HMAC receiver tests pass; licenses pass with cargo-deny 0.21.0 (including new 0BSD allowance), and native-tls/OpenSSL are explicitly banned.
-- Ubuntu arm64 native release and full static `aarch64-unknown-linux-musl` release builds pass. Disposable 64 MiB ext4 disk reached 89%, triggered firing, then resolved after clearing; anonymous alerts access refused. Existing service user cannot read `/etc/opsbox/master.key`. TLS-aware isolated idle probe: 13.21 MiB RSS (<40 MiB).
+- PostgreSQL management lives in four typed `priv` ops (inspect, manage, pooler, upgrade) that run `psql`/`pg_dumpall` in the container; `serve` only stores sealed values. No new crates, `Cargo.lock` unchanged.
+- One database + one least-privilege login per connected app (default on): `app_<app>`, `CONNECT` revoked from `PUBLIC` everywhere. Checked on real PostgreSQL 15/17: app A cannot connect to app B's database, the admin database or `postgres`.
+- Database page (`#/databases/<id>`): apps and logins (rotate, remove with typed confirmation, direct/pooled), databases, users, grants, extensions (pgvector, PostGIS, pg_stat_statements, pgcrypto, uuid-ossp, pg_trgm, citext, hstore), biggest tables, connections, slow queries, PgBouncer on/off, version upgrade, data tools.
+- Catalog: `postgres-pgvector`, `postgis`, `pgweb`, `adminer`; `postgres` gains 17.2 and preloads `pg_stat_statements`.
+- Major upgrade: `priv` takes the backup snapshot first (no snapshot, no upgrade), dumps, starts the new major on a new volume, restores, compares databases/roles/table counts, rolls back on any failure; the old volume is kept.
+- Connection strings need a fresh single-use 2FA code (wrong code: 403, counts toward lockout), are audited without the secret and sent `no-store`.
+- Data tools open only at `/tools/<service>/` through the signed-in panel session (panel cookies never forwarded, tool cookies scoped, `Origin` checked on writes).
+- `web/js/api.js` `REAL` map and `PAGE_USES` updated; apps.js has "Manage database", the own-login choice and "Open tool".
+- fmt, `generate-api.py --check`, locked clippy `-D warnings`, locked workspace tests and locked release build pass. New tests: priv scripted-Docker (inspect, provision, rotate, refusals, pooler, upgrade validation), API end-to-end (per-app connect, 2FA reveal + replay + audit, RBAC), gateway, store.
 
 ## Partial / Found, not fixed
-- Live SMTP/Slack/Telegram/provider receipt needs administrator channel credentials; local trusted-TLS webhook receipt/signature, HTTP failure and redirect refusal are automated. x86_64 musl remains for CI.
-- Existing CI tooling: `tools/check-idle-memory.py` probes HTTP although serve always uses HTTPS; an isolated temporary TLS-aware copy measured memory. Pinned cargo-deny 0.18.2 cannot parse current CVSS 4 advisories, and bans rejects existing unversioned internal path dependencies. Kept outside this prompt's scope; current-tool license checks pass.
-- Earlier real R2/MinIO/SFTP and Docker DB restore verification remains pending from prompt 14.
+- Not done: the prompt gained a line after work began ("Capacity: every new or resized database and any memory-adding extension goes through `capacity::admit` from prompt 15b"). 15b is not built (no `capacity` module), so database create/resize, pooler and extension flows do not check capacity yet. Wire `capacity::admit` in when 15b lands.
+- Not run against real Docker/Linux: provisioning/inspect/pooler/upgrade container steps, the PgBouncer image, pgvector/PostGIS image tags (PostGIS arm64 support unconfirmed), and the pgweb path-prefix behaviour. SQL itself was run on real PostgreSQL 15 and 17.
+- The upgrade's backup step needs restic and a destination, so it is untested end to end here; no disk-space pre-check before the dump.
+- Restoring a pgvector/PostGIS backup creates a plain `postgres` instance (restore infers the kind only). Extensions are per-database; a new app database does not inherit them.
+- `cargo-deny` is not installed on this Mac: no new crates or licenses were added, so `deny.toml` is unchanged; run it in CI. Earlier notes still apply (pinned cargo-deny 0.18.2 vs CVSS 4, `tools/check-idle-memory.py` probes HTTP).
+- Earlier real R2/MinIO/SFTP, Docker DB restore and live alert-channel verification are still pending (prompts 14, 15).
 
 ## Next
-- Reinstall in `opsbox-vm`, configure one channel, send a test, then confirm real firing/recovery delivery. `tools/check-alerts-vm.py --binary <binary>` safely tests a disposable disk without filling `/`.
-- Next implementation prompt: `docs/prompts/16-databases-manage.md`; separately staged prompt 03c remains independent.
+- Verify in `opsbox-vm` (steps below), then run `docs/prompts/17-alpha-release.md`. Prompt 03c is still independent and staged separately.
+- VM checks: add `PostgreSQL`, add two apps, connect both, try the cross-app read (must fail), open Adminer from the Database page, take an upgrade from 16.x to 17.2 with a configured backup destination.

@@ -5,9 +5,10 @@ kind = "db"
 description = "Relational database · daily backup on by default"
 resources = "≈ 100 MB RAM · 1 GB disk"
 image = "postgres"
-versions = ["16.4", "16.3", "15.8"]
+versions = ["17.2", "16.4", "16.3", "15.8"]
 port = 5432
 internal_by_default = true
+cmd = ["postgres", "-c", "shared_preload_libraries=pg_stat_statements", "-c", "pg_stat_statements.track=all"]
 
 [[volumes]]
 suffix = "data"

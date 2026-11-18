@@ -1,0 +1,18 @@
+id = "adminer"
+name = "Adminer"
+category = "tools"
+kind = "tool"
+description = "Browse and edit your databases in the browser · opens only through opsbox sign-in"
+resources = "≈ 30 MB RAM"
+image = "adminer"
+versions = ["4.17.1", "latest"]
+port = 8080
+internal_by_default = false
+
+[health]
+tcp_port = 8080
+
+[backup]
+enabled_by_default = false
+cron = "0 2 * * *"
+method = "none"

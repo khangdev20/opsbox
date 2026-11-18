@@ -57,7 +57,7 @@ fn serialize_template(t: &TemplateSpec) -> Value {
         "port": t.port,
         "extraPorts": t.extra_ports,
         "internalByDefault": t.internal_by_default,
-        "requiresDatabase": t.id == "umami",
+        "requiresDatabase": matches!(t.id.as_str(), "umami" | "pgweb"),
         "backup": {
             "enabledByDefault": t.backup.enabled_by_default,
             "cron": t.backup.cron,
@@ -202,7 +202,7 @@ pub(crate) async fn create_template_instance(
         overrides.retain(|(k, _, _)| k != "DATABASE_URL");
         overrides.push(("DATABASE_URL".to_owned(), db_url.to_owned(), true));
     }
-    if tmpl.id == "umami" {
+    if matches!(tmpl.id.as_str(), "umami" | "pgweb") {
         let db_url = overrides
             .iter()
             .find(|(k, _, _)| k == "DATABASE_URL")
@@ -214,7 +214,10 @@ pub(crate) async fn create_template_instance(
         {
             return Err(invalid(
                 "databaseUrl",
-                "Umami needs a PostgreSQL DATABASE_URL connection string or service reference (${{ db.DATABASE_URL }}).",
+                format!(
+                    "{} needs a PostgreSQL DATABASE_URL connection string or service reference (${{{{ db.DATABASE_URL }}}}).",
+                    tmpl.name
+                ),
             ));
         }
     }

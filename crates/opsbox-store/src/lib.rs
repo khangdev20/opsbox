@@ -6,6 +6,7 @@
 mod accounts;
 mod audit;
 mod backup;
+mod databases;
 mod deploy;
 mod github;
 mod invites;
@@ -29,6 +30,7 @@ pub use backup::{
     BackupDestinationRecord, BackupJobRecord, BackupSnapshotRecord, LOCAL_DESTINATION_ID,
     NewBackupJob, OPSBOX_SELF_JOB_ID, SyncBackupSnapshot, UpdateBackupJob,
 };
+pub use databases::{DatabaseAppRecord, DatabaseSettings};
 pub use deploy::{
     ActiveServiceRoute, ComposeStackRecord, DeployLogRow, DeployRecord, DeployStatus,
     DeployTrigger, EnvironmentRecord, NewService, NewServiceDomain, ProjectRecord,

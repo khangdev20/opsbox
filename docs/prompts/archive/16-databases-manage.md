@@ -11,3 +11,5 @@ Do:
 - Data tools: one-click pgweb or Adminer template behind opsbox auth. (Built-in SQL console is a later prompt.)
 
 Verify: two apps on one Postgres each get their own user and cannot read each other's tables.
+
+Capacity: every new or resized database and any extension that adds memory use goes through `capacity::admit` from prompt 15b; show the fit in the create and resize dialogs.
