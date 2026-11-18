@@ -20,8 +20,8 @@ pub use client::{
     PtySession, PtyWriter,
 };
 pub use config::{
-    DEFAULT_APPS_DIR, DEFAULT_MASTER_KEY_PATH, DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR,
-    DEFAULT_XFER_DIR, PrivConfig, resolve_users,
+    DEFAULT_APPS_DIR, DEFAULT_BACKUP_CACHE_DIR, DEFAULT_BACKUP_DIR, DEFAULT_MASTER_KEY_PATH,
+    DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR, PrivConfig, resolve_users,
 };
 pub use io::PtyIoError;
 pub use ops::{base32_encode, cleanup, code_at, verify_at, web as web_ops};

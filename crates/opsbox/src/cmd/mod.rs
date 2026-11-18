@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod backup;
 pub mod cleanup;
 pub mod doctor;
 pub mod install;

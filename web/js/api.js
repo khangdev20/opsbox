@@ -55,6 +55,7 @@ const REAL = new Set([
   'connectDatabase', 'disconnectDatabase', 'rotateDatabase', 'setServiceExposure',
   'getDomains', 'addDomain', 'checkDns', 'issueDomainCert', 'updateDomain', 'removeDomain', 'makePrimary',
   'getTemplates', 'addTemplate', 'deployCompose',
+  'getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -73,7 +74,7 @@ export const PAGE_USES = {
   alerts: ['connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
   apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
   backupdest: ['PROVIDERS', 'saveDestination', 'testDestination'],
-  backups: ['getBackups', 'restoreBackup', 'runBackup'],
+  backups: ['getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
   configure: ['createService'],
   containers: ['containerAction', 'containerLogs', 'dockerStatus', 'inspectContainer', 'installDocker', 'listContainers', 'listDocker'],
@@ -1094,8 +1095,116 @@ const BK = {
     { id: 'k4', at: 'Sun 02:00', what: 'postgres-15 (weekly)', size: 1.1, where: 'S3', check: 'checksum ok' },
   ],
 };
-export async function getBackups() { sample('getBackups'); await lag(); return clone(BK); }
-export async function runBackup(id) { sample('runBackup'); await lag(900); audit(`backup ${id || 'all jobs'}`); const j = BK.jobs.find((x) => x.id === id); if (j) j.last = 'ok · just now'; return { ok: true }; }
+export async function getBackups() { sample('getBackups');
+  if (real('getBackups')) {
+    const res = await http('/backups');
+    return {
+      jobs: (res.jobs || []).map((j) => ({
+        id: j.id,
+        name: j.name,
+        kind: j.kind,
+        kindLabel: j.kindLabel || j.kind,
+        what: j.name === j.what ? j.name : `${j.name} (${j.what})`,
+        rawWhat: j.what,
+        whatDetail: j.whatDetail || {},
+        note: `${j.kindLabel || j.kind} · ${j.method} · ${j.what}`,
+        method: j.method,
+        cron: j.cron,
+        cronHuman: j.cronHuman || j.cron,
+        retainDaily: j.retainDaily,
+        retainWeekly: j.retainWeekly,
+        keep: j.retention || `${j.retainDaily} daily · ${j.retainWeekly} weekly`,
+        dest: j.destinationId === 'local' ? 'local' : (j.destination || j.destinationId),
+        destinationId: j.destinationId,
+        enabled: j.enabled !== false,
+        last: j.last || 'never',
+        lastError: j.lastError || null,
+        state: j.lastStatus === 'ok' ? 'ok' : j.lastStatus === 'failed' ? 'fail' : 'warn',
+      })),
+      items: (res.snapshots || []).map((s) => ({
+        id: s.id,
+        resticId: s.resticId,
+        shortId: s.shortId,
+        at: s.when || when(s.takenAt),
+        what: s.what,
+        size: s.sizeBytes,
+        sizeBytes: s.sizeBytes,
+        where: s.where || s.destinationId || 'local',
+        check: s.checkLabel || s.check,
+        checkState: s.check,
+      })),
+      dests: (res.destinations || []).map((d) => ({
+        id: d.id,
+        name: d.name,
+        type: d.provider,
+        loc: d.detail || '/var/backups/opsbox',
+        ok: d.status === 'ok' && !res.sameDisk,
+        status: d.status,
+      })),
+      localDisk: res.localDisk || null,
+      sameDisk: !!res.sameDisk,
+      remoteDestinationsReady: !!res.remoteDestinationsReady,
+      restoreReady: !!res.restoreReady,
+    };
+  }
+  await lag();
+  return {
+    ...clone(BK),
+    sameDisk: true,
+    remoteDestinationsReady: false,
+    restoreReady: false,
+    localDisk: {
+      path: '/var/backups/opsbox',
+      sameDisk: true,
+      sameDiskPaths: ['/var/lib/opsbox/opsbox.db'],
+      resticInstalled: true,
+    },
+  };
+}
+export async function runBackup(id) { sample('runBackup');
+  if (real('runBackup')) {
+    const path = id ? `/backups/jobs/${encodeURIComponent(id)}/run` : '/backups/run';
+    const { task } = await http(path, { method: 'POST', body: {} });
+    return waitTask(task, { every: 500 });
+  }
+  await lag(900); audit(`backup ${id || 'all jobs'}`); const j = BK.jobs.find((x) => x.id === id); if (j) j.last = 'ok · just now'; return { ok: true };
+}
+export async function createBackupJob(data) { sample('createBackupJob');
+  if (real('createBackupJob')) return http('/backups/jobs', { method: 'POST', body: data });
+  await lag(300);
+  const id = 'j' + Date.now();
+  BK.jobs.push({ id, what: data.name, note: (data.paths || data.volumes || []).join(', '), cron: data.cron, keep: `${data.retainDaily || 14} daily · ${data.retainWeekly || 8} weekly`, dest: 'Local disk', state: 'warn', last: 'never' });
+  return { job: { id } };
+}
+export async function updateBackupJob(id, data) { sample('updateBackupJob');
+  if (real('updateBackupJob')) return http(`/backups/jobs/${encodeURIComponent(id)}`, { method: 'PATCH', body: data });
+  await lag(250);
+  const j = BK.jobs.find((x) => x.id === id);
+  if (j && data.cron) j.cron = data.cron;
+  return { job: j };
+}
+export async function deleteBackupJob(id) { sample('deleteBackupJob');
+  if (real('deleteBackupJob')) return http(`/backups/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await lag(250);
+  BK.jobs = BK.jobs.filter((x) => x.id !== id);
+  return { ok: true };
+}
+export async function pruneBackups(opts = {}) { sample('pruneBackups');
+  if (real('pruneBackups')) {
+    const { task } = await http('/backups/prune', { method: 'POST', body: opts });
+    return waitTask(task, { every: 500 });
+  }
+  await lag(600);
+  return { ok: true, result: { removed: 0, kept: BK.items.length } };
+}
+export async function checkBackups(opts = {}) { sample('checkBackups');
+  if (real('checkBackups')) {
+    const { task } = await http('/backups/check', { method: 'POST', body: opts });
+    return waitTask(task, { every: 500 });
+  }
+  await lag(800);
+  return { ok: true, result: { ok: true, summary: 'Repository checksum verification passed.' } };
+}
 export async function restoreBackup(id, mode) { sample('restoreBackup');
   await lag(1200); const k = BK.items.find((x) => x.id === id); if (!k) throw new Error('No such backup');
   if (mode !== 'copy' && mode !== 'replace') throw new Error('Choose how to restore.'); audit(`restore ${k.what} (${k.at}) as ${mode}`); return { msg: mode === 'copy' ? `Restored ${k.what} into ${k.what}-restored. Check it, then swap it in.` : `${k.what} replaced from ${k.at}.` };

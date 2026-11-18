@@ -7,6 +7,7 @@
 mod access;
 mod allowlist;
 mod auth;
+pub mod backups;
 mod cleanup;
 pub mod deploy;
 mod docker;
@@ -100,6 +101,7 @@ pub struct AppState {
     pub github: github::GithubService,
     pub deploy: DeploySettings,
     pub deploy_hub: DeployHub,
+    pub backups: backups::BackupRunner,
 }
 
 impl AppState {
@@ -121,12 +123,15 @@ impl AppState {
             files.xfer_dir.clone(),
             version,
         );
+        let tasks = tasks::Tasks::default();
+        let backups = backups::BackupRunner::default();
+        backups.spawn_scheduler(store.clone(), priv_client.clone(), tasks.clone());
         Self {
             store,
             priv_client,
             auth,
             metrics,
-            tasks: tasks::Tasks::default(),
+            tasks,
             files,
             terminal: TerminalSettings::default(),
             limits: limits::RateLimits::default(),
@@ -145,7 +150,22 @@ impl AppState {
             github: github::GithubService::default(),
             deploy: DeploySettings::default(),
             deploy_hub: DeployHub::default(),
+            backups,
         }
+    }
+
+    pub fn with_backup_dir(self, dir: impl Into<std::path::PathBuf>) -> Self {
+        let dir = dir.into();
+        let dir_str = dir.display().to_string();
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+        .unwrap_or(0);
+        let _ = self.store.ensure_local_destination_path(&dir_str, now);
+        self.backups.set_backup_dir(dir);
+        self
     }
 }
 
@@ -410,6 +430,17 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/compose/{stack}",
             delete(templates::delete_compose_stack),
         )
+        .route("/api/v1/backups", get(backups::overview))
+        .route("/api/v1/backups/snapshots", get(backups::list_snapshots))
+        .route("/api/v1/backups/jobs", post(backups::create_job))
+        .route(
+            "/api/v1/backups/jobs/{id}",
+            patch(backups::update_job).delete(backups::delete_job),
+        )
+        .route("/api/v1/backups/jobs/{id}/run", post(backups::run_job))
+        .route("/api/v1/backups/run", post(backups::run_all))
+        .route("/api/v1/backups/prune", post(backups::prune))
+        .route("/api/v1/backups/check", post(backups::check))
         .route("/api/v1/terminal/users", get(terminal::users))
         .route("/api/v1/stream/terminal", get(terminal::stream))
         .route("/api/v1/session", get(auth::session))

@@ -94,6 +94,11 @@ impl Secrets {
         })?;
         plain.map(Zeroizing::new).map_err(|_| SecretError::Open)
     }
+
+    /// Derive the deterministic restic repository password from the 32-byte master key.
+    pub fn derive_backup_password(&self) -> Result<Zeroizing<String>, SecretError> {
+        self.with_key(opsbox_backup::derive_repo_password)
+    }
 }
 
 fn key_err(path: &Path, reason: impl Into<String>) -> SecretError {

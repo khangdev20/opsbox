@@ -5,16 +5,18 @@ use std::time::Duration;
 
 use opsbox_proto::frame;
 use opsbox_proto::{
-    AccessState, CleanupFreed, CleanupScan, CommandOutcome, ComposeDeployRequest,
-    ComposeDeployResult, ComposeValidateRequest, ComposeValidationResult, DatabaseRotateRequest,
-    DatabaseRotateResult, DeployBuildFrame, DeployBuildRequest, DeployPullRequest,
-    DeployStartRequest, DeployStartResult, DirListing, DockerContainer, DockerContainerAction,
-    DockerContainerInspect, DockerContainerStat, DockerExecOutput, DockerExecRequest, DockerImage,
-    DockerLogFrame, DockerLogLine, DockerNetwork, DockerStatus, DockerVolume, FileContent,
-    FirewallChange, FirewallState, HostInfo, HostSettings, JobInfo, JournalEntry, NewRule,
-    PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
-    PtyFrame, RawSample, Secret, SecurityScan, Staged, SystemFacts, SystemUser,
-    TemplateStartRequest, UnitActionKind, UnitInfo, WatchdogStatus,
+    AccessState, BackupCheckRequest, BackupCheckResult, BackupForgetRequest, BackupForgetResult,
+    BackupLocalInfo, BackupRunResult, BackupRunSpec, BackupSnapshotsRequest, CleanupFreed,
+    CleanupScan, CommandOutcome, ComposeDeployRequest, ComposeDeployResult, ComposeValidateRequest,
+    ComposeValidationResult, DatabaseRotateRequest, DatabaseRotateResult, DeployBuildFrame,
+    DeployBuildRequest, DeployPullRequest, DeployStartRequest, DeployStartResult, DirListing,
+    DockerContainer, DockerContainerAction, DockerContainerInspect, DockerContainerStat,
+    DockerExecOutput, DockerExecRequest, DockerImage, DockerLogFrame, DockerLogLine, DockerNetwork,
+    DockerStatus, DockerVolume, FileContent, FirewallChange, FirewallState, HostInfo, HostSettings,
+    JobInfo, JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
+    PrivResponse, PrivResult, PtyFrame, RawSample, ResticSnapshotInfo, Secret, SecurityScan,
+    Staged, SystemFacts, SystemUser, TemplateStartRequest, UnitActionKind, UnitInfo,
+    WatchdogStatus,
 };
 use tokio::net::{
     UnixStream,
@@ -1511,6 +1513,86 @@ impl PrivClient {
                     service: service.to_owned(),
                 },
             )
+            .await
+    }
+
+    pub async fn backup_local_info(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        check_paths: Vec<String>,
+    ) -> Result<BackupLocalInfo, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(30))
+            .expect(
+                rid,
+                actor,
+                PrivOp::BackupLocalInfo { check_paths },
+                |r| match r {
+                    PrivReply::BackupLocalInfo(v) => Ok(*v),
+                    o => Err(o),
+                },
+            )
+            .await
+    }
+
+    pub async fn backup_run(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        spec: BackupRunSpec,
+    ) -> Result<BackupRunResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(31 * 60))
+            .expect(rid, actor, PrivOp::BackupRun(spec), |r| match r {
+                PrivReply::BackupRun(v) => Ok(*v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn backup_snapshots(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        req: BackupSnapshotsRequest,
+    ) -> Result<Vec<ResticSnapshotInfo>, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(120))
+            .expect(rid, actor, PrivOp::BackupSnapshots(req), |r| match r {
+                PrivReply::BackupSnapshots(v) => Ok(v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn backup_forget(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        req: BackupForgetRequest,
+    ) -> Result<BackupForgetResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(31 * 60))
+            .expect(rid, actor, PrivOp::BackupForget(req), |r| match r {
+                PrivReply::BackupForget(v) => Ok(*v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn backup_check(
+        &self,
+        rid: &str,
+        actor: Option<&str>,
+        req: BackupCheckRequest,
+    ) -> Result<BackupCheckResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(31 * 60))
+            .expect(rid, actor, PrivOp::BackupCheck(req), |r| match r {
+                PrivReply::BackupCheck(v) => Ok(*v),
+                o => Err(o),
+            })
             .await
     }
 }

@@ -261,6 +261,7 @@ pub(crate) async fn get_attention(
             }
         }
     }
+    items.extend(crate::backups::collect_attention_items(&state, &who));
     Json(json!(items))
 }
 

@@ -43,6 +43,7 @@ struct FileConfig {
     auth: AuthSection,
     files: FilesSection,
     terminal: TerminalSection,
+    backup: BackupSection,
     proxy: ProxySection,
     watchdog: WatchdogSection,
     #[serde(rename = "priv")]
@@ -149,6 +150,23 @@ impl Default for TerminalSection {
     }
 }
 
+/// Encrypted restic backup repository and cache settings.
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct BackupSection {
+    dir: PathBuf,
+    cache_dir: PathBuf,
+}
+
+impl Default for BackupSection {
+    fn default() -> Self {
+        Self {
+            dir: opsbox_priv::DEFAULT_BACKUP_DIR.into(),
+            cache_dir: opsbox_priv::DEFAULT_BACKUP_CACHE_DIR.into(),
+        }
+    }
+}
+
 /// Reverse proxy, ACME, and public IP settings.
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -247,6 +265,8 @@ pub struct Config {
     pub apps_dir: PathBuf,
     pub max_upload_mb: u64,
     pub terminal_idle_min: u64,
+    pub backup_dir: PathBuf,
+    pub backup_cache_dir: PathBuf,
     pub proxy_listen_http: SocketAddr,
     pub proxy_listen_https: SocketAddr,
     pub proxy_socket: PathBuf,
@@ -382,6 +402,8 @@ impl Config {
             apps_dir: file.files.apps_dir,
             max_upload_mb: file.files.max_upload_mb,
             terminal_idle_min: file.terminal.idle_timeout_min.clamp(1, 24 * 60),
+            backup_dir: file.backup.dir,
+            backup_cache_dir: file.backup.cache_dir,
             proxy_listen_http: o.proxy_listen_http.unwrap_or(file.proxy.listen_http),
             proxy_listen_https: o.proxy_listen_https.unwrap_or(file.proxy.listen_https),
             proxy_socket: o.proxy_socket.unwrap_or(file.proxy.socket),
@@ -472,6 +494,8 @@ mod tests {
         assert_eq!(c.log_level, "info");
         assert_eq!(c.log_format, LogFormat::Text);
         assert_eq!(c.master_key, Path::new("/etc/opsbox/master.key"));
+        assert_eq!(c.backup_dir, Path::new("/var/backups/opsbox"));
+        assert_eq!(c.backup_cache_dir, Path::new("/var/cache/opsbox/restic"));
         assert_eq!(c.secure_cookies, SecureCookiesSetting::Auto);
         assert_eq!((c.argon2_memory_kib, c.argon2_iterations), (65536, 3));
     }

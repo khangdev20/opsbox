@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use anyhow::Result;
 use clap::Parser;
 
-use crate::cli::{AuditAction, CleanupAction, Cli, Command, WebAction};
+use crate::cli::{AuditAction, BackupAction, CleanupAction, Cli, Command, WebAction};
 use crate::config::{Config, Overrides};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -129,6 +129,20 @@ fn run(cli: &Cli) -> Result<ExitCode> {
         } => {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             cmd::web::domain(&config, name, *skip_dns_check)?;
+        }
+        Command::Backup { action } => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            match action {
+                BackupAction::List => cmd::backup::list(&config)?,
+                BackupAction::Now { job, prune, check } => {
+                    return Ok(ok_or_failure(cmd::backup::now(
+                        &config,
+                        job.as_deref(),
+                        *prune,
+                        *check,
+                    )?));
+                }
+            }
         }
         // Handled above; listed so adding a command forces a decision here.
         _ => unreachable!("unimplemented commands return before this match"),

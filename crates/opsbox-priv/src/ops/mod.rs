@@ -3,6 +3,7 @@
 //! the compiler enforces the last two because the `match` is exhaustive.
 
 mod access;
+pub(crate) mod backup;
 pub mod cleanup;
 pub(crate) mod cron;
 pub(crate) mod deploy;
@@ -44,6 +45,10 @@ pub(crate) struct Env {
     pub config_path: std::path::PathBuf,
     pub files: files::Dirs,
     pub apps_dir: std::path::PathBuf,
+    pub db_path: std::path::PathBuf,
+    pub backup_dir: std::path::PathBuf,
+    pub backup_cache_dir: std::path::PathBuf,
+    pub restic_bin: Option<std::path::PathBuf>,
     pub docker: opsbox_docker::DockerClient,
     pub docker_bin: Option<std::path::PathBuf>,
     pub allow_test_git: bool,
@@ -303,6 +308,20 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::ComposeRemoveService { stack, service } => {
             templates_compose::remove_compose_service_with(env, stack, service)
                 .map(|()| PrivReply::Done)
+        }
+        PrivOp::BackupLocalInfo { check_paths } => backup::local_info_with(env, check_paths)
+            .map(|v| PrivReply::BackupLocalInfo(Box::new(v))),
+        PrivOp::BackupRun(req) => {
+            backup::run_backup_with(env, req.clone()).map(|v| PrivReply::BackupRun(Box::new(v)))
+        }
+        PrivOp::BackupSnapshots(req) => {
+            backup::list_snapshots_with(env, req.clone()).map(PrivReply::BackupSnapshots)
+        }
+        PrivOp::BackupForget(req) => {
+            backup::forget_with(env, req.clone()).map(|v| PrivReply::BackupForget(Box::new(v)))
+        }
+        PrivOp::BackupCheck(req) => {
+            backup::check_with(env, req.clone()).map(|v| PrivReply::BackupCheck(Box::new(v)))
         }
     }
 }

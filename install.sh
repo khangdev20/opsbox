@@ -16,8 +16,14 @@ REPO="khangdev20/opsbox"
 MINISIGN_PUBKEY="RWRCUyMVksFGTIOeCqnTqQkIyfCLb5O1NPxAYB0tNyxfPl0whpWvfWJn"
 
 PREFIX_BIN="/usr/local/bin/opsbox"
+RESTIC_BIN="/usr/local/bin/restic"
+RESTIC_VERSION="0.19.1"
+RESTIC_SHA256_AMD64="f415415624dcc452f2a02b8c33641791a8c6d6d3b65bbb3543fcf9a25151585c"
+RESTIC_SHA256_ARM64="a5f64aaab53d51e311fa3829124c5b703f2d14cf187d8640b6be3b2b49376465"
 STATE_DIR="/var/lib/opsbox"
 SLOT_DIR="$STATE_DIR/bin"
+BACKUP_DIR="/var/backups/opsbox"
+BACKUP_CACHE_DIR="/var/cache/opsbox/restic"
 CONF_DIR="/etc/opsbox"
 UNIT_DIR="/etc/systemd/system"
 SVC_USER="opsbox"
@@ -126,8 +132,16 @@ if [ "$KERNEL" != "Linux" ]; then
 fi
 
 case "$ARCH" in
-  x86_64|amd64) TARGET="x86_64-unknown-linux-musl" ;;
-  aarch64|arm64) TARGET="aarch64-unknown-linux-musl" ;;
+  x86_64|amd64)
+    TARGET="x86_64-unknown-linux-musl"
+    RESTIC_ARCH="amd64"
+    RESTIC_SHA256="$RESTIC_SHA256_AMD64"
+    ;;
+  aarch64|arm64)
+    TARGET="aarch64-unknown-linux-musl"
+    RESTIC_ARCH="arm64"
+    RESTIC_SHA256="$RESTIC_SHA256_ARM64"
+    ;;
   *) die "unsupported CPU architecture: $ARCH (supported: x86_64, aarch64)" ;;
 esac
 
@@ -210,6 +224,54 @@ verify_checksum() { # verify_checksum ARCHIVE
   say "checksum verified"
 }
 
+verify_sha256_literal() { # verify_sha256_literal FILE EXPECTED_HEX
+  command -v sha256sum >/dev/null 2>&1 || die "sha256sum not found"
+  actual="$(sha256sum "$1" | cut -d ' ' -f 1)"
+  [ "$1" != "" ] && [ "$2" = "$actual" ] ||
+    die "checksum mismatch for $1 (expected $2, got $actual); refusing to install"
+}
+
+ensure_bunzip2() {
+  if command -v bunzip2 >/dev/null 2>&1 || command -v bzip2 >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq bzip2 >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q bzip2 >/dev/null 2>&1 || true
+  fi
+}
+
+install_restic() {
+  if [ -x "$RESTIC_BIN" ] && "$RESTIC_BIN" version 2>/dev/null | grep -q "^restic $RESTIC_VERSION "; then
+    say "restic $RESTIC_VERSION already installed"
+    return 0
+  fi
+  restic_base="${OPSBOX_RESTIC_BASE:-https://github.com/restic/restic/releases/download/v$RESTIC_VERSION}"
+  restic_file="restic_${RESTIC_VERSION}_linux_${RESTIC_ARCH}.bz2"
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "+ download & verify sha256=$RESTIC_SHA256 for $restic_base/$restic_file -> $RESTIC_BIN"
+    return 0
+  fi
+  say "installing restic $RESTIC_VERSION ($RESTIC_ARCH)"
+  fetch "$restic_base/$restic_file" "$WORK/$restic_file"
+  verify_sha256_literal "$WORK/$restic_file" "$RESTIC_SHA256"
+  say "restic checksum verified"
+  ensure_bunzip2
+  if command -v bunzip2 >/dev/null 2>&1; then
+    bunzip2 -c "$WORK/$restic_file" >"$WORK/restic"
+  elif command -v bzip2 >/dev/null 2>&1; then
+    bzip2 -dc "$WORK/$restic_file" >"$WORK/restic"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import bz2,sys;sys.stdout.buffer.write(bz2.decompress(sys.stdin.buffer.read()))' <"$WORK/$restic_file" >"$WORK/restic"
+  else
+    die "bzip2/bunzip2 is required to unpack restic"
+  fi
+  install -m 0755 -o root -g root "$WORK/restic" "$RESTIC_BIN"
+  "$RESTIC_BIN" version >/dev/null || die "installed restic binary failed verification"
+}
+
 # ------------------------------------------------------------------ get the binary
 
 WORK="$(mktemp -d)"
@@ -281,6 +343,10 @@ run install -d -m 0755 -o root -g root "$CONF_DIR"
 run install -d -m 1770 -o root -g "$SVC_USER" "$STATE_DIR"
 run install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$STATE_DIR/proxy"
 run install -d -m 0755 -o root -g root "$SLOT_DIR"
+run install -d -m 0700 -o root -g root "$BACKUP_DIR"
+run install -d -m 0700 -o root -g root "$BACKUP_CACHE_DIR"
+
+install_restic
 
 # ------------------------------------------------------------------ install
 
@@ -314,6 +380,10 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 
 # [store]
 # db_path = "/var/lib/opsbox/opsbox.db"
+
+# [backup]
+# dir = "/var/backups/opsbox"
+# cache_dir = "/var/cache/opsbox/restic"
 
 # [log]
 # level = "info"

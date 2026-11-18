@@ -303,7 +303,19 @@ pub enum UserAction {
 
 #[derive(Debug, Subcommand)]
 pub enum BackupAction {
-    Now,
+    /// Back up enabled schedules (or one job with --job)
+    Now {
+        /// Optional backup schedule ID to run
+        #[arg(long)]
+        job: Option<String>,
+        /// Prune old snapshots after running
+        #[arg(long)]
+        prune: bool,
+        /// Run a 10% repository checksum verification afterwards
+        #[arg(long)]
+        check: bool,
+    },
+    /// Show configured backup schedules, repository disk status, and snapshots
     List,
 }
 
@@ -345,6 +357,7 @@ impl Command {
             | Self::Watchdog(_)
             | Self::WatchdogVerifyPw
             | Self::RecoveryCode
+            | Self::Backup { .. }
             | Self::Web {
                 action: WebAction::LocalOnly { .. } | WebAction::Domain { .. },
             } => return None,
@@ -355,12 +368,6 @@ impl Command {
             Self::Web {
                 action: WebAction::Disable,
             } => "web disable",
-            Self::Backup {
-                action: BackupAction::Now,
-            } => "backup now",
-            Self::Backup {
-                action: BackupAction::List,
-            } => "backup list",
             Self::Restore { .. } => "restore",
             Self::Uninstall { .. } => "uninstall",
         })
@@ -447,6 +454,8 @@ mod tests {
             "watchdog",
             "watchdog-verify-pw",
             "recovery-code",
+            "backup list",
+            "backup now",
         ] {
             assert_eq!(parse(done).unimplemented_name(), None, "{done}");
         }
