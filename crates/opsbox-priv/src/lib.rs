@@ -24,7 +24,7 @@ pub use config::{
     DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR, PrivConfig, resolve_users,
 };
 pub use io::PtyIoError;
-pub use ops::{base32_encode, cleanup, code_at, verify_at, web as web_ops};
+pub use ops::{base32_encode, cleanup, code_at, uninstall, verify_at, web as web_ops};
 pub use server::{PrivServer, ServerError};
 
 /// Version reported by `Ping`, so `status` can notice a stale helper after an update.

@@ -20,6 +20,7 @@ pub mod pty;
 pub mod role;
 pub mod security;
 pub mod system;
+pub mod uninstall;
 pub mod watchdog;
 
 pub use access::{AccessState, AccessUser, AuthorizedKey, SshStatus};
@@ -75,6 +76,7 @@ pub use system::{
     CommandOutcome, FirewallChange, FirewallRule, FirewallState, JobInfo, JournalEntry, NewRule,
     PkgSelect, PkgState, PkgUpdate, UnitActionKind, UnitInfo,
 };
+pub use uninstall::{UninstallAdopted, UninstallPlan};
 pub use watchdog::{WatchdogCheck, WatchdogStatus};
 
 pub mod network;

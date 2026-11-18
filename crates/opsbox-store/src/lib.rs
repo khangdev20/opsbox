@@ -240,6 +240,16 @@ impl ReadOnlyStore {
             .map_err(Into::into)
     }
 
+    /// Newest `limit` audit entries, newest first (for uninstall export and similar).
+    pub fn recent_audit(&self, limit: u32) -> Result<Vec<AuditEntry>, StoreError> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {} FROM audit ORDER BY seq DESC LIMIT ?1",
+            audit::COLUMNS
+        ))?;
+        let rows = stmt.query_map([limit], audit::row_to_entry)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// Snapshot the SQLite database safely to `dst_path` using SQLite's online backup API
     /// (safe while `serve` writes concurrently in WAL mode). Creates `dst_path` with mode 0600.
     pub fn online_backup(&self, dst_path: &Path) -> Result<(), StoreError> {

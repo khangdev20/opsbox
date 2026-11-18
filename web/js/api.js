@@ -49,7 +49,7 @@ const REAL = new Set([
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
   'dockerStatus', 'installDocker', 'listContainers', 'listDocker', 'inspectContainer', 'containerAction', 'containerLogs',
-  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs', 'exportConfig',
+  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs', 'exportConfig', 'uninstallPlan', 'uninstallExec',
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
   'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
   'getRecovery',
@@ -94,7 +94,7 @@ export const PAGE_USES = {
   overview: ['getCapacity', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
-  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
+  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook', 'uninstallPlan', 'uninstallExec'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'listContainers', 'updateService', 'addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
@@ -1789,6 +1789,25 @@ export async function exportConfig({ password = '', passphrase = '' } = {}) { sa
   await lag(400); audit('export configuration');
   const text = JSON.stringify({ format: 'opsbox-config/1', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel }, secrets: { included: false, needsReentry: [] } }, null, 2);
   return { filename: `opsbox-config-${S.host.name}-${new Date().toISOString().slice(0, 10)}.json`, text, secretsIncluded: false, needsReentry: [] }; }
+
+function uninstallPlanMock(purge = false) {
+  return {
+    purge: !!purge,
+    removed: ['opsbox, opsbox-priv, opsbox-proxy and opsbox-watchdog services', 'opsbox-cleanup.timer (weekly cleanup)', '/usr/local/bin/opsbox (symlink and release slots)', 'system user `opsbox`', ...(purge ? ['/var/lib/opsbox (database, audit log, apps metadata)', '/etc/opsbox (config and master key)'] : [])],
+    kept: ['App containers (restart policy set to unless-stopped)', ...(!purge ? ['/var/lib/opsbox (database, audit log, proxy state)', '/etc/opsbox (config.toml, master key)'] : [])],
+    domains: (S.project?.services || []).map((s) => s.domain).filter(Boolean),
+    adopted: null,
+    containers: ['demo-web'],
+    warnings: ['These domains stop answering on ports 80/443 until another proxy takes over.'],
+  };
+}
+export async function uninstallPlan({ purge = false } = {}) { sample('uninstallPlan');
+  if (real('uninstallPlan')) return http(`/system/uninstall/plan?purge=${purge ? 'true' : 'false'}`);
+  await lag(200); return uninstallPlanMock(purge); }
+export async function uninstallExec({ password = '', confirm = 'uninstall', purge = false } = {}) { sample('uninstallExec');
+  if (real('uninstallExec')) return http('/system/uninstall', { method: 'POST', body: { password, confirm, purge: !!purge } });
+  await lag(400); if (confirm !== 'uninstall') { const e = new Error('Type uninstall to confirm.'); e.field = 'confirm'; throw e; }
+  audit('uninstall opsbox'); return { ok: true, message: 'opsbox is being removed. This page will stop responding in a moment.', plan: uninstallPlanMock(purge) }; }
 
 // ---------------------------------------------------------------- domains
 const DOM = {

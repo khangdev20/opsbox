@@ -119,9 +119,15 @@ pub enum Command {
     Doctor,
     /// Remove opsbox; apps and data keep running
     Uninstall {
-        /// Keep /var/lib/opsbox and /etc/opsbox
-        #[arg(long)]
+        /// Keep /var/lib/opsbox and /etc/opsbox (default)
+        #[arg(long, group = "data")]
         keep_data: bool,
+        /// Also delete /var/lib/opsbox and /etc/opsbox (typed confirmation unless --yes)
+        #[arg(long, group = "data")]
+        purge: bool,
+        /// Skip interactive confirmation (required for panel-triggered uninstall)
+        #[arg(long)]
+        yes: bool,
     },
     /// Run the reverse proxy (internal)
     Proxy(ProxyArgs),
@@ -364,7 +370,8 @@ impl Command {
             | Self::Restore { .. }
             | Self::Web {
                 action: WebAction::LocalOnly { .. } | WebAction::Domain { .. },
-            } => return None,
+            }
+            | Self::Uninstall { .. } => return None,
             Self::Pair => "pair",
             Self::Web {
                 action: WebAction::Enable { .. },
@@ -372,7 +379,6 @@ impl Command {
             Self::Web {
                 action: WebAction::Disable,
             } => "web disable",
-            Self::Uninstall { .. } => "uninstall",
         })
     }
 }
@@ -417,6 +423,7 @@ mod tests {
             "doctor",
             "uninstall",
             "uninstall --keep-data",
+            "uninstall --purge --yes",
             "serve",
             "priv",
             "proxy",
@@ -461,6 +468,7 @@ mod tests {
             "backup list",
             "backup now",
             "restore abc123 --to /tmp/out",
+            "uninstall --yes",
         ] {
             assert_eq!(parse(done).unimplemented_name(), None, "{done}");
         }

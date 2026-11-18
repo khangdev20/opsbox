@@ -152,6 +152,16 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             cmd::backup::restore(&config, snapshot, to)?;
         }
+        Command::Uninstall {
+            keep_data: _,
+            purge,
+            yes,
+        } => {
+            return Ok(match cmd::uninstall::run(*purge, *yes) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(code) => ExitCode::from(code as u8),
+            });
+        }
         // Handled above; listed so adding a command forces a decision here.
         _ => unreachable!("unimplemented commands return before this match"),
     }

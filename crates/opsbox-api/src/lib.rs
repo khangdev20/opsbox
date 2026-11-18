@@ -42,6 +42,7 @@ mod tokens;
 mod tools;
 pub mod transport;
 mod ui;
+mod uninstall;
 mod update;
 mod users;
 
@@ -329,6 +330,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/system/swap", put(system::set_swap))
         .route("/api/v1/system/disk", get(system::get_disk))
         .route("/api/v1/system/disk/grow", post(system::grow_disk))
+        .route(
+            "/api/v1/system/uninstall/plan",
+            get(uninstall::plan),
+        )
+        .route("/api/v1/system/uninstall", post(uninstall::exec))
         .route("/api/v1/system/hostname", put(system::set_hostname))
         .route("/api/v1/system/timezone", put(system::set_timezone))
         .route("/api/v1/metrics", get(metrics::get_metrics))

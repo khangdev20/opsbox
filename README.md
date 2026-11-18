@@ -12,6 +12,15 @@ curl -fsSL https://github.com/khangdev20/opsbox/releases/latest/download/install
 
 Re-running the installer upgrades an existing installation in place while keeping data and configuration. Pass `--channel beta` for pre-releases or `--version vX.Y.Z` for a specific release. See [docs/RELEASING.md](docs/RELEASING.md) for release signing and verification details.
 
+## Uninstall
+
+```sh
+sudo opsbox uninstall          # keep /var/lib/opsbox and /etc/opsbox (default)
+sudo opsbox uninstall --purge  # also delete data and config (typed confirmation)
+```
+
+Or Settings → Export and uninstall → Uninstall opsbox (password + type `uninstall`). Apps keep running: managed containers switch to Docker restart policy `unless-stopped`. Proxy domains on 80/443 stop until another proxy takes over; an adopted web server (moved behind opsbox) is restored first. The audit log is written to `/var/lib/opsbox/uninstall-<date>.log` before removal. Re-running `install.sh` reuses kept data when present.
+
 ## Layout
 - `web/` the whole interface: plain HTML, CSS and ES modules, no build step. `web/js/api.js` selects real or sample data; each export maps to one REST endpoint (see `docs/API.md`).
 - `web/vendor/monaco/` the file editor (VS Code's editor core), self-hosted, loaded on first use.

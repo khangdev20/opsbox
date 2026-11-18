@@ -459,7 +459,7 @@ Every `ServiceRecord` field is either exported or listed in `SERVICE_EXCLUDED` w
 | `backup now`, `backup list`, `restore <snapshot> --to <path>` | Work without the UI. |
 | `audit verify` | Check the hash chain. |
 | `doctor` | Diagnose common problems (ports, DNS, Docker, disk, clock skew) and print fixes. |
-| `uninstall [--keep-data]` | Remove opsbox; apps and data keep running. |
+| `uninstall [--keep-data \| --purge] [--yes]` | Remove opsbox; apps keep running. Default keeps `/var/lib/opsbox` and `/etc/opsbox`; `--purge` deletes them after confirmation. |
 | `serve`, `priv`, `proxy`, `watchdog`, `selftest` | Internal, used by systemd units and the updater. |
 
 ---

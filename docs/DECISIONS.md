@@ -487,3 +487,13 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **The schema is checked by a small validator in the test, not a crate.** `jsonschema` pulled about 28 new crates (regex engines, URI parsing) into the workspace for one test, and `cargo deny` is not available here to vet them. The test validator knows exactly the keywords the schema uses and fails on any other, so the schema cannot start using something unchecked.
 
 **Service fields are accounted for in code.** `service_json` destructures `ServiceRecord` without `..`; `SERVICE_EXPORTED` and `SERVICE_EXCLUDED` name every field; a test reads the struct source and fails if a column is in neither list or both.
+
+## Prompt 16j (uninstall)
+
+**CLI does the work; priv only schedules it.** `PrivOp::Uninstall` runs `systemd-run --no-block opsbox uninstall --yes [--purge]` so the panel can stop itself. The plan builder and path-removal logic live in `opsbox-priv::uninstall` and are shared with the CLI (same pattern as cleanup).
+
+**Default is keep-data.** `--keep-data` and `--purge` are mutually exclusive clap flags; omitting both keeps `/var/lib/opsbox` and `/etc/opsbox`. Local restic backups under `/var/backups/opsbox` stay with keep-data and go with purge. On purge the audit export is also copied to `/var/log/opsbox-uninstall-<date>.log` so it survives the data wipe.
+
+**Adopted web restore is best-effort from receipts.** Before stopping units, uninstall re-applies backed-up config from `/etc/opsbox/web-moves` and reloads the unit or container. Full `WebUndo` needs a live Env/proxy; the receipt path is enough for ports 80/443 to return to the old server.
+
+**Reinstall reuses kept data.** `install.sh` does not wipe `/var/lib/opsbox` or `/etc/opsbox` when they already exist, so a later install picks up the database and config.

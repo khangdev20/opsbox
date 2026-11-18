@@ -86,6 +86,10 @@ Development:
                       never use it for a server that matters.
   --dry-run           print what would be done and change nothing
   -h, --help          show this help
+
+To remove opsbox later (apps keep running; data kept by default):
+  sudo opsbox uninstall
+  sudo opsbox uninstall --purge   # also delete /var/lib/opsbox and /etc/opsbox
 EOF
 }
 

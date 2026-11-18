@@ -1818,4 +1818,31 @@ impl PrivClient {
             })
             .await
     }
+
+    pub async fn uninstall_plan(
+        &self,
+        rid: &str,
+        purge: bool,
+        domains: Vec<String>,
+    ) -> Result<opsbox_proto::UninstallPlan, ClientError> {
+        self.expect(
+            rid,
+            None,
+            PrivOp::UninstallPlan { purge, domains },
+            |r| match r {
+                PrivReply::UninstallPlan(p) => Ok(*p),
+                o => Err(o),
+            },
+        )
+        .await
+    }
+
+    pub async fn uninstall(
+        &self,
+        rid: &str,
+        actor: &str,
+        purge: bool,
+    ) -> Result<(), ClientError> {
+        self.done(rid, actor, PrivOp::Uninstall { purge }).await
+    }
 }

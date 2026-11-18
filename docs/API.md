@@ -157,6 +157,8 @@ A signed-in Owner (`admin` role) may add `override:true` and `capacityConfirmati
 | Request | Response / behaviour |
 |---|---|
 | `POST /config/export {password, passphrase?}` | Interactive admin only (no tokens), account password asked again. Returns the document (`Content-Type: application/json`, `Cache-Control: no-store`, `Content-Disposition: attachment; filename="opsbox-config-<host>-<YYYY-MM-DD>.json"`). Wrong password is `403` and audits `config.export` as denied; a `passphrase` shorter than 8 characters is `400` (field `passphrase`); an empty `passphrase` means "no secrets". It is a `POST` on purpose: the password and passphrase never go into a URL or an access log (the original plan said `GET`). |
+| `GET /system/uninstall/plan?purge=` | Interactive admin. Preview: `{purge,removed,kept,domains,adopted?,containers,warnings}`. Domains are panel + app hosts that stop on 80/443; `adopted` names a 16c web server that will be restored first. |
+| `POST /system/uninstall {password,confirm:"uninstall",purge?}` | Interactive admin only (no tokens). Wrong password is `403` and audits `system.uninstall` as denied; wrong `confirm` is `400` (field `confirm`). Schedules `opsbox uninstall --yes [--purge]` via a detached `systemd-run` unit and returns `{ok,message,plan}`. The panel shows a final “opsbox is being removed” screen; apps keep running (`unless-stopped`). |
 
 The document is `"format": "opsbox-config/1"`, checked in as a JSON Schema at [`docs/schemas/config-export-v1.json`](schemas/config-export-v1.json). Top-level keys: `exportedAt`, `exportedBy`, `opsboxVersion`, `host`, `services` (source, build, port, health path, domains, limits, exposure, owner, variables), `templates`, `composeProjects`, `databases` (engine, version, volume, pooler, linked apps; no data), `backups` (`destinations` metadata, `jobs`), `alerts` (`rules`, `quiet`, `channels` by id), `network` (panel domain, local-only, allowed addresses), `updates`, `firewall` (`null` and listed under `unavailable` when `priv` cannot read it), `users` (name, role, whether two-factor is on), `notExported` (what is left out and why) and `secrets`.
 
@@ -342,6 +344,8 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `POST` | `/api/v1/system/reboot/cancel` | [system::reboot_cancel](../crates/opsbox-api/src/system.rs) |
 | `PUT` | `/api/v1/system/swap` | [system::set_swap](../crates/opsbox-api/src/system.rs) |
 | `PUT` | `/api/v1/system/timezone` | [system::set_timezone](../crates/opsbox-api/src/system.rs) |
+| `POST` | `/api/v1/system/uninstall` | [uninstall::exec](../crates/opsbox-api/src/uninstall.rs) |
+| `GET` | `/api/v1/system/uninstall/plan` | [uninstall::plan](../crates/opsbox-api/src/uninstall.rs) |
 | `GET` | `/api/v1/system/units` | [system::get_units](../crates/opsbox-api/src/system.rs) |
 | `POST` | `/api/v1/system/units/{name}/{action}` | [system::unit_action](../crates/opsbox-api/src/system.rs) |
 | `GET` | `/api/v1/system/updates` | [system::get_updates](../crates/opsbox-api/src/system.rs) |

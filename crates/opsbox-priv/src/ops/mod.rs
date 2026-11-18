@@ -31,6 +31,7 @@ pub(crate) mod templates_compose;
 pub(crate) mod terminal;
 mod totp;
 mod units;
+pub mod uninstall;
 mod update;
 mod watchdog;
 pub mod web;
@@ -386,5 +387,6 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         }
         PrivOp::BackupRestoreTest(req) => backup::restore_test_with(env, req.clone())
             .map(|v| PrivReply::BackupRestoreTest(Box::new(v))),
+        PrivOp::UninstallPlan { .. } | PrivOp::Uninstall { .. } => uninstall::dispatch(op, env),
     }
 }

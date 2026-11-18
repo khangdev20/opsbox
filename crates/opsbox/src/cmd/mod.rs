@@ -8,6 +8,7 @@ pub mod proxy;
 pub mod selftest;
 pub mod serve;
 pub mod status;
+pub mod uninstall;
 pub mod update;
 pub mod watchdog;
 pub mod web;

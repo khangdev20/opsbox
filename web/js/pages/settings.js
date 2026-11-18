@@ -6,10 +6,10 @@ import { noOfferText, checkedLine, checkToast } from '../update-status.js';
 const TZ = ['Asia/Ho_Chi_Minh', 'UTC', 'Australia/Brisbane'];
 const SWAP = ['None', '1 GB', '2 GB', '4 GB'];
 const LIVE = api.MODE === 'http';
-const sampleBadge = () => LIVE ? html`<span class="tag-sm sample" style="align-self:flex-start">sample data</span>` : '';
 const normDom = (s) => String(s || '').trim().toLowerCase().replace(/^https:\/\//, '').replace(/\/$/, '');
 export async function view({ query = {} } = {}) {
   let ghErr = '', ghOrg = '';
+  let uninstallBusy = false, uninstallGone = false;
   const clearHashQuery = () => {
     try { history.replaceState(null, '', '#/settings'); } catch { /* ignore */ }
   };
@@ -185,7 +185,7 @@ export async function view({ query = {} } = {}) {
       ${diskBlock()}</div>`)}
     ${section('GitHub', renderGithubSection(pi))}
     ${section('opsbox updates', html`<div class="list-row"><span>${statusText}<br><span class="sm muted" id="ucheck">${checkedLine(u)}</span></span><div class="row">${btn('Check now', { act: 'check' })}${u.updateAvailable ? btn('Update now', { act: 'updateNow', kind: 'primary' }) : ''}${u.previousVersion ? btn(`Roll back to ${u.previousVersion}`, { act: 'rollback' }) : ''}</div></div>${u.lastOutcome ? html`<p class="sm muted">${u.lastOutcome.message}</p>` : ''}<div class="list-row"><span>Release channel${chanSource ? html` <span class="sm muted">(${chanSource})</span>` : ''}</span><select class="select" id="uch" style="width:auto"><option value="stable"${u.channel === 'stable' ? ' selected' : ''}>stable</option><option value="beta"${u.channel === 'beta' ? ' selected' : ''}>beta</option></select></div><div class="list-row"><span>Update opsbox automatically</span><div class="row">${sw('Update opsbox automatically', u.auto, 'autoup')}<select class="select" id="uwin" aria-label="Daily update window" style="width:auto">${hours.map((h) => html`<option value="${h}"${h === (u.window ?? 3) ? ' selected' : ''}>${String(h).padStart(2, '0')}:00 UTC</option>`)}</select></div></div><p class="muted sm">If a new version fails its health check after 2 minutes, opsbox rolls back to the previous one by itself.</p>`)}
-    ${section('Export and uninstall', html`<p class="muted sm" style="max-width:620px">Export saves your services, domains, databases (not their data), backups, alerts, firewall rules and people as a file you can import on a new server. Passwords, keys and tokens stay out of the file unless you protect them with a passphrase.</p><div class="row">${btn('Export configuration', { act: 'export' })}</div><p class="muted sm" style="max-width:620px">Uninstall removes opsbox but leaves your apps and data running.</p>${sampleBadge()}<div class="row">${btn('Uninstall opsbox', { act: 'uninstall', kind: 'danger', disabled: LIVE })}</div>`)}`;
+    ${section('Export and uninstall', html`<p class="muted sm" style="max-width:620px">Export saves your services, domains, databases (not their data), backups, alerts, firewall rules and people as a file you can import on a new server. Passwords, keys and tokens stay out of the file unless you protect them with a passphrase.</p><div class="row">${btn('Export configuration', { act: 'export' })}</div><p class="muted sm" style="max-width:620px">Uninstall removes opsbox but leaves your apps and data running. Containers keep their restart policy so they survive reboots without opsbox.</p>${uninstallGone ? html`<div class="col gap12" style="max-width:620px;border:1px solid var(--ls);padding:16px;border-radius:8px" role="status"><b>opsbox is being removed</b><p class="muted sm">Services are stopping. This page will stop responding in a moment. Your apps keep running on their ports.</p></div>` : html`<div class="row">${btn('Uninstall opsbox…', { act: 'uninstall', kind: 'danger', disabled: !!uninstallBusy })}</div>`}`)}`;
   };
   // One block per filesystem opsbox watches (GET /system/disk). Grow shows only when there is space to take.
   const diskBlock = () => {
@@ -420,7 +420,33 @@ export async function view({ query = {} } = {}) {
           const n = file.needsReentry.length;
           toast(file.secretsIncluded ? `Exported with secrets sealed by your passphrase. ${n} item${n === 1 ? '' : 's'} still need${n === 1 ? 's' : ''} re-entry.` : `Exported without secrets. ${n} item${n === 1 ? '' : 's'} will need re-entry on a new server.`);
         },
-        uninstall: async () => { if (await confirmDialog({ title: 'Uninstall opsbox?', body: 'The panel is removed. Your apps and data keep running.', confirm: 'Uninstall', danger: true, typed: 'uninstall' })) toast('The demo does not uninstall anything.'); },
+        uninstall: async () => {
+          if (uninstallBusy || uninstallGone) return;
+          let plan;
+          try { plan = await api.uninstallPlan({ purge: false }); }
+          catch (e) { toast(e.message, 'err'); return; }
+          const parts = [];
+          if (plan.removed?.length) parts.push(`Removed: ${plan.removed.join('; ')}.`);
+          if (plan.kept?.length) parts.push(`Kept: ${plan.kept.join('; ')}.`);
+          if (plan.domains?.length) parts.push(`Domains that stop on 80/443: ${plan.domains.join(', ')}.`);
+          if (plan.adopted?.willRestore) parts.push(`Adopted web server ${plan.adopted.holder} will be restored to ports 80/443 first.`);
+          (plan.warnings || []).forEach((w) => parts.push(w));
+          parts.push('Data under /var/lib/opsbox and /etc/opsbox is kept. Enter your password and type uninstall to confirm.');
+          const out = await askForm({
+            title: 'Uninstall opsbox?',
+            body: parts.join(' '),
+            fields: [
+              { name: 'password', label: 'Account password', type: 'password' },
+              { name: 'confirm', label: 'Type uninstall to confirm', placeholder: 'uninstall' },
+            ],
+            submit: 'Uninstall',
+            danger: true,
+          }, (o) => api.uninstallExec({ password: o.password, confirm: (o.confirm || '').trim(), purge: false }));
+          if (!out) return;
+          uninstallBusy = true;
+          uninstallGone = true;
+          paint();
+        },
       });
     },
   };

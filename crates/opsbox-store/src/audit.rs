@@ -130,10 +130,10 @@ fn compute_hash(prev_hash: &str, e: &AuditEntry) -> String {
     hex(&h.finalize())
 }
 
-const COLUMNS: &str =
+pub(crate) const COLUMNS: &str =
     "seq, id, ts, actor, actor_kind, ip, action, target, result, detail, prev_hash, hash";
 
-fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
+pub(crate) fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
     Ok(AuditEntry {
         seq: row.get(0)?,
         id: row.get(1)?,

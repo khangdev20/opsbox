@@ -441,6 +441,16 @@ pub enum PrivOp {
     BackupRestore(crate::backup::BackupRestoreRequest),
     /// Verify a snapshot by restoring it into an ephemeral temporary container or directory.
     BackupRestoreTest(crate::backup::BackupRestoreTestRequest),
+    /// Preview what uninstall removes and keeps (units, paths, adopted web, containers).
+    UninstallPlan {
+        purge: bool,
+        /// Domains the panel knows about (app + panel); merged into the plan.
+        domains: Vec<String>,
+    },
+    /// Schedule a detached `opsbox uninstall` via systemd-run so the panel can stop cleanly.
+    Uninstall {
+        purge: bool,
+    },
 }
 
 impl PrivOp {
@@ -560,6 +570,8 @@ impl PrivOp {
             Self::BackupRecoveryKey => "backup_recovery_key",
             Self::BackupRestore(_) => "backup_restore",
             Self::BackupRestoreTest(_) => "backup_restore_test",
+            Self::UninstallPlan { .. } => "uninstall_plan",
+            Self::Uninstall { .. } => "uninstall",
         }
     }
 }
@@ -761,6 +773,8 @@ pub enum PrivReply {
     BackupRestore(Box<crate::backup::BackupRestoreResult>),
     /// Answer to [`PrivOp::BackupRestoreTest`].
     BackupRestoreTest(Box<crate::backup::BackupRestoreTestResult>),
+    /// Answer to [`PrivOp::UninstallPlan`].
+    UninstallPlan(Box<crate::uninstall::UninstallPlan>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
