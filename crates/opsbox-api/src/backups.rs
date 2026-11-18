@@ -5,6 +5,7 @@
 //! Attention alerts; every `restic`, container dump, `/etc/opsbox`, and `/var/backups/opsbox`
 //! operation runs inside `opsbox-priv`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,33 +13,43 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::extract::{Extension, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use opsbox_auth::Principal;
 use opsbox_backup::BackupError;
 use opsbox_backup::cron::{
     CronSchedule, format_utc_short, human_label, is_run_missed, validate_cron,
 };
+use opsbox_backup::destinations::{
+    DestinationFieldInput, ValidatedDestinationConfig, validate_destination_input,
+};
+use opsbox_backup::dumps::default_stdin_filename;
+use opsbox_backup::restic::date_suffix_utc;
 use opsbox_backup::validation::{
     validate_job_name, validate_path_list, validate_read_data_subset, validate_retention,
     validate_volume_list,
 };
-use opsbox_deploy::templates::get_template;
+use opsbox_deploy::templates::{generate_instance_env, get_template};
 use opsbox_metrics::Attention;
-use opsbox_priv::{ClientError, PrivClient};
+use opsbox_priv::PrivClient;
 use opsbox_proto::{
-    BackupCheckRequest, BackupCheckState, BackupDbKind, BackupForgetRequest, BackupLocalInfo,
-    BackupRunSpec, BackupRunTarget, BackupSnapshotsRequest, BackupTargetKind, DeployEnvSpec,
-    ErrorCode, PrivErrorCode, ResticSnapshotInfo, Role, valid_backup_id,
+    BackupCheckRequest, BackupCheckState, BackupDbKind, BackupDestinationTestRequest,
+    BackupDestinationTestTarget, BackupForgetRequest, BackupGenerateSftpKeyRequest,
+    BackupLocalInfo, BackupProviderId, BackupRepoTarget, BackupRestoreMode, BackupRestoreRequest,
+    BackupRestoreTarget, BackupRestoreTestRequest, BackupRestoreTestTarget, BackupRunSpec,
+    BackupRunTarget, BackupS3Credentials, BackupSnapshotsRequest, BackupTargetKind, DeployEnvSpec,
+    DeployStartResult, ErrorCode, ResticSnapshotInfo, Role, Secret, TemplateStartRequest,
+    backup_provider_presets, valid_backup_id, valid_service_name,
 };
 use opsbox_store::{
-    BackupDestinationRecord, BackupJobRecord, BackupSnapshotRecord, LOCAL_DESTINATION_ID,
-    NewBackupJob, OPSBOX_SELF_JOB_ID, ServiceKind, Store, SyncBackupSnapshot, UpdateBackupJob,
+    BackupDestinationRecord, BackupJobRecord, BackupSnapshotRecord, DeployTrigger,
+    LOCAL_DESTINATION_ID, NewBackupJob, NewService, OPSBOX_SELF_JOB_ID, ServiceKind, SourceKind,
+    Store, SyncBackupSnapshot, UpdateBackupJob,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::warn;
 
-use crate::deploy::var_seal_context;
+use crate::deploy::{next_graph_pos, seal_and_store_vars, var_seal_context};
 use crate::json::ApiJson;
 use crate::session::{Admin, Client, Viewer};
 use crate::system::audit;
@@ -48,6 +59,13 @@ use crate::{AppState, HttpError, RequestId};
 const SCHEDULER_POLL_SECS: u64 = 30;
 const MISSED_RUN_GRACE_SECS: i64 = 3600;
 const DEFAULT_SNAPSHOT_LIMIT: usize = 200;
+const RESTORE_TEST_INTERVAL_SECS: i64 = 30 * 24 * 3600;
+pub(crate) const SETTING_DEFAULT_DEST: &str = "backups.default_destination_id";
+const SETTING_NEXT_RESTORE_TEST_AT: &str = "backups.next_restore_test_at";
+const SETTING_LAST_RESTORE_TEST_AT: &str = "backups.last_restore_test_at";
+const SETTING_LAST_RESTORE_TEST_OK: &str = "backups.last_restore_test_ok";
+const SETTING_LAST_RESTORE_TEST_SUMMARY: &str = "backups.last_restore_test_summary";
+const SETTING_LAST_RESTORE_TEST_ERROR: &str = "backups.last_restore_test_error";
 
 /// Background backup serializer + cron loop attached to [`AppState`].
 #[derive(Clone)]
@@ -108,63 +126,98 @@ impl BackupRunner {
                 tokio::time::sleep(Duration::from_secs(SCHEDULER_POLL_SECS)).await;
                 let s = store.clone();
                 let ts = now_unix();
-                let due = tokio::task::spawn_blocking(move || {
+                let (due, restore_test_due) = tokio::task::spawn_blocking(move || {
                     initialize_missing_next_runs(&s, ts);
-                    s.list_due_backup_jobs(ts).unwrap_or_default()
+                    let jobs = s.list_due_backup_jobs(ts).unwrap_or_default();
+                    let next_rt = s
+                        .get_setting(SETTING_NEXT_RESTORE_TEST_AT)
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.as_i64());
+                    let rt_due = match next_rt {
+                        None => {
+                            let has_snaps =
+                                !s.list_backup_snapshots(1).unwrap_or_default().is_empty();
+                            if has_snaps {
+                                let _ = s.set_setting(
+                                    SETTING_NEXT_RESTORE_TEST_AT,
+                                    &json!(ts + RESTORE_TEST_INTERVAL_SECS),
+                                );
+                            }
+                            false
+                        }
+                        Some(due_at) => due_at <= ts,
+                    };
+                    (jobs, rt_due)
                 })
                 .await
                 .unwrap_or_default();
 
-                if due.is_empty() {
-                    continue;
-                }
-
-                let pc = priv_client.clone();
-                let r = runner.clone();
-                let st = store.clone();
-                let _ = tasks.start("backups.scheduled", async move {
-                    let mut log = Vec::new();
-                    let mut ran = 0u32;
-                    let mut failed = 0u32;
-                    for job in due {
-                        let rid = format!("sched-backup-{}", job.id);
-                        match r
-                            .execute_job(
-                                &st,
-                                &pc,
-                                &rid,
-                                None,
-                                &job,
-                                RunOptionsBody {
-                                    run_prune: true,
-                                    run_check: job.id == OPSBOX_SELF_JOB_ID,
-                                },
-                            )
-                            .await
-                        {
-                            Ok(msg) => {
-                                ran += 1;
-                                log.push(msg);
-                            }
-                            Err(e) => {
-                                failed += 1;
-                                log.push(format!("{}: failed: {}", job.name, e.0.error.message));
-                                warn!(job = %job.id, error = %e.0.error.message, "scheduled backup failed");
+                if !due.is_empty() {
+                    let pc = priv_client.clone();
+                    let r = runner.clone();
+                    let st = store.clone();
+                    let _ = tasks.start("backups.scheduled", async move {
+                        let mut log = Vec::new();
+                        let mut ran = 0u32;
+                        let mut failed = 0u32;
+                        for job in due {
+                            let rid = format!("sched-backup-{}", job.id);
+                            match r
+                                .execute_job(
+                                    &st,
+                                    &pc,
+                                    &rid,
+                                    None,
+                                    &job,
+                                    RunOptionsBody {
+                                        run_prune: true,
+                                        run_check: job.id == OPSBOX_SELF_JOB_ID,
+                                    },
+                                )
+                                .await
+                            {
+                                Ok(msg) => {
+                                    ran += 1;
+                                    log.push(msg);
+                                }
+                                Err(e) => {
+                                    failed += 1;
+                                    log.push(format!(
+                                        "{}: failed: {}",
+                                        job.name, e.0.error.message
+                                    ));
+                                    warn!(job = %job.id, error = %e.0.error.message, "scheduled backup failed");
+                                }
                             }
                         }
-                    }
-                    sync_all_snapshots(&st, &pc, "sched-sync", None, None).await;
-                    if failed > 0 && ran == 0 {
-                        return Err(HttpError::new(
-                            ErrorCode::Internal,
-                            format!("{failed} scheduled backup job(s) failed."),
-                        ));
-                    }
-                    Ok(Outcome {
-                        log,
-                        result: json!({ "ran": ran, "failed": failed }),
-                    })
-                });
+                        sync_all_snapshots(&st, &pc, "sched-sync", None, None, None).await;
+                        if failed > 0 && ran == 0 {
+                            return Err(HttpError::new(
+                                ErrorCode::Internal,
+                                format!("{failed} scheduled backup job(s) failed."),
+                            ));
+                        }
+                        Ok(Outcome {
+                            log,
+                            result: json!({ "ran": ran, "failed": failed }),
+                        })
+                    });
+                }
+
+                if restore_test_due {
+                    let pc = priv_client.clone();
+                    let r = runner.clone();
+                    let st = store.clone();
+                    let _ = st.set_setting(
+                        SETTING_NEXT_RESTORE_TEST_AT,
+                        &json!(ts + RESTORE_TEST_INTERVAL_SECS),
+                    );
+                    let _ = tasks.start("backups.restore_test", async move {
+                        let _guard = r.run_lock.lock().await;
+                        execute_scheduled_restore_test(&st, &pc, "sched-restore-test", None).await
+                    });
+                }
             }
         });
     }
@@ -371,12 +424,131 @@ fn infer_db_kind(job: &BackupJobRecord) -> Result<BackupDbKind, HttpError> {
     }
 }
 
+/// Build a [`BackupRepoTarget`] from a `backup_destinations` row using sealed credentials
+/// (never unsealing any secrets in `serve`).
+pub fn repo_target_from_record(
+    dest: &BackupDestinationRecord,
+) -> Result<BackupRepoTarget, HttpError> {
+    if dest.id == LOCAL_DESTINATION_ID || dest.provider == "local" {
+        return Ok(BackupRepoTarget::Local);
+    }
+    let secrets_enc = dest.secrets_enc.clone().ok_or_else(|| {
+        HttpError::new(
+            ErrorCode::Internal,
+            format!("Destination '{}' is missing sealed credentials.", dest.name),
+        )
+    })?;
+    let seal_context = format!("backup:dest:{}", dest.id);
+    if dest.provider == "sftp" {
+        let host = dest
+            .config
+            .get("host")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let port = dest
+            .config
+            .get("port")
+            .and_then(Value::as_u64)
+            .and_then(|p| u16::try_from(p).ok())
+            .unwrap_or(22);
+        let user = dest
+            .config
+            .get("user")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let repo_path = dest
+            .config
+            .get("repoPath")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        return Ok(BackupRepoTarget::Sftp {
+            destination_id: dest.id.clone(),
+            host,
+            port,
+            user,
+            repo_path,
+            seal_context,
+            private_key_enc: secrets_enc,
+        });
+    }
+
+    let endpoint = dest
+        .config
+        .get("endpoint")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let bucket = dest
+        .config
+        .get("bucket")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let repo_path = dest
+        .config
+        .get("repoPath")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let region = dest
+        .config
+        .get("region")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    Ok(BackupRepoTarget::S3 {
+        destination_id: dest.id.clone(),
+        endpoint,
+        bucket,
+        repo_path,
+        region,
+        credentials: BackupS3Credentials::Sealed {
+            seal_context,
+            value_enc: secrets_enc,
+        },
+    })
+}
+
+/// Resolve the default destination ID for newly created jobs (offsite verified default if set, else `'local'`).
+pub fn resolve_default_destination_id(store: &Store) -> String {
+    if let Ok(Some(val)) = store.get_setting(SETTING_DEFAULT_DEST)
+        && let Some(id) = val.as_str()
+        && let Ok(Some(dest)) = store.get_backup_destination(id)
+        && (dest.id == LOCAL_DESTINATION_ID || dest.verified_at.is_some())
+    {
+        return dest.id;
+    }
+    if let Ok(dests) = store.list_backup_destinations()
+        && let Some(offsite) = dests
+            .into_iter()
+            .find(|d| d.id != LOCAL_DESTINATION_ID && d.verified_at.is_some())
+    {
+        return offsite.id;
+    }
+    LOCAL_DESTINATION_ID.to_owned()
+}
+
 pub fn build_run_spec(
     store: &Store,
     job: &BackupJobRecord,
     run_prune: bool,
     run_check: bool,
 ) -> Result<BackupRunSpec, HttpError> {
+    let dest = store
+        .get_backup_destination(&job.destination_id)
+        .map_err(store_err)?
+        .ok_or_else(|| {
+            HttpError::new(
+                ErrorCode::NotFound,
+                format!(
+                    "Backup destination '{}' does not exist.",
+                    job.destination_id
+                ),
+            )
+        })?;
+    let repo = repo_target_from_record(&dest)?;
     let target = match job.kind {
         BackupTargetKind::Opsbox => BackupRunTarget::Opsbox,
         BackupTargetKind::Path => {
@@ -472,6 +644,7 @@ pub fn build_run_spec(
 
     Ok(BackupRunSpec {
         destination_id: job.destination_id.clone(),
+        repo,
         job_id: job.id.clone(),
         job_name: job.name.clone(),
         target,
@@ -487,29 +660,53 @@ async fn sync_all_snapshots(
     priv_client: &PrivClient,
     rid: &str,
     actor: Option<&str>,
+    only_destination_id: Option<&str>,
     override_check: Option<(BackupCheckState, i64)>,
 ) {
-    let Ok(snaps) = priv_client
-        .backup_snapshots(
-            rid,
-            actor,
-            BackupSnapshotsRequest {
-                destination_id: LOCAL_DESTINATION_ID.to_owned(),
-            },
-        )
+    let st_dests = store.clone();
+    let dests = tokio::task::spawn_blocking(move || st_dests.list_backup_destinations())
         .await
-    else {
-        return;
-    };
-    let st = store.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        sync_restic_snapshots_to_store(&st, &snaps, override_check)
-    })
-    .await;
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_default();
+
+    for dest in dests {
+        if let Some(only) = only_destination_id
+            && dest.id != only
+        {
+            continue;
+        }
+        if dest.id != LOCAL_DESTINATION_ID && dest.verified_at.is_none() {
+            continue;
+        }
+        let Ok(repo) = repo_target_from_record(&dest) else {
+            continue;
+        };
+        let Ok(snaps) = priv_client
+            .backup_snapshots(
+                rid,
+                actor,
+                BackupSnapshotsRequest {
+                    destination_id: dest.id.clone(),
+                    repo,
+                },
+            )
+            .await
+        else {
+            continue;
+        };
+        let st = store.clone();
+        let did = dest.id.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            sync_restic_snapshots_to_store(&st, &did, &snaps, override_check)
+        })
+        .await;
+    }
 }
 
 pub fn sync_restic_snapshots_to_store(
     store: &Store,
+    destination_id: &str,
     snaps: &[ResticSnapshotInfo],
     override_check: Option<(BackupCheckState, i64)>,
 ) -> Result<(), opsbox_store::StoreError> {
@@ -552,7 +749,7 @@ pub fn sync_restic_snapshots_to_store(
             paths: &s.paths,
         })
         .collect();
-    store.sync_backup_snapshots(LOCAL_DESTINATION_ID, &sync_refs, override_check, now)
+    store.sync_backup_snapshots(destination_id, &sync_refs, override_check, now)
 }
 
 fn collect_check_paths(jobs: &[BackupJobRecord]) -> Vec<String> {
@@ -687,7 +884,11 @@ fn job_json(job: &BackupJobRecord, now: i64) -> Value {
     })
 }
 
-fn snapshot_json(snap: &BackupSnapshotRecord) -> Value {
+fn snapshot_json(snap: &BackupSnapshotRecord, dest_names: &HashMap<String, String>) -> Value {
+    let where_label = dest_names
+        .get(&snap.destination_id)
+        .cloned()
+        .unwrap_or_else(|| snap.destination_id.clone());
     json!({
         "id": snap.id,
         "resticId": snap.restic_id,
@@ -699,7 +900,7 @@ fn snapshot_json(snap: &BackupSnapshotRecord) -> Value {
         "what": snap.what,
         "kind": snap.kind.as_str(),
         "sizeBytes": snap.size_bytes,
-        "where": snap.destination_id,
+        "where": where_label,
         "check": snap.check_state.as_str(),
         "checkLabel": snap.check_state.display_label(),
         "checkedAt": snap.checked_at,
@@ -708,7 +909,11 @@ fn snapshot_json(snap: &BackupSnapshotRecord) -> Value {
     })
 }
 
-fn dest_json(d: &BackupDestinationRecord, local_info: Option<&BackupLocalInfo>) -> Value {
+fn dest_json(
+    d: &BackupDestinationRecord,
+    default_dest_id: &str,
+    local_info: Option<&BackupLocalInfo>,
+) -> Value {
     let detail = if d.provider == "local" {
         local_info
             .map(|i| i.path.clone())
@@ -720,7 +925,11 @@ fn dest_json(d: &BackupDestinationRecord, local_info: Option<&BackupLocalInfo>) 
             })
             .unwrap_or_else(|| "/var/backups/opsbox".to_owned())
     } else {
-        d.name.clone()
+        d.config
+            .get("displayLoc")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| d.name.clone())
     };
     let status = if d.provider == "local" {
         match local_info {
@@ -740,6 +949,9 @@ fn dest_json(d: &BackupDestinationRecord, local_info: Option<&BackupLocalInfo>) 
         "name": d.name,
         "detail": detail,
         "config": d.config,
+        "publicKey": d.config.get("publicKey").and_then(Value::as_str),
+        "fingerprint": d.config.get("fingerprint").and_then(Value::as_str),
+        "isDefault": d.id == default_dest_id,
         "status": status,
         "verifiedAt": d.verified_at,
     })
@@ -832,8 +1044,25 @@ pub(crate) fn collect_attention_items(state: &AppState, who: &Principal) -> Vec<
                 link: ("Inspect backups →".to_owned(), "#/backups".to_owned()),
             });
         }
+        if let Ok(Some(err_v)) = state.store.get_setting(SETTING_LAST_RESTORE_TEST_ERROR)
+            && let Some(err_s) = err_v.as_str()
+            && !err_s.trim().is_empty()
+        {
+            out.push(Attention {
+                kind: "backup",
+                text: format!("Monthly backup restore test failed: {err_s}"),
+                link: ("Inspect backups →".to_owned(), "#/backups".to_owned()),
+            });
+        }
     }
     out
+}
+
+fn dest_name_map(dests: &[BackupDestinationRecord]) -> HashMap<String, String> {
+    dests
+        .iter()
+        .map(|d| (d.id.clone(), d.name.clone()))
+        .collect()
 }
 
 /// `GET /api/v1/backups`
@@ -844,13 +1073,48 @@ pub(crate) async fn overview(
 ) -> Result<Json<Value>, HttpError> {
     let store = state.store.clone();
     let dir_str = state.backups.backup_dir().display().to_string();
-    let (jobs, dests) = tokio::task::spawn_blocking(move || {
+    let (jobs, dests, default_dest_id, rt_meta) = tokio::task::spawn_blocking(move || {
         let now = now_unix();
         let _ = store.ensure_local_destination_path(&dir_str, now);
         initialize_missing_next_runs(&store, now);
+        let default_id = resolve_default_destination_id(&store);
+        let last_at = store
+            .get_setting(SETTING_LAST_RESTORE_TEST_AT)
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_i64());
+        let last_ok = store
+            .get_setting(SETTING_LAST_RESTORE_TEST_OK)
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_bool());
+        let last_summary = store
+            .get_setting(SETTING_LAST_RESTORE_TEST_SUMMARY)
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_str().map(str::to_owned));
+        let last_err = store
+            .get_setting(SETTING_LAST_RESTORE_TEST_ERROR)
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_str().map(str::to_owned))
+            .filter(|s| !s.is_empty());
+        let next_at = store
+            .get_setting(SETTING_NEXT_RESTORE_TEST_AT)
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_i64());
         Ok::<_, opsbox_store::StoreError>((
             store.list_backup_jobs()?,
             store.list_backup_destinations()?,
+            default_id,
+            json!({
+                "lastRunAt": last_at,
+                "lastOk": last_ok,
+                "lastSummary": last_summary,
+                "lastError": last_err,
+                "nextRunAt": next_at,
+            }),
         ))
     })
     .await
@@ -864,15 +1128,20 @@ pub(crate) async fn overview(
         .await
         .ok();
 
-    if local_info
-        .as_ref()
-        .is_some_and(|i| i.restic_installed && i.repo_initialized)
+    let has_remote = dests
+        .iter()
+        .any(|d| d.id != LOCAL_DESTINATION_ID && d.verified_at.is_some());
+    if has_remote
+        || local_info
+            .as_ref()
+            .is_some_and(|i| i.restic_installed && i.repo_initialized)
     {
         sync_all_snapshots(
             &state.store,
             &state.priv_client,
             &rid,
             Some(&who.user.name),
+            None,
             None,
         )
         .await;
@@ -888,21 +1157,27 @@ pub(crate) async fn overview(
 
     let now = now_unix();
     let same_disk = local_info.as_ref().is_some_and(|i| i.same_disk);
+    let dnames = dest_name_map(&dests);
     let jobs_json: Vec<Value> = jobs.iter().map(|j| job_json(j, now)).collect();
-    let snaps_json: Vec<Value> = snapshots.iter().map(snapshot_json).collect();
+    let snaps_json: Vec<Value> = snapshots
+        .iter()
+        .map(|s| snapshot_json(s, &dnames))
+        .collect();
     let dests_json: Vec<Value> = dests
         .iter()
-        .map(|d| dest_json(d, local_info.as_ref()))
+        .map(|d| dest_json(d, &default_dest_id, local_info.as_ref()))
         .collect();
 
     Ok(Json(json!({
         "jobs": jobs_json,
         "snapshots": snaps_json,
         "destinations": dests_json,
+        "defaultDestinationId": default_dest_id,
         "localDisk": local_info.as_ref().map(local_disk_json),
         "sameDisk": same_disk,
-        "remoteDestinationsReady": false,
-        "restoreReady": false,
+        "remoteDestinationsReady": true,
+        "restoreReady": true,
+        "restoreTest": rt_meta,
     })))
 }
 
@@ -912,37 +1187,28 @@ pub(crate) async fn list_snapshots(
     Viewer(who): Viewer,
     Extension(RequestId(rid)): Extension<RequestId>,
 ) -> Result<Json<Value>, HttpError> {
-    match state
-        .priv_client
-        .backup_snapshots(
-            &rid,
-            Some(&who.user.name),
-            BackupSnapshotsRequest {
-                destination_id: LOCAL_DESTINATION_ID.to_owned(),
-            },
-        )
-        .await
-    {
-        Ok(snaps) => {
-            let st = state.store.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                sync_restic_snapshots_to_store(&st, &snaps, None)
-            })
-            .await;
-        }
-        Err(ClientError::Remote(ref r)) if r.code == PrivErrorCode::Unsupported => {}
-        Err(e) => {
-            warn!(error = %e, "could not refresh restic snapshots; returning cached list");
-        }
-    }
+    sync_all_snapshots(
+        &state.store,
+        &state.priv_client,
+        &rid,
+        Some(&who.user.name),
+        None,
+        None,
+    )
+    .await;
 
     let st = state.store.clone();
-    let rows =
-        tokio::task::spawn_blocking(move || st.list_backup_snapshots(DEFAULT_SNAPSHOT_LIMIT))
-            .await
-            .map_err(|_| HttpError::internal())?
-            .map_err(store_err)?;
-    let out: Vec<Value> = rows.iter().map(snapshot_json).collect();
+    let (rows, dests) = tokio::task::spawn_blocking(move || {
+        Ok::<_, opsbox_store::StoreError>((
+            st.list_backup_snapshots(DEFAULT_SNAPSHOT_LIMIT)?,
+            st.list_backup_destinations()?,
+        ))
+    })
+    .await
+    .map_err(|_| HttpError::internal())?
+    .map_err(store_err)?;
+    let dnames = dest_name_map(&dests);
+    let out: Vec<Value> = rows.iter().map(|s| snapshot_json(s, &dnames)).collect();
     Ok(Json(json!({ "snapshots": out })))
 }
 
@@ -979,22 +1245,18 @@ pub(crate) async fn create_job(
         body.retain_weekly.unwrap_or(8),
     )
     .map_err(map_val_err)?;
-    let destination_id = body
+    let requested_dest = body
         .destination_id
         .as_deref()
-        .unwrap_or(LOCAL_DESTINATION_ID)
-        .trim()
-        .to_owned();
-    if !valid_backup_id(&destination_id) {
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    if let Some(ref did) = requested_dest
+        && !valid_backup_id(did)
+    {
         return Err(HttpError::new(
             ErrorCode::Validation,
             "Invalid backup destination ID.",
-        ));
-    }
-    if destination_id != LOCAL_DESTINATION_ID {
-        return Err(HttpError::new(
-            ErrorCode::Unsupported,
-            "Off-server destinations are not enabled yet; choose local storage.",
         ));
     }
     let enabled = body.enabled.unwrap_or(true);
@@ -1007,6 +1269,30 @@ pub(crate) async fn create_job(
     let service_ref = body.service_id;
 
     let created = tokio::task::spawn_blocking(move || -> Result<BackupJobRecord, HttpError> {
+        let destination_id = match requested_dest {
+            Some(did) => {
+                let dest = store
+                    .get_backup_destination(&did)
+                    .map_err(store_err)?
+                    .ok_or_else(|| {
+                        HttpError::new(
+                            ErrorCode::NotFound,
+                            format!("Backup destination '{did}' does not exist."),
+                        )
+                    })?;
+                if dest.id != LOCAL_DESTINATION_ID && dest.verified_at.is_none() {
+                    return Err(HttpError::new(
+                        ErrorCode::Conflict,
+                        format!(
+                            "Verify destination '{}' before assigning jobs to it.",
+                            dest.name
+                        ),
+                    ));
+                }
+                dest.id
+            }
+            None => resolve_default_destination_id(&store),
+        };
         let now = now_unix();
         let next_run = if enabled {
             next_run_after_safe(&cron, now)
@@ -1150,6 +1436,7 @@ pub(crate) struct UpdateJobBody {
     retain_daily: Option<u32>,
     retain_weekly: Option<u32>,
     enabled: Option<bool>,
+    destination_id: Option<String>,
     paths: Option<Vec<String>>,
     volumes: Option<Vec<String>>,
     pause_containers: Option<bool>,
@@ -1248,6 +1535,37 @@ pub(crate) async fn update_job(
             None
         };
 
+        let new_dest_id = if let Some(ref raw_did) = body.destination_id {
+            let did = raw_did.trim();
+            if !valid_backup_id(did) {
+                return Err(HttpError::new(
+                    ErrorCode::Validation,
+                    "Invalid backup destination ID.",
+                ));
+            }
+            let dest = store
+                .get_backup_destination(did)
+                .map_err(store_err)?
+                .ok_or_else(|| {
+                    HttpError::new(
+                        ErrorCode::NotFound,
+                        format!("Backup destination '{did}' does not exist."),
+                    )
+                })?;
+            if dest.id != LOCAL_DESTINATION_ID && dest.verified_at.is_none() {
+                return Err(HttpError::new(
+                    ErrorCode::Conflict,
+                    format!(
+                        "Verify destination '{}' before assigning jobs to it.",
+                        dest.name
+                    ),
+                ));
+            }
+            Some(dest.id)
+        } else {
+            None
+        };
+
         store
             .update_backup_job(
                 &jid,
@@ -1262,6 +1580,15 @@ pub(crate) async fn update_job(
                     now,
                 },
             )
+            .map_err(store_err)?
+            .ok_or_else(HttpError::not_found)?;
+        if let Some(ref did) = new_dest_id {
+            store
+                .set_backup_job_destination(&jid, did, now)
+                .map_err(store_err)?;
+        }
+        store
+            .get_backup_job(&jid)
             .map_err(store_err)?
             .ok_or_else(HttpError::not_found)
     })
@@ -1362,7 +1689,15 @@ pub(crate) async fn run_job(
                 opts,
             )
             .await;
-        sync_all_snapshots(&s.store, &s.priv_client, &rid, Some(&actor_name), None).await;
+        sync_all_snapshots(
+            &s.store,
+            &s.priv_client,
+            &rid,
+            Some(&actor_name),
+            Some(&job.destination_id),
+            None,
+        )
+        .await;
         match res {
             Ok(line) => {
                 audit(
@@ -1445,7 +1780,15 @@ pub(crate) async fn run_all(
                 }
             }
         }
-        sync_all_snapshots(&s.store, &s.priv_client, &rid, Some(&actor_name), None).await;
+        sync_all_snapshots(
+            &s.store,
+            &s.priv_client,
+            &rid,
+            Some(&actor_name),
+            None,
+            None,
+        )
+        .await;
         audit(
             &s,
             &principal,
@@ -1470,6 +1813,7 @@ pub(crate) async fn run_all(
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PruneBody {
     job_id: Option<String>,
+    destination_id: Option<String>,
     retain_daily: Option<u32>,
     retain_weekly: Option<u32>,
 }
@@ -1488,10 +1832,36 @@ pub(crate) async fn prune(
     {
         return Err(HttpError::new(ErrorCode::Validation, "Invalid job ID."));
     }
+    if let Some(ref did) = body.destination_id
+        && !valid_backup_id(did)
+    {
+        return Err(HttpError::new(
+            ErrorCode::Validation,
+            "Invalid destination ID.",
+        ));
+    }
     let store = state.store.clone();
     let job_id_clone = body.job_id.clone();
-    let jobs_to_prune: Vec<(Option<String>, u32, u32)> = tokio::task::spawn_blocking(
-        move || -> Result<Vec<(Option<String>, u32, u32)>, HttpError> {
+    let dest_id_clone = body.destination_id.clone();
+    type PruneItem = (String, BackupRepoTarget, Option<String>, u32, u32);
+    let jobs_to_prune: Vec<PruneItem> =
+        tokio::task::spawn_blocking(move || -> Result<Vec<PruneItem>, HttpError> {
+            let dests: HashMap<String, BackupDestinationRecord> = store
+                .list_backup_destinations()
+                .map_err(store_err)?
+                .into_iter()
+                .map(|d| (d.id.clone(), d))
+                .collect();
+            let repo_for = |did: &str| -> Result<BackupRepoTarget, HttpError> {
+                let d = dests.get(did).ok_or_else(|| {
+                    HttpError::new(
+                        ErrorCode::NotFound,
+                        format!("Destination '{did}' does not exist."),
+                    )
+                })?;
+                repo_target_from_record(d)
+            };
+
             if let Some(jid) = job_id_clone {
                 let job = store
                     .get_backup_job(&jid)
@@ -1504,29 +1874,40 @@ pub(crate) async fn prune(
                     .retain_weekly
                     .unwrap_or_else(|| u32::try_from(job.retain_weekly.max(0)).unwrap_or(8));
                 validate_retention(rd, rw).map_err(map_val_err)?;
-                return Ok(vec![(Some(jid), rd, rw)]);
+                let repo = repo_for(&job.destination_id)?;
+                return Ok(vec![(job.destination_id, repo, Some(jid), rd, rw)]);
             }
             if let (Some(rd), Some(rw)) = (body.retain_daily, body.retain_weekly) {
                 validate_retention(rd, rw).map_err(map_val_err)?;
-                return Ok(vec![(None, rd, rw)]);
+                let did = dest_id_clone.unwrap_or_else(|| resolve_default_destination_id(&store));
+                let repo = repo_for(&did)?;
+                return Ok(vec![(did, repo, None, rd, rw)]);
             }
             let all = store.list_backup_jobs().map_err(store_err)?;
             let mut out = Vec::with_capacity(all.len());
             for j in all {
+                if let Some(ref only_did) = dest_id_clone
+                    && &j.destination_id != only_did
+                {
+                    continue;
+                }
                 let rd = u32::try_from(j.retain_daily.max(0)).unwrap_or(14);
                 let rw = u32::try_from(j.retain_weekly.max(0)).unwrap_or(8);
-                if rd > 0 || rw > 0 {
-                    out.push((Some(j.id), rd, rw));
+                if (rd > 0 || rw > 0)
+                    && let Ok(repo) = repo_for(&j.destination_id)
+                {
+                    out.push((j.destination_id, repo, Some(j.id), rd, rw));
                 }
             }
             if out.is_empty() {
-                out.push((None, 14, 8));
+                let did = dest_id_clone.unwrap_or_else(|| LOCAL_DESTINATION_ID.to_owned());
+                let repo = repo_for(&did)?;
+                out.push((did, repo, None, 14, 8));
             }
             Ok(out)
-        },
-    )
-    .await
-    .map_err(|_| HttpError::internal())??;
+        })
+        .await
+        .map_err(|_| HttpError::internal())??;
 
     let s = state.clone();
     let actor_name = who.user.name.clone();
@@ -1538,14 +1919,15 @@ pub(crate) async fn prune(
         let mut total_removed = 0u32;
         let mut total_kept = 0u32;
         let mut log = Vec::new();
-        for (jid, rd, rw) in jobs_to_prune {
+        for (did, repo, jid, rd, rw) in jobs_to_prune {
             let res = s
                 .priv_client
                 .backup_forget(
                     &rid,
                     Some(&actor_name),
                     BackupForgetRequest {
-                        destination_id: LOCAL_DESTINATION_ID.to_owned(),
+                        destination_id: did,
+                        repo,
                         job_id: jid,
                         retain_daily: rd,
                         retain_weekly: rw,
@@ -1556,7 +1938,15 @@ pub(crate) async fn prune(
             total_kept = total_kept.saturating_add(res.kept_count);
             log.extend(res.log);
         }
-        sync_all_snapshots(&s.store, &s.priv_client, &rid, Some(&actor_name), None).await;
+        sync_all_snapshots(
+            &s.store,
+            &s.priv_client,
+            &rid,
+            Some(&actor_name),
+            None,
+            None,
+        )
+        .await;
         audit(
             &s,
             &principal,
@@ -1577,6 +1967,7 @@ pub(crate) async fn prune(
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CheckBody {
+    destination_id: Option<String>,
     read_data_subset: Option<String>,
 }
 
@@ -1588,12 +1979,57 @@ pub(crate) async fn check(
     Extension(RequestId(rid)): Extension<RequestId>,
     body: Option<ApiJson<CheckBody>>,
 ) -> Result<(StatusCode, Json<Value>), HttpError> {
+    let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    if let Some(ref did) = body.destination_id
+        && !valid_backup_id(did)
+    {
+        return Err(HttpError::new(
+            ErrorCode::Validation,
+            "Invalid destination ID.",
+        ));
+    }
     let subset = body
-        .map(|ApiJson(b)| b.read_data_subset)
-        .unwrap_or(None)
+        .read_data_subset
         .map(|s| validate_read_data_subset(&s))
         .transpose()
         .map_err(map_val_err)?;
+
+    let store = state.store.clone();
+    let explicit_did = body.destination_id.clone();
+    let targets: Vec<(String, BackupRepoTarget)> = tokio::task::spawn_blocking(move || {
+        let dests = store.list_backup_destinations().map_err(store_err)?;
+        if let Some(ref want) = explicit_did {
+            let d = dests
+                .into_iter()
+                .find(|x| &x.id == want)
+                .ok_or_else(HttpError::not_found)?;
+            return Ok::<_, HttpError>(vec![(d.id.clone(), repo_target_from_record(&d)?)]);
+        }
+        let snaps = store
+            .list_backup_snapshots(DEFAULT_SNAPSHOT_LIMIT)
+            .unwrap_or_default();
+        let active_dests: std::collections::HashSet<&str> =
+            snaps.iter().map(|s| s.destination_id.as_str()).collect();
+        let mut out = Vec::new();
+        for d in &dests {
+            if (active_dests.contains(d.id.as_str())
+                || d.id == LOCAL_DESTINATION_ID && active_dests.is_empty())
+                && (d.id == LOCAL_DESTINATION_ID || d.verified_at.is_some())
+                && let Ok(repo) = repo_target_from_record(d)
+            {
+                out.push((d.id.clone(), repo));
+            }
+        }
+        if out.is_empty() {
+            let fallback_id = resolve_default_destination_id(&store);
+            if let Some(d) = dests.into_iter().find(|x| x.id == fallback_id) {
+                out.push((d.id.clone(), repo_target_from_record(&d)?));
+            }
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|_| HttpError::internal())??;
 
     let s = state.clone();
     let actor_name = who.user.name.clone();
@@ -1602,47 +2038,1622 @@ pub(crate) async fn check(
 
     let task = state.tasks.start("backups.check", async move {
         let _guard = s.backups.run_lock.lock().await;
-        let res = s
-            .priv_client
-            .backup_check(
+        let mut all_ok = true;
+        let mut total_errors = 0u64;
+        let mut summaries = Vec::new();
+        for (did, repo) in targets {
+            let res = s
+                .priv_client
+                .backup_check(
+                    &rid,
+                    Some(&actor_name),
+                    BackupCheckRequest {
+                        destination_id: did.clone(),
+                        repo,
+                        read_data_subset: subset.clone(),
+                    },
+                )
+                .await?;
+            let ts = now_unix();
+            let chk_state = if res.ok {
+                BackupCheckState::ChecksumOk
+            } else {
+                all_ok = false;
+                BackupCheckState::ChecksumFailed
+            };
+            total_errors = total_errors.saturating_add(res.num_errors);
+            summaries.push(res.summary);
+            sync_all_snapshots(
+                &s.store,
+                &s.priv_client,
                 &rid,
                 Some(&actor_name),
-                BackupCheckRequest {
-                    destination_id: LOCAL_DESTINATION_ID.to_owned(),
-                    read_data_subset: subset,
-                },
+                Some(&did),
+                Some((chk_state, ts)),
             )
-            .await?;
-        let ts = now_unix();
-        let chk_state = if res.ok {
-            BackupCheckState::ChecksumOk
-        } else {
-            BackupCheckState::ChecksumFailed
-        };
-        sync_all_snapshots(
-            &s.store,
-            &s.priv_client,
-            &rid,
-            Some(&actor_name),
-            Some((chk_state, ts)),
-        )
-        .await;
+            .await;
+        }
+        let summary = summaries.join(" | ");
         audit(
             &s,
             &principal,
             &ip,
             "backup.check",
             None,
-            json!({ "ok": res.ok, "errors": res.num_errors }),
+            json!({ "ok": all_ok, "errors": total_errors }),
         );
-        if !res.ok {
-            return Err(HttpError::new(ErrorCode::Internal, res.summary));
+        if !all_ok {
+            return Err(HttpError::new(ErrorCode::Internal, summary));
         }
         Ok(Outcome {
-            log: vec![res.summary.clone()],
-            result: json!({ "ok": true, "numErrors": res.num_errors, "summary": res.summary }),
+            log: summaries,
+            result: json!({ "ok": true, "numErrors": total_errors, "summary": summary }),
         })
     })?;
 
+    Ok((StatusCode::ACCEPTED, Json(json!({ "task": task }))))
+}
+
+/// `GET /api/v1/backups/providers` — canonical offsite provider presets + server hostname.
+pub(crate) async fn list_providers(
+    State(state): State<AppState>,
+    Viewer(who): Viewer,
+    Extension(RequestId(rid)): Extension<RequestId>,
+) -> Json<Value> {
+    let hostname = state
+        .priv_client
+        .host_info(&rid, Some(&who.user.name))
+        .await
+        .map(|h| h.hostname)
+        .unwrap_or_else(|_| "opsbox-server".to_owned());
+    Json(json!({
+        "providers": backup_provider_presets(),
+        "hostname": hostname,
+    }))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TestDestinationBody {
+    provider: BackupProviderId,
+    #[serde(default, alias = "fields")]
+    values: DestinationFieldInput,
+}
+
+/// `POST /api/v1/backups/destinations/test` — validate and probe an unsaved destination.
+pub(crate) async fn test_destination(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(body): ApiJson<TestDestinationBody>,
+) -> Result<Json<Value>, HttpError> {
+    let hostname = state
+        .priv_client
+        .host_info(&rid, Some(&who.user.name))
+        .await
+        .map(|h| h.hostname)
+        .unwrap_or_else(|_| "opsbox-server".to_owned());
+
+    let cfg = validate_destination_input(
+        body.provider,
+        None,
+        &body.values,
+        &hostname,
+        !body.provider.is_sftp(),
+    )
+    .map_err(map_val_err)?;
+
+    let target = match cfg {
+        ValidatedDestinationConfig::Sftp {
+            host,
+            port,
+            user,
+            repo_path,
+            ..
+        } => BackupDestinationTestTarget::SftpReachability {
+            host,
+            port,
+            user,
+            repo_path,
+        },
+        ValidatedDestinationConfig::S3 {
+            endpoint,
+            region,
+            bucket,
+            repo_path,
+            ..
+        } => BackupDestinationTestTarget::Restic {
+            repo: BackupRepoTarget::S3 {
+                destination_id: "probe".into(),
+                endpoint,
+                bucket,
+                repo_path,
+                region,
+                credentials: BackupS3Credentials::Plaintext {
+                    access_key_id: Secret::new(body.values.key.trim().to_owned()),
+                    secret_access_key: Secret::new(body.values.secret.clone()),
+                },
+            },
+        },
+    };
+
+    let res = state
+        .priv_client
+        .backup_test_destination(
+            &rid,
+            Some(&who.user.name),
+            BackupDestinationTestRequest {
+                provider: body.provider,
+                target,
+            },
+        )
+        .await?;
+
+    audit(
+        &state,
+        &who,
+        &client.ip,
+        "backup.destination.test",
+        None,
+        json!({ "provider": body.provider.as_str(), "ok": res.ok }),
+    );
+    Ok(Json(json!(res)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CreateDestinationBody {
+    provider: BackupProviderId,
+    name: Option<String>,
+    #[serde(default, alias = "fields")]
+    values: DestinationFieldInput,
+    make_default: Option<bool>,
+    use_for_existing: Option<bool>,
+    verify: Option<bool>,
+}
+
+/// `POST /api/v1/backups/destinations` — seal credentials in `priv` and save destination.
+pub(crate) async fn create_destination(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(body): ApiJson<CreateDestinationBody>,
+) -> Result<(StatusCode, Json<Value>), HttpError> {
+    let hostname = state
+        .priv_client
+        .host_info(&rid, Some(&who.user.name))
+        .await
+        .map(|h| h.hostname)
+        .unwrap_or_else(|_| "opsbox-server".to_owned());
+
+    let cfg = validate_destination_input(
+        body.provider,
+        body.name.as_deref(),
+        &body.values,
+        &hostname,
+        !body.provider.is_sftp(),
+    )
+    .map_err(map_val_err)?;
+
+    let id = ulid::Ulid::generate().to_string();
+    let now = now_unix();
+    let seal_context = format!("backup:dest:{id}");
+
+    match cfg {
+        ValidatedDestinationConfig::Sftp {
+            name,
+            host,
+            port,
+            user,
+            path,
+            server,
+            repo_path,
+            display_loc,
+        } => {
+            let key = state
+                .priv_client
+                .backup_generate_sftp_key(
+                    &rid,
+                    Some(&who.user.name),
+                    BackupGenerateSftpKeyRequest {
+                        destination_id: id.clone(),
+                    },
+                )
+                .await?;
+            let config = json!({
+                "host": host,
+                "port": port,
+                "user": user,
+                "path": path,
+                "server": server,
+                "repoPath": repo_path,
+                "displayLoc": display_loc,
+                "publicKey": key.public_key,
+                "fingerprint": key.fingerprint,
+                "sealContext": key.seal_context,
+            });
+            let st = state.store.clone();
+            let did = id.clone();
+            let rec = tokio::task::spawn_blocking(move || {
+                st.create_backup_destination(
+                    &did,
+                    body.provider.as_str(),
+                    &name,
+                    &config,
+                    Some(&key.private_key_enc),
+                    None,
+                    now,
+                )
+            })
+            .await
+            .map_err(|_| HttpError::internal())?
+            .map_err(store_err)?;
+
+            let default_dest = resolve_default_destination_id(&state.store);
+            audit(
+                &state,
+                &who,
+                &client.ip,
+                "backup.destination.create",
+                Some(&rec.id),
+                json!({ "provider": rec.provider, "name": rec.name, "verified": false }),
+            );
+            Ok((
+                StatusCode::CREATED,
+                Json(json!({
+                    "destination": dest_json(&rec, &default_dest, None),
+                    "publicKey": key.public_key,
+                    "fingerprint": key.fingerprint,
+                    "nextAction": "add_ssh_key_and_test",
+                })),
+            ))
+        }
+        ValidatedDestinationConfig::S3 {
+            provider,
+            name,
+            endpoint,
+            region,
+            bucket,
+            prefix,
+            server,
+            repo_path,
+            display_loc,
+        } => {
+            let secret_payload = json!({
+                "accessKeyId": body.values.key.trim(),
+                "secretAccessKey": body.values.secret,
+            })
+            .to_string();
+            let sealed_creds = state
+                .priv_client
+                .secret_seal(
+                    &rid,
+                    Some(&who.user.name),
+                    &seal_context,
+                    Secret::new(secret_payload),
+                )
+                .await?;
+
+            if body.verify.unwrap_or(true) {
+                let probe = state
+                    .priv_client
+                    .backup_test_destination(
+                        &rid,
+                        Some(&who.user.name),
+                        BackupDestinationTestRequest {
+                            provider,
+                            target: BackupDestinationTestTarget::Restic {
+                                repo: BackupRepoTarget::S3 {
+                                    destination_id: id.clone(),
+                                    endpoint: endpoint.clone(),
+                                    bucket: bucket.clone(),
+                                    repo_path: repo_path.clone(),
+                                    region: region.clone(),
+                                    credentials: BackupS3Credentials::Sealed {
+                                        seal_context: seal_context.clone(),
+                                        value_enc: sealed_creds.clone(),
+                                    },
+                                },
+                            },
+                        },
+                    )
+                    .await?;
+                if !probe.ok {
+                    let fail_msg = probe
+                        .steps
+                        .iter()
+                        .find(|s| s.status == opsbox_proto::BackupTestStepStatus::Fail)
+                        .map_or_else(
+                            || "Destination test failed.".to_owned(),
+                            |s| s.message.clone(),
+                        );
+                    return Err(HttpError::new(ErrorCode::Validation, fail_msg));
+                }
+            }
+
+            let config = json!({
+                "endpoint": endpoint,
+                "region": region,
+                "bucket": bucket,
+                "prefix": prefix,
+                "server": server,
+                "repoPath": repo_path,
+                "displayLoc": display_loc,
+                "sealContext": seal_context,
+            });
+            let make_default = body.make_default.unwrap_or(true);
+            let use_existing = body.use_for_existing.unwrap_or(true);
+            let st = state.store.clone();
+            let did = id.clone();
+            let (rec, default_dest) =
+                tokio::task::spawn_blocking(move || -> Result<_, opsbox_store::StoreError> {
+                    let rec = st.create_backup_destination(
+                        &did,
+                        provider.as_str(),
+                        &name,
+                        &config,
+                        Some(&sealed_creds),
+                        Some(now),
+                        now,
+                    )?;
+                    if use_existing {
+                        let _ =
+                            st.reassign_backup_jobs_destination(LOCAL_DESTINATION_ID, &did, now);
+                    }
+                    if make_default {
+                        let _ = st.set_setting(SETTING_DEFAULT_DEST, &json!(did));
+                    }
+                    let cur_def = resolve_default_destination_id(&st);
+                    Ok((rec, cur_def))
+                })
+                .await
+                .map_err(|_| HttpError::internal())?
+                .map_err(store_err)?;
+
+            audit(
+                &state,
+                &who,
+                &client.ip,
+                "backup.destination.create",
+                Some(&rec.id),
+                json!({ "provider": rec.provider, "name": rec.name, "verified": true }),
+            );
+            Ok((
+                StatusCode::CREATED,
+                Json(json!({
+                    "destination": dest_json(&rec, &default_dest, None),
+                })),
+            ))
+        }
+    }
+}
+
+/// `POST /api/v1/backups/destinations/{id}/test` — test a saved destination and mark verified.
+pub(crate) async fn test_saved_destination(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, HttpError> {
+    if !valid_backup_id(&id) {
+        return Err(HttpError::not_found());
+    }
+    let st = state.store.clone();
+    let did = id.clone();
+    let dest = tokio::task::spawn_blocking(move || st.get_backup_destination(&did))
+        .await
+        .map_err(|_| HttpError::internal())?
+        .map_err(store_err)?
+        .ok_or_else(HttpError::not_found)?;
+
+    let provider = if dest.provider == "local" {
+        BackupProviderId::Custom
+    } else {
+        BackupProviderId::parse(&dest.provider).ok_or_else(|| {
+            HttpError::new(
+                ErrorCode::Validation,
+                format!("Unsupported provider '{}'.", dest.provider),
+            )
+        })?
+    };
+    let repo = repo_target_from_record(&dest)?;
+    let res = state
+        .priv_client
+        .backup_test_destination(
+            &rid,
+            Some(&who.user.name),
+            BackupDestinationTestRequest {
+                provider,
+                target: BackupDestinationTestTarget::Restic { repo },
+            },
+        )
+        .await?;
+
+    let mut updated_dest = dest.clone();
+    if res.ok {
+        let now = now_unix();
+        let was_unverified = dest.verified_at.is_none();
+        let st_upd = state.store.clone();
+        let did_upd = id.clone();
+        updated_dest =
+            tokio::task::spawn_blocking(move || -> Result<_, opsbox_store::StoreError> {
+                st_upd.update_backup_destination_verification(&did_upd, Some(now), now)?;
+                if was_unverified && did_upd != LOCAL_DESTINATION_ID {
+                    let _ = st_upd.reassign_backup_jobs_destination(
+                        LOCAL_DESTINATION_ID,
+                        &did_upd,
+                        now,
+                    );
+                    if resolve_default_destination_id(&st_upd) == LOCAL_DESTINATION_ID
+                        || st_upd
+                            .get_setting(SETTING_DEFAULT_DEST)
+                            .ok()
+                            .flatten()
+                            .is_none()
+                    {
+                        let _ = st_upd.set_setting(SETTING_DEFAULT_DEST, &json!(did_upd));
+                    }
+                }
+                Ok(st_upd.get_backup_destination(&did_upd)?.unwrap_or(dest))
+            })
+            .await
+            .map_err(|_| HttpError::internal())?
+            .map_err(store_err)?;
+
+        sync_all_snapshots(
+            &state.store,
+            &state.priv_client,
+            &rid,
+            Some(&who.user.name),
+            Some(&id),
+            None,
+        )
+        .await;
+    }
+
+    let default_dest = resolve_default_destination_id(&state.store);
+    audit(
+        &state,
+        &who,
+        &client.ip,
+        "backup.destination.test",
+        Some(&id),
+        json!({ "ok": res.ok, "verified": res.verified }),
+    );
+    Ok(Json(json!({
+        "ok": res.ok,
+        "verified": res.verified,
+        "steps": res.steps,
+        "destination": dest_json(&updated_dest, &default_dest, None),
+    })))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetDefaultDestBody {
+    #[serde(default)]
+    reassign_existing: bool,
+}
+
+/// `POST /api/v1/backups/destinations/{id}/default` — select default destination.
+pub(crate) async fn set_default_destination(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Path(id): Path<String>,
+    body: Option<ApiJson<SetDefaultDestBody>>,
+) -> Result<Json<Value>, HttpError> {
+    if !valid_backup_id(&id) {
+        return Err(HttpError::not_found());
+    }
+    let reassign = body.is_some_and(|ApiJson(b)| b.reassign_existing);
+    let st = state.store.clone();
+    let did = id.clone();
+    let dest =
+        tokio::task::spawn_blocking(move || -> Result<BackupDestinationRecord, HttpError> {
+            let dest = st
+                .get_backup_destination(&did)
+                .map_err(store_err)?
+                .ok_or_else(HttpError::not_found)?;
+            if dest.id != LOCAL_DESTINATION_ID && dest.verified_at.is_none() {
+                return Err(HttpError::new(
+                    ErrorCode::Conflict,
+                    "Verify this destination before setting it as default.",
+                ));
+            }
+            let now = now_unix();
+            st.set_setting(SETTING_DEFAULT_DEST, &json!(did))
+                .map_err(store_err)?;
+            if reassign {
+                for j in st.list_backup_jobs().map_err(store_err)? {
+                    let _ = st.set_backup_job_destination(&j.id, &did, now);
+                }
+            }
+            Ok(dest)
+        })
+        .await
+        .map_err(|_| HttpError::internal())??;
+
+    audit(
+        &state,
+        &who,
+        &client.ip,
+        "backup.destination.default",
+        Some(&id),
+        json!({ "reassignExisting": reassign }),
+    );
+    Ok(Json(json!({ "destination": dest_json(&dest, &id, None) })))
+}
+
+/// `DELETE /api/v1/backups/destinations/{id}` — remove an offsite destination and return jobs to local.
+pub(crate) async fn delete_destination(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, HttpError> {
+    if !valid_backup_id(&id) {
+        return Err(HttpError::not_found());
+    }
+    if id == LOCAL_DESTINATION_ID {
+        return Err(HttpError::new(
+            ErrorCode::Validation,
+            "The built-in local disk destination cannot be deleted.",
+        ));
+    }
+    let st = state.store.clone();
+    let did = id.clone();
+    let removed = tokio::task::spawn_blocking(move || -> Result<bool, opsbox_store::StoreError> {
+        let now = now_unix();
+        let ok = st.delete_backup_destination(&did, now)?;
+        if ok
+            && st
+                .get_setting(SETTING_DEFAULT_DEST)?
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .as_deref()
+                == Some(did.as_str())
+        {
+            let _ = st.set_setting(SETTING_DEFAULT_DEST, &json!(LOCAL_DESTINATION_ID));
+        }
+        Ok(ok)
+    })
+    .await
+    .map_err(|_| HttpError::internal())?
+    .map_err(store_err)?;
+
+    if !removed {
+        return Err(HttpError::not_found());
+    }
+    audit(
+        &state,
+        &who,
+        &client.ip,
+        "backup.destination.delete",
+        Some(&id),
+        json!({}),
+    );
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecoveryKeyBody {
+    password: String,
+}
+
+/// `POST /api/v1/backups/recovery-key` — export the restic repo recovery password behind
+/// admin session check, `deny_token`, and password re-authentication (never returning HTTP 401
+/// on wrong password so interactive browser sessions are preserved).
+pub(crate) async fn recovery_key(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(body): ApiJson<RecoveryKeyBody>,
+) -> Result<(HeaderMap, Json<Value>), HttpError> {
+    if who.via_token {
+        return Err(HttpError::new(
+            ErrorCode::Forbidden,
+            "Recovery key download requires an interactive admin session.",
+        ));
+    }
+    let ok = state
+        .auth
+        .verify_user_password(&who.user.id, &body.password)
+        .await
+        .map_err(|_| HttpError::internal())?;
+    if !ok {
+        audit(
+            &state,
+            &who,
+            &client.ip,
+            "backup.recovery_key.denied",
+            None,
+            json!({ "reason": "wrong_password" }),
+        );
+        return Err(HttpError::new(
+            ErrorCode::Forbidden,
+            "Incorrect account password.",
+        ));
+    }
+
+    let key = state
+        .priv_client
+        .backup_recovery_key(&rid, Some(&who.user.name))
+        .await?;
+    audit(
+        &state,
+        &who,
+        &client.ip,
+        "backup.recovery_key.export",
+        None,
+        json!({ "hostname": key.hostname }),
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok((
+        headers,
+        Json(json!({
+            "password": key.recovery_key.expose(),
+            "hostname": key.hostname,
+            "instructions": "Keep this recovery password offline (for example in a password manager). restic needs it to decrypt backups on a fresh server.",
+        })),
+    ))
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RestoreBody {
+    #[serde(default = "default_copy_mode")]
+    mode: String,
+    confirm: Option<String>,
+    copy_target: Option<String>,
+}
+
+fn default_copy_mode() -> String {
+    "copy".to_owned()
+}
+
+fn infer_db_kind_from_snapshot(
+    snap: &BackupSnapshotRecord,
+    job: Option<&BackupJobRecord>,
+) -> Option<BackupDbKind> {
+    if let Some(j) = job
+        && let Ok(k) = infer_db_kind(j)
+    {
+        return Some(k);
+    }
+    for p in &snap.paths {
+        if p.ends_with(".pg_dump.fc") {
+            return Some(BackupDbKind::Postgres);
+        }
+        if p.ends_with(".rdb") {
+            return Some(BackupDbKind::Redis);
+        }
+        if p.ends_with(".mongodump.archive") {
+            return Some(BackupDbKind::Mongo);
+        }
+        if p.ends_with(".sql") {
+            if let Some(j) = job
+                && (j.template_id.as_deref() == Some("mariadb")
+                    || j.what.get("templateId").and_then(Value::as_str) == Some("mariadb"))
+            {
+                return Some(BackupDbKind::Mariadb);
+            }
+            return Some(BackupDbKind::Mysql);
+        }
+    }
+    None
+}
+
+fn allocate_copy_service_name(
+    store: &Store,
+    custom: Option<&str>,
+    base: &str,
+    now: i64,
+) -> Result<String, HttpError> {
+    if let Some(raw) = custom.map(str::trim).filter(|s| !s.is_empty()) {
+        if !valid_service_name(raw) {
+            return Err(HttpError::new(
+                ErrorCode::Validation,
+                "Service name must use lowercase letters, digits, and dashes.",
+            ));
+        }
+        if store.get_service(raw).map_err(store_err)?.is_some() {
+            return Err(HttpError::new(
+                ErrorCode::Conflict,
+                format!("A service named '{raw}' already exists."),
+            ));
+        }
+        return Ok(raw.to_owned());
+    }
+    let clean_base: String = base
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed_base = clean_base.trim_matches('-');
+    let prefix = if trimmed_base.is_empty() {
+        "db"
+    } else {
+        trimmed_base
+    };
+    let sfx = date_suffix_utc(now);
+    let head: String = prefix.chars().take(16).collect();
+    let candidate = format!("{}-r{}", head.trim_end_matches('-'), sfx);
+    let mut name: String = candidate.chars().take(32).collect();
+    name = name.trim_end_matches('-').to_owned();
+    if valid_service_name(&name) && store.get_service(&name).map_err(store_err)?.is_none() {
+        return Ok(name);
+    }
+    for idx in 1..=99u32 {
+        let cand = format!("{}-{idx}", name.chars().take(28).collect::<String>());
+        if valid_service_name(&cand) && store.get_service(&cand).map_err(store_err)?.is_none() {
+            return Ok(cand);
+        }
+    }
+    Err(HttpError::new(
+        ErrorCode::Conflict,
+        "Could not allocate a unique copy service name.",
+    ))
+}
+
+/// `POST /api/v1/backups/snapshots/{id}/restore` — restore a snapshot (`copy` by default, or
+/// `replace` in place after exact `"replace"` typed confirmation and a live safety snapshot first).
+pub(crate) async fn restore_snapshot(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path(id): Path<String>,
+    body: Option<ApiJson<RestoreBody>>,
+) -> Result<(StatusCode, Json<Value>), HttpError> {
+    let body = body.map(|ApiJson(b)| b).unwrap_or_default();
+    let mode = match body.mode.trim().to_ascii_lowercase().as_str() {
+        "" | "copy" => BackupRestoreMode::Copy,
+        "replace" => BackupRestoreMode::Replace,
+        other => {
+            return Err(HttpError::new(
+                ErrorCode::Validation,
+                format!("Invalid restore mode '{other}'; expected 'copy' or 'replace'."),
+            ));
+        }
+    };
+    if mode == BackupRestoreMode::Replace && body.confirm.as_deref() != Some("replace") {
+        return Err(HttpError::new(
+            ErrorCode::ConfirmationRequired,
+            "Type \"replace\" to confirm replacing live data in place.",
+        ));
+    }
+
+    let st = state.store.clone();
+    let snap_lookup = id.clone();
+    let (snap, job, dest, orig_svc_opt, orig_vars, proj_env, existing_count) =
+        tokio::task::spawn_blocking(move || -> Result<_, HttpError> {
+            let snap = st
+                .get_backup_snapshot_by_any_id(&snap_lookup)
+                .map_err(store_err)?
+                .ok_or_else(HttpError::not_found)?;
+            let job = snap
+                .job_id
+                .as_deref()
+                .and_then(|jid| st.get_backup_job(jid).ok().flatten());
+            let dest = st
+                .get_backup_destination(&snap.destination_id)
+                .map_err(store_err)?
+                .ok_or_else(|| {
+                    HttpError::new(
+                        ErrorCode::NotFound,
+                        format!("Destination '{}' no longer exists.", snap.destination_id),
+                    )
+                })?;
+            let orig_svc = job
+                .as_ref()
+                .and_then(|j| j.service_id.as_deref())
+                .and_then(|sid| st.get_service(sid).ok().flatten())
+                .or_else(|| st.get_service(&snap.what).ok().flatten());
+            let orig_vars = orig_svc
+                .as_ref()
+                .map(|s| st.list_service_vars(&s.id).unwrap_or_default())
+                .unwrap_or_default();
+            let now = now_unix();
+            let (proj, env_rec) = if let Some(ref s) = orig_svc {
+                st.resolve_project(&s.project_id, now)
+                    .map_err(store_err)?
+                    .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Project not found."))?
+            } else {
+                st.resolve_project("default", now)
+                    .map_err(store_err)?
+                    .ok_or_else(|| {
+                        HttpError::new(ErrorCode::NotFound, "Default project not found.")
+                    })?
+            };
+            let env_id_for_cnt = orig_svc
+                .as_ref()
+                .map_or(env_rec.id.as_str(), |s| s.env_id.as_str());
+            let cnt = st
+                .list_services(&proj.id, env_id_for_cnt)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            Ok((snap, job, dest, orig_svc, orig_vars, (proj, env_rec), cnt))
+        })
+        .await
+        .map_err(|_| HttpError::internal())??;
+
+    if snap.kind == BackupTargetKind::Opsbox && mode == BackupRestoreMode::Replace {
+        return Err(HttpError::new(
+            ErrorCode::Forbidden,
+            "opsbox itself cannot be replaced in place while running; restore to a copy instead.",
+        ));
+    }
+
+    let repo = repo_target_from_record(&dest)?;
+    let now = now_unix();
+
+    // Validate DB restore targets synchronously before spawning the background task.
+    enum RestorePlan {
+        PrivDirect(BackupRestoreRequest),
+        DbCopy {
+            db_kind: BackupDbKind,
+            tmpl_id: String,
+            version: String,
+            image_ref: String,
+            copy_name: String,
+            proj_id: String,
+            proj_name: String,
+            env_id: String,
+            internal_only: bool,
+            public_port: bool,
+            overrides: Vec<(String, String, bool)>,
+            stdin_filename: String,
+        },
+    }
+
+    let plan = match snap.kind {
+        BackupTargetKind::Opsbox => RestorePlan::PrivDirect(BackupRestoreRequest {
+            destination_id: snap.destination_id.clone(),
+            repo: repo.clone(),
+            restic_id: snap.restic_id.clone(),
+            mode,
+            confirm_replace: body.confirm.clone(),
+            target: BackupRestoreTarget::Opsbox {
+                copy_target: body.copy_target.clone(),
+            },
+            job_id: snap.job_id.clone(),
+        }),
+        BackupTargetKind::Path => {
+            let mut snapshot_paths = snap.paths.clone();
+            if snapshot_paths.is_empty()
+                && let Some(ref j) = job
+            {
+                snapshot_paths = j
+                    .what
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            }
+            if snapshot_paths.is_empty() {
+                return Err(HttpError::new(
+                    ErrorCode::Validation,
+                    "Snapshot does not record which path to restore.",
+                ));
+            }
+            RestorePlan::PrivDirect(BackupRestoreRequest {
+                destination_id: snap.destination_id.clone(),
+                repo: repo.clone(),
+                restic_id: snap.restic_id.clone(),
+                mode,
+                confirm_replace: body.confirm.clone(),
+                target: BackupRestoreTarget::Path {
+                    snapshot_paths,
+                    copy_target: body.copy_target.clone(),
+                },
+                job_id: snap.job_id.clone(),
+            })
+        }
+        BackupTargetKind::Volume => {
+            let source_volumes = job
+                .as_ref()
+                .and_then(|j| j.what.get("volumes"))
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| {
+                    snap.what
+                        .split(',')
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                });
+            if source_volumes.is_empty() {
+                return Err(HttpError::new(
+                    ErrorCode::Validation,
+                    "Snapshot does not record which Docker volume to restore.",
+                ));
+            }
+            RestorePlan::PrivDirect(BackupRestoreRequest {
+                destination_id: snap.destination_id.clone(),
+                repo: repo.clone(),
+                restic_id: snap.restic_id.clone(),
+                mode,
+                confirm_replace: body.confirm.clone(),
+                target: BackupRestoreTarget::Volume {
+                    source_volumes,
+                    snapshot_paths: snap.paths.clone(),
+                    copy_volume: body.copy_target.clone(),
+                    project: proj_env.0.name.clone(),
+                    service_label: snap.what.clone(),
+                },
+                job_id: snap.job_id.clone(),
+            })
+        }
+        BackupTargetKind::Database => {
+            let db_kind = infer_db_kind_from_snapshot(&snap, job.as_ref()).ok_or_else(|| {
+                HttpError::new(
+                    ErrorCode::Validation,
+                    "Could not determine database type for this snapshot.",
+                )
+            })?;
+            let stdin_filename = snap
+                .paths
+                .first()
+                .map(|p| p.trim_start_matches('/').to_owned())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| default_stdin_filename(db_kind, &snap.what));
+
+            if mode == BackupRestoreMode::Replace {
+                let svc = orig_svc_opt.ok_or_else(|| {
+                    HttpError::new(
+                        ErrorCode::NotFound,
+                        format!(
+                            "Live database service '{}' no longer exists — restore to a copy instead.",
+                            snap.what
+                        ),
+                    )
+                })?;
+                let cid = svc.active_container.clone().ok_or_else(|| {
+                    HttpError::new(
+                        ErrorCode::Conflict,
+                        format!(
+                            "Database service '{}' must be running before replace-in-place restore.",
+                            svc.name
+                        ),
+                    )
+                })?;
+                let vars = store_env_specs(&state.store, &svc.id);
+                RestorePlan::PrivDirect(BackupRestoreRequest {
+                    destination_id: snap.destination_id.clone(),
+                    repo: repo.clone(),
+                    restic_id: snap.restic_id.clone(),
+                    mode,
+                    confirm_replace: body.confirm.clone(),
+                    target: BackupRestoreTarget::Database {
+                        template: db_kind,
+                        service_id: svc.id,
+                        service_name: svc.name,
+                        container_id: cid,
+                        stdin_filename,
+                        vars,
+                    },
+                    job_id: snap.job_id.clone(),
+                })
+            } else {
+                let tmpl = get_template(db_kind.as_str()).ok_or_else(|| {
+                    HttpError::new(
+                        ErrorCode::Validation,
+                        "Missing database template definition.",
+                    )
+                })?;
+                let copy_name = allocate_copy_service_name(
+                    &state.store,
+                    body.copy_target.as_deref(),
+                    &snap.what,
+                    now,
+                )?;
+                let version = orig_svc_opt
+                    .as_ref()
+                    .map(|s| s.branch.clone())
+                    .filter(|v| tmpl.versions.contains(v))
+                    .or_else(|| tmpl.versions.first().cloned())
+                    .unwrap_or_else(|| "latest".to_owned());
+                let image_ref = format!("{}:{version}", tmpl.image);
+                let mut overrides = Vec::new();
+                if let Some(ref osvc) = orig_svc_opt {
+                    for v in &orig_vars {
+                        if !v.is_secret
+                            && v.ref_expr.is_none()
+                            && matches!(
+                                v.key.as_str(),
+                                "POSTGRES_USER"
+                                    | "POSTGRES_DB"
+                                    | "MYSQL_DATABASE"
+                                    | "MYSQL_USER"
+                                    | "MARIADB_DATABASE"
+                                    | "MARIADB_USER"
+                                    | "MONGO_INITDB_ROOT_USERNAME"
+                            )
+                            && let Ok(opened) = state
+                                .priv_client
+                                .secret_open(
+                                    &rid,
+                                    Some(&who.user.name),
+                                    &var_seal_context(&osvc.id, &v.key),
+                                    &v.value_enc,
+                                )
+                                .await
+                        {
+                            let val = opened.expose().trim().to_owned();
+                            if !val.is_empty() {
+                                overrides.push((v.key.clone(), val, false));
+                            }
+                        }
+                    }
+                }
+                let (internal_only, public_port) = orig_svc_opt
+                    .as_ref()
+                    .map_or((true, false), |s| (s.internal_only, s.public_port));
+                let target_env_id = orig_svc_opt
+                    .as_ref()
+                    .map_or(proj_env.1.id.clone(), |s| s.env_id.clone());
+                RestorePlan::DbCopy {
+                    db_kind,
+                    tmpl_id: tmpl.id.clone(),
+                    version,
+                    image_ref,
+                    copy_name,
+                    proj_id: proj_env.0.id,
+                    proj_name: proj_env.0.name,
+                    env_id: target_env_id,
+                    internal_only,
+                    public_port,
+                    overrides,
+                    stdin_filename,
+                }
+            }
+        }
+    };
+
+    let s = state.clone();
+    let actor_name = who.user.name.clone();
+    let owner_id = who.user.id.clone();
+    let ip = client.ip.clone();
+    let principal = who.clone();
+    let snap_id = snap.id.clone();
+    let snap_short = snap.short_id.clone();
+    let snap_dest = snap.destination_id.clone();
+    let snap_restic_id = snap.restic_id.clone();
+    let snap_job_id = snap.job_id.clone();
+
+    let task = state.tasks.start("backups.restore", async move {
+        let _guard = s.backups.run_lock.lock().await;
+        let res = match plan {
+            RestorePlan::PrivDirect(req) => {
+                s.priv_client
+                    .backup_restore(&rid, Some(&actor_name), req)
+                    .await?
+            }
+            RestorePlan::DbCopy {
+                db_kind,
+                tmpl_id,
+                version,
+                image_ref,
+                copy_name,
+                proj_id,
+                proj_name,
+                env_id,
+                internal_only,
+                public_port,
+                overrides,
+                stdin_filename,
+            } => {
+                let tmpl = get_template(&tmpl_id)
+                    .ok_or_else(|| HttpError::new(ErrorCode::Internal, "Missing DB template."))?;
+                let generated = generate_instance_env(tmpl, &copy_name, &overrides)
+                    .map_err(|_| HttpError::internal())?;
+                let (gx, gy) = next_graph_pos(existing_count);
+                let svc = s
+                    .store
+                    .create_service_with_exposure(
+                        NewService {
+                            project_id: &proj_id,
+                            env_id: &env_id,
+                            name: &copy_name,
+                            kind: ServiceKind::Db,
+                            owner_id: Some(&owner_id),
+                            source_kind: SourceKind::DockerImage,
+                            repo: &image_ref,
+                            branch: &version,
+                            build_method: &tmpl.name,
+                            dockerfile_path: None,
+                            start_cmd: None,
+                            port: tmpl.port,
+                            health_path: "tcp",
+                            domain: None,
+                            image_ref: Some(&image_ref),
+                            deploy_key_id: None,
+                            auto_deploy: false,
+                            memory_limit_mb: None,
+                            cpu_limit_millis: None,
+                            graph_x: gx,
+                            graph_y: gy,
+                            note: Some("restored copy"),
+                            now,
+                        },
+                        None,
+                        Some(&tmpl.id),
+                        internal_only,
+                        public_port,
+                    )
+                    .map_err(store_err)?;
+
+                let seal_pairs: Vec<(String, String, bool)> = generated
+                    .vars
+                    .iter()
+                    .map(|v| (v.key.clone(), v.value.clone(), v.is_secret))
+                    .collect();
+                if let Err(e) =
+                    seal_and_store_vars(&s, &rid, &actor_name, &svc, &seal_pairs, now).await
+                {
+                    let _ = s.store.delete_service(&svc.id);
+                    return Err(e);
+                }
+
+                let _ = s.store.upsert_backup_job(
+                    &svc.id,
+                    Some(&tmpl.id),
+                    &tmpl.backup.method,
+                    &tmpl.backup.cron,
+                    false,
+                    now,
+                );
+                let default_dest = resolve_default_destination_id(&s.store);
+                if default_dest != LOCAL_DESTINATION_ID
+                    && let Ok(Some(j)) = s.store.get_backup_job_for_service(&svc.id)
+                {
+                    let _ = s
+                        .store
+                        .set_backup_job_destination(&j.id, &default_dest, now);
+                }
+
+                let dep = s
+                    .store
+                    .create_deploy(
+                        &svc.id,
+                        None,
+                        &format!("Restore snapshot {snap_short} into copy {copy_name}"),
+                        DeployTrigger::Manual,
+                        &actor_name,
+                        now,
+                    )
+                    .map_err(store_err)?;
+
+                let vars_specs = store_env_specs(&s.store, &svc.id);
+                let started: DeployStartResult = match s
+                    .priv_client
+                    .template_start(
+                        &rid,
+                        &actor_name,
+                        TemplateStartRequest {
+                            project: proj_name,
+                            service: svc.name.clone(),
+                            deploy_id: dep.id.clone(),
+                            template_id: tmpl_id,
+                            version,
+                            image_ref: image_ref.clone(),
+                            internal_only,
+                            public_port,
+                            confirm_public_port: public_port,
+                            vars: vars_specs.clone(),
+                            ref_sources: Vec::new(),
+                            memory_limit_mb: None,
+                            cpu_limit_millis: None,
+                        },
+                    )
+                    .await
+                {
+                    Ok(st) => st,
+                    Err(e) => {
+                        let _ = s.store.delete_service(&svc.id);
+                        return Err(HttpError::from(e));
+                    }
+                };
+
+                let _ = s.store.complete_deploy_switch_with_refs(
+                    &svc.id,
+                    &dep.id,
+                    &image_ref,
+                    &started.container_id,
+                    started.host_port,
+                    None,
+                    None,
+                    now_unix(),
+                );
+
+                match s
+                    .priv_client
+                    .backup_restore(
+                        &rid,
+                        Some(&actor_name),
+                        BackupRestoreRequest {
+                            destination_id: snap_dest.clone(),
+                            repo,
+                            restic_id: snap_restic_id,
+                            mode: BackupRestoreMode::Copy,
+                            confirm_replace: None,
+                            target: BackupRestoreTarget::Database {
+                                template: db_kind,
+                                service_id: svc.id.clone(),
+                                service_name: svc.name.clone(),
+                                container_id: started.container_id.clone(),
+                                stdin_filename,
+                                vars: vars_specs,
+                            },
+                            job_id: snap_job_id,
+                        },
+                    )
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = s
+                            .priv_client
+                            .deploy_stop_container(&rid, &actor_name, &started.container_id)
+                            .await;
+                        let _ = s.store.delete_service(&svc.id);
+                        return Err(HttpError::from(e));
+                    }
+                }
+            }
+        };
+
+        if mode == BackupRestoreMode::Replace {
+            sync_all_snapshots(
+                &s.store,
+                &s.priv_client,
+                &rid,
+                Some(&actor_name),
+                Some(&snap_dest),
+                None,
+            )
+            .await;
+        }
+        audit(
+            &s,
+            &principal,
+            &ip,
+            "backup.restore",
+            Some(&snap_id),
+            json!({
+                "mode": if mode == BackupRestoreMode::Copy { "copy" } else { "replace" },
+                "target": res.target_summary,
+                "safetySnapshotId": res.safety_snapshot_id,
+            }),
+        );
+        Ok(Outcome {
+            log: res.log,
+            result: json!({
+                "ok": res.ok,
+                "mode": if mode == BackupRestoreMode::Copy { "copy" } else { "replace" },
+                "targetSummary": res.target_summary,
+                "message": res.message,
+                "safetySnapshotId": res.safety_snapshot_id,
+                "safetySnapshotShortId": res.safety_snapshot_short_id,
+            }),
+        })
+    })?;
+
+    Ok((StatusCode::ACCEPTED, Json(json!({ "task": task }))))
+}
+
+async fn open_non_secret_var(
+    priv_client: &PrivClient,
+    rid: &str,
+    actor: Option<&str>,
+    service_id: Option<&str>,
+    vars: &[opsbox_store::ServiceVarRecord],
+    key: &str,
+) -> Option<String> {
+    let sid = service_id?;
+    let v = vars
+        .iter()
+        .find(|v| v.key == key && !v.is_secret && v.ref_expr.is_none())?;
+    let sec = priv_client
+        .secret_open(rid, actor, &var_seal_context(sid, key), &v.value_enc)
+        .await
+        .ok()?;
+    let s = sec.expose().trim().to_owned();
+    (!s.is_empty()).then_some(s)
+}
+
+async fn build_restore_test_target(
+    store: &Arc<Store>,
+    priv_client: &PrivClient,
+    rid: &str,
+    actor: Option<&str>,
+    snap: &BackupSnapshotRecord,
+) -> BackupRestoreTestTarget {
+    let st = store.clone();
+    let snap_c = snap.clone();
+    let (db_kind_opt, svc_opt, vars) = tokio::task::spawn_blocking(move || {
+        let job = snap_c
+            .job_id
+            .as_deref()
+            .and_then(|jid| st.get_backup_job(jid).ok().flatten());
+        let db_kind_opt = if snap_c.kind == BackupTargetKind::Database {
+            infer_db_kind_from_snapshot(&snap_c, job.as_ref())
+        } else {
+            None
+        };
+        let svc = job
+            .as_ref()
+            .and_then(|j| j.service_id.as_deref())
+            .and_then(|sid| st.get_service(sid).ok().flatten())
+            .or_else(|| st.get_service(&snap_c.what).ok().flatten());
+        let vars = svc
+            .as_ref()
+            .map(|s| st.list_service_vars(&s.id).unwrap_or_default())
+            .unwrap_or_default();
+        (db_kind_opt, svc, vars)
+    })
+    .await
+    .unwrap_or((None, None, Vec::new()));
+
+    if let Some(db_kind) = db_kind_opt {
+        let sid = svc_opt.as_ref().map(|s| s.id.as_str());
+        let (db_user, db_name) = match db_kind {
+            BackupDbKind::Postgres => (
+                open_non_secret_var(priv_client, rid, actor, sid, &vars, "POSTGRES_USER").await,
+                open_non_secret_var(priv_client, rid, actor, sid, &vars, "POSTGRES_DB").await,
+            ),
+            BackupDbKind::Mysql => (
+                open_non_secret_var(priv_client, rid, actor, sid, &vars, "MYSQL_USER").await,
+                open_non_secret_var(priv_client, rid, actor, sid, &vars, "MYSQL_DATABASE").await,
+            ),
+            BackupDbKind::Mariadb => (
+                open_non_secret_var(priv_client, rid, actor, sid, &vars, "MARIADB_USER").await,
+                open_non_secret_var(priv_client, rid, actor, sid, &vars, "MARIADB_DATABASE").await,
+            ),
+            BackupDbKind::Redis => (None, None),
+            BackupDbKind::Mongo => (
+                open_non_secret_var(
+                    priv_client,
+                    rid,
+                    actor,
+                    sid,
+                    &vars,
+                    "MONGO_INITDB_ROOT_USERNAME",
+                )
+                .await,
+                None,
+            ),
+        };
+        let version = svc_opt.map(|s| s.branch).unwrap_or_default();
+        let stdin_filename = snap
+            .paths
+            .first()
+            .map(|p| p.trim_start_matches('/').to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| default_stdin_filename(db_kind, &snap.what));
+        return BackupRestoreTestTarget::Database {
+            template: db_kind,
+            version,
+            stdin_filename,
+            db_user,
+            db_name,
+        };
+    }
+    BackupRestoreTestTarget::Files {
+        is_opsbox_self: snap.kind == BackupTargetKind::Opsbox
+            || snap.job_id.as_deref() == Some(OPSBOX_SELF_JOB_ID),
+    }
+}
+
+async fn run_single_restore_test(
+    store: &Arc<Store>,
+    priv_client: &PrivClient,
+    rid: &str,
+    actor: Option<&str>,
+    snap: &BackupSnapshotRecord,
+    dest: &BackupDestinationRecord,
+) -> Result<Outcome, HttpError> {
+    let repo = repo_target_from_record(dest)?;
+    let target = build_restore_test_target(store, priv_client, rid, actor, snap).await;
+
+    let priv_res = priv_client
+        .backup_restore_test(
+            rid,
+            actor,
+            BackupRestoreTestRequest {
+                destination_id: snap.destination_id.clone(),
+                repo,
+                restic_id: snap.restic_id.clone(),
+                target,
+            },
+        )
+        .await;
+
+    let (ok, summary, logs) = match priv_res {
+        Ok(res) => (res.ok, res.summary, res.log),
+        Err(e) => {
+            let msg = HttpError::from(e).0.error.message;
+            (false, msg, Vec::new())
+        }
+    };
+
+    let ts = now_unix();
+    let new_state = if ok {
+        BackupCheckState::RestoreTested
+    } else {
+        BackupCheckState::ChecksumFailed
+    };
+    let st_save = store.clone();
+    let snap_id = snap.id.clone();
+    let summary_c = summary.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = st_save.set_backup_snapshot_check_state(&snap_id, new_state, ts);
+        let _ = st_save.set_setting(SETTING_LAST_RESTORE_TEST_AT, &json!(ts));
+        let _ = st_save.set_setting(SETTING_LAST_RESTORE_TEST_OK, &json!(ok));
+        let _ = st_save.set_setting(SETTING_LAST_RESTORE_TEST_SUMMARY, &json!(summary_c));
+        if ok {
+            let _ = st_save.set_setting(SETTING_LAST_RESTORE_TEST_ERROR, &json!(""));
+        } else {
+            let _ = st_save.set_setting(SETTING_LAST_RESTORE_TEST_ERROR, &json!(summary_c));
+        }
+    })
+    .await;
+
+    if !ok {
+        return Err(HttpError::new(ErrorCode::Internal, summary));
+    }
+    Ok(Outcome {
+        log: if logs.is_empty() {
+            vec![summary.clone()]
+        } else {
+            logs
+        },
+        result: json!({
+            "ok": true,
+            "snapshotId": snap.id,
+            "summary": summary,
+            "checkState": "restore_tested",
+        }),
+    })
+}
+
+async fn execute_scheduled_restore_test(
+    store: &Arc<Store>,
+    priv_client: &PrivClient,
+    rid: &str,
+    actor: Option<&str>,
+) -> Result<Outcome, HttpError> {
+    let st = store.clone();
+    let candidate = tokio::task::spawn_blocking(move || -> Result<_, HttpError> {
+        let snaps = st
+            .list_backup_snapshots(DEFAULT_SNAPSHOT_LIMIT)
+            .map_err(store_err)?;
+        let preferred = snaps
+            .iter()
+            .find(|s| s.kind == BackupTargetKind::Database)
+            .or_else(|| snaps.first())
+            .cloned()
+            .ok_or_else(|| {
+                HttpError::new(ErrorCode::NotFound, "No snapshots exist to verify yet.")
+            })?;
+        let dest = st
+            .get_backup_destination(&preferred.destination_id)
+            .map_err(store_err)?
+            .ok_or_else(|| {
+                HttpError::new(
+                    ErrorCode::NotFound,
+                    "Destination for snapshot no longer exists.",
+                )
+            })?;
+        Ok((preferred, dest))
+    })
+    .await
+    .map_err(|_| HttpError::internal())??;
+
+    run_single_restore_test(store, priv_client, rid, actor, &candidate.0, &candidate.1).await
+}
+
+/// `POST /api/v1/backups/snapshots/{id}/test` — run a live restore test on a specific snapshot.
+pub(crate) async fn test_snapshot_restore(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<Value>), HttpError> {
+    let st = state.store.clone();
+    let lookup = id.clone();
+    let (snap, dest) = tokio::task::spawn_blocking(move || -> Result<_, HttpError> {
+        let snap = st
+            .get_backup_snapshot_by_any_id(&lookup)
+            .map_err(store_err)?
+            .ok_or_else(HttpError::not_found)?;
+        let dest = st
+            .get_backup_destination(&snap.destination_id)
+            .map_err(store_err)?
+            .ok_or_else(HttpError::not_found)?;
+        Ok((snap, dest))
+    })
+    .await
+    .map_err(|_| HttpError::internal())??;
+
+    let s = state.clone();
+    let actor_name = who.user.name.clone();
+    let ip = client.ip.clone();
+    let principal = who.clone();
+
+    let task = state.tasks.start("backups.restore_test", async move {
+        let _guard = s.backups.run_lock.lock().await;
+        let out = run_single_restore_test(
+            &s.store,
+            &s.priv_client,
+            &rid,
+            Some(&actor_name),
+            &snap,
+            &dest,
+        )
+        .await;
+        audit(
+            &s,
+            &principal,
+            &ip,
+            "backup.restore_test",
+            Some(&snap.id),
+            json!({ "ok": out.is_ok() }),
+        );
+        out
+    })?;
+    Ok((StatusCode::ACCEPTED, Json(json!({ "task": task }))))
+}
+
+/// `POST /api/v1/backups/restore-test` — trigger a monthly-style restore test on the latest snapshot.
+pub(crate) async fn run_restore_test_all(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+) -> Result<(StatusCode, Json<Value>), HttpError> {
+    let s = state.clone();
+    let actor_name = who.user.name.clone();
+    let ip = client.ip.clone();
+    let principal = who.clone();
+
+    let task = state.tasks.start("backups.restore_test", async move {
+        let _guard = s.backups.run_lock.lock().await;
+        let out =
+            execute_scheduled_restore_test(&s.store, &s.priv_client, &rid, Some(&actor_name)).await;
+        audit(
+            &s,
+            &principal,
+            &ip,
+            "backup.restore_test",
+            None,
+            json!({ "ok": out.is_ok() }),
+        );
+        out
+    })?;
     Ok((StatusCode::ACCEPTED, Json(json!({ "task": task }))))
 }

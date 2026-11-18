@@ -56,6 +56,8 @@ const REAL = new Set([
   'getDomains', 'addDomain', 'checkDns', 'issueDomainCert', 'updateDomain', 'removeDomain', 'makePrimary',
   'getTemplates', 'addTemplate', 'deployCompose',
   'getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups',
+  'getProviders', 'testDestination', 'saveDestination', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination',
+  'downloadRecoveryKey', 'restoreBackup', 'testBackupRestore',
 ]);
 const real = (name) => MODE === 'http' && REAL.has(name);
 export const isReal = (name) => real(name);
@@ -73,8 +75,8 @@ export const PAGE_USES = {
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
   alerts: ['connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
   apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
-  backupdest: ['PROVIDERS', 'saveDestination', 'testDestination'],
-  backups: ['getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup'],
+  backupdest: ['getProviders', 'saveDestination', 'testDestination', 'downloadRecoveryKey'],
+  backups: ['getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination', 'downloadRecoveryKey', 'testBackupRestore'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
   configure: ['createService'],
   containers: ['containerAction', 'containerLogs', 'dockerStatus', 'inspectContainer', 'installDocker', 'listContainers', 'listDocker'],
@@ -1125,6 +1127,7 @@ export async function getBackups() { sample('getBackups');
         id: s.id,
         resticId: s.resticId,
         shortId: s.shortId,
+        kind: s.kind,
         at: s.when || when(s.takenAt),
         what: s.what,
         size: s.sizeBytes,
@@ -1138,9 +1141,15 @@ export async function getBackups() { sample('getBackups');
         name: d.name,
         type: d.provider,
         loc: d.detail || '/var/backups/opsbox',
-        ok: d.status === 'ok' && !res.sameDisk,
+        ok: d.status === 'ok' && (d.id !== 'local' || !res.sameDisk),
         status: d.status,
+        isDefault: !!d.isDefault,
+        publicKey: d.publicKey || null,
+        fingerprint: d.fingerprint || null,
+        verifiedAt: d.verifiedAt || null,
       })),
+      defaultDestinationId: res.defaultDestinationId || 'local',
+      restoreTest: res.restoreTest || null,
       localDisk: res.localDisk || null,
       sameDisk: !!res.sameDisk,
       remoteDestinationsReady: !!res.remoteDestinationsReady,
@@ -1151,8 +1160,10 @@ export async function getBackups() { sample('getBackups');
   return {
     ...clone(BK),
     sameDisk: true,
-    remoteDestinationsReady: false,
-    restoreReady: false,
+    remoteDestinationsReady: true,
+    restoreReady: true,
+    defaultDestinationId: BK.dests[0]?.id || 'local',
+    restoreTest: null,
     localDisk: {
       path: '/var/backups/opsbox',
       sameDisk: true,
@@ -1205,9 +1216,62 @@ export async function checkBackups(opts = {}) { sample('checkBackups');
   await lag(800);
   return { ok: true, result: { ok: true, summary: 'Repository checksum verification passed.' } };
 }
-export async function restoreBackup(id, mode) { sample('restoreBackup');
+export async function restoreBackup(id, mode, opts = {}) { sample('restoreBackup');
+  if (real('restoreBackup')) {
+    const { task } = await http(`/backups/snapshots/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
+      body: { mode, confirm: opts.confirm, copyTarget: opts.copyTarget },
+    });
+    const done = await waitTask(task, { every: 500, max: 30 * 60 * 1000 });
+    return { msg: (done.result && done.result.message) || 'Restore completed.', result: done.result };
+  }
   await lag(1200); const k = BK.items.find((x) => x.id === id); if (!k) throw new Error('No such backup');
-  if (mode !== 'copy' && mode !== 'replace') throw new Error('Choose how to restore.'); audit(`restore ${k.what} (${k.at}) as ${mode}`); return { msg: mode === 'copy' ? `Restored ${k.what} into ${k.what}-restored. Check it, then swap it in.` : `${k.what} replaced from ${k.at}.` };
+  if (mode !== 'copy' && mode !== 'replace') throw new Error('Choose how to restore.'); audit(`restore ${k.what} (${k.at}) as ${mode}`); return { msg: mode === 'copy' ? `Restored ${k.what} into ${opts.copyTarget || `${k.what}-restored`}. Check it, then swap it in.` : `${k.what} replaced from ${k.at}.` };
+}
+export async function testBackupRestore(id) { sample('testBackupRestore');
+  if (real('testBackupRestore')) {
+    const path = id ? `/backups/snapshots/${encodeURIComponent(id)}/test` : '/backups/restore-test';
+    const { task } = await http(path, { method: 'POST', body: {} });
+    return waitTask(task, { every: 500, max: 30 * 60 * 1000 });
+  }
+  await lag(900);
+  const k = id ? BK.items.find((x) => x.id === id) : BK.items[0];
+  if (k) k.check = 'restore-tested';
+  return { ok: true, result: { ok: true, checkState: 'restore_tested' } };
+}
+export async function downloadRecoveryKey(password) { sample('downloadRecoveryKey');
+  if (real('downloadRecoveryKey')) {
+    return http('/backups/recovery-key', { method: 'POST', body: { password } });
+  }
+  await lag(250);
+  if (!password) throw new Error('Enter your password.');
+  return { password: 'demo-recovery-key-from-master-key', hostname: 'srv-sgn-01', instructions: 'Keep offline in a password manager.' };
+}
+export async function testSavedDestination(id) { sample('testSavedDestination');
+  if (real('testSavedDestination')) {
+    const r = await http(`/backups/destinations/${encodeURIComponent(id)}/test`, { method: 'POST', body: {} });
+    return { ...r, steps: (r.steps || []).map((s) => (Array.isArray(s) ? s : [s.status, s.message])) };
+  }
+  await lag(600);
+  const d = BK.dests.find((x) => x.id === id);
+  if (d) d.ok = true;
+  return { ok: true, verified: true, steps: [['ok', 'Verified repository read/write.']] };
+}
+export async function setDefaultDestination(id, opts = {}) { sample('setDefaultDestination');
+  if (real('setDefaultDestination')) {
+    return http(`/backups/destinations/${encodeURIComponent(id)}/default`, { method: 'POST', body: opts });
+  }
+  await lag(200);
+  BK.dests.forEach((d) => { d.isDefault = d.id === id; });
+  return { ok: true };
+}
+export async function deleteDestination(id) { sample('deleteDestination');
+  if (real('deleteDestination')) {
+    return http(`/backups/destinations/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+  await lag(250);
+  BK.dests = BK.dests.filter((d) => d.id !== id);
+  return { ok: true };
 }
 export async function addDestination(d) { sample('addDestination');
   await lag(500);
@@ -1584,34 +1648,44 @@ export async function makePrimary(svc, name) {
 }
 
 // ---------------------------------------------------------------- backup providers
-export const PROVIDERS = [
-  { id: 'r2', name: 'Cloudflare R2', sub: 'Cloudflare', mono: 'R2', fields: [['account', 'Account ID', 'Cloudflare dashboard › R2 › Overview, right-hand side.'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key ID'], ['secret', 'Secret Access Key']], endpoint: (v) => v.account ? `https://${v.account}.r2.cloudflarestorage.com` : '', steps: ['Open R2 Object Storage and create a bucket.', 'Manage R2 API Tokens › Create API token.', 'Choose Object Read & Write, limited to that bucket.', 'Copy the Access Key ID and Secret here. The secret is shown only once.'], tip: 'R2 charges nothing to download, so restoring costs only storage.' },
-  { id: 's3', name: 'AWS S3', sub: 'Amazon', mono: 'S3', fields: [['region', 'Region', 'For example ap-southeast-2.'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key ID'], ['secret', 'Secret Access Key']], endpoint: (v) => v.region ? `https://s3.${v.region}.amazonaws.com` : '', steps: ['Create a bucket in S3 (block public access stays on).', 'In IAM create a user with a policy limited to that bucket.', 'Create an access key for that user.', 'Copy the key and secret here.'] },
-  { id: 'b2', name: 'Backblaze B2', sub: 'Backblaze', mono: 'B2', fields: [['region', 'Region', 'Shown on the bucket page, e.g. us-west-004.'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Application Key ID'], ['secret', 'Application Key']], endpoint: (v) => v.region ? `https://s3.${v.region}.backblazeb2.com` : '', steps: ['Create a private bucket.', 'App Keys › Add a New Application Key, limited to that bucket.', 'Copy the keyID and applicationKey here.'] },
-  { id: 'wasabi', name: 'Wasabi', sub: 'Wasabi', mono: 'WA', fields: [['region', 'Region'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.region ? `https://s3.${v.region}.wasabisys.com` : '', steps: ['Create a bucket.', 'Access Keys › Create new access key.', 'Copy both keys here.'] },
-  { id: 'do', name: 'DigitalOcean Spaces', sub: 'DigitalOcean', mono: 'DO', fields: [['region', 'Region', 'e.g. sgp1'], ['bucket', 'Space name'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret']], endpoint: (v) => v.region ? `https://${v.region}.digitaloceanspaces.com` : '', steps: ['Create a Space.', 'API › Spaces Keys › Generate New Key.', 'Copy both values here.'] },
-  { id: 'hetzner', name: 'Hetzner Storage', sub: 'Hetzner', mono: 'HZ', fields: [['region', 'Location', 'fsn1, nbg1 or hel1'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.region ? `https://${v.region}.your-objectstorage.com` : '', steps: ['Create a bucket in Object Storage.', 'Security › S3 credentials › Generate.', 'Copy both values here.'] },
-  { id: 'gcs', name: 'Google Cloud Storage', sub: 'Google Cloud', mono: 'GC', fields: [['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'HMAC Access ID'], ['secret', 'HMAC Secret']], endpoint: () => 'https://storage.googleapis.com', steps: ['Create a bucket.', 'Settings › Interoperability › Create a key for a service account.', 'Copy the access ID and secret here.'] },
-  { id: 'minio', name: 'MinIO', sub: 'Self-hosted', mono: 'MI', fields: [['endpoint', 'Endpoint URL', 'https://minio.example.com:9000'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.endpoint || '', steps: ['Create a bucket and a user limited to it.', 'Create an access key for that user.'] },
-  { id: 'sftp', name: 'SFTP server', sub: 'Any Linux box over SSH', mono: 'SF', fields: [['host', 'Host', 'backup.example.com or an IP'], ['user', 'User'], ['path', 'Folder on that server', '/srv/backups/srv-sgn-01']], endpoint: (v) => v.host ? `sftp://${v.user || 'user'}@${v.host}` : '', steps: ['opsbox shows a public key after you save.', 'Add it to ~/.ssh/authorized_keys of that user on the backup server.', 'Run the test again.'], sftp: true },
-  { id: 'custom', name: 'Other S3-compatible', sub: 'Custom endpoint', mono: 'S3', fields: [['endpoint', 'Endpoint URL'], ['region', 'Region (optional)'], ['bucket', 'Bucket'], ['prefix', 'Folder in bucket'], ['key', 'Access Key'], ['secret', 'Secret Key']], endpoint: (v) => v.endpoint || '', steps: ['Use the S3 endpoint your provider documents.', 'Create a key limited to one bucket.'] },
+const MOCK_PROVIDERS = [
+  { id: 'r2', name: 'Cloudflare R2', sub: 'Cloudflare', mono: 'R2', sftp: false, endpointTemplate: 'https://{account}.r2.cloudflarestorage.com', fields: [{ key: 'account', label: 'Account ID', hint: 'Cloudflare dashboard › R2 › Overview, right-hand side.' }, { key: 'bucket', label: 'Bucket' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'Access Key ID' }, { key: 'secret', label: 'Secret Access Key', secret: true }], steps: ['Open R2 Object Storage and create a bucket.', 'Manage R2 API Tokens › Create API token.', 'Choose Object Read & Write, limited to that bucket.', 'Copy the Access Key ID and Secret here. The secret is shown only once.'], tip: 'R2 charges nothing to download, so restoring costs only storage.' },
+  { id: 's3', name: 'AWS S3', sub: 'Amazon', mono: 'S3', sftp: false, endpointTemplate: 'https://s3.{region}.amazonaws.com', fields: [{ key: 'region', label: 'Region', hint: 'For example ap-southeast-2.' }, { key: 'bucket', label: 'Bucket' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'Access Key ID' }, { key: 'secret', label: 'Secret Access Key', secret: true }], steps: ['Create a bucket in S3 (block public access stays on).', 'In IAM create a user with a policy limited to that bucket.', 'Create an access key for that user.', 'Copy the key and secret here.'] },
+  { id: 'b2', name: 'Backblaze B2', sub: 'Backblaze', mono: 'B2', sftp: false, endpointTemplate: 'https://s3.{region}.backblazeb2.com', fields: [{ key: 'region', label: 'Region', hint: 'Shown on the bucket page, e.g. us-west-004.' }, { key: 'bucket', label: 'Bucket' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'Application Key ID' }, { key: 'secret', label: 'Application Key', secret: true }], steps: ['Create a private bucket.', 'App Keys › Add a New Application Key, limited to that bucket.', 'Copy the keyID and applicationKey here.'] },
+  { id: 'wasabi', name: 'Wasabi', sub: 'Wasabi', mono: 'WA', sftp: false, endpointTemplate: 'https://s3.{region}.wasabisys.com', fields: [{ key: 'region', label: 'Region' }, { key: 'bucket', label: 'Bucket' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'Access Key' }, { key: 'secret', label: 'Secret Key', secret: true }], steps: ['Create a bucket.', 'Access Keys › Create new access key.', 'Copy both keys here.'] },
+  { id: 'do', name: 'DigitalOcean Spaces', sub: 'DigitalOcean', mono: 'DO', sftp: false, endpointTemplate: 'https://{region}.digitaloceanspaces.com', fields: [{ key: 'region', label: 'Region', hint: 'e.g. sgp1' }, { key: 'bucket', label: 'Space name' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'Access Key' }, { key: 'secret', label: 'Secret', secret: true }], steps: ['Create a Space.', 'API › Spaces Keys › Generate New Key.', 'Copy both values here.'] },
+  { id: 'hetzner', name: 'Hetzner Storage', sub: 'Hetzner', mono: 'HZ', sftp: false, endpointTemplate: 'https://{region}.your-objectstorage.com', fields: [{ key: 'region', label: 'Location', hint: 'fsn1, nbg1 or hel1' }, { key: 'bucket', label: 'Bucket' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'Access Key' }, { key: 'secret', label: 'Secret Key', secret: true }], steps: ['Create a bucket in Object Storage.', 'Security › S3 credentials › Generate.', 'Copy both values here.'] },
+  { id: 'gcs', name: 'Google Cloud Storage', sub: 'Google Cloud', mono: 'GC', sftp: false, endpointTemplate: 'https://storage.googleapis.com', fields: [{ key: 'bucket', label: 'Bucket' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'HMAC Access ID' }, { key: 'secret', label: 'HMAC Secret', secret: true }], steps: ['Create a bucket.', 'Settings › Interoperability › Create a key for a service account.', 'Copy the access ID and secret here.'] },
+  { id: 'minio', name: 'MinIO', sub: 'Self-hosted', mono: 'MI', sftp: false, endpointTemplate: '{endpoint}', fields: [{ key: 'endpoint', label: 'Endpoint URL', hint: 'https://minio.example.com:9000' }, { key: 'bucket', label: 'Bucket' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'Access Key' }, { key: 'secret', label: 'Secret Key', secret: true }], steps: ['Create a bucket and a user limited to it.', 'Create an access key for that user.'] },
+  { id: 'sftp', name: 'SFTP server', sub: 'Any Linux box over SSH', mono: 'SF', sftp: true, endpointTemplate: 'sftp://{user}@{host}', fields: [{ key: 'host', label: 'Host', hint: 'backup.example.com or an IP' }, { key: 'port', label: 'SSH port', hint: '22', optional: true }, { key: 'user', label: 'User' }, { key: 'path', label: 'Folder on that server', hint: '/srv/backups/srv-sgn-01' }], steps: ['opsbox shows a public key after you save.', 'Add it to ~/.ssh/authorized_keys of that user on the backup server.', 'Run the test again.'] },
+  { id: 'custom', name: 'Other S3-compatible', sub: 'Custom endpoint', mono: 'S3', sftp: false, endpointTemplate: '{endpoint}', fields: [{ key: 'endpoint', label: 'Endpoint URL' }, { key: 'region', label: 'Region', optional: true }, { key: 'bucket', label: 'Bucket' }, { key: 'prefix', label: 'Folder in bucket', optional: true }, { key: 'key', label: 'Access Key' }, { key: 'secret', label: 'Secret Key', secret: true }], steps: ['Use the S3 endpoint your provider documents.', 'Create a key limited to one bucket.'] },
 ];
+export async function getProviders() { sample('getProviders');
+  if (real('getProviders')) return http('/backups/providers');
+  await lag(50);
+  return { providers: clone(MOCK_PROVIDERS), hostname: 'srv-sgn-01' };
+}
 export async function testDestination(pid, v) { sample('testDestination');
-  await lag(1100); const p = PROVIDERS.find((x) => x.id === pid); if (!p) throw new Error('Choose a provider');
-  const opt = new Set(['prefix', 'region']); if (pid === 'custom') opt.add('region');
-  const miss = p.fields.filter(([k]) => !opt.has(k) && !(v[k] || '').trim()).map(([, l]) => l);
-  if (pid === 's3' || pid === 'b2' || pid === 'wasabi' || pid === 'do' || pid === 'hetzner') { if (!(v.region || '').trim()) miss.unshift(p.fields.find(([k]) => k === 'region')[1]); }
+  if (real('testDestination')) {
+    const r = await http('/backups/destinations/test', { method: 'POST', body: { provider: pid, values: v } });
+    return { ...r, steps: (r.steps || []).map((s) => (Array.isArray(s) ? s : [s.status, s.message])) };
+  }
+  await lag(1100); const p = MOCK_PROVIDERS.find((x) => x.id === pid); if (!p) throw new Error('Choose a provider');
+  const miss = p.fields.filter((f) => !f.optional && !(v[f.key] || '').trim()).map((f) => f.label);
   if (miss.length) return { ok: false, steps: [['fail', `Missing: ${miss.join(', ')}`]] };
   if (v.bucket && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(v.bucket)) return { ok: false, steps: [['ok', 'Connected to endpoint'], ['fail', 'Bucket names use lowercase letters, numbers, dots and dashes.']] };
-  if (p.sftp) return { ok: true, steps: [['ok', `Reached ${v.host}:22`], ['warn', 'Add the opsbox public key to the backup server, then test again.']] };
-  return { ok: true, steps: [['ok', 'Connected to endpoint'], ['ok', `Bucket ${v.bucket} found`], ['ok', 'Wrote and read back a 1 KB test file'], ['warn', 'Key can also delete objects. Fine for pruning old backups; use a separate key for append-only.']] };
+  if (p.sftp) return { ok: true, steps: [['ok', `Reached ${v.host}:${v.port || 22}`], ['warn', 'Save to view the public key, add it to authorized_keys, then test again.']] };
+  return { ok: true, steps: [['ok', 'Connected to endpoint'], ['ok', `Bucket ${v.bucket} found`], ['ok', 'Wrote encrypted probe and read it back'], ['ok', 'Verified delete permission']] };
 }
 export async function saveDestination(pid, v, name) { sample('saveDestination');
-  await lag(400); const p = PROVIDERS.find((x) => x.id === pid);
-  BK.dests = BK.dests.filter((d) => d.ok || d.type !== 'folder');
-  BK.dests.unshift({ id: 'd' + Date.now(), name: (name || '').trim() || `Offsite (${p.name})`, type: p.name, loc: p.sftp ? `${p.endpoint(v)}:${v.path}` : `${p.endpoint(v).replace(/^https:\/\//, '')}/${v.bucket}/${v.prefix || ''}`, ok: true });
-  BK.dests.push({ id: 'd2', name: 'Local disk', type: 'folder', loc: '/var/backups', ok: false });
-  BK.dests = BK.dests.filter((d, i, a) => a.findIndex((x) => x.loc === d.loc) === i);
-  BK.jobs.forEach((j) => { if (j.dest === 'Local disk') { j.dest = BK.dests[0].name; j.state = 'ok'; j.last = 'next run 02:40'; } });
+  if (real('saveDestination')) {
+    return http('/backups/destinations', { method: 'POST', body: { provider: pid, name: (name || '').trim() || undefined, values: v, verify: true } });
+  }
+  await lag(400); const p = MOCK_PROVIDERS.find((x) => x.id === pid);
+  const loc = p.sftp ? `sftp://${v.user}@${v.host}:${v.path}` : `${(v.endpoint || p.endpointTemplate).replace('{account}', v.account || '').replace('{region}', v.region || '').replace(/^https?:\/\//, '')}/${v.bucket}${v.prefix ? '/' + v.prefix : ''}`;
+  const rec = { id: 'd' + Date.now(), name: (name || '').trim() || `Offsite (${p.name})`, type: p.name, loc, ok: !p.sftp, isDefault: !p.sftp, ...(p.sftp ? { publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMockKey opsbox-backup' } : {}) };
+  BK.dests.unshift(rec);
+  BK.jobs.forEach((j) => { if (j.dest === 'Local disk') { j.dest = rec.name; j.state = 'ok'; j.last = 'next run 02:40'; } });
   audit(`add backup destination ${p.name}`);
+  return { destination: rec, ...(p.sftp ? { publicKey: rec.publicKey } : {}) };
 }

@@ -358,6 +358,7 @@ impl Command {
             | Self::WatchdogVerifyPw
             | Self::RecoveryCode
             | Self::Backup { .. }
+            | Self::Restore { .. }
             | Self::Web {
                 action: WebAction::LocalOnly { .. } | WebAction::Domain { .. },
             } => return None,
@@ -368,7 +369,6 @@ impl Command {
             Self::Web {
                 action: WebAction::Disable,
             } => "web disable",
-            Self::Restore { .. } => "restore",
             Self::Uninstall { .. } => "uninstall",
         })
     }
@@ -456,6 +456,7 @@ mod tests {
             "recovery-code",
             "backup list",
             "backup now",
+            "restore abc123 --to /tmp/out",
         ] {
             assert_eq!(parse(done).unimplemented_name(), None, "{done}");
         }

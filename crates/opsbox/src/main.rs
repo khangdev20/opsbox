@@ -144,6 +144,10 @@ fn run(cli: &Cli) -> Result<ExitCode> {
                 }
             }
         }
+        Command::Restore { snapshot, to } => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            cmd::backup::restore(&config, snapshot, to)?;
+        }
         // Handled above; listed so adding a command forces a decision here.
         _ => unreachable!("unimplemented commands return before this match"),
     }

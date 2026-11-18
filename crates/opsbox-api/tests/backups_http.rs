@@ -118,14 +118,17 @@ struct MockDockerState {
     containers: HashMap<String, Vec<String>>,
     paused_calls: Vec<String>,
     unpaused_calls: Vec<String>,
+    removed_containers: Vec<String>,
+    removed_volumes: Vec<String>,
     exec_envs: Vec<Vec<String>>,
+    restored_dumps: Vec<Vec<u8>>,
     fail_exec: bool,
     next_cid: u64,
     exec_seq: u64,
-    exec_outcomes: HashMap<String, (bool, i64)>,
+    exec_outcomes: HashMap<String, (u8, i64)>,
 }
 
-async fn send(
+async fn send_with_headers(
     app: &Router,
     method: Method,
     path: &str,
@@ -133,7 +136,7 @@ async fn send(
     is_bearer: bool,
     csrf: &str,
     body: Option<Value>,
-) -> (StatusCode, Value) {
+) -> (StatusCode, axum::http::HeaderMap, Value) {
     let mut builder = Request::builder()
         .method(method.clone())
         .uri(path)
@@ -160,9 +163,23 @@ async fn send(
         .await
         .unwrap();
     let status = resp.status();
+    let headers = resp.headers().clone();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let val = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
-    (status, val)
+    (status, headers, val)
+}
+
+async fn send(
+    app: &Router,
+    method: Method,
+    path: &str,
+    auth: &str,
+    is_bearer: bool,
+    csrf: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let (st, _, val) = send_with_headers(app, method, path, auth, is_bearer, csrf, body).await;
+    (st, val)
 }
 
 async fn wait_task_done(app: &Router, cookie: &str, csrf: &str, task_id: &str) -> Value {
@@ -194,6 +211,7 @@ pw=""
 sub=""
 stdin_mode=0
 stdin_name=""
+restore_target=""
 tags=""
 keep_daily=""
 targets=""
@@ -203,14 +221,17 @@ for a in "$@"; do
     repo) repo="$a"; expect=""; continue ;;
     pw) pw="$a"; expect=""; continue ;;
     stdin_name) stdin_name="$a"; expect=""; continue ;;
+    target) restore_target="$a"; expect=""; continue ;;
     tag) tags="${tags}${tags:+|}$a"; expect=""; continue ;;
-    exclude|group-by|keep-weekly|read-data-subset) expect=""; continue ;;
+    opt|exclude|group-by|keep-weekly|read-data-subset) expect=""; continue ;;
     keep-daily) keep_daily="$a"; expect=""; continue ;;
   esac
   case "$a" in
     -r) expect="repo" ;;
     --password-file) expect="pw" ;;
     --stdin-filename) expect="stdin_name" ;;
+    --target) expect="target" ;;
+    -o) expect="opt" ;;
     --tag) expect="tag" ;;
     --exclude|--group-by|--keep-weekly) expect="$a"; expect="${expect#--}" ;;
     --keep-daily) expect="keep-daily" ;;
@@ -219,10 +240,13 @@ for a in "$@"; do
     --json|--prune) ;;
     version) sub="version" ;;
     init) sub="init" ;;
+    cat) sub="cat" ;;
     backup) sub="backup" ;;
     snapshots) sub="snapshots" ;;
     forget) sub="forget" ;;
     check) sub="check" ;;
+    dump) sub="dump" ;;
+    restore) sub="restore" ;;
     *) [ -n "$sub" ] && targets="${targets}${targets:+|}$a" ;;
   esac
 done
@@ -233,38 +257,75 @@ if [ "$sub" = "version" ]; then
 fi
 
 [ -n "$pw" ] && [ -f "$pw" ] || { echo "missing password file" >&2; exit 2; }
-db_list="$repo/snapshots.tsv"
+base_dir="$(dirname "$0")/mock-repos"
+case "$repo" in
+  s3:*)
+    if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+      echo "missing S3 credentials in environment" >&2
+      exit 3
+    fi
+    repo_fs="$base_dir/s3-$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')"
+    ;;
+  sftp:*)
+    repo_fs="$base_dir/sftp-$(printf '%s' "$repo" | tr -c 'A-Za-z0-9._-' '_')"
+    ;;
+  *)
+    repo_fs="$repo"
+    ;;
+esac
+db_list="$repo_fs/snapshots.tsv"
 
 case "$sub" in
+  cat)
+    [ -f "$repo_fs/config" ] || { echo "Fatal: unable to open config file: does not exist" >&2; exit 10; }
+    cat "$repo_fs/config"
+    ;;
   init)
-    mkdir -p "$repo"
-    echo "{}" > "$repo/config"
+    mkdir -p "$repo_fs"
+    echo "{}" > "$repo_fs/config"
     : > "$db_list"
-    echo "0" > "$repo/seq"
+    echo "0" > "$repo_fs/seq"
     echo "{\"message_type\":\"initialized\",\"id\":\"testrepo\",\"repository\":\"$repo\"}"
     ;;
   backup)
-    [ -f "$repo/config" ] || { echo "repo not initialized" >&2; exit 1; }
-    seq=$(cat "$repo/seq" 2>/dev/null || echo "0")
+    [ -f "$repo_fs/config" ] || { echo "repo not initialized" >&2; exit 1; }
+    seq=$(cat "$repo_fs/seq" 2>/dev/null || echo "0")
     seq=$((seq + 1))
-    echo "$seq" > "$repo/seq"
+    echo "$seq" > "$repo_fs/seq"
     sid=$(printf "%08x%056x" "$seq" "$seq")
     short=$(printf "%08x" "$seq")
     if [ "$stdin_mode" -eq 1 ]; then
-      dump_out="$repo/stdin_${short}_${stdin_name}"
+      dump_out="$repo_fs/stdin_${short}_${stdin_name}"
       cat > "$dump_out"
+      cp "$dump_out" "$repo_fs/last_stdin_${stdin_name}"
       bytes=$(wc -c < "$dump_out" | tr -d ' ')
       paths_str="/$stdin_name"
     else
       bytes=4096
       paths_str="$targets"
       if [ -f "opsbox.db" ] && [ -d "etc-opsbox" ]; then
-        cp "opsbox.db" "$repo/self_${short}_opsbox.db"
+        cp "opsbox.db" "$repo_fs/self_${short}_opsbox.db"
         if find "etc-opsbox" -name "master.key" | grep -q .; then
           echo "FORBIDDEN master.key staged" >&2
           exit 9
         fi
-        cp -R "etc-opsbox" "$repo/self_${short}_etc"
+        cp -R "etc-opsbox" "$repo_fs/self_${short}_etc"
+      else
+        snap_dir="$repo_fs/snaps/${sid}"
+        mkdir -p "$snap_dir"
+        OLD_IFS="$IFS"
+        IFS="|"
+        for src in $targets; do
+          case "$src" in
+            /*)
+              if [ -e "$src" ]; then
+                mkdir -p "$snap_dir$(dirname "$src")"
+                cp -R "$src" "$snap_dir$src"
+              fi
+              ;;
+          esac
+        done
+        IFS="$OLD_IFS"
       fi
     fi
     printf "%s\t%s\t%s\t%s\t%s\n" "$sid" "$short" "$bytes" "$tags" "$paths_str" >> "$db_list"
@@ -287,17 +348,16 @@ case "$sub" in
   forget)
     [ -f "$db_list" ] || { echo "[]"; exit 0; }
     if [ -z "$keep_daily" ] && [ -n "$targets" ]; then
-      # Single-snapshot forget (`restic forget --prune <snapshot_id>`)
-      grep -v "^${targets}" "$db_list" > "$repo/kept.tmp" || true
-      mv "$repo/kept.tmp" "$db_list"
+      grep -v "^${targets}" "$db_list" > "$repo_fs/kept.tmp" || true
+      mv "$repo_fs/kept.tmp" "$db_list"
       echo "[{\"keep\":[],\"remove\":[{\"id\":\"$targets\",\"short_id\":\"${targets%????????????????????????????????????????????????????????}\"}]}]"
       exit 0
     fi
     keep="${keep_daily:-1}"
     [ -n "$keep" ] || keep=1
     filter_tag="$tags"
-    kept_file="$repo/kept.tmp"
-    removed_file="$repo/rem.tmp"
+    kept_file="$repo_fs/kept.tmp"
+    removed_file="$repo_fs/rem.tmp"
     : > "$kept_file"
     : > "$removed_file"
     total_match=$(awk -F '\t' -v t="$filter_tag" 'BEGIN{c=0} (t=="" || index($4, t)>0){c++} END{print c}' "$db_list")
@@ -320,11 +380,46 @@ case "$sub" in
     echo "[{\"keep\":[$keep_json],\"remove\":[$rem_json]}]"
     ;;
   check)
-    if [ -f "$repo/fail_check" ]; then
+    if [ -f "$repo_fs/fail_check" ]; then
       echo "{\"message_type\":\"summary\",\"num_errors\":1,\"broken_packs\":[\"packdeadbeef\"]}"
       exit 1
     fi
     echo "{\"message_type\":\"summary\",\"num_errors\":0,\"broken_packs\":[]}"
+    ;;
+  dump)
+    if [ -f "$repo_fs/fail_restore_test" ]; then
+      echo "corrupted pack header" >&2
+      exit 1
+    fi
+    snap_id="${targets%%|*}"
+    dump_path="${targets#*|}"
+    base_name="${dump_path#/}"
+    short=$(printf "%s" "$snap_id" | cut -c1-8)
+    cand="$repo_fs/stdin_${short}_${base_name}"
+    [ -f "$cand" ] || cand="$repo_fs/last_stdin_${base_name}"
+    if [ -f "$cand" ]; then
+      cat "$cand"
+    else
+      echo "snapshot file not found: $cand" >&2
+      exit 1
+    fi
+    ;;
+  restore)
+    if [ -f "$repo_fs/fail_restore_test" ]; then
+      echo "corrupted snapshot tree" >&2
+      exit 1
+    fi
+    mkdir -p "$restore_target"
+    snap_id="${targets%%|*}"
+    short=$(printf "%s" "$snap_id" | cut -c1-8)
+    if [ -d "$repo_fs/snaps/${snap_id}" ]; then
+      cp -R "$repo_fs/snaps/${snap_id}/." "$restore_target/"
+    elif [ -f "$repo_fs/self_${short}_opsbox.db" ]; then
+      cp "$repo_fs/self_${short}_opsbox.db" "$restore_target/opsbox.db"
+      if [ -d "$repo_fs/self_${short}_etc" ]; then
+        cp -R "$repo_fs/self_${short}_etc" "$restore_target/etc-opsbox"
+      fi
+    fi
     ;;
 esac
 "#;
@@ -419,6 +514,20 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
                             )
                             .await;
                         }
+                    }
+                    ("DELETE", p) if p.starts_with("/volumes/") => {
+                        let name = p
+                            .trim_start_matches("/volumes/")
+                            .split('?')
+                            .next()
+                            .unwrap_or("")
+                            .to_owned();
+                        {
+                            let mut guard = st.lock().unwrap();
+                            guard.volumes.remove(&name);
+                            guard.removed_volumes.push(name);
+                        }
+                        write_http_empty(&mut stream, 204, "No Content").await;
                     }
                     ("POST", "/volumes/create") => {
                         let v: Value = serde_json::from_slice(&body).unwrap_or_default();
@@ -551,6 +660,23 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
                         st.lock().unwrap().unpaused_calls.push(cid);
                         write_http_empty(&mut stream, 204, "No Content").await;
                     }
+                    ("POST", p) if p.starts_with("/containers/") && p.ends_with("/stop") => {
+                        write_http_empty(&mut stream, 204, "No Content").await;
+                    }
+                    ("DELETE", p) if p.starts_with("/containers/") => {
+                        let cid = p
+                            .trim_start_matches("/containers/")
+                            .split('?')
+                            .next()
+                            .unwrap_or("")
+                            .to_owned();
+                        {
+                            let mut guard = st.lock().unwrap();
+                            guard.containers.remove(&cid);
+                            guard.removed_containers.push(cid);
+                        }
+                        write_http_empty(&mut stream, 204, "No Content").await;
+                    }
                     ("POST", p) if p.starts_with("/containers/") && p.ends_with("/exec") => {
                         let req_json: Value = serde_json::from_slice(&body).unwrap_or_default();
                         let env_list: Vec<String> = req_json["Env"]
@@ -562,18 +688,25 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
                                     .collect()
                             })
                             .unwrap_or_default();
-                        let is_pg_dump = req_json["Cmd"]
+                        let first_cmd = req_json["Cmd"]
                             .as_array()
-                            .is_some_and(|a| a.first().and_then(Value::as_str) == Some("pg_dump"));
+                            .and_then(|a| a.first())
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        let kind = match first_cmd {
+                            "pg_dump" => 1u8,
+                            "pg_restore" => 2u8,
+                            _ => 0u8,
+                        };
                         let exec_id = {
                             let mut guard = st.lock().unwrap();
                             guard.exec_seq += 1;
                             let id = format!("exec-{}", guard.exec_seq);
-                            if is_pg_dump {
+                            if kind == 1 {
                                 guard.exec_envs.push(env_list);
                             }
-                            let code = if is_pg_dump && guard.fail_exec { 1 } else { 0 };
-                            guard.exec_outcomes.insert(id.clone(), (is_pg_dump, code));
+                            let code = if kind == 1 && guard.fail_exec { 1 } else { 0 };
+                            guard.exec_outcomes.insert(id.clone(), (kind, code));
                             id
                         };
                         write_http_json(&mut stream, 201, "Created", &json!({ "Id": exec_id }))
@@ -581,16 +714,16 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
                     }
                     ("POST", p) if p.starts_with("/exec/") && p.ends_with("/start") => {
                         let eid = p.trim_start_matches("/exec/").trim_end_matches("/start");
-                        let (is_dump, code) = st
+                        let (kind, code) = st
                             .lock()
                             .unwrap()
                             .exec_outcomes
                             .get(eid)
                             .copied()
-                            .unwrap_or((false, 0));
+                            .unwrap_or((0, 0));
                         let resp = "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\nContent-Type: application/vnd.docker.raw-stream\r\n\r\n";
                         let _ = stream.write_all(resp.as_bytes()).await;
-                        if is_dump {
+                        if kind == 1 {
                             if code == 0 {
                                 let _ = stream
                                     .write_all(&docker_mux_frame(1, b"PGDMP\x01\x0ehello-pg-dump"))
@@ -603,6 +736,13 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
                                     ))
                                     .await;
                             }
+                        } else if kind == 2 {
+                            let mut stdin_buf = Vec::new();
+                            let _ = stream.read_to_end(&mut stdin_buf).await;
+                            st.lock().unwrap().restored_dumps.push(stdin_buf);
+                            let _ = stream
+                                .write_all(&docker_mux_frame(1, b"pg_restore ok\n"))
+                                .await;
                         } else {
                             let _ = stream
                                 .write_all(&docker_mux_frame(1, b"accepting connections\n"))
@@ -619,7 +759,7 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
                             .exec_outcomes
                             .get(eid)
                             .copied()
-                            .unwrap_or((false, 0));
+                            .unwrap_or((0, 0));
                         write_http_json(
                             &mut stream,
                             200,
@@ -666,8 +806,19 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
         .set_setting("live_backup_probe", &json!("from_live_sqlite"))
         .unwrap();
 
+    let auth_cfg = AuthConfig {
+        hash_params: HashParams {
+            memory_kib: 1024,
+            iterations: 1,
+            parallelism: 1,
+        },
+        ..AuthConfig::default()
+    };
+    let admin_hash = opsbox_auth::password::Hasher::new(auth_cfg.hash_params)
+        .hash("TestAdminPass123!")
+        .unwrap();
     let admin = store
-        .create_user("alice", Role::Admin, "unused", 0)
+        .create_user("alice", Role::Admin, &admin_hash, 0)
         .unwrap();
     store.set_pending_totp(&admin.id, "unused", 0).unwrap();
     store.enable_totp(&admin.id, 0, 0).unwrap();
@@ -706,14 +857,6 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
     let cookie_a = format!("opsbox_session={tok_a}; opsbox_csrf={csrf_a}");
     let cookie_v = format!("opsbox_session={tok_v}; opsbox_csrf={csrf_v}");
 
-    let auth_cfg = AuthConfig {
-        hash_params: HashParams {
-            memory_kib: 1024,
-            iterations: 1,
-            parallelism: 1,
-        },
-        ..AuthConfig::default()
-    };
     let state = AppState::new(
         store.clone(),
         PrivClient::new(&priv_sock).with_timeout(Duration::from_secs(15)),
@@ -731,6 +874,10 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
     let (_tok_rec, dep_token) = state
         .auth
         .create_token(&deployer, "ci-deploy", TokenScope::Deploy, None)
+        .unwrap();
+    let (_admin_tok_rec, admin_token) = state
+        .auth
+        .create_token(&admin, "backup-admin-tok", TokenScope::Full, None)
         .unwrap();
     let app = router(state);
 
@@ -760,8 +907,8 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
     assert_eq!(ov["sameDisk"], true);
     assert_eq!(ov["localDisk"]["resticInstalled"], true);
     assert_eq!(ov["localDisk"]["resticVersion"], "0.19.1");
-    assert_eq!(ov["remoteDestinationsReady"], false);
-    assert_eq!(ov["restoreReady"], false);
+    assert_eq!(ov["remoteDestinationsReady"], true);
+    assert_eq!(ov["restoreReady"], true);
     assert!(
         ov["jobs"]
             .as_array()
@@ -816,7 +963,7 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
         })),
     )
     .await;
-    assert_eq!(st, StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(st, StatusCode::NOT_FOUND);
 
     let (st, _) = send(
         &app,
@@ -1188,6 +1335,457 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(del["ok"], true);
+
+    // 10. Prompt 14: providers preset API, offsite R2 + SFTP destinations, sealed creds,
+    //     recovery key behind password re-auth + deny_token, restore copy/replace + DB reconnect,
+    //     and restore verification.
+    docker_state.lock().unwrap().fail_exec = false;
+    let _ = std::fs::remove_file(backup_dir.join("fail_check"));
+
+    let (st, provs) = send(
+        &app,
+        Method::GET,
+        "/api/v1/backups/providers",
+        &cookie_a,
+        false,
+        &csrf_a,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(provs["providers"].as_array().unwrap().len(), 10);
+
+    // Viewer cannot test or save destinations.
+    let (st, _) = send(
+        &app,
+        Method::POST,
+        "/api/v1/backups/destinations/test",
+        &cookie_v,
+        false,
+        &csrf_v,
+        Some(json!({ "provider": "r2", "values": { "account": "acct1", "bucket": "ops", "key": "ak", "secret": "sk" } })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Pre-save destination test returns 3 passing steps.
+    let (st, test_r2) = send(
+        &app,
+        Method::POST,
+        "/api/v1/backups/destinations/test",
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({
+            "provider": "r2",
+            "values": {
+                "account": "acct999",
+                "bucket": "opsbox-bk",
+                "prefix": "prod",
+                "key": "AKIA_PRE_TEST",
+                "secret": "SK_PRE_SECRET"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "R2 test failed: {test_r2}");
+    assert_eq!(test_r2["ok"], true);
+    assert_eq!(test_r2["steps"].as_array().unwrap().len(), 3);
+
+    // Save R2 destination -> secrets sealed (never plaintext), switches existing 'local' jobs.
+    let (st, save_r2) = send(
+        &app,
+        Method::POST,
+        "/api/v1/backups/destinations",
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({
+            "provider": "r2",
+            "name": "Offsite R2",
+            "values": {
+                "account": "acct999",
+                "bucket": "opsbox-bk",
+                "prefix": "prod",
+                "key": "AKIA_SAVED",
+                "secret": "SK_SAVED_SECRET"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "R2 save failed: {save_r2}");
+    let r2_id = save_r2["destination"]["id"].as_str().unwrap().to_owned();
+    let r2_row = store.get_backup_destination(&r2_id).unwrap().unwrap();
+    let enc = r2_row.secrets_enc.as_deref().unwrap();
+    assert!(enc.starts_with("enc:v1:"));
+    assert!(!enc.contains("SK_SAVED_SECRET"));
+    assert_eq!(
+        store
+            .get_backup_job(&pg_job.id)
+            .unwrap()
+            .unwrap()
+            .destination_id,
+        r2_id
+    );
+
+    // Save SFTP destination -> generates Ed25519 keypair, exposes public key only, unverified until tested.
+    let (st, save_sftp) = send(
+        &app,
+        Method::POST,
+        "/api/v1/backups/destinations",
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({
+            "provider": "sftp",
+            "name": "Vault SFTP",
+            "values": {
+                "host": "127.0.0.1",
+                "port": "2222",
+                "user": "opsbox",
+                "path": "/srv/backups"
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "SFTP save failed: {save_sftp}");
+    assert!(
+        save_sftp["publicKey"]
+            .as_str()
+            .unwrap()
+            .starts_with("ssh-ed25519 ")
+    );
+    let sftp_id = save_sftp["destination"]["id"].as_str().unwrap().to_owned();
+    let sftp_row = store.get_backup_destination(&sftp_id).unwrap().unwrap();
+    assert!(sftp_row.verified_at.is_none());
+    assert!(
+        sftp_row
+            .secrets_enc
+            .as_deref()
+            .unwrap()
+            .starts_with("enc:v1:")
+    );
+
+    // Recovery key: token refused (403), wrong password refused (403, not 401), valid password succeeds.
+    let (st, _) = send(
+        &app,
+        Method::POST,
+        "/api/v1/backups/recovery-key",
+        &admin_token,
+        true,
+        "",
+        Some(json!({ "password": "TestAdminPass123!" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    let (st, _) = send(
+        &app,
+        Method::POST,
+        "/api/v1/backups/recovery-key",
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({ "password": "WrongPassword999!" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    let (st, hdrs, rec_res) = send_with_headers(
+        &app,
+        Method::POST,
+        "/api/v1/backups/recovery-key",
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({ "password": "TestAdminPass123!" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        hdrs.get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    let expected_pw = opsbox_backup::derive_repo_password(
+        &std::fs::read(&master_key).unwrap().try_into().unwrap(),
+    );
+    assert_eq!(rec_res["password"].as_str().unwrap(), expected_pw.as_str());
+
+    // Run pg-main backup onto R2 offsite destination.
+    let (st, run_r2_pg) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/backups/jobs/{}/run", pg_job.id),
+        &cookie_a,
+        false,
+        &csrf_a,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::ACCEPTED);
+    let run_r2_t = wait_task_done(
+        &app,
+        &cookie_a,
+        &csrf_a,
+        run_r2_pg["task"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(run_r2_t["status"], "ok", "R2 backup failed: {run_r2_t}");
+
+    // Locate the R2 pg-main snapshot in overview.
+    let (st, ov2) = send(
+        &app,
+        Method::GET,
+        "/api/v1/backups",
+        &cookie_a,
+        false,
+        &csrf_a,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(ov2["remoteDestinationsReady"], true);
+    assert_eq!(ov2["restoreReady"], true);
+    let r2_pg_snap = ov2["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["destinationId"] == r2_id && s["kind"] == "database")
+        .expect("missing R2 pg snapshot");
+    let r2_pg_snap_id = r2_pg_snap["id"].as_str().unwrap().to_owned();
+
+    // Restore DB snapshot as COPY -> starts new managed DB service & streams pg_restore dump.
+    let (st, rst_copy) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/backups/snapshots/{r2_pg_snap_id}/restore"),
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({ "mode": "copy", "copyTarget": "pg-restored" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::ACCEPTED,
+        "DB copy restore failed: {rst_copy}"
+    );
+    let rst_copy_t =
+        wait_task_done(&app, &cookie_a, &csrf_a, rst_copy["task"].as_str().unwrap()).await;
+    assert_eq!(
+        rst_copy_t["status"], "ok",
+        "DB copy task failed: {rst_copy_t}"
+    );
+    assert_eq!(rst_copy_t["result"]["targetSummary"], "pg-restored");
+    assert!(!docker_state.lock().unwrap().restored_dumps.is_empty());
+
+    // Restored DB copy is a full managed DB service that an app can connect to!
+    let (proj, env_rec) = store.ensure_default_project(now).unwrap();
+    let web_app = store
+        .create_service(opsbox_store::NewService {
+            project_id: &proj.id,
+            env_id: &env_rec.id,
+            name: "shop-web",
+            kind: opsbox_store::ServiceKind::App,
+            owner_id: Some(&admin.id),
+            source_kind: opsbox_store::SourceKind::DockerImage,
+            repo: "nginx:alpine",
+            branch: "latest",
+            build_method: "image",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 80,
+            health_path: "/",
+            domain: None,
+            image_ref: Some("nginx:alpine"),
+            deploy_key_id: None,
+            auto_deploy: false,
+            memory_limit_mb: None,
+            cpu_limit_millis: None,
+            graph_x: 0,
+            graph_y: 0,
+            note: None,
+            now,
+        })
+        .unwrap();
+    let (st, conn_res) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/services/{}/databases", web_app.id),
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({ "database": "pg-restored" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "connecting app to restored DB copy failed: {conn_res}"
+    );
+
+    // Replace-in-place WITHOUT exact "replace" confirmation must be refused with 409 confirmation_required.
+    let (st, err_confirm) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/backups/snapshots/{r2_pg_snap_id}/restore"),
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({ "mode": "replace", "confirm": "wrong" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(err_confirm["error"]["code"], "confirmation_required");
+
+    // Replace-in-place WITH exact "replace" takes a live safety snapshot FIRST, then restores.
+    let (st, rst_rep) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/backups/snapshots/{r2_pg_snap_id}/restore"),
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({ "mode": "replace", "confirm": "replace" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::ACCEPTED);
+    let rst_rep_t =
+        wait_task_done(&app, &cookie_a, &csrf_a, rst_rep["task"].as_str().unwrap()).await;
+    assert_eq!(
+        rst_rep_t["status"], "ok",
+        "DB replace task failed: {rst_rep_t}"
+    );
+    assert!(rst_rep_t["result"]["safetySnapshotId"].as_str().is_some());
+
+    // Opsbox-self snapshot refuses replace-in-place even with "replace", allows copy restore + restore test.
+    let self_snap_id = ov2["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["kind"] == "opsbox")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (st, _) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/backups/snapshots/{self_snap_id}/restore"),
+        &cookie_a,
+        false,
+        &csrf_a,
+        Some(json!({ "mode": "replace", "confirm": "replace" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    let (st, rtest_res) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/backups/snapshots/{r2_pg_snap_id}/test"),
+        &cookie_a,
+        false,
+        &csrf_a,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::ACCEPTED);
+    let rtest_t = wait_task_done(
+        &app,
+        &cookie_a,
+        &csrf_a,
+        rtest_res["task"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(rtest_t["status"], "ok", "restore test failed: {rtest_t}");
+    assert_eq!(rtest_t["result"]["checkState"], "restore_tested");
+    assert_eq!(
+        store
+            .get_backup_snapshot(&r2_pg_snap_id)
+            .unwrap()
+            .unwrap()
+            .check_state,
+        opsbox_proto::BackupCheckState::RestoreTested
+    );
+
+    // Deleting built-in local destination is refused; deleting R2 moves pg-main back to 'local'.
+    let (st, _) = send(
+        &app,
+        Method::DELETE,
+        "/api/v1/backups/destinations/local",
+        &cookie_a,
+        false,
+        &csrf_a,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let (st, del_r2) = send(
+        &app,
+        Method::DELETE,
+        &format!("/api/v1/backups/destinations/{r2_id}"),
+        &cookie_a,
+        false,
+        &csrf_a,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(del_r2["ok"], true);
+    assert_eq!(
+        store
+            .get_backup_job(&pg_job.id)
+            .unwrap()
+            .unwrap()
+            .destination_id,
+        "local"
+    );
+
+    // Failed restore test surfaces alert via GET /api/v1/attention.
+    std::fs::write(backup_dir.join("fail_restore_test"), b"1").unwrap();
+    let (st, rt_fail_res) = send(
+        &app,
+        Method::POST,
+        &format!("/api/v1/backups/snapshots/{self_snap_id}/test"),
+        &cookie_a,
+        false,
+        &csrf_a,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::ACCEPTED);
+    let rt_fail_t = wait_task_done(
+        &app,
+        &cookie_a,
+        &csrf_a,
+        rt_fail_res["task"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(rt_fail_t["status"], "failed");
+    let (st, att2) = send(
+        &app,
+        Method::GET,
+        "/api/v1/attention",
+        &cookie_a,
+        false,
+        &csrf_a,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        att2.as_array().unwrap().iter().any(|i| {
+            i["kind"] == "backup"
+                && i["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Monthly backup restore test failed")
+        }),
+        "missing restore-test failure alert: {att2}"
+    );
 
     let _ = priv_stop.send(());
     let _ = priv_task.await;

@@ -1,12 +1,18 @@
-//! `opsbox backup list` and `opsbox backup now` CLI commands.
+//! `opsbox backup list`, `opsbox backup now`, and `opsbox restore` CLI commands.
+
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use opsbox_api::backups::{
-    build_run_spec, next_run_after_safe, now_unix, sync_restic_snapshots_to_store,
+    build_run_spec, next_run_after_safe, now_unix, repo_target_from_record,
+    sync_restic_snapshots_to_store,
 };
 use opsbox_backup::cron::format_utc_short;
 use opsbox_priv::PrivClient;
-use opsbox_proto::{BackupCheckState, BackupSnapshotsRequest};
+use opsbox_proto::{
+    BackupCheckState, BackupRestoreMode, BackupRestoreRequest, BackupRestoreTarget,
+    BackupSnapshotsRequest, BackupTargetKind,
+};
 use opsbox_store::{LOCAL_DESTINATION_ID, Store};
 
 use crate::config::Config;
@@ -32,14 +38,23 @@ pub fn list(config: &Config) -> Result<()> {
     let local_info = rt
         .block_on(client.backup_local_info("cli-backup-list", Some("root"), Vec::new()))
         .ok();
-    if let Ok(snaps) = rt.block_on(client.backup_snapshots(
-        "cli-backup-list",
-        Some("root"),
-        BackupSnapshotsRequest {
-            destination_id: LOCAL_DESTINATION_ID.to_owned(),
-        },
-    )) {
-        let _ = sync_restic_snapshots_to_store(&store, &snaps, None);
+    for dest in store.list_backup_destinations().unwrap_or_default() {
+        if dest.id != LOCAL_DESTINATION_ID && dest.verified_at.is_none() {
+            continue;
+        }
+        let Ok(repo) = repo_target_from_record(&dest) else {
+            continue;
+        };
+        if let Ok(snaps) = rt.block_on(client.backup_snapshots(
+            "cli-backup-list",
+            Some("root"),
+            BackupSnapshotsRequest {
+                destination_id: dest.id.clone(),
+                repo,
+            },
+        )) {
+            let _ = sync_restic_snapshots_to_store(&store, &dest.id, &snaps, None);
+        }
     }
 
     let snapshots = store.list_backup_snapshots(50)?;
@@ -206,15 +221,102 @@ pub fn now(config: &Config, job_id: Option<&str>, prune: bool, check: bool) -> R
         }
     }
 
-    if let Ok(snaps) = rt.block_on(client.backup_snapshots(
-        "cli-backup-sync",
-        Some("root"),
-        BackupSnapshotsRequest {
-            destination_id: LOCAL_DESTINATION_ID.to_owned(),
-        },
-    )) {
-        let _ = sync_restic_snapshots_to_store(&store, &snaps, None);
+    for dest in store.list_backup_destinations().unwrap_or_default() {
+        if dest.id != LOCAL_DESTINATION_ID && dest.verified_at.is_none() {
+            continue;
+        }
+        let Ok(repo) = repo_target_from_record(&dest) else {
+            continue;
+        };
+        if let Ok(snaps) = rt.block_on(client.backup_snapshots(
+            "cli-backup-sync",
+            Some("root"),
+            BackupSnapshotsRequest {
+                destination_id: dest.id.clone(),
+                repo,
+            },
+        )) {
+            let _ = sync_restic_snapshots_to_store(&store, &dest.id, &snaps, None);
+        }
     }
 
     Ok(all_ok)
+}
+
+pub fn restore(config: &Config, snapshot: &str, to: &Path) -> Result<()> {
+    let store = Store::open(&config.db_path).with_context(|| {
+        format!(
+            "cannot open database at {} (is opsbox installed?)",
+            config.db_path.display()
+        )
+    })?;
+    let Some(snap) = store.get_backup_snapshot_by_any_id(snapshot)? else {
+        bail!("snapshot '{snapshot}' not found (run `opsbox backup list` first)");
+    };
+    let Some(dest) = store.get_backup_destination(&snap.destination_id)? else {
+        bail!(
+            "destination '{}' for snapshot '{}' not found",
+            snap.destination_id,
+            snap.short_id
+        );
+    };
+    let repo =
+        repo_target_from_record(&dest).map_err(|e| anyhow::anyhow!("{}", e.0.error.message))?;
+    let target_str = to.to_string_lossy().into_owned();
+    let target = match snap.kind {
+        BackupTargetKind::Opsbox => BackupRestoreTarget::Opsbox {
+            copy_target: Some(target_str),
+        },
+        BackupTargetKind::Path => {
+            if snap.paths.is_empty() {
+                bail!(
+                    "snapshot '{}' has no recorded path to restore",
+                    snap.short_id
+                );
+            }
+            BackupRestoreTarget::Path {
+                snapshot_paths: snap.paths.clone(),
+                copy_target: Some(target_str),
+            }
+        }
+        BackupTargetKind::Volume => BackupRestoreTarget::Volume {
+            source_volumes: vec![snap.what.clone()],
+            snapshot_paths: snap.paths.clone(),
+            copy_volume: Some(target_str),
+            project: "cli".into(),
+            service_label: snap.what.clone(),
+        },
+        BackupTargetKind::Database => {
+            bail!(
+                "database snapshot '{}' should be restored from the web panel (Backups -> Restore) so a managed database container can be started",
+                snap.short_id
+            );
+        }
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("cannot start async runtime")?;
+    let client = PrivClient::new(&config.priv_socket);
+    let res = rt
+        .block_on(client.backup_restore(
+            "cli-restore",
+            Some("root"),
+            BackupRestoreRequest {
+                destination_id: snap.destination_id.clone(),
+                repo,
+                restic_id: snap.restic_id.clone(),
+                mode: BackupRestoreMode::Copy,
+                confirm_replace: None,
+                target,
+                job_id: snap.job_id.clone(),
+            },
+        ))
+        .with_context(|| format!("restoring snapshot {}", snap.short_id))?;
+    println!("{}", res.message);
+    for line in res.log {
+        println!("  {line}");
+    }
+    Ok(())
 }

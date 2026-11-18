@@ -431,7 +431,41 @@ pub fn router(state: AppState) -> Router {
             delete(templates::delete_compose_stack),
         )
         .route("/api/v1/backups", get(backups::overview))
+        .route("/api/v1/backups/providers", get(backups::list_providers))
+        .route(
+            "/api/v1/backups/destinations",
+            post(backups::create_destination),
+        )
+        .route(
+            "/api/v1/backups/destinations/test",
+            post(backups::test_destination),
+        )
+        .route(
+            "/api/v1/backups/destinations/{id}",
+            delete(backups::delete_destination),
+        )
+        .route(
+            "/api/v1/backups/destinations/{id}/test",
+            post(backups::test_saved_destination),
+        )
+        .route(
+            "/api/v1/backups/destinations/{id}/default",
+            post(backups::set_default_destination),
+        )
+        .route("/api/v1/backups/recovery-key", post(backups::recovery_key))
         .route("/api/v1/backups/snapshots", get(backups::list_snapshots))
+        .route(
+            "/api/v1/backups/snapshots/{id}/restore",
+            post(backups::restore_snapshot),
+        )
+        .route(
+            "/api/v1/backups/snapshots/{id}/test",
+            post(backups::test_snapshot_restore),
+        )
+        .route(
+            "/api/v1/backups/restore-test",
+            post(backups::run_restore_test_all),
+        )
         .route("/api/v1/backups/jobs", post(backups::create_job))
         .route(
             "/api/v1/backups/jobs/{id}",

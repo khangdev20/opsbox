@@ -332,6 +332,15 @@ pub(crate) async fn create_template_instance(
         now,
     ) {
         warn!(error = %e, service = %svc.name, "failed to create default backup job");
+    } else {
+        let default_dest = crate::backups::resolve_default_destination_id(&state.store);
+        if default_dest != opsbox_store::LOCAL_DESTINATION_ID
+            && let Ok(Some(job)) = state.store.get_backup_job_for_service(&svc.id)
+        {
+            let _ = state
+                .store
+                .set_backup_job_destination(&job.id, &default_dest, now);
+        }
     }
 
     audit_user(

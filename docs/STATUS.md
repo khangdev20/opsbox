@@ -1,18 +1,17 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/13-backups-engine.md` (Backups engine)
+Last completed prompt: `docs/prompts/archive/14-backup-destinations-restore.md` (Backup destinations and restore)
 
 ## What works
-- `crates/opsbox-backup` & `crates/opsbox-proto`: pure-Rust UTC cron parser/evaluator (`next_run_after`, `is_run_missed`), path/volume/retention/subset validators, logical dump builders (`pg_dump -Fc`, `mysqldump`/`mariadb-dump`, `redis-cli --rdb`, `mongodump --archive`), `restic --json` parsers, HMAC repo password derivation, and typed `PrivOp::Backup{LocalInfo,Run,Snapshots,Forget,Check}` messages (zero new external crates).
-- `crates/opsbox-store` (`0010_backups.sql`, `backup.rs`, `lib.rs`): `backup_destinations` (seeded `'local'`), `backup_jobs` (nullable `service_id`, seeded `'opsbox-self'`), `backup_snapshots`, snapshot sync preserving verification states, and `ReadOnlyStore::online_backup` via SQLite's online backup API.
-- `crates/opsbox-docker` & `crates/opsbox-priv` (`ops/backup.rs`): zero-buffer `DockerClient::exec_to_writer` streaming DB dumps into `restic --stdin` (with automatic empty-snapshot rollback), volume mountpoint backup with optional container pause/unpause, path validation blocking `master.key`/`..`/system dirs, `opsbox-self` staging excluding `master.key` + symlinks, `forget --prune`, `check --read-data-subset`, and `st_dev` / `statvfs` same-disk inspection.
-- `crates/opsbox-api` (`backups.rs`, `metrics.rs`) & `crates/opsbox`: serialized `BackupRunner` cron scheduler (`OPSBOX_DISABLE_BG_BACKUPS` opt-out), `/api/v1/backups*` routes, Attention alerts for failed/missed runs and checksum failures, `[backup]` config, and `opsbox backup list` / `opsbox backup now` CLI commands.
-- `install.sh` & `web/js` (`api.js`, `pages/backups.js`): pinned `restic 0.19.1` download with SHA-256 verification before unpacking, wired schedule CRUD/run/prune/checksum UI, and real same-disk warning callout (`restoreBackup` and offsite destinations scoped to prompt 14).
+- Offsite destination presets & wizard (`crates/opsbox-proto`, `crates/opsbox-backup/src/destinations.rs`, `GET /api/v1/backups/providers`, `POST /api/v1/backups/destinations/test`, `POST /api/v1/backups/destinations`): supports all 10 providers (`r2`, `s3`, `b2`, `wasabi`, `do`, `hetzner`, `gcs`, `minio`, `sftp`, `custom`). S3 keys are sealed via `opsbox-priv` (`backup:dest:<id>`); SFTP generates an Ed25519 SSH keypair inside `priv`, exposes only the public key/fingerprint, uses `StrictHostKeyChecking=accept-new` pinned per destination, and switches `'local'` jobs once verified.
+- Credentials & recovery key (`POST /api/v1/backups/recovery-key`): `serve` never unseals destination credentials or touches `master.key`; `priv` injects `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` solely via `cmd.env` and ephemeral `0600` SFTP keyfiles (never CLI argv). Recovery password download requires admin interactive session (`deny_token`) + password re-authentication (returning `403` on bad password, `Cache-Control: no-store`).
+- Restore (`POST /api/v1/backups/snapshots/{id}/restore`, `opsbox restore <snapshot> --to <path>`): copy-by-default (starts a brand-new connectable managed DB service for `database`, `<path>.restored-<date>` for `path`, `<vol>-restored-<date>` for `volume`, `/var/lib/opsbox/opsbox-restored-<date>` for `opsbox`). In-place `replace` requires exact `"replace"` typed confirmation (`409 confirmation_required`), refuses live `opsbox`, and takes a live safety snapshot (`opsbox-safety:true`) FIRST before overwriting.
+- Automated monthly & on-demand restore testing (`POST /api/v1/backups/snapshots/{id}/test`, `POST /api/v1/backups/restore-test`, 30-day scheduler): restores into an ephemeral Docker DB container or temporary directory, runs SQL/Redis/Mongo or SQLite `PRAGMA integrity_check` verification, cleans up temporary resources, marks snapshots `restore_tested`, and surfaces failures in `GET /api/v1/attention`.
+- Backups & destination UI (`web/js/api.js`, `web/js/pages/backups.js`, `web/js/pages/backupdest.js`): all backup/destination/restore/recovery-key calls moved into `REAL` and all `"sample data"` badges removed.
 
 ## Partial / Found, not fixed
-- Linux-only runtime/CI checks (`tools/check-idle-memory.py`, `musl` static build, `cargo-deny`, real `restic 0.19.1` & Docker Engine dumps) cannot execute on macOS and remain for Linux CI / `opsbox-vm`.
-- Remote S3/SFTP destinations, recovery key download, snapshot download, and copy/replace restore arrive in prompt 14 (`14-backup-destinations-restore.md`).
+- Linux-only CI/VM checks (`tools/check-idle-memory.py`, `musl` cross-compile, `cargo-deny`, real MinIO/R2/SFTP & Docker DB restore verification) did not execute on macOS and remain for Linux CI / `opsbox-vm`.
 
 ## Next
-- Verify `install.sh` restic install, DB/path/`opsbox-self` backups, `opsbox backup list|now`, and Backups UI on `opsbox-vm`.
-- Next prompt: `docs/prompts/14-backup-destinations-restore.md`.
+- Verify R2/MinIO & SFTP destinations, DB copy restore + app reconnect, `replace` safety snapshot/refusal, recovery key download, and `opsbox restore` in `opsbox-vm`.
+- Next prompt: `docs/prompts/15-alerts.md`.
