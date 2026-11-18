@@ -45,6 +45,7 @@ pub type ProxyBody = BoxBody<Bytes, hyper::Error>;
 #[derive(Clone, Default)]
 pub struct RouteTable {
     inner: Arc<RwLock<HashMap<String, Route>>>,
+    adopted: Arc<RwLock<opsbox_proto::AdoptedRoutes>>,
 }
 
 impl RouteTable {
@@ -77,7 +78,56 @@ impl RouteTable {
         guard.len()
     }
 
+    pub fn set_adopted(&self, routes: opsbox_proto::AdoptedRoutes) {
+        *self
+            .adopted
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = routes;
+    }
+    pub fn adopted(&self) -> opsbox_proto::AdoptedRoutes {
+        self.adopted
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    /// None means the normal opsbox route/404 path; app and panel hosts always win.
+    pub fn adopted_target(&self, host: &str, tls: bool) -> Option<u16> {
+        if self.lookup_owned(host).is_some() {
+            return None;
+        }
+        let a = self.adopted();
+        let domain = a.domains.iter().find(|d| d.domain == host);
+        if domain.is_some_and(|d| !d.terminate_tls) || (domain.is_none() && a.everything_else) {
+            Some(if tls { a.https_port } else { a.http_port })
+        } else {
+            None
+        }
+    }
     fn lookup(&self, host: &str) -> Option<(Route, bool)> {
+        self.lookup_owned(host).or_else(|| {
+            let a = self.adopted();
+            a.domains
+                .iter()
+                .find(|d| d.domain == host && d.terminate_tls)
+                .map(|_| {
+                    (
+                        Route {
+                            host: host.into(),
+                            upstream: format!("127.0.0.1:{}", a.http_port),
+                            upstream_tls: UpstreamTls::Plain,
+                            redirect_www: false,
+                            redirect_to: None,
+                            redirect_https: true,
+                            hsts: true,
+                            max_body_bytes: 0,
+                            is_panel: false,
+                        },
+                        false,
+                    )
+                })
+        })
+    }
+    fn lookup_owned(&self, host: &str) -> Option<(Route, bool)> {
         let guard = self
             .inner
             .read()
@@ -712,6 +762,27 @@ pub async fn serve_http_connection(
     default_max_body: u64,
     ports: ListenerPorts,
 ) {
+    if routes.adopted().http_port != 0 {
+        let Ok(host) = crate::passthrough::peek_host(&stream).await else {
+            return;
+        };
+        // During a TLS takeover only our active token wins; all other challenge
+        // requests remain byte-for-byte forwards to the old ACME client.
+        let mut header = [0u8; 16384];
+        let n = stream.peek(&mut header).await.unwrap_or(0);
+        let local_challenge = std::str::from_utf8(&header[..n])
+            .ok()
+            .and_then(|h| h.lines().next())
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|p| p.strip_prefix(CHALLENGE_PREFIX))
+            .is_some_and(|token| challenges.get(token).is_some());
+        if !local_challenge
+            && let Some(port) = routes.adopted_target(host.as_deref().unwrap_or(""), false)
+        {
+            crate::passthrough::forward(stream, port, host.as_deref().unwrap_or("")).await;
+            return;
+        }
+    }
     let io = TokioIo::new(stream);
     let svc = hyper::service::service_fn(move |req| {
         handle_http_on_ports(
@@ -737,7 +808,17 @@ pub async fn serve_https_connection(
     default_max_body: u64,
     https_port: u16,
 ) {
-    let Ok(tls_stream) = acceptor.accept(stream).await else {
+    if routes.adopted().https_port != 0 {
+        let Ok(sni) = crate::passthrough::peek_sni(&stream).await else {
+            return;
+        };
+        if let Some(port) = routes.adopted_target(sni.as_deref().unwrap_or(""), true) {
+            crate::passthrough::forward(stream, port, sni.as_deref().unwrap_or("")).await;
+            return;
+        }
+    }
+    let Ok(Ok(tls_stream)) = tokio::time::timeout(CONNECT_TIMEOUT, acceptor.accept(stream)).await
+    else {
         return;
     };
     let io = TokioIo::new(tls_stream);
@@ -767,5 +848,122 @@ mod listener_port_tests {
             host_with_port("app.example.com", 443, 443),
             "app.example.com"
         );
+    }
+}
+
+#[cfg(test)]
+mod adopted_tests {
+    use super::*;
+    #[test]
+    fn opsbox_then_adopted_then_everything_else_then_not_found() {
+        let routes = RouteTable::default();
+        let domain = |name: &str| opsbox_proto::AdoptedDomain {
+            domain: name.into(),
+            served_by: "old".into(),
+            certificate_expiry: None,
+            has_certificate: false,
+            reachable_now: true,
+            terminate_tls: false,
+        };
+        routes.set_adopted(opsbox_proto::AdoptedRoutes {
+            domains: vec![domain("app.test"), domain("old.test")],
+            everything_else: true,
+            http_port: 18080,
+            https_port: 18443,
+        });
+        routes.set(vec![Route {
+            host: "app.test".into(),
+            upstream: "127.0.0.1:3000".into(),
+            upstream_tls: UpstreamTls::Plain,
+            redirect_www: true,
+            redirect_to: None,
+            redirect_https: false,
+            hsts: false,
+            max_body_bytes: 0,
+            is_panel: false,
+        }]);
+        assert_eq!(routes.adopted_target("app.test", true), None);
+        assert_eq!(routes.adopted_target("www.app.test", true), None);
+        assert_eq!(routes.adopted_target("old.test", true), Some(18443));
+        assert_eq!(routes.adopted_target("unknown.test", false), Some(18080));
+        assert_eq!(routes.adopted_target("", true), Some(18443));
+        let mut a = routes.adopted();
+        a.everything_else = false;
+        routes.set_adopted(a);
+        assert_eq!(routes.adopted_target("unknown.test", false), None);
+        assert!(routes.lookup("unknown.test").is_none());
+        let mut a = routes.adopted();
+        a.domains[1].terminate_tls = true;
+        routes.set_adopted(a);
+        assert_eq!(routes.adopted_target("old.test", true), None);
+        assert_eq!(
+            routes.lookup("old.test").unwrap().0.upstream,
+            "127.0.0.1:18080"
+        );
+        routes.set(vec![]);
+        assert_eq!(routes.adopted().domains.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod raw_http_tests {
+    use super::*;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+    #[tokio::test]
+    async fn adopted_http_preserves_host_acme_path_and_headers_byte_for_byte() {
+        let backend = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let front = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = front.local_addr().unwrap();
+        let routes = RouteTable::default();
+        routes.set_adopted(opsbox_proto::AdoptedRoutes {
+            domains: vec![opsbox_proto::AdoptedDomain {
+                domain: "old.test".into(),
+                served_by: "old".into(),
+                certificate_expiry: None,
+                has_certificate: false,
+                reachable_now: true,
+                terminate_tls: false,
+            }],
+            everything_else: false,
+            http_port: backend.local_addr().unwrap().port(),
+            https_port: 18443,
+        });
+        let bytes=b"GET /.well-known/acme-challenge/old-token HTTP/1.1\r\nHost: old.test\r\nX-Original: unchanged\r\nConnection: close\r\n\r\n";
+        let upstream = tokio::spawn(async move {
+            let (mut s, _) = backend.accept().await.unwrap();
+            let mut buf = vec![0; bytes.len()];
+            s.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, bytes);
+            s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nold")
+                .await
+                .unwrap();
+        });
+        let proxy = tokio::spawn(async move {
+            let (s, p) = front.accept().await.unwrap();
+            serve_http_connection(
+                s,
+                p,
+                routes,
+                ChallengeMap::default(),
+                Arc::new(DynamicCertResolver::new()),
+                1024,
+                ListenerPorts {
+                    http: 80,
+                    https: 443,
+                },
+            )
+            .await;
+        });
+        let mut c = TcpStream::connect(addr).await.unwrap();
+        c.write_all(bytes).await.unwrap();
+        c.shutdown().await.unwrap();
+        let mut response = String::new();
+        c.read_to_string(&mut response).await.unwrap();
+        assert!(response.ends_with("old"));
+        upstream.await.unwrap();
+        proxy.await.unwrap();
     }
 }

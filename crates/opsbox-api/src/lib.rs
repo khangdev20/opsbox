@@ -552,6 +552,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/network/proxy/takeover", post(network::takeover))
         .route("/api/v1/network/proxy/undo", post(network::undo))
         .route("/api/v1/network/proxy/keep", post(network::keep))
+        .route("/api/v1/network/proxy/discover", post(network::discover))
+        .route("/api/v1/network/proxy/move", post(network::move_web))
+        .route("/api/v1/network/proxy/undo-move", post(network::undo_move))
+        .route(
+            "/api/v1/domains/{domain}/adopted-tls",
+            post(network::adopted_tls),
+        )
         .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

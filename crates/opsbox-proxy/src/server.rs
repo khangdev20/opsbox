@@ -148,6 +148,11 @@ impl ProxyServer {
             routes.set(persisted_routes);
         }
 
+        if let Ok(raw) = fs::read(config.state_dir.join("adopted.json")) {
+            let adopted =
+                serde_json::from_slice(&raw).map_err(|e| ProxyServerError::Tls(e.to_string()))?;
+            routes.set_adopted(adopted);
+        }
         let challenges = ChallengeMap::default();
         let resolver = Arc::new(DynamicCertResolver::new());
         let priv_client =
@@ -217,7 +222,29 @@ impl ProxyServer {
 
     async fn change_listeners(&mut self, action: ListenerAction) -> Result<(), ProxyServerError> {
         let mut network = self.network.write().await;
-        if action == ListenerAction::KeepFallback {
+        if action == ListenerAction::ClaimPrimary {
+            // Nginx reload returns before draining workers release their accept FDs.
+            // Try immediately, then briefly await that handoff (never the 30s retry).
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            let http = if network.listen_http != Some(self.config.listen_http) {
+                Some(bind_cutover(self.config.listen_http, deadline).await?)
+            } else {
+                None
+            };
+            let https = if network.listen_https != Some(self.config.listen_https) {
+                Some(bind_cutover(self.config.listen_https, deadline).await?)
+            } else {
+                None
+            };
+            if let Some(new) = http {
+                network.listen_http = new.local_addr().ok();
+                self.http_listener = new;
+            }
+            if let Some(new) = https {
+                network.listen_https = new.local_addr().ok();
+                self.https_listener = new;
+            }
+        } else if action == ListenerAction::KeepFallback {
             self.config.listen_http =
                 self.http_listener
                     .local_addr()
@@ -295,6 +322,7 @@ impl ProxyServer {
         });
 
         let permits = Arc::new(Semaphore::new(MAX_CTRL_CONNS));
+        let traffic_permits = Arc::new(Semaphore::new(1024));
         let mut allowed_uids = self.config.allowed_uids.clone();
         allowed_uids.sort_unstable();
         allowed_uids.dedup();
@@ -334,14 +362,16 @@ impl ProxyServer {
                 accepted = self.http_listener.accept() => {
                     match accepted {
                         Ok((stream, peer)) => {
+                            let Ok(permit) = traffic_permits.clone().try_acquire_owned() else { continue; };
                             let routes = self.routes.clone();
                             let challenges = self.challenges.clone();
                             let certs = Arc::clone(&self.resolver);
                             let max_body = self.config.max_body_bytes;
-                            tokio::spawn(serve_http_connection(
+                            let ports = ListenerPorts { http: if self.config.listen_http.port() == 0 {80} else {self.http_listener.local_addr().map_or(80, |a| a.port())}, https: if self.config.listen_https.port() == 0 {443} else {self.https_listener.local_addr().map_or(443, |a| a.port())} };
+                            tokio::spawn(async move { let _permit = permit; serve_http_connection(
                                 stream, peer, routes, challenges, certs, max_body,
-                                ListenerPorts { http: if self.config.listen_http.port() == 0 {80} else {self.http_listener.local_addr().map_or(80, |a| a.port())}, https: if self.config.listen_https.port() == 0 {443} else {self.https_listener.local_addr().map_or(443, |a| a.port())} },
-                            ));
+                                ports,
+                            ).await; });
                         }
                         Err(e) => {
                             warn!(error = %e, "HTTP accept failed");
@@ -352,10 +382,12 @@ impl ProxyServer {
                 accepted = self.https_listener.accept() => {
                     match accepted {
                         Ok((stream, peer)) => {
+                            let Ok(permit) = traffic_permits.clone().try_acquire_owned() else { continue; };
                             let acceptor = acceptor.clone();
                             let routes = self.routes.clone();
                             let max_body = self.config.max_body_bytes;
-                            tokio::spawn(serve_https_connection(stream, peer, acceptor, routes, max_body, if self.config.listen_https.port() == 0 {443} else {self.https_listener.local_addr().map_or(443, |a| a.port())}));
+                            let port = if self.config.listen_https.port() == 0 {443} else {self.https_listener.local_addr().map_or(443, |a| a.port())};
+                            tokio::spawn(async move { let _permit = permit; serve_https_connection(stream, peer, acceptor, routes, max_body, port).await; });
                         }
                         Err(e) => {
                             warn!(error = %e, "HTTPS accept failed");
@@ -508,6 +540,16 @@ async fn handle_ctrl_conn(
                     ),
                 }
             }
+        } else if matches!(
+            req.op,
+            ProxyOp::SetAdopted { .. } | ProxyOp::ReloadCerts | ProxyOp::ImportCert { .. }
+        ) && cred.uid() != 0
+        {
+            ProxyResponse::failure(
+                req.id,
+                ProxyErrorCode::Forbidden,
+                "Adoption changes require the privileged helper.",
+            )
         } else {
             let mut snapshot = network.read().await.clone();
             if matches!(req.op, ProxyOp::Status)
@@ -579,8 +621,67 @@ async fn dispatch_ctrl(
                 certs: acme.list_certs(),
                 acme_staging: staging,
                 network: Box::new(network),
+                adopted: routes.adopted(),
             }),
         ),
+        ProxyOp::ImportCert {
+            domain,
+            cert_pem,
+            key_sealed,
+        } => match acme
+            .import_sealed(&id, &domain, &cert_pem, &key_sealed)
+            .await
+        {
+            Ok(()) => ProxyResponse::success(id, ProxyReply::Ok),
+            Err(_) => ProxyResponse::failure(
+                id,
+                ProxyErrorCode::Invalid,
+                "Cannot import the existing certificate.",
+            ),
+        },
+        ProxyOp::ReloadCerts => match acme.load_persisted().await {
+            Ok(_) => ProxyResponse::success(id, ProxyReply::Ok),
+            Err(_) => {
+                ProxyResponse::failure(id, ProxyErrorCode::Internal, "Cannot load certificate.")
+            }
+        },
+        ProxyOp::SetAdopted { routes: adopted } => {
+            if adopted.domains.len() > 256
+                || adopted
+                    .domains
+                    .iter()
+                    .any(|d| validate_domain(&d.domain).is_err())
+                || (!adopted.domains.is_empty() || adopted.everything_else)
+                    && (adopted.http_port < 1024
+                        || adopted.https_port < 1024
+                        || adopted.http_port == adopted.https_port)
+            {
+                return ProxyResponse::failure(
+                    id,
+                    ProxyErrorCode::Invalid,
+                    "Invalid adopted routes.",
+                );
+            }
+            if fs::create_dir_all(state_dir)
+                .and_then(|()| {
+                    let tmp = state_dir.join("adopted.json.tmp");
+                    fs::write(
+                        &tmp,
+                        serde_json::to_vec(&adopted).map_err(io::Error::other)?,
+                    )?;
+                    fs::rename(tmp, state_dir.join("adopted.json"))
+                })
+                .is_err()
+            {
+                return ProxyResponse::failure(
+                    id,
+                    ProxyErrorCode::Internal,
+                    "Cannot persist adopted routes.",
+                );
+            }
+            routes.set_adopted(adopted);
+            ProxyResponse::success(id, ProxyReply::Ok)
+        }
         ProxyOp::SetRoutes { routes: new_routes } => {
             for r in &new_routes {
                 if let Err(e) = validate_domain(&r.host) {
@@ -676,6 +777,23 @@ fn refresh_conflicts(network: &mut ProxyNetwork, config: &ProxyConfig) {
     .collect();
     network.port_conflict = !network.conflict_ports.is_empty();
 }
+async fn bind_cutover(
+    addr: SocketAddr,
+    deadline: tokio::time::Instant,
+) -> Result<TcpListener, ProxyServerError> {
+    loop {
+        match TcpListener::bind(addr).await {
+            Ok(listener) => return Ok(listener),
+            Err(source)
+                if source.kind() == io::ErrorKind::AddrInUse
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+            Err(source) => return Err(ProxyServerError::Bind { addr, source }),
+        }
+    }
+}
 async fn bind_or_fallback(
     primary: SocketAddr,
     preferred: u16,
@@ -726,4 +844,31 @@ struct ListenerControl {
     network: Arc<RwLock<ProxyNetwork>>,
     commands: mpsc::Sender<ListenerCommand>,
     priv_client: PrivClient,
+}
+
+#[cfg(test)]
+mod cutover_bind_tests {
+    use super::*;
+    #[tokio::test]
+    async fn immediate_handoff_waits_only_for_draining_accept_fds() {
+        let old = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = old.local_addr().unwrap();
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            drop(old);
+        });
+        let new = bind_cutover(addr, tokio::time::Instant::now() + Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(new.local_addr().unwrap(), addr);
+        release.await.unwrap();
+        assert!(
+            bind_cutover(
+                addr,
+                tokio::time::Instant::now() + Duration::from_millis(20)
+            )
+            .await
+            .is_err()
+        );
+    }
 }

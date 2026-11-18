@@ -109,7 +109,7 @@ check_proxy_ports() {
       container=$(docker ps --filter "publish=$port" --format 'container "{{.Names}}", image {{.Image}}' 2>/dev/null | head -n 1 || true)
     fi
     if [ -n "$container" ]; then process="$process ($container)"; fi
-    warn "port $port is used by $process; the opsbox proxy will use :$fallback (or the next free port) until it is free. Fix in panel > Settings > Network."
+    warn "port $port is used by $process; the opsbox proxy will use :$fallback (or the next free port) until it is free. Fix in panel > Settings > Network; run \"Move behind opsbox\" in the panel to keep your sites online."
   done
 }
 # END proxy-port-preflight

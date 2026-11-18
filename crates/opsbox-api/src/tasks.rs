@@ -139,6 +139,19 @@ impl Tasks {
         Ok(id)
     }
 
+    pub(crate) fn progress(&self, kind: &str, log: Vec<String>) {
+        if let Some(task) = self
+            .lock()
+            .values_mut()
+            .find(|t| t.kind == kind && t.status == Status::Running)
+        {
+            task.log = log
+                .into_iter()
+                .take(100)
+                .map(|s| s.chars().take(8192).collect())
+                .collect();
+        }
+    }
     pub(crate) fn is_running(&self, kind: &str) -> bool {
         self.lock()
             .values()

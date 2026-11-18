@@ -88,6 +88,8 @@ pub struct ProxyStatus {
     pub acme_staging: bool,
     #[serde(default)]
     pub network: Box<opsbox_proto::ProxyNetwork>,
+    #[serde(default)]
+    pub adopted: opsbox_proto::AdoptedRoutes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +106,15 @@ pub enum ProxyOp {
     Status,
     Listeners {
         action: opsbox_proto::ListenerAction,
+    },
+    SetAdopted {
+        routes: opsbox_proto::AdoptedRoutes,
+    },
+    ReloadCerts,
+    ImportCert {
+        domain: String,
+        cert_pem: String,
+        key_sealed: String,
     },
     SetRoutes {
         routes: Vec<Route>,
@@ -122,6 +133,9 @@ impl ProxyOp {
             Self::Ping => "ping",
             Self::Status => "status",
             Self::Listeners { .. } => "listeners",
+            Self::SetAdopted { .. } => "set_adopted",
+            Self::ReloadCerts => "reload_certs",
+            Self::ImportCert { .. } => "import_cert",
             Self::SetRoutes { .. } => "set_routes",
             Self::IssueCert { .. } => "issue_cert",
             Self::RemoveCert { .. } => "remove_cert",

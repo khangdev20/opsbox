@@ -215,6 +215,20 @@ pub(crate) async fn get_domains(
         .iter()
         .map(|r| domain_json(r, cert_map.get(&r.domain.to_ascii_lowercase())))
         .collect();
+    let adopted = if who.user.role == opsbox_proto::Role::Admin {
+        if let Some(proxy) = &state.proxy {
+            proxy
+                .status("adopted-domains")
+                .await
+                .ok()
+                .map(|s| s.adopted.domains)
+                .unwrap_or_default()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
     let internal_url = if svc.port > 0 {
         format!("http://{}:{}", svc.name, svc.port)
     } else {
@@ -231,6 +245,7 @@ pub(crate) async fn get_domains(
         "proxyReachable": proxy_reachable,
         "serverIps": server_ips,
         "domains": rendered,
+        "adopted": adopted,
     })))
 }
 

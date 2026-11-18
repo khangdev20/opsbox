@@ -34,6 +34,7 @@ function pickMode() {
 // this set get a "sample data" badge (main.js); the badge disappears by itself.
 const REAL = new Set([
   'getCapacity', 'checkCapacity', 'addCapacitySwap',
+  'discoverWeb', 'moveWeb', 'undoWebMove', 'adoptedTls',
   'getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts',
   'getHost',
   'getAlerts', 'setRule', 'testAlert', 'connectChannel', 'disconnectChannel', 'silenceAlert', 'setQuiet',
@@ -1845,4 +1846,21 @@ export async function addCapacitySwap(size_mb) {
   sample('addCapacitySwap');
   if (real('addCapacitySwap')) return http('/capacity/swap', {method:'POST',body:{size_mb}});
   return {ok:true};
+}
+
+export async function discoverWeb(target) {
+  if (real('discoverWeb')) return http('/network/proxy/discover', { method: 'POST', body: { target } });
+  throw new Error('Discovery needs a connected server.');
+}
+export async function moveWeb(body) {
+  if (real('moveWeb')) { const { task } = await http('/network/proxy/move', { method: 'POST', body }); return waitTask(task, { every: 400 }); }
+  throw new Error('Moving a web server needs a connected server.');
+}
+export async function undoWebMove(id) {
+  if (real('undoWebMove')) { const { task } = await http('/network/proxy/undo-move', { method: 'POST', body: { id, confirm: true } }); return waitTask(task, { every: 400 }); }
+  throw new Error('Undo needs a connected server.');
+}
+export async function adoptedTls(domain) {
+  if (real('adoptedTls')) { const { task } = await http(`/domains/${enc(domain)}/adopted-tls`, { method: 'POST' }); return waitTask(task, { every: 400 }); }
+  throw new Error('Certificates need a connected server.');
 }

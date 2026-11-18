@@ -16,25 +16,25 @@ use opsbox_proto::{
 use serde_json::{Value, json};
 
 static ACTION_LOCK: Mutex<()> = Mutex::new(());
-fn error(code: PrivErrorCode, message: &str) -> PrivError {
+pub(super) fn error(code: PrivErrorCode, message: &str) -> PrivError {
     PrivError {
         code,
         message: message.into(),
     }
 }
-fn internal() -> PrivError {
+pub(super) fn internal() -> PrivError {
     error(
         PrivErrorCode::Internal,
         "Cannot complete the port change. Review the privileged helper logs and use Undo if needed.",
     )
 }
-fn invalid() -> PrivError {
+pub(super) fn invalid() -> PrivError {
     error(
         PrivErrorCode::Invalid,
         "The port holder changed or cannot be managed safely. Refresh Network settings.",
     )
 }
-fn confirmed(confirm: bool) -> Result<(), PrivError> {
+pub(super) fn confirmed(confirm: bool) -> Result<(), PrivError> {
     if confirm {
         Ok(())
     } else {
@@ -86,20 +86,20 @@ fn valid_unit(unit: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"_.@:-".contains(&c))
 }
-fn docker_bin(env: &Env) -> String {
+pub(super) fn docker_bin(env: &Env) -> String {
     env.docker_bin
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned())
         .or_else(|| exec::find(&["/usr/bin/docker", "/usr/local/bin/docker"]))
         .unwrap_or_else(|| "/usr/bin/docker".into())
 }
-fn systemctl_bin(env: &Env) -> String {
+pub(super) fn systemctl_bin(env: &Env) -> String {
     env.network_systemctl
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "/usr/bin/systemctl".into())
 }
-fn command(program: &str, args: &[&str]) -> Result<String, PrivError> {
+pub(super) fn command(program: &str, args: &[&str]) -> Result<String, PrivError> {
     let out = exec::run(program, args, Duration::from_secs(20)).ok_or_else(internal)?;
     if !out.ok() {
         tracing::warn!(program, args = ?args, "port-conflict command failed");
@@ -155,7 +155,7 @@ fn containers(env: &Env, port: u16) -> Vec<PortContainer> {
         })
         .collect()
 }
-fn valid_container(id: &str) -> bool {
+pub(super) fn valid_container(id: &str) -> bool {
     (12..=64).contains(&id.len()) && id.bytes().all(|c| c.is_ascii_hexdigit())
 }
 pub(crate) fn holders(env: &Env, ports: &[u16]) -> Result<Vec<PortHolder>, PrivError> {
@@ -235,7 +235,7 @@ fn config(env: &Env) -> Result<(String, toml::Value), PrivError> {
     let parsed = toml::from_str(&raw).map_err(|_| internal())?;
     Ok((raw, parsed))
 }
-fn control(env: &Env, op: Value) -> Result<Value, PrivError> {
+pub(super) fn control(env: &Env, op: Value) -> Result<Value, PrivError> {
     let (_, parsed) = config(env)?;
     let path = parsed
         .get("proxy")
@@ -244,7 +244,11 @@ fn control(env: &Env, op: Value) -> Result<Value, PrivError> {
         .unwrap_or("/run/opsbox-proxy/proxy.sock");
     let mut stream = UnixStream::connect(path).map_err(|_| internal())?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(Duration::from_secs(if op["type"] == "issue_cert" {
+            180
+        } else {
+            10
+        })))
         .map_err(|_| internal())?;
     stream
         .set_write_timeout(Some(Duration::from_secs(10)))
@@ -261,11 +265,11 @@ fn control(env: &Env, op: Value) -> Result<Value, PrivError> {
     }
     Ok(value["result"]["reply"]["data"].clone())
 }
-fn network(env: &Env) -> Result<ProxyNetwork, PrivError> {
+pub(super) fn network(env: &Env) -> Result<ProxyNetwork, PrivError> {
     serde_json::from_value(control(env, json!({"type":"status"}))?["network"].clone())
         .map_err(|_| internal())
 }
-fn listeners(env: &Env, action: ListenerAction) -> Result<(), PrivError> {
+pub(super) fn listeners(env: &Env, action: ListenerAction) -> Result<(), PrivError> {
     control(env, json!({"type":"listeners","args":{"action":action}})).map(|_| ())
 }
 fn receipts_path(env: &Env) -> PathBuf {
@@ -278,7 +282,7 @@ fn receipts(env: &Env) -> Result<Vec<PortTakeover>, PrivError> {
         Err(_) => Err(internal()),
     }
 }
-fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), PrivError> {
+pub(super) fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), PrivError> {
     let parent = path.parent().ok_or_else(internal)?;
     let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|_| internal())?;
     file.as_file()
@@ -408,8 +412,14 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
     if let PrivOp::PortHolders { ports } = op {
         return holders(env, ports).map(PrivReply::PortHolders);
     }
+    if matches!(op, PrivOp::WebDiscover { .. } | PrivOp::WebMoves) {
+        return super::adoption::dispatch(op, env);
+    }
     let _guard = ACTION_LOCK.lock().map_err(|_| internal())?;
     match op {
+        PrivOp::WebMove { .. } | PrivOp::WebUndo { .. } | PrivOp::WebTls { .. } => {
+            super::adoption::dispatch(op, env)
+        }
         PrivOp::ProxyNetwork => Ok(PrivReply::ProxyNetwork {
             network: Box::new(network(env)?),
             undo: receipts(env)?,

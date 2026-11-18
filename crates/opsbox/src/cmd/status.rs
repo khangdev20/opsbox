@@ -159,7 +159,7 @@ impl Report {
                 (
                     "conflict",
                     format!(
-                        "{holders}, serving on {} / {}. Fix in panel > Settings > Network",
+                        "{holders}, serving on {} / {}. Fix in panel > Settings > Network; run \"Move behind opsbox\" in the panel to keep your sites online",
                         network
                             .listen_http
                             .map_or_else(|| "?".into(), |a| a.to_string()),

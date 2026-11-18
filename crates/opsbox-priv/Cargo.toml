@@ -35,7 +35,10 @@ thiserror = "2.0"
 tokio = { version = "1.54", features = ["rt", "net", "io-util", "time", "sync", "macros", "process"] }
 tracing = "0.1"
 zeroize = "1.9"
+rustls-pki-types = "1"
+x509-parser = "0.18"
 pty-process = { version = "0.5", features = ["async"] }
+serde-saphyr = { version = "2.2", default-features = false, features = ["deserialize"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "6.3", default-features = false, features = ["tokio", "proxy"] }

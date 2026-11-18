@@ -1,30 +1,28 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/16b-ui-polish.md` (tag `v0.1.0-alpha.18`).
+Last completed prompt: `16b` (`v0.1.0-alpha.18`). Prompt `16c` is implemented with two unresolved scope decisions; it is not archived or tagged complete.
 
-## What works (16b)
-- Motion tokens (`--dur-1..3`, `--ease-*`) in `app.css`; one reduced-motion block zeroes durations and `tweenNumber` jumps. Only opacity/transform/colour/shadow animate; bars use `scaleX`.
-- `ui.js`: `tweenNumber`, `num`, `setBar`/`bar`/`segBar`, `flash`, keyed `patch` (rows update in place, new rows slide in, removed rows fade, changed rows flash, focus/scroll/typed input kept), `poll` + `refreshing` (pause when hidden, "updating" dot), `announce` (polite), `trackTask` rows (from `waitTask`), `createChart` (smooth append, stable y axis), skeletons, `empty`, `setBusy`/`withBusy`.
-- Controls styled once: buttons (busy state on every `data-act` button), inputs, stepper, select, checkbox/radio, switch (pending/revert), sliding tabs, dialogs (focus trap/restore, Esc), stacked toasts, drop zone, scrollbars, `.tip`, tables, empty states. Status bar shows live / reconnecting.
-- `web/kit.html` + `js/kit.js`: all components and states, dark and light side by side, "Simulate live data". Served by debug builds or to a signed-in Owner only (`ui.rs`, unit-tested).
-
-## Audit checklist (mock panel, headless Chromium, dark + light, 1440 and 390 px; no console errors, no horizontal overflow on 18 routes)
-- [x] Native controls restyled: select, checkbox, radio, textarea, number (spin hidden, stepper), file (drop zone), date/time, range, search, dialog, scrollbars, autofill (dark and light). `progress` is not used anywhere.
-- [x] Live places: Overview metrics/tables/capacity/network (stream + 5 s poll), status bar, Containers poll, Alerts 15 s poll, Apps poll and deploy status, Cleanup scan, System tabs/journal, `waitTask` (updates, cleanup, backups, swap, Docker install), Files list.
-- [x] Jumps fixed: numbers and bars (tween / scaleX), rows and chips (keyed patch, cross-fade), chart redraw, first-load blank page (skeleton after 140 ms), switch/tab snaps, dialog pop-in.
-- [x] Before/after screenshots: `docs/screenshots/16b/{before,after}/` (Overview, Containers, Cleanup, Alerts, deploy in progress, form dialog; dark, mock data).
+## What works (16c)
+- Read-only privileged discovery: holder/image/Compose labels, nginx/Apache/Caddy/Traefik names, standard/mounted/container certificate stores (names/expiry only), local Host probes, manual names and Everything else.
+- Compose `!override` preserves originals and other published ports. Confirmed plain Docker recreation snapshots writable config, warms private listeners, masks secrets in its generated command diff, retains the stopped/renamed original and restores its restart policy on Undo.
+- nginx/Apache Listen rewrites, IPv6 duplicate collapse/flags, Caddy ports/loopback bind, Traefik static YAML/TOML structural validation, backups and reload. Unsupported layouts refuse.
+- Separate persisted adopted routes; bounded non-consuming TLS 1.2/1.3 SNI peeks, raw TCP/HTTP forwarding, limits/timeouts and payload-free logs. Panel/app hosts win. Sealed certificate import or issuance precedes TLS termination; response regressions restore passthrough.
+- Durable root cutover/Undo receipts, automatic rollback, baseline status classes, immediate bind (≤1s draining-worker handoff), shared 20s verification, live task steps and audits. Interactive-admin API, REAL map, Overview/Network dialog, adopted-domain actions, installer/status hint and API/spec docs.
 
 ## Verified
-- `node --check` on every `web/js/*.js` and `web/js/pages/*.js`; `node tools/check-{capacity,alerts,network}-ui.mjs`.
-- `cargo fmt --all --check`; `python3 tools/generate-api.py --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo test --workspace --locked`; `cargo build --release --locked`.
-- Browser (Playwright on the mock panel): rows/charts patched in place across polls, focus restored after dialog Esc, switch pending then revert on failure, double click ignored, reduced-motion run has no errors.
+- `cargo fmt --all --check`; API generator check; warning-level sh shellcheck; modified JS and check-*-ui.mjs syntax; all three UI contract scripts; locked workspace clippy with warnings denied; locked release build.
+- Adoption fixtures/state-machine tests, TLS versions/SNI/missing SNI/record and TCP fragmentation, bidirectional byte preservation, HTTP-01/Host preservation, routing precedence, command masking and HTTP authorization/task tests pass.
+- All workspace tests pass when the pre-existing Capacity failure below is excluded. The required unfiltered command was run and fails at that same test; reproduced on unchanged `450e0bf` in an isolated worktree.
+- `opsbox-vm` (Ubuntu 24.04, Docker 29): installed release binary; real plain Docker, Compose override and nginx.service moves + Undo; old.test HTTP/TLS, new.test managed-container route fixture, unknown/missing SNI, imported certificate, safe refusal. Latest successful loop: 0 / 1 / 0 failed requests respectively at 200ms intervals. Fixtures/routes/hosts restored. See `tools/check-adoption-vm.py`.
 
 ## Partial / Found, not fixed
-- Not run on `opsbox-vm`: http-mode parts (real task rows from the server, stream "reconnecting", release `kit` gate for a real Owner cookie) are covered by code and the `ui.rs` unit test only.
-- Idle CPU was not profiled in a browser Performance panel; the only infinite animations are CSS (pulse dots, skeleton, indeterminate bar).
-- `html` templates drop `false`, so any attribute written as `"${bool}"` renders empty; fixed for tabs/switch/tiles, others may remain. `.topo-edge` flow still animates `background-position` (topology only).
-- Earlier items still open: live DB/R2/MinIO/SFTP/alert-channel checks, pgweb path prefix, Capacity override click-through. `design/*` working-tree edits are untouched and unstaged.
+- Awaiting Apache choice: port-qualified `<VirtualHost *:80>`/`:443` blocks cannot follow a Listen-only move. Current code refuses those layouts to obey the instruction not to change other directives; wildcard/no-port VirtualHost layouts remain supported.
+- Awaiting permission for an unrelated test-fixture fix: `capacity_http::queued_workloads_block_database_resize_pooler_and_memory_adding_extensions` expects structured pooler admission but its database is stopped, producing “Start this database first.” Conventions say to record unrelated problems rather than fix them.
+- Caddy/Traefik live cutovers and an entire service-deploy API workflow on new.test were not exercised in the VM (the real proxy app-route fixture was). Their parsing/rewriting and existing deployment paths have automated coverage.
+- Earlier open items remain: live DB/R2/MinIO/SFTP/alert-channel checks, pgweb path prefix, Capacity override click-through and idle browser CPU profiling.
+- Existing `design/*`, staged 16d/16e prompts, and concurrent unrelated panel edits are preserved outside this change.
 
 ## Next
-- Prompt `17` alpha release; finish earlier live integration checks.
-- VM: `cd /home/ubuntu/opsbox`; `CARGO_TARGET_DIR=~/target cargo build --release`; `sudo sh install.sh --dev --binary ~/target/release/opsbox`; `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`. Check Overview numbers glide, a Cleanup run shows a task row, and `/kit.html` is 404 when signed out or as a Deployer (and loads for the Owner).
+- Resolve the two decisions above, rerun the unfiltered suite, then finish 16c archive/README checkmark and `v0.1.0-alpha.19`.
+- VM: `cd /home/ubuntu/opsbox`; `CARGO_TARGET_DIR=~/target ~/.cargo/bin/cargo build --release --locked`; `sudo sh install.sh --dev --binary ~/target/release/opsbox`; `sudo python3 tools/check-adoption-vm.py` (requires the 03c nginx `web` fixture and Compose v2).
+- UI: `ssh -L 8443:127.0.0.1:8443 ubuntu@192.168.252.2`; open Settings > Network, review Move behind opsbox, and check live steps/Undo. A wrong typed recreation confirmation must leave the existing site online.

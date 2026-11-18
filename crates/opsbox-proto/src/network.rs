@@ -45,4 +45,57 @@ pub struct PortTakeover {
 pub enum ListenerAction {
     KeepFallback,
     YieldPrimary,
+    ClaimPrimary,
+}
+
+/// Independent of app routes: app/panel routes always take precedence.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdoptedRoutes {
+    pub domains: Vec<AdoptedDomain>,
+    pub everything_else: bool,
+    pub http_port: u16,
+    pub https_port: u16,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdoptedDomain {
+    pub domain: String,
+    pub served_by: String,
+    pub certificate_expiry: Option<String>,
+    #[serde(default)]
+    pub has_certificate: bool,
+    pub reachable_now: bool,
+    #[serde(default)]
+    pub terminate_tls: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebPlan {
+    pub target: PortTarget,
+    pub holder: String,
+    pub image: Option<String>,
+    pub compose_project: Option<String>,
+    pub working_dir: Option<String>,
+    pub config_files: Vec<String>,
+    pub routes: AdoptedRoutes,
+    pub changes: Vec<WebDiff>,
+    pub supported: bool,
+    pub explanation: String,
+    pub confirmation: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebDiff {
+    pub path: String,
+    pub before: String,
+    pub after: String,
+}
+/// Public receipt: never config contents, environment variables or private keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebMove {
+    pub id: String,
+    pub holder: String,
+    pub files: Vec<String>,
+    pub http_port: u16,
+    pub https_port: u16,
+    pub steps: Vec<String>,
+    pub active: bool,
 }

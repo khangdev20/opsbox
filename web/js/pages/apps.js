@@ -1,3 +1,4 @@
+import { adoptedDomains } from '../network.js';
 import { html, raw, ago, st, btn, tabs, table, section, header, sw, bindActions, confirmDialog, askForm, toast, patch, empty, announce } from '../ui.js';
 import { editMemory, withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
@@ -190,6 +191,7 @@ export async function view({ query }) {
           ? html`<section class="sec"><div class="sec-h"><h2>Issue TLS certificate</h2></div><p class="muted sm">DNS for <span class="mono">${needCert.name}</span> points here. Issue its Let's Encrypt certificate to enable HTTPS.</p><div class="row">${btn(`Issue certificate for ${needCert.name}`, { act: 'issuecert', data: { n: needCert.name }, kind: 'primary', disabled: !!domBusy || proxyDown })}</div></section>`
           : html`<section class="sec"><div class="sec-h"><h2>All domains are live</h2></div><p class="muted sm">Every domain points here and has a valid certificate.</p></section>`;
     return html`<div style="display:flex;flex-direction:column;gap:28px">
+      ${adoptedDomains(doms.adopted || [])}
       ${table('Domains', [['Domain'], ['DNS'], ['HTTPS'], ['Policy'], ['', 'r']], [...domainRows, internalRow])}
       <div class="cols">
         <div class="w3">${statusCard}</div>
@@ -345,6 +347,7 @@ export async function view({ query }) {
         memory: async () => { await editMemory(svc()); await reload(); },
         select: (el) => { fresh = true; sel = el.dataset.id; tab = 0; stopWs(); logDeploy = null; logLines = []; doms = null; domBusy = ''; domErr = ''; lastDns = null; paint(); },
         tab: (el) => { fresh = true; tab = +el.dataset.i; paint(); },
+        adoptedTls: async (el) => { try { await api.adoptedTls(el.dataset.domain); toast('opsbox now handles TLS.'); await refreshDomainsAndProj(); } catch (e) { toast(e.message, 'err'); } },
         gotodomains: () => { fresh = true; tab = 2; paint(); root.querySelector('#d').scrollIntoView({ behavior: 'smooth', block: 'start' }); },
         adddom: async () => {
           domErr = '';

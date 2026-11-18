@@ -3,6 +3,7 @@
 //! the compiler enforces the last two because the `match` is exhaustive.
 
 mod access;
+mod adoption;
 pub(crate) mod backup;
 pub(crate) mod capacity;
 pub mod cleanup;
@@ -96,6 +97,11 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             Ok(PrivReply::Done)
         }
         PrivOp::PortHolders { .. }
+        | PrivOp::WebDiscover { .. }
+        | PrivOp::WebMove { .. }
+        | PrivOp::WebUndo { .. }
+        | PrivOp::WebMoves
+        | PrivOp::WebTls { .. }
         | PrivOp::ProxyNetwork
         | PrivOp::ProxyTakeover { .. }
         | PrivOp::ProxyUndo { .. }

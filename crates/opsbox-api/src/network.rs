@@ -24,7 +24,18 @@ pub(crate) async fn get_network(
         .await?
     {
         PrivReply::ProxyNetwork { network, undo } => {
-            Ok(Json(json!({"network":network,"undo":undo})))
+            let moves = match state.priv_client.call(&rid, None, PrivOp::WebMoves).await? {
+                PrivReply::WebMoves(rows) => rows,
+                _ => return Err(HttpError::internal()),
+            };
+            let adopted = if let Some(proxy) = &state.proxy {
+                proxy.status(&rid).await.ok().map(|s| s.adopted)
+            } else {
+                None
+            };
+            Ok(Json(
+                json!({"network":network,"undo":undo,"moves":moves,"adopted":adopted}),
+            ))
         }
         _ => Err(HttpError::internal()),
     }
@@ -150,4 +161,134 @@ pub(crate) async fn keep(
         },
     )
     .await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DiscoverBody {
+    target: PortTarget,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MoveBody {
+    target: PortTarget,
+    #[serde(default)]
+    domains: Vec<String>,
+    everything_else: bool,
+    confirmation: String,
+}
+pub(crate) async fn discover(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(body): ApiJson<DiscoverBody>,
+) -> Result<Json<Value>, HttpError> {
+    deny_token(&who)?;
+    match state
+        .priv_client
+        .clone()
+        .with_timeout(std::time::Duration::from_secs(120))
+        .call(
+            &rid,
+            Some(&who.user.name),
+            PrivOp::WebDiscover {
+                target: body.target,
+            },
+        )
+        .await?
+    {
+        PrivReply::WebPlan(plan) => Ok(Json(json!({"plan":plan}))),
+        _ => Err(HttpError::internal()),
+    }
+}
+async fn web_task(
+    state: AppState,
+    who: opsbox_auth::Principal,
+    client: Client,
+    rid: String,
+    op: PrivOp,
+) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    deny_token(&who)?;
+    let worker = state.clone();
+    let task = state.tasks.start("web_move", async move {
+        let call = worker.priv_client.clone().with_timeout(std::time::Duration::from_secs(600));
+        let work = call.call(&rid,Some(&who.user.name),op.clone());
+        tokio::pin!(work);
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(400));
+        let result = loop {
+            tokio::select! {
+                result = &mut work => break result,
+                _ = tick.tick() => {
+                    if let Ok(PrivReply::WebMoves(rows)) = worker.priv_client.call(&rid,None,PrivOp::WebMoves).await {
+                        let row = rows.iter().filter(|r|r.active).max_by_key(|r| &r.id).or_else(||rows.last());
+                        if let Some(row)=row {worker.tasks.progress("web_move",row.steps.clone());}
+                    }
+                }
+            }
+        };
+        let receipts = match worker.priv_client.call(&rid, None, PrivOp::WebMoves).await {
+            Ok(PrivReply::WebMoves(rows)) => rows, _ => vec![],
+        };
+        if let Some(receipt)=receipts.iter().filter(|r|r.active).max_by_key(|r|&r.id).or_else(||receipts.last()) {worker.tasks.progress("web_move",receipt.steps.clone());}
+        let detail=match &result {Ok(PrivReply::WebMove(receipt))=>json!({"receipt":receipt}), _=>json!({"request":op,"receipts":receipts})};
+        worker.store.append_audit(opsbox_store::NewAudit {
+            actor:who.user.name.clone(),actor_kind:ActorKind::User,ip:Some(client.ip),action:format!("network.{}",op.name()),target:Some("proxy".into()),
+            result:if result.is_ok() {AuditResult::Ok} else {AuditResult::Failed}, detail,
+        }).map_err(|_|HttpError::internal())?;
+        match result? {
+            PrivReply::WebMove(receipt)=>Ok(crate::tasks::Outcome {log:receipt.steps.clone(),result:json!({"receipt":receipt})}),
+            PrivReply::Done=>Ok(crate::tasks::Outcome {log:vec!["opsbox now handles TLS for this domain.".into()],result:json!({"ok":true})}),
+            _=>Err(HttpError::internal()),
+        }
+    })?;
+    Ok((axum::http::StatusCode::ACCEPTED, Json(json!({"task":task}))))
+}
+pub(crate) async fn move_web(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(body): ApiJson<MoveBody>,
+) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    web_task(
+        state,
+        who,
+        client,
+        rid,
+        PrivOp::WebMove {
+            target: body.target,
+            domains: body.domains,
+            everything_else: body.everything_else,
+            confirmation: body.confirmation,
+        },
+    )
+    .await
+}
+pub(crate) async fn undo_move(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(body): ApiJson<UndoBody>,
+) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    web_task(
+        state,
+        who,
+        client,
+        rid,
+        PrivOp::WebUndo {
+            id: body.id,
+            confirm: body.confirm,
+        },
+    )
+    .await
+}
+pub(crate) async fn adopted_tls(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    axum::extract::Path(domain): axum::extract::Path<String>,
+) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    web_task(state, who, client, rid, PrivOp::WebTls { domain }).await
 }

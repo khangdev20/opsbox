@@ -311,6 +311,44 @@ impl AcmeManager {
         self
     }
 
+    /// Root supplies only a sealed key; the proxy persists it using its own uid.
+    pub async fn import_sealed(
+        &self,
+        rid: &str,
+        domain: &str,
+        cert_pem: &str,
+        key_sealed: &str,
+    ) -> Result<(), AcmeError> {
+        crate::domain::validate_domain(domain).map_err(|e| AcmeError::Invalid(e.0))?;
+        let meta = parse_cert_metadata(cert_pem)?;
+        if meta.not_before > now_secs() || meta.not_after <= now_secs() {
+            return Err(AcmeError::Invalid(
+                "Certificate is not currently valid.".into(),
+            ));
+        }
+        let key = self
+            .priv_client
+            .secret_open(rid, None, &format!("proxy:cert:{domain}"), key_sealed)
+            .await
+            .map_err(|e| AcmeError::Priv(e.to_string()))?;
+        self.resolver.insert_pem(domain, cert_pem, key.expose())?;
+        let rec = PersistedCert {
+            domain: domain.into(),
+            cert_pem: cert_pem.into(),
+            key_sealed: key_sealed.into(),
+            not_before: meta.not_before,
+            not_after: meta.not_after,
+            issuer: meta.issuer,
+            staging: false,
+            issued_at: now_secs(),
+            consecutive_failures: 0,
+            last_error: None,
+            next_retry_at: 0,
+        };
+        write_private_json(&self.cert_path(domain)?, &rec)?;
+        self.load_persisted().await?;
+        Ok(())
+    }
     fn certs_dir(&self) -> PathBuf {
         self.state_dir.join("certs")
     }

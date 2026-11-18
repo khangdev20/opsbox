@@ -62,6 +62,23 @@ pub enum PrivOp {
         ports: Vec<u16>,
     },
     ProxyNetwork,
+    WebDiscover {
+        target: crate::PortTarget,
+    },
+    WebMove {
+        target: crate::PortTarget,
+        domains: Vec<String>,
+        everything_else: bool,
+        confirmation: String,
+    },
+    WebUndo {
+        id: String,
+        confirm: bool,
+    },
+    WebMoves,
+    WebTls {
+        domain: String,
+    },
     ProxyTakeover {
         port: u16,
         target: crate::PortTarget,
@@ -429,6 +446,11 @@ impl PrivOp {
             Self::CapacityAddSwap { .. } => "capacity_add_swap",
             Self::PortHolders { .. } => "port_holders",
             Self::ProxyNetwork => "proxy_network",
+            Self::WebDiscover { .. } => "web_discover",
+            Self::WebMove { .. } => "web_move",
+            Self::WebUndo { .. } => "web_undo",
+            Self::WebMoves => "web_moves",
+            Self::WebTls { .. } => "web_tls",
             Self::ProxyTakeover { .. } => "proxy_takeover",
             Self::ProxyUndo { .. } => "proxy_undo",
             Self::ProxyKeepPorts { .. } => "proxy_keep_ports",
@@ -577,6 +599,9 @@ pub enum PrivReply {
     CapacityImageSize {
         disk_mb: u64,
     },
+    WebPlan(Box<crate::WebPlan>),
+    WebMove(crate::WebMove),
+    WebMoves(Vec<crate::WebMove>),
     PortHolders(Vec<crate::PortHolder>),
     ProxyNetwork {
         network: Box<crate::ProxyNetwork>,

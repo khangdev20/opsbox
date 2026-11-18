@@ -196,6 +196,7 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `GET` | `/api/v1/docker/networks` | [docker::list_networks](../crates/opsbox-api/src/docker.rs) |
 | `GET` | `/api/v1/docker/status` | [docker::status](../crates/opsbox-api/src/docker.rs) |
 | `GET` | `/api/v1/docker/volumes` | [docker::list_volumes](../crates/opsbox-api/src/docker.rs) |
+| `POST` | `/api/v1/domains/{domain}/adopted-tls` | [network::adopted_tls](../crates/opsbox-api/src/network.rs) |
 | `DELETE` | `/api/v1/domains/{name}` | [domains::remove_domain](../crates/opsbox-api/src/domains.rs) |
 | `PATCH` | `/api/v1/domains/{name}` | [domains::update_domain](../crates/opsbox-api/src/domains.rs) |
 | `POST` | `/api/v1/domains/{name}/certificate` | [domains::issue_cert](../crates/opsbox-api/src/domains.rs) |
@@ -236,9 +237,12 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `POST` | `/api/v1/jobs/{id}/run` | [system::run_job](../crates/opsbox-api/src/system.rs) |
 | `GET` | `/api/v1/metrics` | [metrics::get_metrics](../crates/opsbox-api/src/metrics.rs) |
 | `GET` | `/api/v1/network/proxy` | [network::get_network](../crates/opsbox-api/src/network.rs) |
+| `POST` | `/api/v1/network/proxy/discover` | [network::discover](../crates/opsbox-api/src/network.rs) |
 | `POST` | `/api/v1/network/proxy/keep` | [network::keep](../crates/opsbox-api/src/network.rs) |
+| `POST` | `/api/v1/network/proxy/move` | [network::move_web](../crates/opsbox-api/src/network.rs) |
 | `POST` | `/api/v1/network/proxy/takeover` | [network::takeover](../crates/opsbox-api/src/network.rs) |
 | `POST` | `/api/v1/network/proxy/undo` | [network::undo](../crates/opsbox-api/src/network.rs) |
+| `POST` | `/api/v1/network/proxy/undo-move` | [network::undo_move](../crates/opsbox-api/src/network.rs) |
 | `GET` | `/api/v1/panel` | [panel::status](../crates/opsbox-api/src/panel.rs) |
 | `POST` | `/api/v1/panel/certificate` | [panel::issue_cert](../crates/opsbox-api/src/panel.rs) |
 | `POST` | `/api/v1/panel/dns-check` | [panel::check_dns](../crates/opsbox-api/src/panel.rs) |
@@ -317,3 +321,16 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 ## Future phases (sample UI)
 
 Database management console: Prompt 16. WireGuard, desktop device authentication and other-server terminals: Phase 6. Unimplemented UI actions remain clearly marked in `web/js/api.js` and retain sample-data labels.
+
+### Existing website adoption
+
+All adoption endpoints require an interactive administrator session; mutations use the normal CSRF and same-Origin checks. Tokens cannot discover or mutate adoption. `GET /api/v1/network/proxy` includes `moves` (public durable receipts) and `adopted` alongside existing network/takeover state.
+
+| Endpoint | Request and response |
+|---|---|
+| `POST /api/v1/network/proxy/discover` | `{target:{kind:"container"|"unit",id}}` → `{plan}`. Read-only inspection: holder/image/Compose project, working directory/config files, private ports, discovered domains (`domain`, `served_by`, `has_certificate`, Unix `certificate_expiry`, `reachable_now`), masked command/directive diffs, support explanation and required typed confirmation. |
+| `POST /api/v1/network/proxy/move` | `{target,domains:["old.example.com"],everything_else:false,confirmation:"move"}` → `202 {task}`. Plain containers require `confirmation:"recreate <name>"`. Discovered names remain included. Ownership and configuration are re-read in priv. |
+| `POST /api/v1/network/proxy/undo-move` | `{id,confirm:true}` → `202 {task}`. Restores from the root receipt and verifies original responses. Incomplete recovery retains Undo. |
+| `POST /api/v1/domains/{domain}/adopted-tls` | → `202 {task}`. Import a valid existing certificate, otherwise issue one; change routing only when ready. Restore passthrough on response regression. |
+
+Poll `GET /api/v1/tasks/{id}` for live `log` steps and final `status/error/result`. Move results contain `receipt:{id,holder,files,http_port,https_port,steps,active}`; failed moves report the failed step and rollback result and are audited with public receipt details. No secret configuration, certificate key or environment value is returned. Per-service domain responses include an administrator-only `adopted` list with `terminate_tls` so the panel can label passthrough domains and offer TLS handoff. The `REAL` API map includes `discoverWeb`, `moveWeb`, `undoWebMove` and `adoptedTls`.

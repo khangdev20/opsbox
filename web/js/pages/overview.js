@@ -1,7 +1,7 @@
 import { html, raw, chk, gb, legend, section, header, table, bindActions, num, bar, patch, createChart, poll, refreshing } from '../ui.js';
 import * as api from '../api.js';
 import { capacityCard, addSwap } from '../capacity.js';
-import { networkBanner } from '../network.js';
+import { networkBanner, networkActions } from '../network.js';
 import { listeners } from '../store.js';
 
 const kpi = (l, v, u, p, extra = '', thresholds = true) => html`<div class="kpi"><span class="l">${l}</span><span class="v">${v}<small>${u}</small></span>${bar(p / 100, l, { thresholds })}${extra}</div>`;
@@ -36,7 +36,8 @@ export async function view() {
       <div id="live">${body(m)}</div></main>`,
     mount(root) {
       const card = () => root.querySelector('#capacity-card');
-      bindActions(root, { 'capacity-swap': async (el) => { await addSwap(Number(el.dataset.mb)); const c = card(); if (c) patch(c, capacityCard(await api.getCapacity()).toString()); } });
+      const refreshNetwork = async () => { const b = root.querySelector('#proxy-network-banner'); if (b) patch(b, networkBanner(await api.getProxyNetwork()).toString()); };
+      bindActions(root, { ...networkActions(refreshNetwork, () => {}), 'capacity-swap': async (el) => { await addSwap(Number(el.dataset.mb)); const c = card(); if (c) patch(c, capacityCard(await api.getCapacity()).toString()); } });
       const live = root.querySelector('#live');
       const chart = createChart(root.querySelector('#cpu-chart'), { label: 'CPU and memory over time', series: [{ color: 'var(--muted)', width: 1.5 }, { color: 'var(--accent)', width: 2 }], cap: 100, floor: 20 });
       const draw = (m) => chart.update([m.mem, m.cpu]);

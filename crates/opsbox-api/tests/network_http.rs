@@ -56,7 +56,7 @@ if pathlib.Path(__file__).name == 'docker':
     if a[0] == 'ps':
         if s['running']: print(s['id'])
     elif a[0] == 'inspect':
-        print(json.dumps([{'Id':s['id'],'Name':'/web','Config':{'Image':'nginx:1.27'},'State':{'Running':s['running']},'HostConfig':{'RestartPolicy':{'Name':s['policy'],'MaximumRetryCount':0}},'NetworkSettings':{'Ports':{'80/tcp':[{'HostPort':'80'}],'443/tcp':[{'HostPort':'443'}]}}}]))
+        print(json.dumps([{'Id':s['id'],'Name':'/web','Image':'sha256:test','Config':{'Image':'nginx:1.27'},'State':{'Running':s['running']},'HostConfig':{'PortBindings':{'80/tcp':[{'HostIp':'0.0.0.0','HostPort':'80'}],'443/tcp':[{'HostIp':'0.0.0.0','HostPort':'443'}]},'RestartPolicy':{'Name':s['policy'],'MaximumRetryCount':0}},'NetworkSettings':{'Ports':{'80/tcp':[{'HostPort':'80'}],'443/tcp':[{'HostPort':'443'}]}}}]))
     elif a[0] == 'update': s['policy'] = a[1].split('=',1)[1]
     elif a[0] in ('start','stop'): s['running'] = a[0] == 'start'
     else: sys.exit(2)
@@ -132,6 +132,39 @@ p.write_text(json.dumps(s))
         viewer.get("/api/v1/network/proxy").await.status,
         StatusCode::FORBIDDEN
     );
+    // Adoption is interactive-admin only, and discovery is read-only.
+    let discover_body = json!({"target":{"kind":"container","id":id}});
+    for path in [
+        "/api/v1/network/proxy/discover",
+        "/api/v1/network/proxy/move",
+        "/api/v1/network/proxy/undo-move",
+        "/api/v1/domains/old.test/adopted-tls",
+    ] {
+        assert_eq!(
+            post(&mut viewer, path, discover_body.clone()).await.status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let discovery = post(&mut admin, "/api/v1/network/proxy/discover", discover_body).await;
+    assert_eq!(discovery.status, StatusCode::OK, "{}", discovery.text());
+    assert_eq!(discovery.json()["plan"]["holder"], "web");
+    assert_eq!(discovery.json()["plan"]["confirmation"], "recreate web");
+    assert!(read_only_state(root));
+    let refused=post(&mut admin,"/api/v1/network/proxy/move",json!({"target":{"kind":"container","id":id},"domains":["old.test"],"everything_else":true,"confirmation":"wrong"})).await;
+    assert_eq!(refused.status, StatusCode::ACCEPTED);
+    let tid = refused.json()["task"].as_str().unwrap().to_owned();
+    let mut task_failed = false;
+    for _ in 0..100 {
+        let t = admin.get(&format!("/api/v1/tasks/{tid}")).await.json();
+        if t["status"] == "failed" {
+            assert!(t["error"].as_str().unwrap().contains("Type recreate web"));
+            task_failed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(task_failed, "confirmation refusal task did not finish");
+    assert!(read_only_state(root));
     let body = json!({"port":80,"target":{"kind":"container","id":id},"confirm":true});
     assert_eq!(
         post(&mut viewer, "/api/v1/network/proxy/takeover", body.clone())
@@ -265,4 +298,10 @@ p.write_text(json.dumps(s))
     task.await.unwrap();
     control_task.abort();
     h.shutdown().await;
+}
+
+fn read_only_state(root: &std::path::Path) -> bool {
+    let s: Value =
+        serde_json::from_slice(&std::fs::read(root.join("state.json")).unwrap()).unwrap();
+    s["running"] == true && s["policy"] == "always" && !root.join("web-moves").exists()
 }
