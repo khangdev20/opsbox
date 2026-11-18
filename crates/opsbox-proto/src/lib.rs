@@ -5,6 +5,7 @@
 
 pub mod access;
 pub mod api;
+pub mod backup;
 pub mod cleanup;
 pub mod deploy;
 pub mod docker;
@@ -21,6 +22,11 @@ pub mod watchdog;
 
 pub use access::{AccessState, AccessUser, AuthorizedKey, SshStatus};
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
+pub use backup::{
+    BackupCheckRequest, BackupCheckResult, BackupCheckState, BackupDbKind, BackupForgetRequest,
+    BackupForgetResult, BackupLocalInfo, BackupRunResult, BackupRunSpec, BackupRunTarget,
+    BackupSnapshotsRequest, BackupTargetKind, ResticSnapshotInfo, valid_backup_id,
+};
 pub use cleanup::{CleanupFreed, CleanupItem, CleanupScan};
 pub use deploy::{
     ComposeDeployRequest, ComposeDeployResult, ComposeDeployedService, ComposeServiceInfo,

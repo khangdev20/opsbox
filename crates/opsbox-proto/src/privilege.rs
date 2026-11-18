@@ -357,6 +357,18 @@ pub enum PrivOp {
         stack: String,
         service: String,
     },
+    /// Inspect local backup storage (`/var/backups/opsbox`), restic status, and same-disk mount checks.
+    BackupLocalInfo {
+        check_paths: Vec<String>,
+    },
+    /// Execute a backup job via restic (streamed DB dump, volume, path, or opsbox self-backup).
+    BackupRun(crate::backup::BackupRunSpec),
+    /// List restic snapshots in a destination repository.
+    BackupSnapshots(crate::backup::BackupSnapshotsRequest),
+    /// Enforce retention policy via `restic forget --keep-daily --keep-weekly --prune`.
+    BackupForget(crate::backup::BackupForgetRequest),
+    /// Run `restic check` to verify repository integrity and pack checksums.
+    BackupCheck(crate::backup::BackupCheckRequest),
 }
 
 impl PrivOp {
@@ -446,6 +458,11 @@ impl PrivOp {
             Self::ComposeDeploy(_) => "compose_deploy",
             Self::ComposeDown { .. } => "compose_down",
             Self::ComposeRemoveService { .. } => "compose_remove_service",
+            Self::BackupLocalInfo { .. } => "backup_local_info",
+            Self::BackupRun(_) => "backup_run",
+            Self::BackupSnapshots(_) => "backup_snapshots",
+            Self::BackupForget(_) => "backup_forget",
+            Self::BackupCheck(_) => "backup_check",
         }
     }
 }
@@ -601,6 +618,16 @@ pub enum PrivReply {
     ComposeDeployed(crate::deploy::ComposeDeployResult),
     /// Answer to [`PrivOp::DatabaseRotate`].
     DatabaseRotated(crate::deploy::DatabaseRotateResult),
+    /// Answer to [`PrivOp::BackupLocalInfo`].
+    BackupLocalInfo(Box<crate::backup::BackupLocalInfo>),
+    /// Answer to [`PrivOp::BackupRun`].
+    BackupRun(Box<crate::backup::BackupRunResult>),
+    /// Answer to [`PrivOp::BackupSnapshots`].
+    BackupSnapshots(Vec<crate::backup::ResticSnapshotInfo>),
+    /// Answer to [`PrivOp::BackupForget`].
+    BackupForget(Box<crate::backup::BackupForgetResult>),
+    /// Answer to [`PrivOp::BackupCheck`].
+    BackupCheck(Box<crate::backup::BackupCheckResult>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

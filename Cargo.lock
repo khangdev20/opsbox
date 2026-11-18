@@ -1652,6 +1652,7 @@ dependencies = [
  "nix",
  "opsbox-api",
  "opsbox-auth",
+ "opsbox-backup",
  "opsbox-priv",
  "opsbox-proto",
  "opsbox-proxy",
@@ -1687,6 +1688,7 @@ dependencies = [
  "hyper-util",
  "instant-acme",
  "opsbox-auth",
+ "opsbox-backup",
  "opsbox-deploy",
  "opsbox-metrics",
  "opsbox-priv",
@@ -1738,6 +1740,17 @@ dependencies = [
 [[package]]
 name = "opsbox-backup"
 version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "hmac",
+ "opsbox-proto",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "time",
+ "zeroize",
+]
 
 [[package]]
 name = "opsbox-deploy"
@@ -1805,6 +1818,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac",
  "nix",
+ "opsbox-backup",
  "opsbox-deploy",
  "opsbox-docker",
  "opsbox-proto",

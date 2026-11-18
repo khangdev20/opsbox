@@ -147,6 +147,12 @@ async fn spawn_mock_daemon(
                             "State": web_state,
                             "Status": if web_state == "running" { "Up 2 hours" } else { "Exited (0) 1 minute ago" },
                             "Ports": [{"IP": "0.0.0.0", "PrivatePort": 80, "PublicPort": 8080, "Type": "tcp"}],
+                            "Mounts": [{
+                                "Type": "volume",
+                                "Name": "web_data",
+                                "Source": "/var/lib/docker/volumes/web_data/_data",
+                                "Destination": "/data"
+                            }],
                             "NetworkSettings": {"Networks": {"bridge": {"IPAddress": "172.17.0.2"}}},
                             "Labels": {"opsbox.service": "web", "opsbox.deploy": "d1"}
                         })];
@@ -378,6 +384,23 @@ async fn spawn_mock_daemon(
                             ] })
                         };
                         write_http_json(&mut stream, 200, "OK", &vols).await;
+                    }
+                    ("GET", "/volumes/web_data") => {
+                        write_http_json(
+                            &mut stream,
+                            200,
+                            "OK",
+                            &json!({ "Name": "web_data", "Driver": "local", "Mountpoint": "/var/lib/docker/volumes/web_data/_data", "Scope": "local", "Labels": {}, "Options": {} }),
+                        )
+                        .await;
+                    }
+                    ("POST", p) if p.starts_with("/containers/") && p.ends_with("/pause") => {
+                        state.lock().unwrap().actions.push(format!("pause:{p}"));
+                        write_http_empty(&mut stream, 204, "No Content").await;
+                    }
+                    ("POST", p) if p.starts_with("/containers/") && p.ends_with("/unpause") => {
+                        state.lock().unwrap().actions.push(format!("unpause:{p}"));
+                        write_http_empty(&mut stream, 204, "No Content").await;
                     }
                     ("GET", "/networks") => {
                         write_http_json(
@@ -635,6 +658,45 @@ async fn client_performs_full_lifecycle_and_refuses_bad_refs() {
         .unwrap();
     assert_eq!(exec.exit_code, 0);
     assert_eq!(exec.stdout, b"ok\n");
+
+    // Streaming exec & volume/pause helpers
+    let mut streamed = Vec::new();
+    let stream_status = client
+        .exec_to_writer(
+            DockerExecRequest {
+                id: "web-1".into(),
+                cmd: vec!["pg_dump".into(), "-Fc".into()],
+                user: None,
+                env: vec![],
+                working_dir: None,
+                stdin: None,
+            },
+            &mut streamed,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stream_status.exit_code, 0);
+    assert_eq!(stream_status.bytes_written, 3);
+    assert_eq!(streamed, b"ok\n");
+
+    assert_eq!(
+        client.inspect_volume_mountpoint("web_data").await.unwrap(),
+        "/var/lib/docker/volumes/web_data/_data"
+    );
+    let mounting = client
+        .containers_mounting_volumes(&["web_data".into()])
+        .await
+        .unwrap();
+    assert_eq!(mounting, vec!["11112222333344445555666677778888"]);
+    client
+        .pause_container("11112222333344445555666677778888")
+        .await
+        .unwrap();
+    client
+        .unpause_container("11112222333344445555666677778888")
+        .await
+        .unwrap();
 
     // Images, volumes, networks
     let imgs = client.list_images().await.unwrap();

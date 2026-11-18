@@ -382,20 +382,6 @@ pub struct UpsertComposeStack<'a> {
     pub now: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BackupJobRecord {
-    pub id: String,
-    pub service_id: String,
-    pub template_id: Option<String>,
-    pub method: String,
-    pub cron: String,
-    pub retain_daily: i64,
-    pub retain_weekly: i64,
-    pub enabled: bool,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
 const DOMAIN_COLS: &str = "\
     id, service_id, domain, is_primary, redirect_to, force_https, hsts, \
     dns_status, dns_checked_at, created_at, updated_at";
@@ -501,22 +487,6 @@ fn compose_stack_from_row(r: &Row<'_>) -> rusqlite::Result<ComposeStackRecord> {
         confirmed: confirmed_i != 0,
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
-    })
-}
-
-fn backup_job_from_row(r: &Row<'_>) -> rusqlite::Result<BackupJobRecord> {
-    let enabled_i: i64 = r.get(7)?;
-    Ok(BackupJobRecord {
-        id: r.get(0)?,
-        service_id: r.get(1)?,
-        template_id: r.get(2)?,
-        method: r.get(3)?,
-        cron: r.get(4)?,
-        retain_daily: r.get(5)?,
-        retain_weekly: r.get(6)?,
-        enabled: enabled_i != 0,
-        created_at: r.get(8)?,
-        updated_at: r.get(9)?,
     })
 }
 
@@ -2206,61 +2176,5 @@ impl Store {
         }
         tx.commit()?;
         Ok(found)
-    }
-
-    pub fn upsert_backup_job(
-        &self,
-        service_id: &str,
-        template_id: Option<&str>,
-        method: &str,
-        cron: &str,
-        enabled: bool,
-        now: i64,
-    ) -> Result<BackupJobRecord, StoreError> {
-        let mut conn = self.lock();
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let existing_id: Option<String> = tx
-            .query_row(
-                "SELECT id FROM backup_jobs WHERE service_id = ?1 LIMIT 1",
-                params![service_id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let id = existing_id.unwrap_or_else(|| ulid::Ulid::generate().to_string());
-        tx.execute(
-            "INSERT INTO backup_jobs (
-                id, service_id, template_id, method, cron, retain_daily, retain_weekly, enabled, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, 14, 8, ?6, ?7, ?7)
-            ON CONFLICT(service_id) DO UPDATE SET
-                template_id = excluded.template_id,
-                method = excluded.method,
-                cron = excluded.cron,
-                enabled = excluded.enabled,
-                updated_at = excluded.updated_at",
-            params![id, service_id, template_id, method, cron, i64::from(enabled), now],
-        )?;
-        let rec = tx.query_row(
-            "SELECT id, service_id, template_id, method, cron, retain_daily, retain_weekly, enabled, created_at, updated_at
-             FROM backup_jobs WHERE service_id = ?1",
-            params![service_id],
-            backup_job_from_row,
-        )?;
-        tx.commit()?;
-        Ok(rec)
-    }
-
-    pub fn get_backup_job_for_service(
-        &self,
-        service_id: &str,
-    ) -> Result<Option<BackupJobRecord>, StoreError> {
-        Ok(self
-            .lock()
-            .query_row(
-                "SELECT id, service_id, template_id, method, cron, retain_daily, retain_weekly, enabled, created_at, updated_at
-                 FROM backup_jobs WHERE service_id = ?1 LIMIT 1",
-                params![service_id],
-                backup_job_from_row,
-            )
-            .optional()?)
     }
 }

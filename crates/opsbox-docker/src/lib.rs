@@ -746,6 +746,140 @@ impl DockerClient {
         })
     }
 
+    /// Execute a command inside a running container and stream its stdout directly into `sink`
+    /// without buffering stdout in memory (used to pipe logical database dumps into `restic --stdin`).
+    pub async fn exec_to_writer<W: tokio::io::AsyncWrite + Unpin + Send>(
+        &self,
+        req: DockerExecRequest,
+        mut sink: W,
+        timeout: Duration,
+    ) -> Result<DockerExecStreamStatus, DockerError> {
+        if !valid_docker_ref(&req.id) {
+            return Err(DockerError::Invalid(
+                "That is not a valid container name or ID.".into(),
+            ));
+        }
+        if req.cmd.is_empty() || req.cmd.len() > 64 || req.cmd.iter().any(|s| s.contains('\0')) {
+            return Err(DockerError::Invalid(
+                "Invalid command arguments for container exec.".into(),
+            ));
+        }
+        if req.env.iter().any(|e| !e.contains('=') || e.contains('\0')) {
+            return Err(DockerError::Invalid(
+                "Invalid environment variables for container exec.".into(),
+            ));
+        }
+        if req
+            .user
+            .as_deref()
+            .is_some_and(|u| u.contains('\0') || u.len() > 64)
+            || req
+                .working_dir
+                .as_deref()
+                .is_some_and(|w| w.contains('\0') || w.len() > 512)
+        {
+            return Err(DockerError::Invalid(
+                "Invalid user or working directory for container exec.".into(),
+            ));
+        }
+
+        let docker = self.connect().await?;
+        let has_stdin = req.stdin.is_some();
+        let created = docker
+            .create_exec(
+                &req.id,
+                CreateExecOptions {
+                    attach_stdin: Some(has_stdin),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    tty: Some(false),
+                    cmd: Some(req.cmd),
+                    env: (!req.env.is_empty()).then_some(req.env),
+                    user: req.user,
+                    working_dir: req.working_dir,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "create exec"))?;
+
+        let start = docker
+            .start_exec(
+                &created.id,
+                Some(StartExecOptions {
+                    detach: false,
+                    tty: false,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "start exec"))?;
+
+        let mut bytes_written = 0u64;
+        let mut stderr = Vec::new();
+        let mut truncated_stderr = false;
+
+        if let StartExecResults::Attached {
+            mut output,
+            mut input,
+        } = start
+        {
+            if let Some(bytes) = req.stdin {
+                let _ = input.write_all(&bytes).await;
+                let _ = input.shutdown().await;
+            }
+            let stream_fut = async {
+                while let Some(item) = output.next().await {
+                    match item {
+                        Ok(LogOutput::StdOut { message } | LogOutput::Console { message }) => {
+                            if !message.is_empty() {
+                                sink.write_all(&message).await.map_err(|e| {
+                                    DockerError::Internal(format!("Dump pipe write failed: {e}"))
+                                })?;
+                                bytes_written = bytes_written.saturating_add(
+                                    u64::try_from(message.len()).unwrap_or(u64::MAX),
+                                );
+                            }
+                        }
+                        Ok(LogOutput::StdErr { message }) => {
+                            let keep = message
+                                .len()
+                                .min(MAX_EXEC_STDERR.saturating_sub(stderr.len()));
+                            stderr.extend_from_slice(&message[..keep]);
+                            truncated_stderr |= keep < message.len();
+                        }
+                        Ok(LogOutput::StdIn { .. }) => {}
+                        Err(e) => return Err(DockerError::from_bollard(e, "exec stream")),
+                    }
+                }
+                sink.flush()
+                    .await
+                    .map_err(|e| DockerError::Internal(format!("Dump pipe flush failed: {e}")))?;
+                sink.shutdown()
+                    .await
+                    .map_err(|e| DockerError::Internal(format!("Dump pipe close failed: {e}")))?;
+                Ok::<(), DockerError>(())
+            };
+            tokio::time::timeout(timeout, stream_fut)
+                .await
+                .map_err(|_| DockerError::Timeout)??;
+        } else {
+            let _ = sink.shutdown().await;
+        }
+
+        let inspected = docker
+            .inspect_exec(&created.id)
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "inspect exec"))?;
+
+        Ok(DockerExecStreamStatus {
+            exit_code: inspected.exit_code.unwrap_or(0),
+            bytes_written,
+            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            truncated_stderr,
+        })
+    }
+
     /// List images with tag and usage status.
     pub async fn list_images(&self) -> Result<Vec<DockerImage>, DockerError> {
         let docker = self.connect().await?;
@@ -1586,6 +1720,96 @@ impl DockerClient {
             Err(e) => Err(DockerError::from_bollard(e, "remove container")),
         }
     }
+
+    /// Inspect a Docker volume and return its host mountpoint directory.
+    pub async fn inspect_volume_mountpoint(&self, name: &str) -> Result<String, DockerError> {
+        if !valid_docker_ref(name) {
+            return Err(DockerError::Invalid(
+                "That is not a valid Docker volume name.".into(),
+            ));
+        }
+        let docker = self.connect().await?;
+        let vol = docker
+            .inspect_volume(name)
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "inspect volume"))?;
+        Ok(vol.mountpoint)
+    }
+
+    /// Return IDs of running containers that mount any of `volume_names`.
+    pub async fn containers_mounting_volumes(
+        &self,
+        volume_names: &[String],
+    ) -> Result<Vec<String>, DockerError> {
+        if volume_names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let wanted: HashSet<&str> = volume_names.iter().map(String::as_str).collect();
+        let docker = self.connect().await?;
+        let list = docker
+            .list_containers(Some(
+                ListContainersOptionsBuilder::default().all(false).build(),
+            ))
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "list running containers"))?;
+        let mut out = Vec::new();
+        for c in list {
+            let Some(cid) = c.id else {
+                continue;
+            };
+            let matches = c.mounts.unwrap_or_default().into_iter().any(|m| {
+                m.typ.as_deref() == Some("volume")
+                    && m.name.as_deref().is_some_and(|n| wanted.contains(n))
+            });
+            if matches {
+                out.push(cid);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Pause a running container (used optionally during volume backup for consistency).
+    pub async fn pause_container(&self, id: &str) -> Result<(), DockerError> {
+        if !valid_docker_ref(id) {
+            return Err(DockerError::Invalid(
+                "That is not a valid container name or ID.".into(),
+            ));
+        }
+        let docker = self.connect().await?;
+        match docker.pause_container(id).await {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304, ..
+            }) => Ok(()),
+            Err(e) => Err(DockerError::from_bollard(e, "pause container")),
+        }
+    }
+
+    /// Unpause a paused container.
+    pub async fn unpause_container(&self, id: &str) -> Result<(), DockerError> {
+        if !valid_docker_ref(id) {
+            return Err(DockerError::Invalid(
+                "That is not a valid container name or ID.".into(),
+            ));
+        }
+        let docker = self.connect().await?;
+        match docker.unpause_container(id).await {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304, ..
+            }) => Ok(()),
+            Err(e) => Err(DockerError::from_bollard(e, "unpause container")),
+        }
+    }
+}
+
+/// Result summary for [`DockerClient::exec_to_writer`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DockerExecStreamStatus {
+    pub exit_code: i64,
+    pub bytes_written: u64,
+    pub stderr: String,
+    pub truncated_stderr: bool,
 }
 
 /// Parameters required to create and start a managed service container.

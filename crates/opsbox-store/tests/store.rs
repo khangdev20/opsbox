@@ -30,7 +30,9 @@ fn migrates_an_empty_database() {
         [
             "api_tokens",
             "audit",
+            "backup_destinations",
             "backup_jobs",
+            "backup_snapshots",
             "compose_stacks",
             "deploy_keys",
             "deploy_logs",
@@ -1290,4 +1292,155 @@ fn var_ref_tracking_rotation_staleness_and_exposure_round_trip() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn backup_jobs_snapshots_and_online_hot_backup() {
+    use opsbox_proto::{BackupCheckState, BackupTargetKind};
+    use opsbox_store::{
+        LOCAL_DESTINATION_ID, NewBackupJob, OPSBOX_SELF_JOB_ID, ReadOnlyStore, SyncBackupSnapshot,
+        UpdateBackupJob,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("opsbox.db");
+    let store = Store::open(&db_path).unwrap();
+
+    // Seeded local destination & opsbox self-backup job exist right after migration.
+    let dests = store.list_backup_destinations().unwrap();
+    assert_eq!(dests.len(), 1);
+    assert_eq!(dests[0].id, LOCAL_DESTINATION_ID);
+    let self_job = store.get_backup_job(OPSBOX_SELF_JOB_ID).unwrap().unwrap();
+    assert_eq!(self_job.kind, BackupTargetKind::Opsbox);
+    assert!(self_job.enabled);
+
+    // Create path & volume jobs.
+    let path_job = store
+        .create_backup_job(NewBackupJob {
+            name: "app-files",
+            kind: BackupTargetKind::Path,
+            what: &json!({ "paths": ["/var/www/app"] }),
+            service_id: None,
+            template_id: None,
+            method: "path",
+            cron: "0 3 * * *",
+            retain_daily: 7,
+            retain_weekly: 4,
+            destination_id: LOCAL_DESTINATION_ID,
+            enabled: true,
+            next_run_at: Some(100),
+            now: 50,
+        })
+        .unwrap();
+    assert_eq!(store.list_due_backup_jobs(150).unwrap().len(), 1);
+
+    let updated = store
+        .update_backup_job(
+            &path_job.id,
+            UpdateBackupJob {
+                retain_daily: Some(10),
+                cron: Some("30 3 * * *"),
+                next_run_at: Some(Some(500)),
+                now: 160,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.retain_daily, 10);
+    assert_eq!(updated.cron, "30 3 * * *");
+
+    // Record run & sync snapshots with check state.
+    store
+        .record_backup_job_result(
+            &path_job.id,
+            true,
+            200,
+            Some("snap-1"),
+            Some(4096),
+            Some(120),
+            None,
+            Some(900),
+        )
+        .unwrap();
+    let tags = vec![format!("opsbox-job:{}", path_job.id)];
+    let paths = vec!["/var/www/app".to_owned()];
+    store
+        .sync_backup_snapshots(
+            LOCAL_DESTINATION_ID,
+            &[
+                SyncBackupSnapshot {
+                    job_id: Some(&path_job.id),
+                    restic_id: "1111111111111111",
+                    short_id: "11111111",
+                    what: "app-files",
+                    kind: BackupTargetKind::Path,
+                    taken_at: 200,
+                    size_bytes: 4096,
+                    tags: &tags,
+                    paths: &paths,
+                },
+                SyncBackupSnapshot {
+                    job_id: Some(&path_job.id),
+                    restic_id: "2222222222222222",
+                    short_id: "22222222",
+                    what: "app-files",
+                    kind: BackupTargetKind::Path,
+                    taken_at: 300,
+                    size_bytes: 8192,
+                    tags: &tags,
+                    paths: &paths,
+                },
+            ],
+            Some((BackupCheckState::ChecksumOk, 310)),
+            310,
+        )
+        .unwrap();
+    let snaps = store.list_backup_snapshots(50).unwrap();
+    assert_eq!(snaps.len(), 2);
+    assert_eq!(snaps[0].check_state, BackupCheckState::ChecksumOk);
+
+    // Prune sync removes deleted snapshots while keeping survivors.
+    store
+        .sync_backup_snapshots(
+            LOCAL_DESTINATION_ID,
+            &[SyncBackupSnapshot {
+                job_id: Some(&path_job.id),
+                restic_id: "2222222222222222",
+                short_id: "22222222",
+                what: "app-files",
+                kind: BackupTargetKind::Path,
+                taken_at: 300,
+                size_bytes: 8192,
+                tags: &tags,
+                paths: &paths,
+            }],
+            None,
+            320,
+        )
+        .unwrap();
+    let after_prune = store.list_backup_snapshots(50).unwrap();
+    assert_eq!(after_prune.len(), 1);
+    assert_eq!(after_prune[0].short_id, "22222222");
+
+    // Hot SQLite online backup while WAL store is open and writing.
+    store
+        .set_setting("backup.marker", &json!("alive-wal"))
+        .unwrap();
+    let bak_path = dir.path().join("stage").join("opsbox-hot.db");
+    let ro = ReadOnlyStore::open(&db_path).unwrap();
+    ro.online_backup(&bak_path).unwrap();
+
+    let copied = ReadOnlyStore::open(&bak_path).unwrap();
+    copied.check_integrity().unwrap();
+    assert_eq!(
+        copied.get_setting("backup.marker").unwrap(),
+        Some(json!("alive-wal"))
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&bak_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 }

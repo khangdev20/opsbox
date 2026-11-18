@@ -5,6 +5,7 @@
 
 mod accounts;
 mod audit;
+mod backup;
 mod deploy;
 mod github;
 mod invites;
@@ -24,9 +25,13 @@ pub use accounts::{Session, SessionKind, User};
 pub use audit::{
     ActorKind, AuditEntry, AuditError, AuditReport, AuditResult, GENESIS_HASH, NewAudit,
 };
+pub use backup::{
+    BackupDestinationRecord, BackupJobRecord, BackupSnapshotRecord, LOCAL_DESTINATION_ID,
+    NewBackupJob, OPSBOX_SELF_JOB_ID, SyncBackupSnapshot, UpdateBackupJob,
+};
 pub use deploy::{
-    ActiveServiceRoute, BackupJobRecord, ComposeStackRecord, DeployLogRow, DeployRecord,
-    DeployStatus, DeployTrigger, EnvironmentRecord, NewService, NewServiceDomain, ProjectRecord,
+    ActiveServiceRoute, ComposeStackRecord, DeployLogRow, DeployRecord, DeployStatus,
+    DeployTrigger, EnvironmentRecord, NewService, NewServiceDomain, ProjectRecord,
     ReferencingServiceInfo, ServiceDomainRecord, ServiceKind, ServiceRecord, ServiceState,
     ServiceVarRecord, ServiceVarRefRecord, SourceKind, UpdateService, UpdateServiceDomain,
     UpsertComposeStack,
@@ -229,6 +234,22 @@ impl ReadOnlyStore {
         raw.map(|s| serde_json::from_str(&s))
             .transpose()
             .map_err(Into::into)
+    }
+
+    /// Snapshot the SQLite database safely to `dst_path` using SQLite's online backup API
+    /// (safe while `serve` writes concurrently in WAL mode). Creates `dst_path` with mode 0600.
+    pub fn online_backup(&self, dst_path: &Path) -> Result<(), StoreError> {
+        if let Some(parent) = dst_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)?;
+        }
+        create_private_file(dst_path)?;
+        let mut dst = Connection::open_with_flags(
+            dst_path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let backup = rusqlite::backup::Backup::new(&self.conn, &mut dst)?;
+        backup.run_to_completion(100, std::time::Duration::from_millis(10), None)?;
+        Ok(())
     }
 }
 
