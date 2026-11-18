@@ -5,6 +5,8 @@ use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use flate2::read::GzDecoder;
 use minisign_verify::{PublicKey, Signature};
@@ -51,6 +53,22 @@ pub struct ReleaseInfo {
     pub published_at: Option<String>,
 }
 
+/// Why a check offered nothing. `None` on a [`CheckResult`] means an update is offered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoOfferReason {
+    /// The channel has no release at all (stable while only pre-releases exist).
+    NoReleasesOnChannel,
+    /// The newest release on the channel is older than or equal to the running version.
+    UpToDate,
+    /// GitHub could not be reached, or sent something unusable.
+    NetworkError,
+    /// GitHub is limiting requests; `retry_at` says when to ask again.
+    RateLimited,
+    /// The running build is a local development build.
+    DevBuild,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckResult {
     pub current_version: String,
@@ -65,6 +83,15 @@ pub struct CheckResult {
     /// The running build is a local development build; it is never offered updates.
     #[serde(default)]
     pub dev_build: bool,
+    /// Why nothing is offered; `None` when `update_available`.
+    #[serde(default)]
+    pub reason: Option<NoOfferReason>,
+    /// Technical detail for `network_error` (what went wrong), shown under the plain text.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// Unix seconds when GitHub may be asked again (`rate_limited`).
+    #[serde(default)]
+    pub retry_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,9 +189,13 @@ pub fn select_release(
         checked_at,
         migration: false,
         dev_build: false,
+        reason: None,
+        detail: None,
+        retry_at: None,
     };
     if opsbox_version::is_dev(clean_current) {
         result.dev_build = true;
+        result.reason = Some(NoOfferReason::DevBuild);
         return Ok(result);
     }
     if let Some((v, info)) = best {
@@ -175,6 +206,13 @@ pub fn select_release(
         result.update_available = v > cur || result.migration;
         result.latest = Some(info);
     }
+    result.reason = if result.update_available {
+        None
+    } else if result.latest.is_none() {
+        Some(NoOfferReason::NoReleasesOnChannel)
+    } else {
+        Some(NoOfferReason::UpToDate)
+    };
     Ok(result)
 }
 
@@ -212,17 +250,254 @@ fn now_secs() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
-/// Query GitHub Releases for the latest version on `channel`.
+/// How long a fetched release list is reused before GitHub is asked again.
+pub const CACHE_TTL_SECS: i64 = 3600;
+/// Shortest wait after a rate-limit answer, whatever the headers say.
+const MIN_BACKOFF_SECS: i64 = 60;
+/// Longest wait after a rate-limit answer (GitHub's window is an hour).
+const MAX_BACKOFF_SECS: i64 = 3600;
+
+/// One answer from the releases endpoint, with the headers that matter for rate limits.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HttpReply {
+    pub status: u16,
+    pub body: String,
+    /// `X-RateLimit-Remaining`.
+    pub rate_limit_remaining: Option<i64>,
+    /// `X-RateLimit-Reset`, Unix seconds.
+    pub rate_limit_reset: Option<i64>,
+    /// `Retry-After`, seconds.
+    pub retry_after: Option<i64>,
+}
+
+/// Fetches the releases list. `Err` is a transport failure (DNS, connect, TLS, timeout).
+pub trait ReleaseFetcher: Send + Sync {
+    fn get(&self, url: &str) -> Result<HttpReply, String>;
+}
+
+/// The real thing: `User-Agent` set, non-2xx answers returned (not turned into errors) so the
+/// rate-limit headers can be read.
+pub struct HttpFetcher;
+
+impl ReleaseFetcher for HttpFetcher {
+    fn get(&self, url: &str) -> Result<HttpReply, String> {
+        if let Some(path) = url.strip_prefix("file://") {
+            return fs::read_to_string(path)
+                .map(|body| HttpReply {
+                    status: 200,
+                    body,
+                    ..HttpReply::default()
+                })
+                .map_err(|e| e.to_string());
+        }
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(20)))
+            .build()
+            .into();
+        let resp = agent
+            .get(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/vnd.github+json")
+            .call()
+            .map_err(|e| e.to_string())?;
+        let header = |name: &str| -> Option<i64> {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse().ok())
+        };
+        let status = resp.status().as_u16();
+        let (remaining, reset, retry_after) = (
+            header("x-ratelimit-remaining"),
+            header("x-ratelimit-reset"),
+            header("retry-after"),
+        );
+        let body = resp
+            .into_body()
+            .read_to_string()
+            .map_err(|e| e.to_string())?;
+        Ok(HttpReply {
+            status,
+            body,
+            rate_limit_remaining: remaining,
+            rate_limit_reset: reset,
+            retry_after,
+        })
+    }
+}
+
+const USER_AGENT: &str = "opsbox-updater";
+
+struct CachedBody {
+    url: String,
+    body: String,
+    fetched_at: i64,
+}
+
+#[derive(Default)]
+struct CheckerState {
+    cache: Option<CachedBody>,
+    /// GitHub said "too many requests"; do not ask again before this time.
+    backoff_until: Option<i64>,
+}
+
+/// Why the release list could not be had.
+struct Unavailable {
+    reason: NoOfferReason,
+    detail: Option<String>,
+    retry_at: Option<i64>,
+}
+
+impl Unavailable {
+    fn network(detail: impl Into<String>) -> Self {
+        Self {
+            reason: NoOfferReason::NetworkError,
+            detail: Some(detail.into()),
+            retry_at: None,
+        }
+    }
+}
+
+/// Looks up releases with a one-hour cache and rate-limit backoff. A failed lookup is a
+/// [`CheckResult`] with a `reason`, not an error, so callers can always say why.
+pub struct ReleaseChecker {
+    fetcher: Arc<dyn ReleaseFetcher>,
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    state: Mutex<CheckerState>,
+}
+
+impl Default for ReleaseChecker {
+    fn default() -> Self {
+        Self::new(Arc::new(HttpFetcher), Arc::new(now_secs))
+    }
+}
+
+impl ReleaseChecker {
+    pub fn new(
+        fetcher: Arc<dyn ReleaseFetcher>,
+        clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+    ) -> Self {
+        Self {
+            fetcher,
+            clock,
+            state: Mutex::new(CheckerState::default()),
+        }
+    }
+
+    /// Check `channel` (or, with `None`, the default channel for this version, see
+    /// [`select_release_default_channel`]). `force` ("Check now") skips the cache; it does
+    /// not skip a rate-limit backoff, because asking again would only extend it.
+    pub fn check(
+        &self,
+        current_version: &str,
+        channel: Option<Channel>,
+        force: bool,
+    ) -> Result<CheckResult, UpdateError> {
+        let now = (self.clock)();
+        let pick = |body: &str, at: i64| match channel {
+            Some(ch) => select_release(current_version, ch, body, at),
+            None => select_release_default_channel(current_version, body, at),
+        };
+        // A development build is never offered anything, so there is nothing to ask GitHub.
+        if opsbox_version::is_dev(current_version.trim_start_matches('v')) {
+            return pick("[]", now);
+        }
+        match self.releases(force, now) {
+            Ok((body, fetched_at)) => match pick(&body, fetched_at) {
+                Ok(res) => Ok(res),
+                Err(UpdateError::InvalidVersion(e)) => Err(UpdateError::InvalidVersion(e)),
+                Err(_) => self.failed(
+                    current_version,
+                    channel,
+                    now,
+                    Unavailable::network("GitHub sent a reply opsbox could not read"),
+                ),
+            },
+            Err(why) => self.failed(current_version, channel, now, why),
+        }
+    }
+
+    fn failed(
+        &self,
+        current_version: &str,
+        channel: Option<Channel>,
+        now: i64,
+        why: Unavailable,
+    ) -> Result<CheckResult, UpdateError> {
+        let mut res = match channel {
+            Some(ch) => select_release(current_version, ch, "[]", now)?,
+            None => select_release_default_channel(current_version, "[]", now)?,
+        };
+        res.reason = Some(why.reason);
+        res.detail = why.detail;
+        res.retry_at = why.retry_at;
+        Ok(res)
+    }
+
+    /// The release list and the time it was fetched.
+    fn releases(&self, force: bool, now: i64) -> Result<(String, i64), Unavailable> {
+        let url = releases_url();
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !force
+            && let Some(c) = st.cache.as_ref().filter(|c| c.url == url)
+            && now - c.fetched_at < CACHE_TTL_SECS
+        {
+            return Ok((c.body.clone(), c.fetched_at));
+        }
+        if let Some(until) = st.backoff_until {
+            if until > now {
+                return Err(Unavailable {
+                    reason: NoOfferReason::RateLimited,
+                    detail: None,
+                    retry_at: Some(until),
+                });
+            }
+            st.backoff_until = None;
+        }
+        let reply = self.fetcher.get(&url).map_err(Unavailable::network)?;
+        match reply.status {
+            200..=299 => {
+                st.cache = Some(CachedBody {
+                    url,
+                    body: reply.body.clone(),
+                    fetched_at: now,
+                });
+                Ok((reply.body, now))
+            }
+            403 | 429
+                if reply.rate_limit_remaining == Some(0)
+                    || reply.rate_limit_reset.is_some()
+                    || reply.retry_after.is_some() =>
+            {
+                let wait_until = match (reply.retry_after, reply.rate_limit_reset) {
+                    (Some(secs), _) => now + secs,
+                    (None, Some(reset)) => reset,
+                    (None, None) => now + MAX_BACKOFF_SECS,
+                };
+                let until = wait_until.clamp(now + MIN_BACKOFF_SECS, now + MAX_BACKOFF_SECS);
+                st.backoff_until = Some(until);
+                Err(Unavailable {
+                    reason: NoOfferReason::RateLimited,
+                    detail: None,
+                    retry_at: Some(until),
+                })
+            }
+            code => Err(Unavailable::network(format!("GitHub answered HTTP {code}"))),
+        }
+    }
+}
+
+/// Query GitHub Releases for the latest version on `channel`. Uses a fresh [`ReleaseChecker`],
+/// so it always asks GitHub; a long-running caller should keep its own checker instead.
 pub fn check_latest(current_version: &str, channel: Channel) -> Result<CheckResult, UpdateError> {
-    let body = http_get_text(&releases_url())?;
-    select_release(current_version, channel, &body, now_secs())
+    ReleaseChecker::default().check(current_version, Some(channel), true)
 }
 
 /// Query GitHub Releases for an install whose channel was never chosen
 /// (see [`select_release_default_channel`]).
 pub fn check_latest_default_channel(current_version: &str) -> Result<CheckResult, UpdateError> {
-    let body = http_get_text(&releases_url())?;
-    select_release_default_channel(current_version, &body, now_secs())
+    ReleaseChecker::default().check(current_version, None, true)
 }
 
 fn http_get_text(url: &str) -> Result<String, UpdateError> {
@@ -230,7 +505,7 @@ fn http_get_text(url: &str) -> Result<String, UpdateError> {
         return fs::read_to_string(path).map_err(UpdateError::Io);
     }
     let resp = ureq::get(url)
-        .header("User-Agent", "opsbox-updater")
+        .header("User-Agent", USER_AGENT)
         .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| UpdateError::Http(e.to_string()))?;
@@ -244,7 +519,7 @@ fn http_get_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
         return fs::read(path).map_err(UpdateError::Io);
     }
     let resp = ureq::get(url)
-        .header("User-Agent", "opsbox-updater")
+        .header("User-Agent", USER_AGENT)
         .call()
         .map_err(|e| UpdateError::Http(e.to_string()))?;
     resp.into_body()

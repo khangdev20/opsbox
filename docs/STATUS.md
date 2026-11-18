@@ -1,6 +1,14 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/03d-self-update-versions.md` (self-update versions and channel). Not committed, not tagged yet. Prior: `03c1` (site only), `16f` (tag `v0.1.0-alpha.20`).
+Last completed prompt: `docs/prompts/archive/03e-update-check-reasons.md` (say why nothing is offered). Not committed, not tagged yet; 03d is also still uncommitted. Prior: `03c1` (site only), `16f` (tag `v0.1.0-alpha.20`).
+
+## What works (03e)
+- `opsbox-update`: `ReleaseChecker` (injectable fetcher and clock) returns a `CheckResult` with `reason`: `no_releases_on_channel`, `up_to_date` (newest older or equal), `network_error` (+ `detail`), `rate_limited` (+ `retry_at`), `dev_build`; `None` when an update is offered. A failed lookup is a result, not an error.
+- GitHub: `User-Agent` sent; the release list is cached for 1 hour (shared by both channels); a 403/429 with rate-limit headers backs off until `X-RateLimit-Reset`/`Retry-After` (1 min to 1 h clamp), and a 403 without them is a plain network error. Dev builds never ask GitHub.
+- API: `/updates/self` adds `reason`, `reasonDetail`, `retryAt`, `checkedChannel` (with `checkedAt`). `POST /updates/check` ("Check now") bypasses the cache, not a backoff. A failed check keeps an offer found earlier on the same channel. Changing the channel re-evaluates from the cache. The daily loop retries failed lookups hourly. `apply` with no version and the CLI `opsbox update` give the reason instead of "up to date".
+- Settings: each reason has its own text (`web/js/update-status.js`, e.g. "No stable release yet; switch to beta to get alpha releases"), plus "last checked HH:MM · <channel> channel". Tests: 13 new Rust tests (unit and `tests/update_http.rs`) and `tools/check-update-status.mjs` (added to CI).
+- Verified here: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test -p opsbox-update -p opsbox-api`, `node tools/check-update-status.mjs`, `generate-api.py --check`. Not run here: full workspace tests, 390 px browser check, the `opsbox-vm` steps below.
+- To verify on `opsbox-vm`: set the channel to stable (see "No stable release yet"), back to beta (newest alpha or "up to date" with the last checked time), block outbound HTTPS briefly (see the network error text), press Check now twice within an hour (second one still asks GitHub). Not done yet.
 
 ## What works (03d)
 - New crate `opsbox-version`: `build.rs` picks the version. `OPSBOX_BUILD_VERSION` (the tag without `v`) wins; otherwise `0.1.0-dev+<sha>`. `opsbox --version`, `status`, `/healthz`, `/updates/self`, priv/proxy/watchdog `Ping` and slot names all use it.
@@ -21,6 +29,6 @@ Last completed prompt: `docs/prompts/archive/03d-self-update-versions.md` (self-
 - Earlier open items remain: screenshots use demo data, live DB/R2/MinIO/SFTP/alert-channel checks, pgweb path prefix, Capacity override click-through, idle browser CPU profiling, Caddy/Traefik live cutovers, the `capacity_http` queued-workloads fixture issue (see DECISIONS).
 
 ## Next
-- Commit, push, wait for CI, tag `v0.1.0-alpha.21`, then run the VM verification above. `03e-update-check-reasons.md` is next in the update series.
+- Commit, push, wait for CI, tag `v0.1.0-alpha.21`, then run the VM verification for 03d and 03e.
 - Then `16e-transport-security.md`, `16g-capacity-page.md` and the rest of the 16* series, then `17-alpha-release.md`.
 - VM: `cd /home/ubuntu/opsbox`; `CARGO_TARGET_DIR=~/target ~/.cargo/bin/cargo build --release --locked`; `sudo sh install.sh --dev --binary ~/target/release/opsbox`; UI via `ssh -L 8443:127.0.0.1:8443 ubuntu@192.168.252.2`.

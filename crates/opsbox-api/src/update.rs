@@ -9,7 +9,9 @@ use axum::extract::{Extension, State};
 use opsbox_auth::Principal;
 use opsbox_proto::ErrorCode;
 use opsbox_store::{ActorKind, AuditResult, Store};
-use opsbox_update::{Channel, CheckResult, SlotLayout, UpdateOutcome};
+use opsbox_update::{
+    Channel, CheckResult, NoOfferReason, ReleaseChecker, SlotLayout, UpdateOutcome,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -54,6 +56,7 @@ pub struct Updater {
     version: &'static str,
     /// `[update] channel` from the config file; the panel setting wins over it.
     config_channel: Option<Channel>,
+    checker: Arc<ReleaseChecker>,
     cached: Arc<RwLock<Option<CheckResult>>>,
     first_seen: Arc<RwLock<Option<(String, i64)>>>,
 }
@@ -71,6 +74,7 @@ impl Updater {
             xfer_dir,
             version,
             config_channel: None,
+            checker: Arc::new(ReleaseChecker::default()),
             cached: Arc::new(RwLock::new(None)),
             first_seen: Arc::new(RwLock::new(None)),
         };
@@ -84,6 +88,12 @@ impl Updater {
             });
         }
         updater
+    }
+
+    /// Replace the release lookup (tests script GitHub's answers).
+    pub fn with_checker(mut self, checker: Arc<ReleaseChecker>) -> Self {
+        self.checker = checker;
+        self
     }
 
     pub fn with_config_channel(mut self, channel: Option<Channel>) -> Self {
@@ -192,6 +202,10 @@ impl Updater {
             })),
             "updateAvailable": cached.as_ref().is_some_and(|c| c.update_available),
             "checkedAt": cached.as_ref().map(|c| c.checked_at),
+            "reason": cached.as_ref().and_then(|c| c.reason),
+            "reasonDetail": cached.as_ref().and_then(|c| c.detail.as_deref()),
+            "retryAt": cached.as_ref().and_then(|c| c.retry_at),
+            "checkedChannel": cached.as_ref().map(|c| c.channel.as_str()),
             "previousVersion": state.previous_version,
             "lastOutcome": outcome.map(|o| json!({
                 "status": o.status,
@@ -239,19 +253,34 @@ impl Updater {
         state.last_outcome
     }
 
-    pub async fn check_now(&self) -> Result<CheckResult, HttpError> {
+    /// Look up the newest release. `force` ("Check now") skips the one-hour cache. A lookup
+    /// that fails (offline, rate limited) is a result with a `reason`, and never replaces an
+    /// offer for the same channel that an earlier check found.
+    pub async fn check_now(&self, force: bool) -> Result<CheckResult, HttpError> {
         let version = self.version;
         let (channel, source) = self.channel_with_source();
+        let checker = self.checker.clone();
         let res = tokio::task::spawn_blocking(move || {
-            if source == ChannelSource::Default {
-                opsbox_update::check_latest_default_channel(version)
-            } else {
-                opsbox_update::check_latest(version, channel)
-            }
+            let chosen = (source != ChannelSource::Default).then_some(channel);
+            checker.check(version, chosen, force)
         })
         .await
         .map_err(|_| HttpError::internal())?
         .map_err(|e| HttpError::new(ErrorCode::Internal, format!("Update check failed: {e}")))?;
+        let failed = matches!(
+            res.reason,
+            Some(NoOfferReason::NetworkError | NoOfferReason::RateLimited)
+        );
+        if failed
+            && self
+                .cached
+                .read()
+                .ok()
+                .and_then(|g| g.clone())
+                .is_some_and(|prev| prev.update_available && prev.channel == res.channel)
+        {
+            return Ok(res);
+        }
         if let Ok(mut seen) = self.first_seen.write() {
             if res.update_available
                 && let Some(ref rel) = res.latest
@@ -317,8 +346,19 @@ impl Updater {
                 .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
 
             if now - last_check >= 24 * 3600 {
-                match self.check_now().await {
-                    Ok(_) => last_check = now,
+                match self.check_now(false).await {
+                    // A failed lookup is tried again within the hour, not tomorrow.
+                    Ok(res)
+                        if !matches!(
+                            res.reason,
+                            Some(NoOfferReason::NetworkError | NoOfferReason::RateLimited)
+                        ) =>
+                    {
+                        last_check = now;
+                    }
+                    Ok(res) => {
+                        tracing::debug!(reason = ?res.reason, "daily opsbox update check found nothing")
+                    }
                     Err(e) => tracing::debug!(error = ?e, "daily opsbox update check failed"),
                 }
             }
@@ -339,6 +379,24 @@ impl Updater {
 
             tokio::time::sleep(Duration::from_secs(3600)).await;
         }
+    }
+}
+
+/// Why `apply` with no version has nothing to install, in words for the person clicking.
+fn nothing_to_apply(res: &CheckResult) -> String {
+    match res.reason {
+        Some(NoOfferReason::DevBuild) => "This is a development build, so it is not updated automatically. Pick a version to install.".to_owned(),
+        Some(NoOfferReason::NoReleasesOnChannel) => format!(
+            "There is no release on the {} channel yet.",
+            res.channel.as_str()
+        ),
+        Some(NoOfferReason::NetworkError) => {
+            "opsbox could not reach GitHub to look for a release. Check the server's internet connection and try again.".to_owned()
+        }
+        Some(NoOfferReason::RateLimited) => {
+            "GitHub is limiting update checks right now. Try again in a little while.".to_owned()
+        }
+        Some(NoOfferReason::UpToDate) | None => "opsbox is already up to date.".to_owned(),
     }
 }
 
@@ -369,7 +427,8 @@ pub(crate) async fn check(
     State(state): State<AppState>,
     Admin(_): Admin,
 ) -> Result<Json<Value>, HttpError> {
-    state.updater.check_now().await?;
+    // "Check now": always ask GitHub, whatever the cache holds.
+    state.updater.check_now(true).await?;
     Ok(Json(state.updater.snapshot()))
 }
 
@@ -389,17 +448,11 @@ pub(crate) async fn apply(
     let target = match requested {
         Some(v) if !v.trim().is_empty() => v,
         _ => {
-            let res = state.updater.check_now().await?;
-            if res.dev_build {
-                return Err(HttpError::new(
-                    ErrorCode::Validation,
-                    "This is a development build, so it is not updated automatically. Pick a version to install.",
-                ));
-            }
+            let res = state.updater.check_now(false).await?;
             if !res.update_available {
                 return Err(HttpError::new(
                     ErrorCode::Validation,
-                    "opsbox is already up to date.",
+                    nothing_to_apply(&res),
                 ));
             }
             res.latest
@@ -474,6 +527,8 @@ pub(crate) async fn set_auto(
         if let Ok(mut guard) = state.updater.cached.write() {
             *guard = None;
         }
+        // Answer for the new channel at once; the release list is usually still cached.
+        let _ = state.updater.check_now(false).await;
     }
     if let Some(auto) = body.auto {
         state

@@ -1721,7 +1721,7 @@ export async function setSwap(v) { sample('setSwap');
 export async function growFs() { sample('growFs'); await lag(900); ST.fsGrown = true; audit('grow filesystem'); }
 export async function checkOpsboxUpdate() { sample('checkOpsboxUpdate');
   if (real('checkOpsboxUpdate')) return http('/updates/check', { method: 'POST' });
-  await lag(250); return { current: '0.1.0', channel: ST.channel, auto: ST.autoUpdate, window: 3, updateAvailable: false, latest: null }; }
+  await lag(250); return { current: '0.1.0', channel: ST.channel, checkedChannel: ST.channel, auto: ST.autoUpdate, window: 3, updateAvailable: false, latest: null, reason: 'up_to_date', checkedAt: Math.floor(Date.now() / 1000) }; }
 export async function applyOpsboxUpdate(version = null) { sample('applyOpsboxUpdate');
   if (real('applyOpsboxUpdate')) return http('/updates/apply', { method: 'POST', body: { version } });
   await lag(500); return { ok: true, version }; }

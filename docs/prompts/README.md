@@ -20,7 +20,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 03c | Proxy port conflicts handled automatically (`03c-proxy-port-conflict.md`) | 1 (fix) | ✓ |
 | 03c1 | Landing site: check and commit the new logo (`03c1-site-logo.md`) | site | ✓ |
 | 03d | Fix self-update versions and channel (`03d-self-update-versions.md`) | 2 (fix) | ✓ |
-| 03e | Self-update: say why nothing is offered (`03e-update-check-reasons.md`) | 2 (fix) | |
+| 03e | Self-update: say why nothing is offered (`03e-update-check-reasons.md`) | 2 (fix) | ✓ |
 | 04 | Public first run (`04-public-first-run.md`) | 1c | ✓ |
 | 05 | Proxy and panel domain (`05-proxy-panel-domain.md`) | 4 (panel first) | ✓ |
 | 06 | Watchdog and safe mode (`06-watchdog-safe-mode.md`) | 2 | ✓ |

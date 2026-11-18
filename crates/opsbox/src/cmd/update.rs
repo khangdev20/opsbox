@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use opsbox_priv::PrivClient;
-use opsbox_update::{Channel, SlotLayout, UpdateOutcome};
+use opsbox_update::{Channel, NoOfferReason, SlotLayout, UpdateOutcome};
 
 use crate::VERSION;
 use crate::config::Config;
@@ -36,19 +36,36 @@ pub fn run_update(config: &Config, channel: Option<&str>, version: Option<&str>)
                 None => opsbox_update::check_latest_default_channel(VERSION),
             }
             .context("checking GitHub Releases failed")?;
-            if res.dev_build {
-                println!(
-                    "opsbox {VERSION} is a development build and is not updated automatically.\n\
-                     To install a release, run: opsbox update --version v<version>"
-                );
-                return Ok(());
-            }
-            if !res.update_available {
-                println!(
-                    "opsbox {VERSION} is already up to date ({} channel).",
-                    res.channel.as_str()
-                );
-                return Ok(());
+            match res.reason {
+                Some(NoOfferReason::DevBuild) => {
+                    println!(
+                        "opsbox {VERSION} is a development build and is not updated automatically.\n\
+                         To install a release, run: opsbox update --version v<version>"
+                    );
+                    return Ok(());
+                }
+                Some(NoOfferReason::NetworkError) => anyhow::bail!(
+                    "could not reach GitHub to look for a release ({})",
+                    res.detail.as_deref().unwrap_or("unknown error")
+                ),
+                Some(NoOfferReason::RateLimited) => anyhow::bail!(
+                    "GitHub is limiting requests right now; try again in a few minutes"
+                ),
+                Some(NoOfferReason::NoReleasesOnChannel) => {
+                    println!(
+                        "There is no release on the {} channel yet.",
+                        res.channel.as_str()
+                    );
+                    return Ok(());
+                }
+                Some(NoOfferReason::UpToDate) => {
+                    println!(
+                        "opsbox {VERSION} is already up to date ({} channel).",
+                        res.channel.as_str()
+                    );
+                    return Ok(());
+                }
+                None => {}
             }
             if res.migration {
                 println!(
