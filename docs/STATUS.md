@@ -1,18 +1,18 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/12-databases-link.md` (Databases part A: link to apps)
+Last completed prompt: `docs/prompts/archive/13-backups-engine.md` (Backups engine)
 
 ## What works
-- `crates/opsbox-deploy` (`refs.rs`, `templates.rs`, `compose.rs`): `${{ service.KEY }}` parsing, canonicalization, cycle/self-ref checks, and depth-bounded resolution; DB credential re-computation for `postgres`, `mysql`, `mariadb`, `redis`, `mongo`; Compose guard flagging unconfirmed public DB host ports (`5432`/`3306`/`6379`/`27017`).
-- `crates/opsbox-store` (`0009_databases_link.sql`, `deploy.rs`) & `crates/opsbox-docker`: `services.{public_port,credentials_rotated_at}`, `service_vars.ref_expr`, `service_var_refs` (`stale`, monotonic `ref_seq`), project reference graph edges, and `PortBindMode` (`InternalOnly`, `Loopback`, `Public`).
-- `crates/opsbox-priv` (`ops/deploy.rs`, `ops/templates_compose.rs`): reference variable resolution + secret scrubbing inside `priv` across builds/starts/templates/Compose, `ConfirmRequired` enforcement on unconfirmed public DB ports, and `PrivOp::DatabaseRotate` running `docker exec` inside live DB containers to rotate passwords and re-seal vars without `serve` seeing plaintext.
-- `crates/opsbox-api` (`deploy.rs`, `templates.rs`, `lib.rs`): `POST /services/{id}/databases`, `DELETE /services/{id}/databases/{db}`, `POST /services/{id}/rotate`, `PUT /services/{id}/exposure`, non-leaking `${{ db.KEY }}` rendering in `GET /projects/{id}` & `GET /services/{id}` (`connectedApps`, `edges`, `networkMode`), `409 confirmation_required` on unconfirmed public DB ports, and strict RBAC/API-token enforcement.
-- `web/js` (`api.js`, `pages/apps.js`, `pages/templates.js`): `"Connect database"` flow on app Variables tab, link icon + clickable DB references without secret exposure, bidirectional graph edge routing, upgraded DB detail overview (connected apps, stale `"Needs redeploy"` status, `"Rotate credentials"`, redeploy actions, exposure selector + danger warning), and zero `"sample data"` badges.
+- `crates/opsbox-backup` & `crates/opsbox-proto`: pure-Rust UTC cron parser/evaluator (`next_run_after`, `is_run_missed`), path/volume/retention/subset validators, logical dump builders (`pg_dump -Fc`, `mysqldump`/`mariadb-dump`, `redis-cli --rdb`, `mongodump --archive`), `restic --json` parsers, HMAC repo password derivation, and typed `PrivOp::Backup{LocalInfo,Run,Snapshots,Forget,Check}` messages (zero new external crates).
+- `crates/opsbox-store` (`0010_backups.sql`, `backup.rs`, `lib.rs`): `backup_destinations` (seeded `'local'`), `backup_jobs` (nullable `service_id`, seeded `'opsbox-self'`), `backup_snapshots`, snapshot sync preserving verification states, and `ReadOnlyStore::online_backup` via SQLite's online backup API.
+- `crates/opsbox-docker` & `crates/opsbox-priv` (`ops/backup.rs`): zero-buffer `DockerClient::exec_to_writer` streaming DB dumps into `restic --stdin` (with automatic empty-snapshot rollback), volume mountpoint backup with optional container pause/unpause, path validation blocking `master.key`/`..`/system dirs, `opsbox-self` staging excluding `master.key` + symlinks, `forget --prune`, `check --read-data-subset`, and `st_dev` / `statvfs` same-disk inspection.
+- `crates/opsbox-api` (`backups.rs`, `metrics.rs`) & `crates/opsbox`: serialized `BackupRunner` cron scheduler (`OPSBOX_DISABLE_BG_BACKUPS` opt-out), `/api/v1/backups*` routes, Attention alerts for failed/missed runs and checksum failures, `[backup]` config, and `opsbox backup list` / `opsbox backup now` CLI commands.
+- `install.sh` & `web/js` (`api.js`, `pages/backups.js`): pinned `restic 0.19.1` download with SHA-256 verification before unpacking, wired schedule CRUD/run/prune/checksum UI, and real same-disk warning callout (`restoreBackup` and offsite destinations scoped to prompt 14).
 
 ## Partial / Found, not fixed
-- Linux-only runtime/CI checks (`tools/check-idle-memory.py`, `musl` static build, `cargo-deny`, real Docker Engine live DB `exec` rotation) cannot execute natively on macOS and remain for Linux CI / `opsbox-vm`.
-- Automated backup execution, retention pruning, destinations, and restore arrive in prompts 13–14; per-app DB users, extensions, and SQL query console arrive in prompt 16 (`16-databases-manage.md`).
+- Linux-only runtime/CI checks (`tools/check-idle-memory.py`, `musl` static build, `cargo-deny`, real `restic 0.19.1` & Docker Engine dumps) cannot execute on macOS and remain for Linux CI / `opsbox-vm`.
+- Remote S3/SFTP destinations, recovery key download, snapshot download, and copy/replace restore arrive in prompt 14 (`14-backup-destinations-restore.md`).
 
 ## Next
-- Verify PostgreSQL deployment, `"Connect database"`, app redeploy, live DB credential rotation, and `409` public-port refusal on `opsbox-vm`.
-- Next prompt: `docs/prompts/13-backups-engine.md`.
+- Verify `install.sh` restic install, DB/path/`opsbox-self` backups, `opsbox backup list|now`, and Backups UI on `opsbox-vm`.
+- Next prompt: `docs/prompts/14-backup-destinations-restore.md`.

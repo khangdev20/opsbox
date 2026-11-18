@@ -34,6 +34,8 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[files] apps_dir` | `/var/lib/opsbox/apps` | | | serve |
 | `[files] max_upload_mb` | `2048` | | | serve |
 | `[terminal] idle_timeout_min` | `30` | | | serve |
+| `[backup] dir` | `/var/backups/opsbox` | | | serve, priv, CLI |
+| `[backup] cache_dir` | `/var/cache/opsbox/restic` | | | priv |
 | `[proxy] listen_http` | `0.0.0.0:80` | `--http ADDR` | `OPSBOX_PROXY_HTTP` | proxy |
 | `[proxy] listen_https` | `0.0.0.0:443` | `--https ADDR` | `OPSBOX_PROXY_HTTPS` | proxy |
 | `[proxy] socket` | `/run/opsbox-proxy/proxy.sock` | `--proxy-socket PATH` | `OPSBOX_PROXY_SOCKET` | proxy, serve, status |
@@ -112,9 +114,10 @@ ssh -L 8443:127.0.0.1:8443 you@server
 | `opsbox user reset-2fa\|unlock\|password NAME` | Account recovery over SSH. `password` asks twice on a terminal and reads one line from standard input when piped. |
 | `opsbox audit verify` | Walks the hash chain of the audit log; exit status 1 and the first bad entry if it was altered. |
 | `opsbox doctor` | Read-only diagnostics through the helper: service/port health, DNS resolution, free disk space, clock synchronization, optional Docker and master-key permissions. Exit 1 for failed checks or unavailable helpers; warnings include suggested fixes. |
+| `opsbox backup list\|now` | Lists configured backup schedules, repository/same-disk status, and snapshots (`list`), or runs enabled schedules / `--job <ID>` synchronously through `priv` (`now`, with optional `--prune` / `--check`). |
 | `opsbox selftest` | Ignores the configuration; uses a temporary directory. Exit status 0 if every check passes. |
 
-Commands that exist but are not built yet (`pair`, `backup`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.
+Commands that exist but are not built yet (`pair`, `restore`, ...) print `` `<name>` is not implemented yet `` and exit with status 2.
 
 ## Running on a development machine
 
