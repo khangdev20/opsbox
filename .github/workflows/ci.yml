@@ -29,6 +29,8 @@ jobs:
         run: python3 tools/generate-api.py --check
       - name: Proxy Network UI contracts
         run: node tools/check-network-ui.mjs
+      - name: Stable live lists (data-flip)
+        run: node tools/check-flip-ui.mjs
       - name: Update status text
         run: node tools/check-update-status.mjs
       - name: Mock-only API allowlist

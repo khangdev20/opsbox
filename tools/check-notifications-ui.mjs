@@ -5,8 +5,7 @@
 // - Bell badge, critical pulse, one-shot ring, polite critical announce, popover keyboard nav,
 //   Mark read / Mark all read / Snooze (including critical-snooze-count invariant), mobile sheet
 // - Overview critical-only thin banner + "and N more"
-// - Stable live lists: data-flip keeps height constant & row count 5 at 0, 60, 120, 300 ms while
-//   non-flip fades leaving rows; reduced-motion & > visible-height FLIP skip.
+// (data-flip timing / reduced-motion / long-move skip live in tools/check-flip-ui.mjs)
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -461,80 +460,6 @@ async function runBrowserChecks() {
     assert.deepEqual(await browser.evalJs(`window.__testErrors`), []);
     await browser.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
 
-    // C. Part B: data-flip vs non-flip at 0, 60, 120, 300 ms on kit.html
-    await browser.send('Page.navigate', { url: `${base}/kit.html` });
-    await waitFor(browser.evalJs, `document.querySelector('[data-kit-flip] .list-row')`, 'UI kit loaded');
-
-    const beforeH = await browser.evalJs(`document.querySelector('[data-kit-flip]').getBoundingClientRect().height`);
-    const beforeCount = await browser.evalJs(`document.querySelector('[data-kit-flip]').children.length`);
-    assert.equal(beforeCount, 5);
-
-    const timeline = await browser.evalJs(`new Promise((resolve) => {
-      const flip = document.querySelector('[data-kit-flip]');
-      const plain = document.querySelector('[data-kit-plain]');
-      const sample = () => ({
-        flipCount: flip.children.length,
-        flipHeight: flip.getBoundingClientRect().height,
-        flipAnims: [...flip.children].reduce((n, c) => n + (c.getAnimations?.().length || 0), 0),
-        plainCount: plain.children.length,
-        plainLeaving: plain.querySelectorAll('.leaving').length,
-      });
-      document.querySelector('[data-act="shuffle"]').click();
-      const out = { t0: sample() };
-      setTimeout(() => { out.t60 = sample(); }, 60);
-      setTimeout(() => { out.t120 = sample(); }, 120);
-      setTimeout(() => { out.t300 = sample(); resolve(out); }, 300);
-    })`);
-
-    for (const k of ['t0', 't60', 't120', 't300']) {
-      assert.equal(timeline[k].flipCount, 5, `data-flip row count at ${k}: ${JSON.stringify(timeline[k])}`);
-      assert(Math.abs(timeline[k].flipHeight - beforeH) <= 1, `data-flip height changed at ${k}: before=${beforeH}, got=${timeline[k].flipHeight}`);
-    }
-    assert(timeline.t60.flipAnims > 0, `Expected active FLIP animations at 60ms: ${JSON.stringify(timeline.t60)}`);
-    assert(timeline.t60.plainLeaving >= 1 && timeline.t60.plainCount > 5, `Expected non-flip list to fade leaving row at 60ms: ${JSON.stringify(timeline.t60)}`);
-    assert.equal(timeline.t300.plainCount, 5, `Expected non-flip list to return to 5 rows by 300ms: ${JSON.stringify(timeline.t300)}`);
-
-    // Reduced motion: no FLIP and no enter animation
-    await new Promise((r) => setTimeout(r, 120));
-    await browser.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-    const rmCheck = await browser.evalJs(`(() => {
-      const flip = document.querySelector('[data-kit-flip]');
-      const plain = document.querySelector('[data-kit-plain]');
-      document.querySelector('[data-act="shuffle"]').click();
-      return {
-        reduced: matchMedia('(prefers-reduced-motion: reduce)').matches,
-        flipAnims: [...flip.children].flatMap((c) => (c.getAnimations?.() || []).map((a) => ({ kind: a.constructor?.name, prop: a.transitionProperty || a.animationName || '', dur: a.effect?.getComputedTiming?.().duration }))),
-        flipEnter: flip.querySelectorAll('.enter').length,
-        plainEnter: plain.querySelectorAll('.enter').length,
-        plainLeaving: plain.querySelectorAll('.leaving').length,
-      };
-    })()`);
-    assert.equal(rmCheck.reduced, true);
-    assert.deepEqual(rmCheck.flipAnims, [], 'Reduced motion must skip FLIP');
-    assert.equal(rmCheck.flipEnter, 0, 'Reduced motion must skip enter animation on flip list');
-    assert.equal(rmCheck.plainEnter, 0, 'Reduced motion must skip enter animation');
-    assert.equal(rmCheck.plainLeaving, 0, 'Reduced motion must skip leaving fade');
-    await browser.send('Emulation.setEmulatedMedia', { features: [] });
-
-    // Skip FLIP when row moves further than container visible height (a.clientHeight)
-    const farCheck = await browser.evalJs(`(async () => {
-      const { patch } = await import('/js/ui.js');
-      const host = document.createElement('div');
-      host.innerHTML = '<div id="far" data-flip style="max-height:100px;overflow:auto"></div>';
-      document.body.append(host);
-      const box = host.querySelector('#far');
-      const render = (ids) => ids.map((id) => '<div data-key="' + id + '" style="height:40px">' + id + '</div>').join('');
-      patch(box, render(['a', 'b', 'c', 'd', 'e', 'f']));
-      // Move 'a' 5 slots down (200px > clientHeight 100px) and 'b' 1 slot up (40px <= 100px)
-      patch(box, render(['b', 'c', 'd', 'e', 'f', 'a']));
-      const aAnims = box.querySelector('[data-key="a"]').getAnimations().length;
-      const bAnims = box.querySelector('[data-key="b"]').getAnimations().length;
-      host.remove();
-      return { aAnims, bAnims };
-    })()`);
-    assert.equal(farCheck.aAnims, 0, 'Row moving further than visible container height must skip FLIP');
-    assert(farCheck.bAnims > 0, 'Row moving within visible container height must still FLIP');
-
     assert.deepEqual(await browser.evalJs(`window.__testErrors`), [], `Unexpected page errors: ${errors.join(', ')}`);
   } finally {
     await browser.close();
@@ -544,4 +469,4 @@ async function runBrowserChecks() {
 
 await checkApiContracts();
 await runBrowserChecks();
-console.log('Notification bell UI, shared poll, keyboard nav, Overview banner, and data-flip timing checks passed.');
+console.log('Notification bell UI, shared poll, keyboard nav, and Overview banner checks passed.');

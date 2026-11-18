@@ -218,9 +218,9 @@ function morphNode(a, b, ctx) {
 
 function morphChildren(a, b, ctx) {
   const olds = [...a.childNodes].filter((n) => !isLeaving(n));
-  // data-flip: a ranked list with a fixed number of rows (Top processes). Rows that drop out are
-  // removed at once instead of fading in place (which made the list grow, then shrink), and rows
-  // that change position glide from their old spot (FLIP).
+  // data-flip: ranked / fixed-size lists. Leaving rows are removed at once (no fade-in-place
+  // height bump). Movers glide with FLIP unless reduced-motion is on or the move is further
+  // than the visible list height (then they are just placed).
   const flip = ctx.animate && a.nodeType === 1 && a.hasAttribute('data-flip');
   const first = flip ? new Map(olds.filter((n) => keyOf(n) !== null).map((n) => [n, n.getBoundingClientRect().top])) : null;
   const byKey = new Map();

@@ -1,23 +1,19 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/16o-secrets-in-responses.md` (secrets masked by default, reveal on demand). Not committed / not pushed (per session request). Prior: `16n`.
+Last completed prompt: `docs/prompts/archive/16p-stable-live-lists.md` (stable live lists / FLIP). Not committed / not pushed (per session request). Prior: `16o`.
 
-## What works (16o)
-- **Inventory** in `docs/THREAT_MODEL.md` (env vars, DB URLs, API tokens, backup/S3/SFTP, recovery key, alerts, GitHub webhook/private keys, TOTP, Docker env, proxy secret).
-- **Masking**: list/detail use `••••••••` / `hasValue` / `hasCredentials` / `hasWebhookSecret`; Docker env uses `••••` + last 4.
-- **Reveal**: `POST /auth/reauth`; `…/vars/{key}/reveal`, DB connection-string, backup destination/recovery-key, alerts channel, GitHub webhook secret — Admin/Deployer as appropriate, 5-minute re-auth, `no-store`, reveal rate limit, audited secret name/target.
-- **One-time**: API tokens remain hash-only after create; recovery key is re-derived (not stored).
-- **Log scrubbing**: `secrets::redact_line` on deploy emit + task logs; unit tests with marker value.
-- **UI**: `web/js/secrets.js` (re-auth modal, 30s / nav hide, clipboard copy); Apps Variables Reveal/Copy; Database connection-string flow updated.
-- **Tests**: `crates/opsbox-api/src/secrets.rs` unit tests; `tests/secrets_http.rs` (mask, re-auth, audit, rate-limit); task scrub test.
+## What works (16p)
+- **`morphChildren` / `patch`**: `data-flip` lists remove leavers immediately; movers use FLIP (`translateY`, `DUR[3]`); `prefers-reduced-motion` skips FLIP and enter; moves further than visible list height are placed with no animation.
+- **`data-flip` applied**: Overview top processes + containers (top 5); Containers table (`flip: true`); System services + Capacity reservations; notification popover list in `shell.js`.
+- **UI kit**: side-by-side flip vs non-flip lists with Shuffle (`web/js/kit.js`, styles in `app.css`).
+- **Tests**: `tools/check-flip-ui.mjs` (source placement always; browser timing/reduced-motion/long-move when Chrome is available). Wired in CI. Flip checks removed from `check-notifications-ui.mjs`.
 
 ## Partial / Found, not fixed
-- **Shell unavailable this session** — could not run `cargo fmt` / `clippy` / `test`, `python3 tools/generate-api.py`, or `git mv`. Please run those before commit; if `generate-api.py --check` fails, re-run it to sync the route table.
-- Archive: full text is in `docs/prompts/archive/16o-secrets-in-responses.md`. The file at `docs/prompts/16o-secrets-in-responses.md` is a stub (`git mv` / shell unavailable); on commit run `git rm docs/prompts/16o-secrets-in-responses.md && git add docs/prompts/archive/16o-secrets-in-responses.md`.
+- **Shell / delete unavailable this session** — could not run `git mv`, `node tools/check-flip-ui.mjs`, or cargo checks. Full text is in `docs/prompts/archive/16p-stable-live-lists.md`; `docs/prompts/16p-stable-live-lists.md` is a stub. On commit: `git rm docs/prompts/16p-stable-live-lists.md && git add docs/prompts/archive/16p-stable-live-lists.md` (or `git add -A docs/prompts`). Run `node tools/check-flip-ui.mjs` before commit.
 - **Not verified on `opsbox-vm`**. Not checked at 390 px.
-- Carried over: 16n / … pending commit/release; next prompt `16p`.
+- Carried over: 16o / … pending commit/release; next prompt `16q`.
 
 ## Next
-- Run workspace checks, commit 16o (and pending stack if intended), push `dev`.
-- Then `16p-stable-live-lists.md`.
-- VM check for 16o: reveal a DB connection string — re-auth required, audit row with secret name, value gone after 30 s. Must fail safely: reveal without re-auth → `403`; API token → `403`.
+- Run `node tools/check-flip-ui.mjs`, then commit 16p (and pending stack if intended). Do not push unless asked.
+- Then `16q-import-config.md`.
+- VM check for 16p: `yes > /dev/null` for ~20 s while watching Overview Top processes — rows glide, card height stays fixed. Must fail safely: with reduced motion enabled, rows reorder with no glide/fade.
