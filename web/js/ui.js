@@ -126,7 +126,7 @@ export function bindActions(root, handlers) {
 }
 
 // ---------- form dialog: fields = [{name,label,value,placeholder,hint,type,options}] ----------
-export function formDialog({ title, body = '', fields, submit = 'Save', danger = false }) {
+export function formDialog({ title, body = '', fields, submit = 'Save', danger = false, capacity = null }) {
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
     const f = fields.map((x) => `<div class="field"><label for="f_${esc(x.name)}">${esc(x.label)}</label>${x.options
@@ -134,9 +134,19 @@ export function formDialog({ title, body = '', fields, submit = 'Save', danger =
       : `<input class="input" id="f_${esc(x.name)}" name="${esc(x.name)}" type="${x.type || 'text'}" value="${esc(x.value || '')}" placeholder="${esc(x.placeholder || '')}" autocomplete="off" data-1p-ignore data-lpignore="true">`}${x.hint ? `<span class="hint">${esc(x.hint)}</span>` : ''}</div>`).join('');
     d.innerHTML = `<form method="dialog"><div class="d-b"><h2>${esc(title)}</h2>${body ? `<p class="muted">${esc(body)}</p>` : ''}${f}<p class="err" role="alert" style="color:var(--danger);font-size:13px;min-height:0"></p></div><div class="d-f"><button class="btn" value="no" formnovalidate>Cancel</button><button class="btn ${danger ? 'danger' : 'primary'}" value="yes">${esc(submit)}</button></div></form>`;
     document.body.append(d);
+    let capacityControl, capacityModule;
+    if (capacity) d.querySelector('button[value="yes"]').disabled=true;
+    if (capacity) import('./capacity.js').then((m) => {
+      if (!d.isConnected) return;
+      capacityModule=m; const holder=document.createElement('div'); holder.innerHTML=m.capacityFields(capacity.memory).toString(); d.querySelector('.d-b').append(holder);
+      if(capacity.fixed) d.querySelector('[data-capacity-memory]').readOnly=true;
+      capacityControl=m.bindCapacity(d, () => capacity.request(d), 'button[value="yes"]');
+    });
     d.addEventListener('close', () => {
       const ok = d.returnValue === 'yes'; const out = {};
       if (ok) d.querySelectorAll('input,select').forEach((i) => { out[i.name] = i.value; });
+      if (ok && capacityModule) out.capacity=capacityModule.capacityPayload(d);
+      capacityControl?.dispose();
       d.remove(); resolve(ok ? out : null);
     });
     d.showModal(); const first = d.querySelector('input,select'); if (first) first.focus();

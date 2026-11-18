@@ -9,6 +9,7 @@ mod alerts;
 mod allowlist;
 mod auth;
 pub mod backups;
+mod capacity;
 mod cleanup;
 mod databases;
 pub mod deploy;
@@ -81,6 +82,10 @@ pub type PublicIpCache =
 /// Shared by every handler. Cheap to clone.
 #[derive(Clone)]
 pub struct AppState {
+    pub capacity_approvals: Arc<std::sync::Mutex<std::collections::HashMap<String, bool>>>,
+    pub(crate) capacity_pending:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, capacity::Pending>>>,
+    pub capacity_lock: Arc<tokio::sync::Mutex<()>>,
     pub store: Arc<Store>,
     pub priv_client: PrivClient,
     pub auth: Auth,
@@ -132,6 +137,9 @@ impl AppState {
         let backups = backups::BackupRunner::default();
         backups.spawn_scheduler(store.clone(), priv_client.clone(), tasks.clone());
         Self {
+            capacity_approvals: Default::default(),
+            capacity_pending: Default::default(),
+            capacity_lock: Default::default(),
             store,
             priv_client,
             auth,
@@ -264,6 +272,9 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
         .route("/api/v1/host", get(host::get_host))
+        .route("/api/v1/capacity", get(capacity::get))
+        .route("/api/v1/capacity/check", get(capacity::check))
+        .route("/api/v1/capacity/swap", post(capacity::swap))
         .route("/api/v1/tasks/{id}", get(system::get_task))
         .route("/api/v1/system/updates", get(system::get_updates))
         .route(
@@ -601,6 +612,10 @@ pub fn router(state: AppState) -> Router {
         .merge(transfers)
         .fallback(ui::fallback)
         .method_not_allowed_fallback(error::method_not_allowed)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            capacity::guard,
+        ))
         .with_state(state)
         // Layers added last run first: request id outermost so its span covers all.
         // Fonts and downloads are already compressed (or must stay byte-exact); the UI's

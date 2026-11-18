@@ -155,6 +155,8 @@ pub struct ComposeValidateRequest {
 /// Parsed Compose service summary returned by [`PrivOp::ComposeValidate`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ComposeServiceInfo {
+    pub memory_limit_mb: u64,
+    pub cpu_limit_millis: u64,
     pub name: String,
     pub image: Option<String>,
     pub port: u16,

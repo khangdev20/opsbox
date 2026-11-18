@@ -93,6 +93,26 @@ PostgreSQL services only (`postgres`, `postgres-pgvector`, `postgis`). `{id}` is
 
 Per-app variables (`OPSBOX_APP_*`) and the pooler login (`OPSBOX_POOLER_PASSWORD`) live on the database service, are hidden from its Variables list and are never put in the database container's environment. Audit actions: `database.app.rotate`, `database.app.remove`, `database.app.pooled`, `database.extension`, `database.pooler.enable/disable`, `database.upgrade`, `database.upgrade.failed`. `GET /templates` adds `postgres-pgvector`, `postgis`, `adminer`, `pgweb`.
 
+## Capacity guard (Spec 7.19)
+
+All paths below use the `/api/v1` prefix and require authentication. Memory and disk values ending in `_mb` are MiB; CPU uses millicores. PSI averages use hundredths of a percent (`2150` means 21.5%).
+
+| Request | Response / behaviour |
+|---|---|
+| `GET /capacity` | `{profile,reserves,reservations,allocatable,pressure,features,swap_offer_mb}`. Profile includes RAM/available/swap/free/zram, online CPUs/effective cgroup quota, cgroup v2, Docker/root, filesystem totals/free, PSI memory/CPU and pressure duration, below-minimum marker. Features include minimum/recommended values and `fit`. `swap_offer_mb` is null, 1024 or 2048. |
+| `GET /capacity/check?feature=database&memory_mb=512` | Dry run returns `{request,fit,free}` with HTTP 200 even when blocked. Features: `install`, `docker`, `app`, `build`, `database`, `template`, `backup`, `image_pull`. Optional `database=true` excludes swap for a non-Postgres template/pooler; `min_memory_mb`, `recommended_memory_mb`, `cpu_millis`, `disk_mb`, and `replacing=<reservation-name>` support manifest checks, image sizes and memory edits. This does not reserve resources or authorize an override. |
+| `POST /capacity/swap {size_mb:1024}` | Interactive Owner only, normal CSRF/Origin checks, no tokens. Only the current offered size is accepted; root revalidates RAM/no-swap/disk and persists swap plus swappiness=10. Returns `{ok:true}` and audits `capacity.swap`. |
+
+Workload create/deploy/update, template/Compose install, database pooler/extension changes and manual backup admission return `409` before queueing when blocked:
+
+```json
+{"error":{"code":"conflict","message":"Needs 512 MB, 310 MB allocatable ...","capacity":{"asked":{"feature":"database","memory_mb":512},"free":{"allocatable_mb":310,"database_allocatable_mb":310},"reserves":{"os_mb":192,"opsbox_mb":128,"docker_mb":150},"reservations":[{"name":"api","memory_mb":256,"cpu_millis":0,"database":false}],"fit":{"status":"blocked","reasons":["Needs 512 MB, 310 MB allocatable ..."],"suggestions":["Lower the memory limit, or upgrade the instance.","Stop or remove api to free 256 MB.","Add a swap file for apps and builds; swap never counts for databases."]}}}}
+```
+
+`fit` is `{status:"ok"}`, `{status:"tight",reasons:[...]}`, or `{status:"blocked",reasons:[...],suggestions:[...]}`. Real errors include all reserve/accounting numbers. A tight result is allowed. Capacity-dependent operations fail closed if host/Docker/image metadata cannot be read. Default limits are persisted and enforced, not merely estimated.
+
+A signed-in Owner (`admin` role) may add `override:true` and `capacityConfirmation:"I understand this server may run out of memory"` to a workload request. Missing/wrong confirmation is `409 confirmation_required`; Deployer and every API token receive `403 forbidden`, even if the workload would fit. Successful blocked overrides produce `capacity.override` audit entries and `overCapacity:true` on service views until reservations/pressure fit again. Cgroup v2 enforcement cannot be bypassed. Scheduled backups retry for 30 minutes, then run at lowest priority and raise a backup-capacity alert; manual runs return 409 instead.
+
 ## Implemented routes
 
 ## Proxy network conflicts (prompt 03c)
@@ -149,6 +169,9 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `GET` | `/api/v1/backups/snapshots` | [backups::list_snapshots](../crates/opsbox-api/src/backups.rs) |
 | `POST` | `/api/v1/backups/snapshots/{id}/restore` | [backups::restore_snapshot](../crates/opsbox-api/src/backups.rs) |
 | `POST` | `/api/v1/backups/snapshots/{id}/test` | [backups::test_snapshot_restore](../crates/opsbox-api/src/backups.rs) |
+| `GET` | `/api/v1/capacity` | [capacity::get](../crates/opsbox-api/src/capacity.rs) |
+| `GET` | `/api/v1/capacity/check` | [capacity::check](../crates/opsbox-api/src/capacity.rs) |
+| `POST` | `/api/v1/capacity/swap` | [capacity::swap](../crates/opsbox-api/src/capacity.rs) |
 | `PUT` | `/api/v1/cleanup/auto` | [cleanup::set_auto](../crates/opsbox-api/src/cleanup.rs) |
 | `POST` | `/api/v1/cleanup/run` | [cleanup::run](../crates/opsbox-api/src/cleanup.rs) |
 | `GET` | `/api/v1/cleanup/scan` | [cleanup::scan](../crates/opsbox-api/src/cleanup.rs) |

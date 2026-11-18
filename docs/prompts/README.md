@@ -30,5 +30,6 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 13 | Backups engine (`13-backups-engine.md`) | 5 | ✓ |
 | 14 | Backup destinations and restore (`14-backup-destinations-restore.md`) | 5 | ✓ |
 | 15 | Alerts (`15-alerts.md`) | 5 | ✓ |
+| 15b | Capacity guard: what this server can safely run (`15b-capacity-guard.md`) | 5 | ✓ |
 | 16 | Databases part B: management (`16-databases-manage.md`) | 5b | ✓ |
 | 17 | Alpha release (`17-alpha-release.md`) | release | |

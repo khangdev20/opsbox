@@ -81,6 +81,8 @@ pub struct DockerEnvVar {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DockerContainerInspect {
+    #[serde(default)]
+    pub memory_limit_mb: Option<u64>,
     pub id: String,
     pub full_id: String,
     pub name: String,

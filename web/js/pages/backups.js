@@ -98,6 +98,8 @@ export async function view() {
       paint();
       bindActions(root, {
         run: async (el) => {
+          const c=await api.checkCapacity({feature:'backup'});
+          if(c.fit.status==='blocked') {toast([...(c.fit.reasons||[]),...(c.fit.suggestions||[])].join(' '),'err');return;}
           toast('Backup started…');
           await api.runBackup(el.dataset.id);
           toast('Backup finished.');

@@ -161,6 +161,7 @@ pub fn start_template_with(
     let network_name = format!("opsbox-{}", req.project);
     let socket_path = env.docker.socket_path();
 
+    super::capacity::check_image(env, &req.image_ref)?;
     block_on_fut(env.docker.pull_image(&req.image_ref))?.map_err(|mut e| {
         if let DockerError::Internal(ref mut m) = e {
             *m = scrub_secrets(m, &scrub_refs);
@@ -187,7 +188,7 @@ pub fn start_template_with(
         } else {
             PortBindMode::Loopback
         },
-        memory_limit_mb: req.memory_limit_mb,
+        memory_limit_mb: Some(req.memory_limit_mb.unwrap_or(tmpl.min_memory_mb as i64)),
         cpu_limit_millis: req.cpu_limit_millis,
     };
 
@@ -571,6 +572,24 @@ pub fn deploy_compose_with(
         ));
     }
 
+    let mut normalized = req.clone();
+    let doc = opsbox_deploy::compose::parse_compose_yaml(&req.yaml)
+        .map_err(|e| err(PrivErrorCode::Invalid, e.to_string()))?;
+    normalized.yaml = serde_json::to_string(
+        &opsbox_deploy::compose::with_capacity_limits(&doc)
+            .map_err(|e| err(PrivErrorCode::Invalid, e.to_string()))?,
+    )
+    .map_err(|e| err(PrivErrorCode::Internal, e.to_string()))?;
+    let req = &normalized;
+    let (_, _, has_builds) = opsbox_deploy::compose::capacity_requirements(&doc)
+        .map_err(|e| err(PrivErrorCode::Invalid, e.to_string()))?;
+    let builder = if has_builds {
+        Some(block_on_fut(super::deploy::bounded_builder(
+            env, &req.stack,
+        ))??)
+    } else {
+        None
+    };
     let (opened_vars, scrub_owned) =
         open_and_resolve_deploy_vars(&env.secrets, &req.stack, &req.vars, &req.ref_sources)?;
     let scrub_refs: Vec<&str> = scrub_owned.iter().map(String::as_str).collect();
@@ -641,9 +660,22 @@ pub fn deploy_compose_with(
         extra_env: &extra_env,
         scrub_refs: &scrub_refs,
     };
+    if let Some(builder) = &builder {
+        let (code, _, _) = block_on_fut(run_compose_cmd(
+            &cmd_ctx,
+            &["build", "--builder", &builder.name],
+            Duration::from_secs(1800),
+        ))??;
+        if code != 0 {
+            return Err(err(
+                PrivErrorCode::Internal,
+                "Compose build failed inside its memory limit. Build in GitHub Actions and pull the image instead.",
+            ));
+        }
+    }
     let (code, stdout, stderr) = block_on_fut(run_compose_cmd(
         &cmd_ctx,
-        &["up", "-d", "--remove-orphans"],
+        &["up", "-d", "--remove-orphans", "--no-build"],
         Duration::from_secs(300),
     ))??;
 

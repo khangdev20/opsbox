@@ -87,6 +87,9 @@ impl PrivServer {
     pub async fn run(self, shutdown: impl Future<Output = ()>) {
         let allowed: Arc<[u32]> = self.config.allowed_uids.clone().into();
         let env = Arc::new(Env {
+            capacity: Default::default(),
+            capacity_profile: self.config.capacity_profile.clone(),
+            capacity_image_size_mb: self.config.capacity_image_size_mb,
             secrets: Secrets::new(&self.config.master_key_path),
             master_key: self.config.master_key_path.clone(),
             config_path: self.config.config_path.clone(),
@@ -124,6 +127,7 @@ impl PrivServer {
                 let e = Arc::clone(&janitor_env);
                 let _ = tokio::task::spawn_blocking(move || {
                     ops::janitor_tick();
+                    let _ = ops::capacity::collect(&e);
                     // Once an hour: forget trash older than seven days.
                     if n % 360 == 1 {
                         let now = std::time::SystemTime::now()

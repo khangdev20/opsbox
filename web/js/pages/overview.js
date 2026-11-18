@@ -1,5 +1,6 @@
 import { html, raw, chk, bytes, gb, steps, legend, section, header, table, st, bindActions } from '../ui.js';
 import * as api from '../api.js';
+import { capacityCard, addSwap } from '../capacity.js';
 import { networkBanner } from '../network.js';
 import { listeners } from '../store.js';
 
@@ -7,6 +8,7 @@ const kpi = (l, v, u, p, extra = '') => html`<div class="kpi"><span class="l">${
 
 export async function view() {
   const [h, m, att] = await Promise.all([api.getHost(), api.getMetrics(), api.getAttention()]);
+  const capacity = await api.getCapacity().catch(() => null);
   const network = await api.getProxyNetwork().catch(() => null);
   const body = (m) => html`
     <div class="kpis" id="kpis">
@@ -27,11 +29,13 @@ export async function view() {
     html: html`<main>${header('Overview', `${h.name} · ${h.os} · kernel ${h.kernel} · up ${h.upDays} days · ${h.cores} cores`, html`<a class="btn primary" href="#/apps/new">New service</a>`)}
       <div id="proxy-network-banner">${networkBanner(network)}</div>
       ${section('Needs attention', att.length ? html`<div>${att.map((a) => html`<div class="list-row">${chk('warn', a.text)}<a class="btn link" href="${a.alertId ? `#/alerts?id=${encodeURIComponent(a.alertId)}` : a.link[1]}">${a.link[0]}</a></div>`)}</div>` : chk('ok', 'Nothing needs attention.'))}
+      <div id="capacity-card">${capacityCard(capacity)}</div>
       <div id="live">${body(m)}</div></main>`,
     mount(root) {
+      bindActions(root, { 'capacity-swap': async (el) => { await addSwap(Number(el.dataset.mb)); const card=root.querySelector('#capacity-card'); if(card) card.innerHTML=capacityCard(await api.getCapacity()).toString(); } });
       const f = async () => { const live = root.querySelector('#live'); if (!live) return; live.innerHTML = body(await api.getMetrics()).toString(); };
       listeners.add(f); this._f = f;
-      this._networkTimer = setInterval(async () => { const data = await api.getProxyNetwork().catch(() => null); const banner = root.querySelector('#proxy-network-banner'); if (banner) banner.innerHTML = networkBanner(data).toString(); }, 5000);
+      this._networkTimer = setInterval(async () => { const data = await api.getProxyNetwork().catch(() => null); const card=root.querySelector('#capacity-card'); if(card) card.innerHTML=capacityCard(await api.getCapacity().catch(()=>null)).toString(); const banner = root.querySelector('#proxy-network-banner'); if (banner) banner.innerHTML = networkBanner(data).toString(); }, 5000);
     },
     unmount() { listeners.delete(this._f); clearInterval(this._networkTimer); },
   };

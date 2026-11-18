@@ -1,4 +1,5 @@
 import { html, btn, table, section, header, bindActions, confirmDialog, formDialog, toast } from '../ui.js';
+import { capacityFields, bindCapacity, capacityPayload, withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
 
 const YML = `services:
@@ -27,7 +28,7 @@ export async function view() {
   const pgDbs = (proj.services || []).filter((s) => s.kind === 'db' && (/^postgres|^postgis$/.test(s.templateId || '') || /postgres/i.test(s.repo || '')));
   let pick = all[0] || { id: 'postgres', name: 'PostgreSQL', versions: ['16.4'], port: 5432, category: 'databases' };
   let busy = '';
-  let root;
+  let root, capacityControl;
 
   const rows = (heading, list) => table(heading, [['Name'], ['Needs'], ['', 'r']], list.map((t) => {
     const r = [
@@ -62,6 +63,7 @@ export async function view() {
       </select><span class="hint">${isDb ? 'Database ports stay off the internet by default; apps connect over the internal project network.' : 'Internal-only services bind no host port.'}</span></div>
       ${isDataTool ? html`<p class="sm muted">${pick.name} is never published on its own address. You open it from the database page or at <span class="mono">/tools/${pick.id}-main/</span>, and only while you are signed in to opsbox.</p>` : ''}
       <p class="sm muted">Credentials are generated, encrypted at rest, and shown once upon creation.</p>
+      ${capacityFields(pick.min_memory_mb || (isDb ? 256 : 128))}
       <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p>
       <div>${btn(busy === 'tpl' ? `Starting ${pick.name}…` : `Add ${pick.name}`, { act: 'add', kind: 'primary', disabled: busy === 'tpl' })}</div>`);
   };
@@ -71,6 +73,8 @@ export async function view() {
     root.querySelector('#db').innerHTML = rows('Databases', databases).toString();
     root.querySelector('#tl').innerHTML = rows('Tools', tools).toString();
     root.querySelector('#fm').innerHTML = form().toString();
+    root.querySelector('#fm').toggleAttribute('data-capacity-busy', !!busy);
+    capacityControl?.refresh();
   };
 
   return {
@@ -89,6 +93,7 @@ export async function view() {
     mount(r) {
       root = r;
       paint();
+      capacityControl=bindCapacity(root.querySelector('#fm'), () => ({feature:'template',database:pick.kind==='db'||pick.category==='databases',memory_mb:capacityPayload(root).memoryLimitMb,min_memory_mb:pick.min_memory_mb||128,recommended_memory_mb:pick.recommended_memory_mb||256}), '[data-act="add"]');
       root.addEventListener('change', (e) => {
         if (e.target.id === 'tpg') {
           const inp = root.querySelector('#tdb');
@@ -120,6 +125,7 @@ export async function view() {
             if (!confirmed) return;
           }
           const cfg = {
+            ...capacityPayload(root),
             name: root.querySelector('#tn')?.value.trim(),
             version: root.querySelector('#tv')?.value,
             disk: root.querySelector('#td')?.value,
@@ -132,7 +138,7 @@ export async function view() {
           busy = 'tpl';
           paint();
           try {
-            const res = await api.addTemplate(pick.id, cfg);
+            const res = await withCapacityOverride((b) => api.addTemplate(pick.id, b), cfg);
             toast(`${pick.name} is running.`);
             if (res.connectionUrl && !String(res.connectionUrl).startsWith('${{')) {
               const out = await formDialog({
@@ -162,7 +168,7 @@ export async function view() {
           const cbtn = root.querySelector('[data-act="compose"]');
           if (cbtn) cbtn.textContent = 'Deploying Compose stack…';
           try {
-            const res = await api.deployCompose(yaml, { stack });
+            const res = await withCapacityOverride((b) => api.deployCompose(yaml, b), { stack });
             toast(`Deployed ${(res.names || []).join(', ')}.`);
             location.hash = res.names?.[0] ? `#/apps?s=${encodeURIComponent(res.names[0])}` : '#/apps';
           } catch (e) {
@@ -173,5 +179,6 @@ export async function view() {
         },
       });
     },
+    unmount() { capacityControl?.dispose(); },
   };
 }

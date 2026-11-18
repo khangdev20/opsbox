@@ -1,3 +1,5 @@
+min_memory_mb = 128
+recommended_memory_mb = 256
 id = "kuma"
 name = "Uptime Kuma"
 category = "tools"

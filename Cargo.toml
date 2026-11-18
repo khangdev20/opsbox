@@ -10,6 +10,7 @@ repository = "https://github.com/khangdev20/opsbox"
 
 [workspace.dependencies]
 # internal
+opsbox-capacity = { path = "crates/opsbox-capacity" }
 opsbox-alerts = { path = "crates/opsbox-alerts" }
 opsbox-proto = { path = "crates/opsbox-proto" }
 opsbox-backup = { path = "crates/opsbox-backup" }

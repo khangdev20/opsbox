@@ -62,6 +62,8 @@ pub struct ApiErrorBody {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capacity: Option<serde_json::Value>,
 }
 
 impl ApiError {
@@ -71,6 +73,7 @@ impl ApiError {
                 code,
                 message: message.into(),
                 field: None,
+                capacity: None,
             },
         }
     }

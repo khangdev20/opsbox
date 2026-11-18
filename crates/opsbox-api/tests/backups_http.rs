@@ -11,6 +11,8 @@
 //!   failed backup / failed checksum surfacing in `GET /api/v1/attention`
 //! - RBAC & token scope enforcement.
 
+mod common;
+
 use std::collections::HashMap;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::{Arc, Mutex};
@@ -782,6 +784,8 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
     std::fs::write(&uid_probe, b"").unwrap();
     let uid = std::fs::metadata(&uid_probe).unwrap().uid();
     let mut cfg = PrivConfig::new(&priv_sock, vec![uid]);
+    cfg.capacity_profile = Some(common::capacity_profile());
+    cfg.capacity_image_size_mb = Some(64);
     cfg.master_key_path = master_key.clone();
     cfg.config_path = config_path.clone();
     cfg.db_path = db_path.clone();

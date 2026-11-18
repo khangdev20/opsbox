@@ -505,6 +505,29 @@ fn clean_restic_command(
     args: &[String],
     extra_env: &[(&str, &str)],
 ) -> Command {
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = if Path::new("/run/systemd/system").exists()
+            && Path::new("/usr/bin/systemd-run").exists()
+        {
+            let mut c = Command::new("/usr/bin/systemd-run");
+            c.args([
+                "--scope",
+                "--quiet",
+                "--property=MemoryMax=256M",
+                "--property=MemorySwapMax=0",
+                "--",
+                "/usr/bin/ionice",
+            ]);
+            c
+        } else {
+            Command::new("/usr/bin/ionice")
+        };
+        c.args(["-c", "3", "/usr/bin/nice", "-n", "19"])
+            .arg(restic_bin);
+        c
+    };
+    #[cfg(not(target_os = "linux"))]
     let mut cmd = Command::new(restic_bin);
     cmd.args(args)
         .env_clear()
@@ -3563,6 +3586,9 @@ esac
         fs::create_dir_all(&trash).unwrap();
 
         Env {
+            capacity: Default::default(),
+            capacity_profile: None,
+            capacity_image_size_mb: None,
             secrets: Secrets::new(&master_key),
             master_key,
             config_path,

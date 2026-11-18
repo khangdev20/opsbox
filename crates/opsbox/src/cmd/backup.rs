@@ -152,6 +152,14 @@ pub fn now(config: &Config, job_id: Option<&str>, prune: bool, check: bool) -> R
     let client = PrivClient::new(&config.priv_socket);
     let mut all_ok = true;
 
+    let capacity = rt.block_on(client.capacity("cli-backup-capacity"))?;
+    let fit = capacity.admit(&opsbox_capacity::Request {
+        feature: opsbox_capacity::Feature::Backup,
+        ..Default::default()
+    });
+    if fit.blocked() {
+        bail!("{}", fit.reasons().join(" "));
+    }
     for job in &jobs {
         let start = now_unix();
         let _ = store.mark_backup_job_running(&job.id, start);

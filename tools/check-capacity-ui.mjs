@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+globalThis.location={search:'?mode=http',protocol:'https:',port:'8443'};
+globalThis.document={cookie:'opsbox_csrf=test-csrf'};
+const calls=[];let blocked=false;
+globalThis.fetch=async(url,options)=>{calls.push({url,...options});return {ok:true,json:async()=>url.includes('/check?')?{fit:blocked?{status:'blocked',reasons:['Needs 512 MB'],suggestions:['Add swap']}:{status:'ok'}}:{ok:true}};};
+const data=s=>`data:text/javascript;base64,${Buffer.from(s).toString('base64')}`;
+const apiUrl=data(await readFile(new URL('../web/js/api.js',import.meta.url),'utf8'));const api=await import(apiUrl);
+await api.getCapacity();await api.checkCapacity({feature:'database',memory_mb:512,database:true});await api.addCapacitySwap(1024);
+assert.equal(calls[0].url,'/api/v1/capacity');assert.equal(calls[1].url,'/api/v1/capacity/check?feature=database&memory_mb=512&database=true');
+assert.equal(calls[2].headers['X-Opsbox-CSRF'],'test-csrf');assert.deepEqual(JSON.parse(calls[2].body),{size_mb:1024});
+for(const page of ['overview','apps','configure','templates','database','backups'])assert(!api.usageFor(page).sample.includes('checkCapacity'));
+const uiUrl=data(await readFile(new URL('../web/js/ui.js',import.meta.url),'utf8'));const storeUrl=data("export const server={role:'admin'}");const {server}=await import(storeUrl);
+const source=(await readFile(new URL('../web/js/capacity.js',import.meta.url),'utf8')).replace("'./ui.js'",JSON.stringify(uiUrl)).replace("'./api.js'",JSON.stringify(apiUrl)).replace("'./store.js'",JSON.stringify(storeUrl));
+const cap=await import(data(source));assert(cap.capacityFields().toString().includes('data-capacity-override'));server.role='deployer';assert(!cap.capacityFields().toString().includes('data-capacity-override'));
+const result={textContent:''},button={disabled:false},memory={value:'128'},root={querySelector:s=>s==='[data-capacity-memory]'?memory:s==='[data-capacity-result]'?result:null,querySelectorAll:()=>[button],hasAttribute:()=>false,addEventListener:()=>{}};
+const control=cap.bindCapacity(root,()=>({feature:'app',memory_mb:cap.capacityPayload(root).memoryLimitMb}));await control.refresh();assert.equal(button.disabled,false);assert.equal(result.textContent,'Fits');
+blocked=true;memory.value='512';await control.refresh();assert.equal(button.disabled,true);assert(result.textContent.includes('Needs 512 MB')&&button.title.includes('Add swap'));control.dispose();
+server.role='admin';const card=cap.capacityCard({profile:{memory_mb:1024,swap_mb:0,cpu_millis:1000},allocatable:{os_mb:192,opsbox_mb:128,docker_mb:150,swap_credit_mb:0,allocatable_mb:298,database_allocatable_mb:298},reservations:[{name:'<api>',memory_mb:256}],features:[],pressure:false,swap_offer_mb:1024}).toString();
+assert(card.includes('&lt;api&gt;')&&!card.includes('<api>'));assert(card.includes('capacity-swap')&&card.includes('298 MB allocatable'));
+console.log('Capacity API/CSRF, live fit checks, disabled tooltips, Owner-only override, escaped labels and swap card passed.');

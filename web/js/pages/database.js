@@ -1,6 +1,7 @@
 // Database page (Databases part B): apps and logins, databases and users, extensions,
 // table sizes, slow queries, connection pooler, major upgrades and data tools.
 import { html, st, btn, table, section, header, bytes, bindActions, confirmDialog, formDialog, toast } from '../ui.js';
+import { withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
 
 const DATA_TOOLS = [
@@ -212,17 +213,25 @@ export async function view({ path, query }) {
         ext: async (el) => {
           const on = el.dataset.on === '1';
           if (!on && !await confirmDialog({ title: `Turn off ${el.dataset.name}?`, body: 'Anything that uses it in this database stops working.', confirm: 'Turn off', danger: true })) return;
-          if (await run('ext', () => api.setExtension(id, el.dataset.name, { enabled: on, database: d.live?.database }))) toast(`${el.dataset.name} is ${on ? 'on' : 'off'}.`);
+          let override={};
+          if(on && ['vector','postgis','pg_stat_statements'].includes(el.dataset.name)) {
+            const memory=(proj.services.find((s)=>s.id===id)?.memoryLimitMb || 256)+64;
+            const out=await formDialog({title:`Enable ${el.dataset.name}`,body:'This reserves 64 MB more memory for the database.',fields:[],submit:'Enable extension',capacity:{memory,fixed:true,request:()=>({feature:'database',memory_mb:memory,replacing:id})}});
+            if(!out)return;override=out.capacity;
+          }
+          if (await run('ext', () => withCapacityOverride((b) => api.setExtension(id, el.dataset.name, b), { ...override, enabled: on, database: d.live?.database }))) toast(`${el.dataset.name} is ${on ? 'on' : 'off'}.`);
         },
         pooler: async (el) => {
           const on = el.dataset.on === '1';
           if (!on && !await confirmDialog({ title: 'Turn off the pooler?', body: 'Apps using the pooler are pointed back at the database directly. Redeploy them afterwards.', confirm: 'Turn off', danger: true })) return;
-          if (await run('pooler', () => api.setPooler(id, { enabled: on, mode: 'transaction' }))) toast(on ? 'Connection pooler is running.' : 'Connection pooler removed.');
+          let override={};
+          if(on){const out=await formDialog({title:'Add connection pooler',body:'The pooler needs 128 MB of physical memory. Swap does not count.',fields:[],submit:'Start pooler',capacity:{memory:128,fixed:true,request:()=>({feature:'template',database:true,memory_mb:128})}});if(!out)return;override=out.capacity;}
+          if (await run('pooler', () => withCapacityOverride((b) => api.setPooler(id, b), { ...override, enabled: on, mode: 'transaction' }))) toast(on ? 'Connection pooler is running.' : 'Connection pooler removed.');
         },
         upgrade: async (el) => {
           const v = el.dataset.v;
           if (!await confirmDialog({ title: `Upgrade ${id} to PostgreSQL ${parseInt(v, 10) || v}?`, body: `${id} is stopped for a few minutes. opsbox first takes a safety backup, moves your data to a new volume and checks it. If anything looks wrong, nothing is switched and ${id} keeps running as before. Your current data volume is kept until you delete it.`, confirm: 'Back up and upgrade' })) return;
-          const res = await run('upgrade', () => api.upgradeDatabase(id, { version: v, confirm: true }));
+          const res = await run('upgrade', () => withCapacityOverride((b) => api.upgradeDatabase(id, b), { version: v, confirm: true }));
           if (res) toast(`Upgraded to ${res.result?.version || v}. Old data kept in ${res.result?.oldVolume || 'the previous volume'}.`);
         },
         addtool: async (el) => {

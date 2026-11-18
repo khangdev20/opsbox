@@ -4,6 +4,8 @@
 //! Compose `docker compose config` validation, `409 confirmation_required`, `up -d`,
 //! `opsbox-<project>` attachment, graph nodes + `depends_on` edges, redeploy, and delete.
 
+mod common;
+
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::{Arc, Mutex};
@@ -338,6 +340,11 @@ async fn templates_and_compose_http_lifecycle_end_to_end() {
                     }
                     ("POST", "/containers/create") => {
                         let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
+                        assert!(
+                            parsed["HostConfig"]["Memory"].as_i64().unwrap_or(0)
+                                >= 64 * 1024 * 1024,
+                            "every workload needs a memory cap: {parsed}"
+                        );
                         let cid = {
                             let mut guard = st.lock().unwrap();
                             guard.next_cid += 1;
@@ -500,6 +507,8 @@ exit 1
     std::fs::write(&uid_probe, b"").unwrap();
     let uid = std::fs::metadata(&uid_probe).unwrap().uid();
     let mut cfg = PrivConfig::new(&priv_sock, vec![uid]);
+    cfg.capacity_profile = Some(common::capacity_profile());
+    cfg.capacity_image_size_mb = Some(64);
     cfg.master_key_path = root.join("master.key");
     cfg.xfer_dir = root.join("xfer");
     cfg.trash_dir = root.join("trash");

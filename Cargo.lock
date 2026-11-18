@@ -1701,6 +1701,7 @@ dependencies = [
  "opsbox-api",
  "opsbox-auth",
  "opsbox-backup",
+ "opsbox-capacity",
  "opsbox-priv",
  "opsbox-proto",
  "opsbox-proxy",
@@ -1750,6 +1751,7 @@ dependencies = [
  "opsbox-alerts",
  "opsbox-auth",
  "opsbox-backup",
+ "opsbox-capacity",
  "opsbox-deploy",
  "opsbox-metrics",
  "opsbox-priv",
@@ -1815,6 +1817,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "opsbox-capacity"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "opsbox-deploy"
 version = "0.1.0"
 dependencies = [
@@ -1822,6 +1831,7 @@ dependencies = [
  "base64 0.23.1",
  "getrandom 0.4.3",
  "hmac",
+ "opsbox-capacity",
  "opsbox-proto",
  "pem 4.0.0",
  "ring",
@@ -1845,6 +1855,7 @@ version = "0.1.0"
 dependencies = [
  "bollard",
  "futures-util",
+ "opsbox-capacity",
  "opsbox-proto",
  "serde_json",
  "tempfile",
@@ -1881,6 +1892,7 @@ dependencies = [
  "hmac",
  "nix",
  "opsbox-backup",
+ "opsbox-capacity",
  "opsbox-deploy",
  "opsbox-docker",
  "opsbox-proto",
@@ -1909,6 +1921,7 @@ dependencies = [
 name = "opsbox-proto"
 version = "0.1.0"
 dependencies = [
+ "opsbox-capacity",
  "serde",
  "serde_json",
  "thiserror",

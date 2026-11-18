@@ -248,6 +248,22 @@ pub fn run(config: &Config) -> bool {
     };
     let report = runtime.block_on(collect(config));
     print!("{}", report.render());
+    match runtime.block_on(PrivClient::new(&config.priv_socket).capacity("cli-status")) {
+        Ok(s) => println!(
+            "capacity     {} MB allocatable, {} MB reserved, pressure {}",
+            s.budget(None).allocatable_mb,
+            s.budget(None).reserved_mb
+                + s.budget(None).os_mb
+                + s.budget(None).opsbox_mb
+                + s.budget(None).docker_mb,
+            if s.budget(None).pressure {
+                "high"
+            } else {
+                "normal"
+            }
+        ),
+        Err(_) => println!("capacity     unavailable"),
+    }
     report.healthy()
 }
 
@@ -499,6 +515,55 @@ fn parse_response(raw: &[u8]) -> Option<HttpResponse> {
     let status = parts.next()?.parse().ok()?;
     let json = serde_json::from_slice(&raw[split + 4..]).ok();
     Some(HttpResponse { status, json })
+}
+
+/// Full, machine-readable-numbered policy table without HTTP authentication.
+pub fn capacity(config: &Config) -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let s = runtime.block_on(PrivClient::new(&config.priv_socket).capacity("cli-capacity"))?;
+    let b = s.budget(None);
+    println!(
+        "{} vCPU ({}m quota), {} MB RAM, {} MB swap, cgroup v2: {}",
+        s.profile.online_cpus,
+        s.profile.cpu_millis,
+        s.profile.memory_mb,
+        s.profile.swap_mb,
+        s.profile.cgroup_v2
+    );
+    println!(
+        "OS {} MB; opsbox {} MB; Docker {} MB; workloads {} MB; allocatable {} MB (databases {} MB); pressure {}",
+        b.os_mb,
+        b.opsbox_mb,
+        b.docker_mb,
+        b.reserved_mb,
+        b.allocatable_mb,
+        b.database_allocatable_mb,
+        b.pressure
+    );
+    for d in &s.profile.disks {
+        println!(
+            "{}: {} MB free / {} MB total",
+            d.path, d.free_mb, d.total_mb
+        );
+    }
+    for (feature, min, recommended, _) in opsbox_capacity::requirements::FEATURES {
+        let fit = s.admit(&opsbox_capacity::Request {
+            feature: *feature,
+            ..Default::default()
+        });
+        println!(
+            "{feature:?}: {} (min {min} MB, recommended {recommended} MB) {}",
+            match fit {
+                opsbox_capacity::Fit::Ok => "ok",
+                opsbox_capacity::Fit::Tight { .. } => "tight",
+                opsbox_capacity::Fit::Blocked { .. } => "blocked",
+            },
+            fit.reasons().join(" ")
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

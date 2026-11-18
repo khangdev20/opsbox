@@ -659,7 +659,7 @@ pub(crate) async fn set_extension(
     ApiJson(body): ApiJson<ExtensionBody>,
 ) -> Result<Json<Value>, HttpError> {
     deny_token(&who)?;
-    let db = load_db(&state, &who, &id, true)?;
+    let mut db = load_db(&state, &who, &id, true)?;
     let name = name.trim().to_owned();
     if !allowed_extension(&name) {
         return Err(invalid(
@@ -678,6 +678,52 @@ pub(crate) async fn set_extension(
         Some(_) => return Err(invalid("database", "Invalid database name.")),
         None => main_database_name(&state, &db, &rid, &who.user.name).await?,
     };
+    let key = format!("capacity.extension.{}.{}", db.id, name);
+    if body.enabled
+        && matches!(name.as_str(), "vector" | "postgis" | "pg_stat_statements")
+        && state.store.get_setting(&key).map_err(store_err)?.is_none()
+    {
+        let memory = db.memory_limit_mb.unwrap_or(256).max(64) as u64
+            + opsbox_capacity::requirements::EXTENSION_MB;
+        state
+            .priv_client
+            .call(
+                &rid,
+                Some(&who.user.name),
+                opsbox_proto::PrivOp::WorkloadMemory {
+                    container: target.container_id.clone(),
+                    service: db.name.clone(),
+                    memory_mb: memory,
+                },
+            )
+            .await?;
+        db = state
+            .store
+            .update_service(
+                &db.id,
+                opsbox_store::UpdateService {
+                    memory_limit_mb: Some(Some(memory as i64)),
+                    now: now_secs(),
+                    ..Default::default()
+                },
+            )
+            .map_err(store_err)?
+            .ok_or_else(HttpError::not_found)?;
+        // Keep the higher reservation even if SQL fails; retries must not add it again.
+        state
+            .store
+            .set_setting(&key, &json!({"memory_mb":memory}))
+            .map_err(store_err)?;
+        audit_user(
+            &state,
+            &who.user.name,
+            false,
+            Some(&client.ip),
+            "capacity.extension_memory",
+            Some(&db.name),
+            json!({"extension":name,"memory_mb":memory}),
+        );
+    }
     let done = state
         .priv_client
         .database_manage(

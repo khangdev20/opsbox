@@ -33,6 +33,7 @@ function pickMode() {
 // top of the function, then add its name here. Pages that still call functions not in
 // this set get a "sample data" badge (main.js); the badge disappears by itself.
 const REAL = new Set([
+  'getCapacity', 'checkCapacity', 'addCapacitySwap',
   'getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts',
   'getHost',
   'getAlerts', 'setRule', 'testAlert', 'connectChannel', 'disconnectChannel', 'silenceAlert', 'setQuiet',
@@ -78,24 +79,24 @@ export const PAGE_USES = {
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
   alerts: ['disconnectChannel', 'connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
   databases: ['addTemplate', 'getDatabase', 'getProject', 'removeAppLogin', 'revealConnectionString', 'rotateAppLogin', 'setAppPooled', 'setExtension', 'setPooler', 'upgradeDatabase'],
-  apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
+  apps: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
   backupdest: ['getProviders', 'saveDestination', 'testDestination', 'downloadRecoveryKey'],
-  backups: ['getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination', 'downloadRecoveryKey', 'testBackupRestore'],
+  backups: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination', 'downloadRecoveryKey', 'testBackupRestore'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
-  configure: ['createService'],
+  configure: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'createService'],
   containers: ['containerAction', 'containerLogs', 'dockerStatus', 'inspectContainer', 'installDocker', 'listContainers', 'listDocker'],
   files: ['chmod', 'listDir', 'mkdir', 'readFile', 'removePaths', 'upload', 'writeFile'],
   login: ['auth.login'],
   invite: ['auth.inviteInfo', 'auth.claimInvite'],
   enroll: ['auth.enroll', 'auth.enrollConfirm'],
   newservice: ['createDeployKey', 'deleteDeployKey', 'getGithubStatus', 'getRepos', 'inspectPublicRepo', 'listDeployKeys'],
-  overview: ['getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
+  overview: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
   settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
-  templates: ['addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
+  templates: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
   // In http mode the page shows only this server (the demo hosts and shell are mock-only).
   terminal: ['getTerminalUsers', 'openTerminal'],
 };
@@ -138,6 +139,8 @@ async function http(path, { method = 'GET', body } = {}) {
   try { data = await res.json(); } catch { /* empty or non-JSON body */ }
   if (!res.ok) {
     const err = new Error(data?.error?.message || `The server answered with an error (HTTP ${res.status}).`);
+    err.capacity = data?.error?.capacity;
+    if(err.capacity?.fit?.suggestions?.length) err.message += ' ' + err.capacity.fit.suggestions.join(' ');
     err.code = data?.error?.code; err.field = data?.error?.field; err.status = res.status;
     // The session ended (expired, signed out elsewhere): let the app send the person to sign in.
     if (res.status === 401 && !path.startsWith('/auth/login') && !path.startsWith('/session')) {
@@ -246,7 +249,8 @@ async function uploadReal(dir, file, overwrite = false) {
   let data = null; try { data = await res.json(); } catch { /* none */ }
   if (res.ok) return data;
   const err = new Error(data?.error?.message || `The upload failed (HTTP ${res.status}).`);
-  err.code = data?.error?.code;
+  err.capacity = data?.error?.capacity;
+    err.code = data?.error?.code;
   if (res.status === 409 && !overwrite && hooks.confirm && await hooks.confirm(`A file named ${file.name} already exists here. Replace it?`)) return uploadReal(dir, file, true);
   throw err;
 }
@@ -681,9 +685,9 @@ export async function updateService(svc, patch) {
   Object.assign(s, patch);
   return clone(s);
 }
-export async function redeploy(svc) {
+export async function redeploy(svc, opts = {}) {
   sample('redeploy');
-  if (real('redeploy')) return http(`/services/${encodeURIComponent(svc)}/deploys`, { method: 'POST' });
+  if (real('redeploy')) return http(`/services/${encodeURIComponent(svc)}/deploys`, { method: 'POST', body:opts });
   await lag(300);
   const s = S.project.services.find((x) => x.id === svc); if (!s) throw new Error('No such service');
   const id = Math.random().toString(16).slice(2, 9);
@@ -1484,6 +1488,7 @@ export async function deployCompose(yamlOrOpts, maybeOpts = {}, confirmed = fals
       const r = await http('/compose', {
         method: 'POST',
         body: {
+          ...opts,
           stack: opts.stack || undefined,
           yaml: text,
           confirm: !!confirmed,
@@ -1814,4 +1819,21 @@ export async function undoProxyTakeover(id, confirm = false) {
 export async function keepProxyPorts(confirm = false) {
   if (real('keepProxyPorts')) return http('/network/proxy/keep', { method: 'POST', body: { confirm } }); // POST /api/v1/network/proxy/keep
   sample('keepProxyPorts'); throw new Error('Port changes require a connected server.');
+}
+
+
+export async function getCapacity() {
+  sample('getCapacity');
+  if (real('getCapacity')) return http('/capacity');
+  return {profile:{memory_mb:1024,swap_mb:0,cpu_millis:1000},allocatable:{os_mb:192,opsbox_mb:128,docker_mb:150,reserved_mb:0,allocatable_mb:554,database_allocatable_mb:554,swap_credit_mb:0},reservations:[],features:[],pressure:false,swap_offer_mb:1024};
+}
+export async function checkCapacity(request = {}) {
+  sample('checkCapacity');
+  if (real('checkCapacity')) return http('/capacity/check?' + new URLSearchParams(Object.entries(request).filter(([, v]) => v !== undefined && v !== null)));
+  return {fit:{status:'ok'}};
+}
+export async function addCapacitySwap(size_mb) {
+  sample('addCapacitySwap');
+  if (real('addCapacitySwap')) return http('/capacity/swap', {method:'POST',body:{size_mb}});
+  return {ok:true};
 }

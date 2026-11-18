@@ -150,6 +150,7 @@ async fn build_streams_scrubs_secrets_uses_secret_mount_and_health_checks_loopba
     let fake_docker = tmp.path().join("docker");
     let script = format!(
         r#"#!/bin/sh
+if [ "$1" = "buildx" ] && {{ [ "$2" = "create" ] || [ "$2" = "rm" ]; }}; then exit 0; fi
 if [ "$1" = "buildx" ] && [ "$2" = "version" ]; then
   echo "github.com/docker/buildx v0.17.1"
   exit 0
@@ -302,6 +303,20 @@ exit 0
     let priv_sock = tmp.path().join("priv.sock");
     let uid = Uid::current().as_raw();
     let mut cfg = PrivConfig::new(&priv_sock, vec![uid]);
+    cfg.capacity_profile = Some(opsbox_capacity::Profile {
+        memory_mb: 8192,
+        available_mb: 8192,
+        cpu_millis: 4000,
+        online_cpus: 4,
+        cgroup_v2: true,
+        disks: vec![opsbox_capacity::Disk {
+            path: "/".into(),
+            total_mb: 102400,
+            free_mb: 80000,
+        }],
+        ..Default::default()
+    });
+    cfg.capacity_image_size_mb = Some(64);
     cfg.master_key_path = tmp.path().join("master.key");
     cfg.xfer_dir = tmp.path().join("xfer");
     cfg.trash_dir = tmp.path().join("trash");

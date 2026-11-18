@@ -972,6 +972,8 @@ async fn run_deploy_build_pipeline(
     }
 
     let build_timeout = Duration::from_secs(req.timeout_secs.clamp(10, 3600));
+    let _builder = bounded_builder(env, &req.deploy_id).await?;
+    let builder_name = _builder.name.clone();
 
     // Nixpacks path: optional CLI on host.
     if let CheckoutBuildPlan::Nixpacks { label } = &plan {
@@ -1004,7 +1006,10 @@ async fn run_deploy_build_pipeline(
         }
         let custom_sock = env.docker.socket_path() != Path::new(opsbox_docker::DEFAULT_SOCKET_PATH);
         let dh = format!("unix://{}", env.docker.socket_path().display());
-        let mut extra = vec![("DOCKER_BUILDKIT", "1")];
+        let mut extra = vec![
+            ("DOCKER_BUILDKIT", "1"),
+            ("BUILDX_BUILDER", builder_name.as_str()),
+        ];
         if custom_sock {
             extra.push(("DOCKER_HOST", &dh));
         }
@@ -1068,11 +1073,12 @@ async fn run_deploy_build_pipeline(
 
     let mut d_cmd = tokio::process::Command::new(&docker_bin);
     d_cmd.args(&base_args);
+    d_cmd.args(["--builder", &builder_name]);
     if has_progress {
         d_cmd.arg("--progress=plain");
     }
-    if has_memory && let Some(mb) = req.memory_limit_mb.filter(|m| *m >= 64) {
-        d_cmd.arg(format!("--memory={mb}m"));
+    if has_memory {
+        d_cmd.arg("--memory=1536m");
     }
     if let Some(prev) = &req.cache_from {
         d_cmd.args(["--cache-from", prev]);
@@ -1150,6 +1156,7 @@ async fn run_deploy_build_pipeline(
 
 /// Pull and tag a prebuilt Docker image under `opsbox/<service>:<deploy_id>`.
 pub fn pull_image_with(env: &Env, req: &DeployPullRequest) -> Result<(), PrivError> {
+    super::capacity::check_image(env, &req.source_image)?;
     if !valid_docker_image_ref(&req.source_image)
         || !valid_docker_image_ref(&req.target_tag)
         || !req.target_tag.starts_with("opsbox/")
@@ -1397,6 +1404,77 @@ pub fn delete_service_with(
         let _ = std::fs::remove_dir_all(&svc_dir);
     }
     Ok(())
+}
+
+pub(crate) async fn bounded_builder(env: &Env, id: &str) -> Result<BuildGuard, PrivError> {
+    if !valid_docker_ref(id) {
+        return Err(err(PrivErrorCode::Invalid, "Invalid build identifier."));
+    }
+    let builder_bin = find_binary(
+        env.docker_bin.as_deref(),
+        &["docker"],
+        &["/usr/bin/docker", "/usr/local/bin/docker"],
+    )
+    .ok_or_else(|| {
+        err(
+            PrivErrorCode::Unsupported,
+            "Docker CLI is required to build.",
+        )
+    })?;
+    let builder_name = format!("opsbox-{id}");
+    let mut builder_cmd = tokio::process::Command::new(&builder_bin);
+    builder_cmd.args([
+        "buildx",
+        "create",
+        "--name",
+        &builder_name,
+        "--driver",
+        "docker-container",
+        "--driver-opt",
+        "memory=1536m,memory-swap=1536m",
+    ]);
+    let docker_host = format!("unix://{}", env.docker.socket_path().display());
+    safe_env_base(&mut builder_cmd, &[("DOCKER_HOST", &docker_host)]);
+    let created = tokio::time::timeout(Duration::from_secs(30), builder_cmd.output())
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .is_some_and(|o| o.status.success());
+    if !created {
+        return Err(err(
+            PrivErrorCode::Unsupported,
+            "A memory-limited BuildKit builder could not start. Install Docker buildx, or build in GitHub Actions and pull the image.",
+        ));
+    }
+    Ok(BuildGuard {
+        bin: builder_bin,
+        name: builder_name.clone(),
+        docker_host,
+    })
+}
+
+/// Remove the private BuildKit daemon even on disconnect, timeout or failed build.
+pub(crate) struct BuildGuard {
+    bin: PathBuf,
+    pub(crate) name: String,
+    docker_host: String,
+}
+impl Drop for BuildGuard {
+    fn drop(&mut self) {
+        let mut cmd = std::process::Command::new(&self.bin);
+        cmd.env_clear()
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("DOCKER_HOST", &self.docker_host)
+            .args(["buildx", "rm", "--force", &self.name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        // Drop must not block the async runtime; the typed cleanup has no user command input.
+        if let Ok(mut child) = cmd.spawn() {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
 }
 
 #[cfg(test)]

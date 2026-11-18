@@ -232,6 +232,18 @@ impl BackupRunner {
         opts: RunOptionsBody,
     ) -> Result<String, HttpError> {
         let _guard = self.run_lock.lock().await;
+        if let Some(fit) = crate::capacity::wait_backup(actor.is_none(), || async {
+            priv_client.capacity(rid).await.map_err(HttpError::from)
+        })
+        .await?
+        {
+            store
+                .set_setting(
+                    "capacity.backup_alert",
+                    &json!({"job":job.name,"at":now_unix(),"fit":fit}),
+                )
+                .map_err(|_| HttpError::internal())?;
+        }
         let start_ts = now_unix();
         let st = store.clone();
         let jid = job.id.clone();
@@ -3192,7 +3204,7 @@ pub(crate) async fn restore_snapshot(
                             image_ref: Some(&image_ref),
                             deploy_key_id: None,
                             auto_deploy: false,
-                            memory_limit_mb: None,
+                            memory_limit_mb: Some(256),
                             cpu_limit_millis: None,
                             graph_x: gx,
                             graph_y: gy,
@@ -3265,7 +3277,7 @@ pub(crate) async fn restore_snapshot(
                             confirm_public_port: public_port,
                             vars: vars_specs.clone(),
                             ref_sources: Vec::new(),
-                            memory_limit_mb: None,
+                            memory_limit_mb: Some(256),
                             cpu_limit_millis: None,
                             data_volume: None,
                         },

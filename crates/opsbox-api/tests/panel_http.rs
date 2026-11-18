@@ -123,6 +123,8 @@ async fn readyz_checks_proxy_when_panel_domain_is_active() {
 
     let priv_sock = dir.path().join("priv.sock");
     let mut priv_cfg = PrivConfig::new(&priv_sock, vec![uid]);
+    priv_cfg.capacity_profile = Some(common::capacity_profile());
+    priv_cfg.capacity_image_size_mb = Some(64);
     priv_cfg.master_key_path = dir.path().join("master.key");
     let priv_srv = PrivServer::bind(priv_cfg).unwrap();
     let (priv_stop, priv_rx) = oneshot::channel::<()>();

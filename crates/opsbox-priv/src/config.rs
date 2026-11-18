@@ -15,6 +15,9 @@ pub const DEFAULT_BACKUP_CACHE_DIR: &str = "/var/cache/opsbox/restic";
 /// Everything the server needs, already resolved (no user names left).
 #[derive(Debug, Clone)]
 pub struct PrivConfig {
+    /// Explicit fixture only, supplied by the embedding test; never read from environment.
+    pub capacity_image_size_mb: Option<u64>,
+    pub capacity_profile: Option<opsbox_capacity::Profile>,
     pub socket_path: PathBuf,
     /// Only processes running as one of these user ids may talk to `priv`.
     pub allowed_uids: Vec<u32>,
@@ -70,6 +73,8 @@ impl PrivConfig {
             docker_socket: opsbox_docker::DEFAULT_SOCKET_PATH.into(),
             docker_bin: None,
             allow_test_git: false,
+            capacity_profile: None,
+            capacity_image_size_mb: None,
             network_proc_root: "/proc".into(),
             network_systemctl: None,
         }

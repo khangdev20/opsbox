@@ -329,6 +329,7 @@ async fn deploy_build_proxy_switch_health_failure_rollback_tokens_and_webhook_e2
     let fake_docker = root.join("docker");
     let script = format!(
         r#"#!/bin/sh
+if [ "$1" = "buildx" ] && {{ [ "$2" = "create" ] || [ "$2" = "rm" ]; }}; then exit 0; fi
 if [ "$1" = "buildx" ] && [ "$2" = "version" ]; then
   echo "buildx v0.17.1"
   exit 0
@@ -394,6 +395,11 @@ exit 0
                     }
                     ("POST", "/containers/create") => {
                         let parsed: Value = serde_json::from_slice(&body).unwrap_or_default();
+                        assert!(
+                            parsed["HostConfig"]["Memory"].as_i64().unwrap_or(0)
+                                >= 64 * 1024 * 1024,
+                            "every workload needs a memory cap: {parsed}"
+                        );
                         let img = parsed["Image"].as_str().unwrap_or("").to_owned();
                         let cid = {
                             let mut guard = st.lock().unwrap();
@@ -487,6 +493,8 @@ exit 0
     let uid = std::fs::metadata(&probe).unwrap().uid();
     let priv_sock = root.join("priv.sock");
     let mut priv_cfg = PrivConfig::new(&priv_sock, vec![uid]);
+    priv_cfg.capacity_profile = Some(common::capacity_profile());
+    priv_cfg.capacity_image_size_mb = Some(64);
     priv_cfg.master_key_path = root.join("master.key");
     priv_cfg.xfer_dir = root.join("xfer");
     priv_cfg.trash_dir = root.join("trash");

@@ -14,7 +14,7 @@ fn err(code: PrivErrorCode, msg: impl Into<String>) -> PrivError {
     }
 }
 
-fn needed(candidates: &[&str], what: &str) -> Result<String, PrivError> {
+pub(super) fn needed(candidates: &[&str], what: &str) -> Result<String, PrivError> {
     find(candidates).ok_or_else(|| {
         err(
             PrivErrorCode::Unsupported,
@@ -23,7 +23,7 @@ fn needed(candidates: &[&str], what: &str) -> Result<String, PrivError> {
     })
 }
 
-fn ok_or(o: Option<super::exec::Output>, what: &str) -> Result<(), PrivError> {
+pub(super) fn ok_or(o: Option<super::exec::Output>, what: &str) -> Result<(), PrivError> {
     match o {
         Some(o) if o.ok() => Ok(()),
         Some(o) => Err(err(

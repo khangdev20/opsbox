@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+opsbox-capacity.workspace = true
 opsbox-proto.workspace = true
 bollard = { version = "0.21", default-features = false, features = ["pipe"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

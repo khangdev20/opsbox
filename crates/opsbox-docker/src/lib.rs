@@ -210,6 +210,105 @@ impl DockerClient {
         Ok(negotiated)
     }
 
+    /// Limit a verified managed workload. Never updates an unrelated container.
+    pub async fn set_workload_memory(
+        &self,
+        container: &str,
+        service: &str,
+        memory_mb: u64,
+    ) -> Result<(), DockerError> {
+        if !valid_docker_ref(container)
+            || !opsbox_proto::valid_service_name(service)
+            || !(64..=1_048_576).contains(&memory_mb)
+        {
+            return Err(DockerError::Invalid(
+                "Invalid workload memory limit.".into(),
+            ));
+        }
+        let i = self.inspect_container(container).await?;
+        if !i.managed || i.service.as_deref() != Some(service) {
+            return Err(DockerError::Invalid(
+                "That container does not belong to this managed service.".into(),
+            ));
+        }
+        let bytes = (memory_mb as i64) * 1024 * 1024;
+        self.connect()
+            .await?
+            .update_container(
+                container,
+                bollard::models::ContainerUpdateBody {
+                    memory: Some(bytes),
+                    memory_swap: Some(bytes),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "memory limit"))
+    }
+
+    /// Daemon-reported root, never guessed from a conventional path.
+    pub async fn data_root(&self) -> Result<String, DockerError> {
+        let docker = self.connect().await?;
+        docker
+            .info()
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "info"))?
+            .docker_root_dir
+            .filter(|p| p.starts_with('/'))
+            .ok_or_else(|| {
+                DockerError::from_bollard(
+                    bollard::errors::Error::DockerResponseServerError {
+                        status_code: 500,
+                        message: "Docker data root unavailable".into(),
+                    },
+                    "info",
+                )
+            })
+    }
+
+    /// Reserve the actual limits of all running containers, including unmanaged ones.
+    pub async fn capacity_reservations(
+        &self,
+    ) -> Result<Vec<opsbox_capacity::Reservation>, DockerError> {
+        let docker = self.connect().await?;
+        let mut out = Vec::new();
+        for c in self
+            .list_containers()
+            .await?
+            .into_iter()
+            .filter(|c| c.state == "running" || c.state == "restarting")
+        {
+            let i = docker
+                .inspect_container(&c.full_id, None::<InspectContainerOptions>)
+                .await
+                .map_err(|e| DockerError::from_bollard(e, "inspect"))?;
+            let h = i.host_config.unwrap_or_default();
+            let memory_mb = h
+                .memory
+                .filter(|m| *m > 0)
+                .map_or(u64::MAX, |m| (m as u64).div_ceil(1 << 20));
+            let database = c.labels.get("opsbox.template").is_some_and(|t| {
+                matches!(
+                    t.as_str(),
+                    "postgres"
+                        | "postgres-pgvector"
+                        | "postgis"
+                        | "mysql"
+                        | "mariadb"
+                        | "redis"
+                        | "mongo"
+                )
+            });
+            out.push(opsbox_capacity::Reservation {
+                name: c.service.unwrap_or(c.name),
+                memory_mb,
+                cpu_millis: h.nano_cpus.unwrap_or(0).max(0) as u64 / 1_000_000,
+                database,
+            });
+        }
+        Ok(out)
+    }
+
     /// Check daemon health and return `(version, api_version)`.
     pub async fn ping_version(&self) -> Result<(String, String), DockerError> {
         let docker = self.connect_raw(API_DEFAULT_VERSION)?;
@@ -363,7 +462,14 @@ impl DockerClient {
 
         let env = parse::mask_env(&config.env.unwrap_or_default());
 
+        let memory_limit_mb = raw
+            .host_config
+            .as_ref()
+            .and_then(|h| h.memory)
+            .filter(|m| *m > 0)
+            .map(|m| (m as u64).div_ceil(1 << 20));
         Ok(DockerContainerInspect {
+            memory_limit_mb,
             id: short,
             full_id,
             name,
@@ -411,6 +517,25 @@ impl DockerClient {
             ));
         }
         let docker = self.connect().await?;
+        if matches!(
+            action,
+            DockerContainerAction::Start | DockerContainerAction::Restart
+        ) {
+            let inspected = self.inspect_container(id).await?;
+            let mb = inspected
+                .memory_limit_mb
+                .unwrap_or(opsbox_capacity::requirements::DEFAULT_MB);
+            docker
+                .update_container(
+                    id,
+                    bollard::models::ContainerUpdateBody {
+                        memory: Some((mb as i64).saturating_mul(1 << 20)),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|e| DockerError::from_bollard(e, "memory limit"))?;
+        }
         let res = match action {
             DockerContainerAction::Start => docker.start_container(id, None).await,
             DockerContainerAction::Stop => {
@@ -1587,6 +1712,20 @@ impl DockerClient {
         &self,
         spec: &ManagedContainerCreate<'_>,
     ) -> Result<(String, u16, Option<String>), DockerError> {
+        if spec
+            .memory_limit_mb
+            .is_some_and(|m| !(64..=1_048_576).contains(&m))
+        {
+            return Err(DockerError::Invalid(
+                "Memory limit must be between 64 MB and 1 TB.".into(),
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        if !Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
+            return Err(DockerError::Invalid(
+                "Cgroup v2 is required to enforce memory limits.".into(),
+            ));
+        }
         self.ensure_network(spec.network_name, spec.project).await?;
         let docker = self.connect().await?;
 
@@ -1630,9 +1769,29 @@ impl DockerClient {
             labels: Some(spec.labels.clone()),
             host_config: Some(HostConfig {
                 binds: (!spec.binds.is_empty()).then(|| spec.binds.clone()),
-                memory: spec
-                    .memory_limit_mb
-                    .map(|mb| mb.saturating_mul(1024 * 1024)),
+                memory: Some(
+                    spec.memory_limit_mb
+                        .unwrap_or(opsbox_capacity::requirements::DEFAULT_MB as i64)
+                        .max(64)
+                        .saturating_mul(1024 * 1024),
+                ),
+                memory_swap: spec
+                    .labels
+                    .get("opsbox.template")
+                    .filter(|t| {
+                        matches!(
+                            t.as_str(),
+                            "postgres"
+                                | "postgres-pgvector"
+                                | "postgis"
+                                | "mysql"
+                                | "mariadb"
+                                | "redis"
+                                | "mongo"
+                                | "pgbouncer"
+                        )
+                    })
+                    .map(|_| spec.memory_limit_mb.unwrap_or(128).saturating_mul(1 << 20)),
                 nano_cpus: spec.cpu_limit_millis.map(|ms| ms.saturating_mul(1_000_000)),
                 port_bindings,
                 restart_policy: Some(RestartPolicy {

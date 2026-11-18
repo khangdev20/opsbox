@@ -1,4 +1,5 @@
 import { html, header, toast } from '../ui.js';
+import { capacityFields, bindCapacity, capacityPayload } from '../capacity.js';
 import * as api from '../api.js';
 
 export async function view({ query }) {
@@ -43,21 +44,25 @@ export async function view({ query }) {
         <div class="field"><label for="domain">Domain (optional)</label><input class="input" id="domain" name="domain" value="" placeholder="app.example.com"><span class="hint">Optional hostname routed via the reverse proxy once healthy.</span></div>
         ${isImage ? '' : html`<div class="item-row"><label><input type="checkbox" id="autoDeploy" name="autoDeploy" checked><span><b>Auto-deploy on push</b><span class="sm muted">Trigger a new deploy when commits arrive on ${branch}.</span></span></label></div>`}
         <div class="field"><label for="vars">Environment variables</label><textarea class="input" id="vars" name="vars" rows="4" placeholder="KEY=value (one per line)" style="height:auto;font-family:var(--mono)"></textarea></div>
+        ${capacityFields(128)}
         <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p>
         <div class="row"><button class="btn primary" type="submit">Deploy</button><a class="btn link" href="#/apps/new">Back</a></div>
       </form></main>`,
     mount(root) {
       const f = root.querySelector('#f');
+      this._capacity=bindCapacity(root, () => [{feature:'app', memory_mb:capacityPayload(root).memoryLimitMb}, ...(!isImage ? [{feature:'build'}] : [])]);
+      if(!isImage) api.checkCapacity({feature:'build'}).then(({fit})=>{const b=root.querySelector('#build');if(fit.status==='blocked'&&b){b.disabled=true;b.title=[...(fit.reasons||[]),...(fit.suggestions||[])].join(' ');}});
       f.addEventListener('submit', async (e) => {
         e.preventDefault();
         const b = f.querySelector('button[type="submit"]');
-        b.disabled = true;
+        b.disabled = true; root.setAttribute('data-capacity-busy', '');
         root.querySelector('#err').textContent = '';
         const vars = f.vars.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
           const i = l.indexOf('=');
           return i < 0 ? [l, ''] : [l.slice(0, i), l.slice(i + 1)];
         });
         const payload = {
+          ...capacityPayload(root),
           sourceKind,
           name: f.name.value.trim(),
           port: Number(f.port.value.trim() || 0),
@@ -82,9 +87,10 @@ export async function view({ query }) {
           location.hash = `#/apps?${qs.toString()}`;
         } catch (err) {
           root.querySelector('#err').textContent = err.message;
-          b.disabled = false;
+          root.removeAttribute('data-capacity-busy'); this._capacity?.refresh();
         }
       });
     },
+    unmount() { this._capacity?.dispose(); },
   };
 }

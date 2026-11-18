@@ -336,6 +336,20 @@ async fn fixture() -> Fixture {
     spawn_mock(&docker_sock, state.clone());
     let priv_sock = tmp.path().join("priv.sock");
     let mut cfg = PrivConfig::new(&priv_sock, vec![Uid::current().as_raw()]);
+    cfg.capacity_profile = Some(opsbox_capacity::Profile {
+        memory_mb: 8192,
+        available_mb: 8192,
+        cpu_millis: 4000,
+        online_cpus: 4,
+        cgroup_v2: true,
+        disks: vec![opsbox_capacity::Disk {
+            path: "/".into(),
+            total_mb: 102400,
+            free_mb: 80000,
+        }],
+        ..Default::default()
+    });
+    cfg.capacity_image_size_mb = Some(64);
     cfg.master_key_path = tmp.path().join("master.key");
     cfg.xfer_dir = tmp.path().join("xfer");
     cfg.trash_dir = tmp.path().join("trash");

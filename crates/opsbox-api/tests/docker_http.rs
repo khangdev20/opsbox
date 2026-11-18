@@ -121,6 +121,10 @@ async fn spawn_mock_daemon(
                 let path = strip_api_prefix(raw_path);
 
                 match (method.as_str(), path) {
+                    ("POST", p) if p.ends_with("/update") => {
+                        write_http_empty(&mut stream, 200, "OK").await;
+                    }
+
                     ("GET", "/version") => {
                         write_http_json(
                             &mut stream,
@@ -359,6 +363,8 @@ impl DockerHarness {
         let uid = std::fs::metadata(&probe).unwrap().uid();
 
         let mut cfg = PrivConfig::new(&socket, vec![uid]);
+        cfg.capacity_profile = Some(common::capacity_profile());
+        cfg.capacity_image_size_mb = Some(64);
         cfg.master_key_path = dir.path().join("master.key");
         cfg.xfer_dir = root.join("xfer");
         cfg.trash_dir = root.join("trash");

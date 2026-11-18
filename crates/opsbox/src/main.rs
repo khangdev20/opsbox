@@ -50,6 +50,10 @@ fn run(cli: &Cli) -> Result<ExitCode> {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             return Ok(ok_or_failure(cmd::status::run(&config)));
         }
+        Command::Capacity => {
+            let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
+            cmd::status::capacity(&config)?;
+        }
         Command::Doctor => {
             let config = Config::load(cli.config.as_deref(), Overrides::from_cli(cli))?;
             return Ok(ok_or_failure(cmd::doctor::run(&config)?));

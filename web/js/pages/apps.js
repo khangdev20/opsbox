@@ -1,4 +1,5 @@
 import { html, raw, ago, st, btn, tabs, table, section, header, sw, bindActions, confirmDialog, askForm, toast } from '../ui.js';
+import { editMemory, withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
 import { listeners } from '../store.js';
 
@@ -121,7 +122,7 @@ export async function view({ query }) {
     const maxY = Math.max(300, ...proj.services.map((s) => (s.y || 0) + 140));
     const nodes = proj.services.map((s) => {
       const [k, t] = KIND[s.state] || KIND.idle;
-      return html`<button type="button" class="node topo-node ${entered ? '' : 'enter'} ${s.id === sel ? 'on' : ''}" style="left:${s.x}px;top:${s.y}px;animation-delay:${((s.x + s.y) / 2000).toFixed(2)}s" data-act="select" data-id="${s.id}" aria-pressed="${s.id === sel}"><b>${s.id}</b><span class="sm muted">${s.repo}</span>${st(k, t)}</button>`;
+      return html`<button type="button" class="node topo-node ${entered ? '' : 'enter'} ${s.id === sel ? 'on' : ''}" style="left:${s.x}px;top:${s.y}px;animation-delay:${((s.x + s.y) / 2000).toFixed(2)}s" data-act="select" data-id="${s.id}" aria-pressed="${s.id === sel}"><b>${s.id}</b><span class="sm muted">${s.repo}</span>${st(k, t)}${s.overCapacity ? st('warn', 'over capacity') : ''}</button>`;
     });
     return html`<div style="overflow-x:auto"><div class="graph" style="width:${maxX}px;height:${maxY}px">${raw(ed)}${nodes}</div></div>`;
   };
@@ -243,6 +244,7 @@ export async function view({ query }) {
         ${isDb ? btn('Network exposure…', { act: 'setexposure' }) : ''}
         ${s.sourceKind !== 'docker_image' && !s.templateId && !s.composeStack ? btn(s.autoDeploy === false ? 'Enable auto-deploy' : 'Disable auto-deploy', { act: 'toggleAuto' }) : ''}
         ${/^(adminer|pgweb)$/.test(s.templateId || '') && s.state === 'active' ? html`<a class="btn primary" href="/tools/${encodeURIComponent(s.id)}/" target="_blank" rel="noopener">Open ${s.templateId}</a>` : ''}
+        ${btn('Memory limit…', { act: 'memory' })}
         ${btn('Delete service', { act: 'delsvc', kind: 'danger' })}
       </div>`;
     let body;
@@ -337,6 +339,7 @@ export async function view({ query }) {
         }
       });
       bindActions(root, {
+        memory: async () => { await editMemory(svc()); await reload(); },
         select: (el) => { sel = el.dataset.id; tab = 0; stopWs(); logDeploy = null; logLines = []; doms = null; domBusy = ''; domErr = ''; lastDns = null; paint(); },
         tab: (el) => { tab = +el.dataset.i; paint(); },
         gotodomains: () => { tab = 2; paint(); root.querySelector('#d').scrollIntoView({ behavior: 'smooth', block: 'start' }); },
@@ -433,7 +436,7 @@ export async function view({ query }) {
         copydom: async (el) => { try { await navigator.clipboard.writeText(el.dataset.n); toast('Copied.'); } catch { toast(el.dataset.n); } },
         log: (el) => { const id = el.dataset.id; openLogFor(logDeploy === id ? null : id); },
         redeploy: async () => {
-          const r2 = await api.redeploy(sel);
+          const r2 = await withCapacityOverride((b) => api.redeploy(sel, b), {});
           toast('Deploy started.');
           tab = 0;
           await reload();
@@ -488,7 +491,7 @@ export async function view({ query }) {
             toast(`Connected ${out.database} to ${sel}.`);
             await reload();
             if (out.needsRedeploy && await confirmDialog({ title: `Redeploy ${sel}?`, body: `${sel} is currently running. Redeploy now so the container receives the connected database reference.`, confirm: 'Redeploy now' })) {
-              const r2 = await api.redeploy(sel);
+              const r2 = await withCapacityOverride((b) => api.redeploy(sel, b), {});
               toast('Deploy started.');
               tab = 0;
               await reload();
@@ -567,7 +570,7 @@ export async function view({ query }) {
           toast(`Updated ${sel} network exposure to ${res.mode}.`);
           await reload();
           if (res.redeployRequired && await confirmDialog({ title: `Restart ${sel} to apply port change?`, body: 'Docker port bindings apply when the container is restarted via Redeploy.', confirm: 'Redeploy now' })) {
-            await api.redeploy(sel);
+            await withCapacityOverride((b) => api.redeploy(sel, b), {});
             toast(`Redeploying ${sel}…`);
             await reload();
           }

@@ -432,7 +432,7 @@ pub(crate) fn service_writable(who: &Principal, svc: &ServiceRecord) -> bool {
     false
 }
 
-fn service_deployable(who: &Principal, svc: &ServiceRecord) -> bool {
+pub(crate) fn service_deployable(who: &Principal, svc: &ServiceRecord) -> bool {
     if !who.allows_service(&svc.name) {
         return false;
     }
@@ -502,6 +502,20 @@ pub(crate) async fn resolve_service_view(
     svc: &ServiceRecord,
     live_certs: &HashSet<String>,
 ) -> Result<Value, HttpError> {
+    let override_key = format!("capacity.override.{}", svc.name);
+    let mut over_capacity = state
+        .store
+        .get_setting(&override_key)
+        .ok()
+        .flatten()
+        .is_some();
+    if over_capacity
+        && let Ok(s) = crate::capacity::snapshot(state, rid).await
+        && !s.over_capacity()
+    {
+        let _ = state.store.delete_setting(&override_key);
+        over_capacity = false;
+    }
     let store = state.store.clone();
     let svc_id = svc.id.clone();
     let stack_id = svc.compose_stack_id.clone();
@@ -622,6 +636,7 @@ pub(crate) async fn resolve_service_view(
         "deployKeyId": svc.deploy_key_id,
         "autoDeploy": svc.auto_deploy,
         "memoryLimitMb": svc.memory_limit_mb,
+        "overCapacity": over_capacity,
         "cpuLimitMillis": svc.cpu_limit_millis,
         "ownerId": svc.owner_id,
         "x": svc.graph_x,
@@ -1320,6 +1335,28 @@ pub(crate) async fn update_service(
         None
     };
 
+    if let Some(mb) = body.memory_limit_mb {
+        if !(64..=1_048_576).contains(&mb) {
+            return Err(invalid(
+                "memoryLimitMb",
+                "Memory limit must be between 64 MB and 1 TB.",
+            ));
+        }
+        if let Some(container) = &svc.active_container {
+            state
+                .priv_client
+                .call(
+                    &rid,
+                    Some(&who.user.name),
+                    opsbox_proto::PrivOp::WorkloadMemory {
+                        container: container.clone(),
+                        service: svc.name.clone(),
+                        memory_mb: mb as u64,
+                    },
+                )
+                .await?;
+        }
+    }
     let updated = state
         .store
         .update_service(
@@ -2281,6 +2318,16 @@ pub(crate) async fn enqueue_deploy(
     commit_sha: Option<&str>,
     message: Option<&str>,
 ) -> Result<(DeployRecord, String), HttpError> {
+    let approval = state.capacity_approvals.lock().unwrap().get(rid).copied();
+    let _capacity_lock = if approval.is_none() {
+        Some(state.capacity_lock.lock().await)
+    } else {
+        None
+    };
+    if approval.is_none() {
+        crate::capacity::admit_service(state, rid, svc, false).await?;
+    }
+    let capacity_override = approval == Some(true);
     let default_msg = match trigger {
         DeployTrigger::Manual => "Manual deploy".to_owned(),
         DeployTrigger::Webhook => "GitHub push".to_owned(),
@@ -2338,8 +2385,17 @@ pub(crate) async fn enqueue_deploy(
     let task_id = state.tasks.start(&task_kind, async move {
         let guard = active_guard;
         let res = run_deploy_pipeline(
-            state_bg, rid_bg, svc_bg, proj_bg, deploy_id, commit_bg, actor_bg, via_token, ip_bg,
+            state_bg,
+            rid_bg,
+            svc_bg,
+            proj_bg,
+            deploy_id,
+            commit_bg,
+            actor_bg,
+            via_token,
+            ip_bg,
             stream,
+            capacity_override,
         )
         .await;
         drop(guard);
@@ -2479,6 +2535,7 @@ async fn run_deploy_pipeline(
     via_token: bool,
     ip: Option<String>,
     stream: Arc<DeployStream>,
+    capacity_override: bool,
 ) -> Result<crate::tasks::Outcome, HttpError> {
     let short_id: String = deploy_id
         .chars()
@@ -2488,6 +2545,20 @@ async fn run_deploy_pipeline(
         .to_ascii_lowercase();
     let image_tag = format!("opsbox/{}:{short_id}", svc.name);
 
+    if !capacity_override
+        && let Err(e) = crate::capacity::admit_service(&state, &rid, &svc, true).await
+    {
+        return fail_and_report(
+            &state,
+            &svc,
+            &deploy_id,
+            &actor,
+            via_token,
+            ip.as_deref(),
+            &stream,
+            e.0.error.message,
+        );
+    }
     let vars_specs = service_env_specs(&state, &svc.id);
     let ref_sources = service_ref_sources(&state, &svc.id);
     let mut detected_method: Option<String> = None;

@@ -730,6 +730,7 @@ pub fn pooler_database_with(
         block_on_fut(env.docker.force_stop_and_remove_container(c))?
             .map_err(|e| map_docker_err(e, socket))?;
     }
+    super::capacity::check_image(env, PGBOUNCER_IMAGE)?;
     block_on_fut(env.docker.pull_image(PGBOUNCER_IMAGE))?.map_err(|e| map_docker_err(e, socket))?;
 
     let svc = pooler_service(&t.service_name);

@@ -45,15 +45,19 @@ impl Harness {
 
     /// A fresh harness with no admin yet, for testing first-run setup gating.
     pub fn new_unclaimed(with_priv: bool) -> Self {
-        Self::build(with_priv, 2 << 20, false, None)
+        Self::build(with_priv, 2 << 20, false, None, capacity_profile())
     }
 
     pub fn with_upload_limit(with_priv: bool, max_upload: u64) -> Self {
-        Self::build(with_priv, max_upload, true, None)
+        Self::build(with_priv, max_upload, true, None, capacity_profile())
     }
 
     pub fn with_github(with_priv: bool, github: opsbox_deploy::GitHubConfig) -> Self {
-        Self::build(with_priv, 2 << 20, true, Some(github))
+        Self::build(with_priv, 2 << 20, true, Some(github), capacity_profile())
+    }
+
+    pub fn with_capacity(profile: opsbox_capacity::Profile) -> Self {
+        Self::build(true, 2 << 20, true, None, profile)
     }
 
     fn build(
@@ -61,6 +65,7 @@ impl Harness {
         max_upload: u64,
         seed_admin: bool,
         github: Option<opsbox_deploy::GitHubConfig>,
+        profile: opsbox_capacity::Profile,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
@@ -73,6 +78,8 @@ impl Harness {
         let (mut stop, mut task) = (None, None);
         if with_priv {
             let mut cfg = PrivConfig::new(&socket, vec![uid]);
+            cfg.capacity_profile = Some(profile);
+            cfg.capacity_image_size_mb = Some(64);
             cfg.master_key_path = dir.path().join("master.key");
             cfg.xfer_dir = root.join("xfer");
             cfg.trash_dir = root.join("trash");
@@ -346,5 +353,22 @@ impl Browser {
     pub async fn post(&mut self, path: &str, body: Value) -> Reply {
         self.send(Method::POST, path, Some(body), Opts::default())
             .await
+    }
+}
+
+pub fn capacity_profile() -> opsbox_capacity::Profile {
+    opsbox_capacity::Profile {
+        memory_mb: 8192,
+        available_mb: 8192,
+        online_cpus: 4,
+        cpu_millis: 4000,
+        cgroup_v2: true,
+        docker: true,
+        disks: vec![opsbox_capacity::Disk {
+            path: "/".into(),
+            total_mb: 102400,
+            free_mb: 80000,
+        }],
+        ..Default::default()
     }
 }

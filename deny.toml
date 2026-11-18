@@ -8,6 +8,7 @@ targets = [
 ignore = []
 
 [licenses]
+# Capacity guard adds only an internal Apache-2.0 crate and reuses locked serde/nix; no new allowances.
 allow = [
     "0BSD",
     "Apache-2.0",

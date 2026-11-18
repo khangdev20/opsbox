@@ -328,6 +328,15 @@ async fn collect(s: &AppState, at: i64) -> (Vec<Observation>, BTreeSet<String>) 
                 ));
             }
         }
+        if s.store
+            .get_setting("capacity.backup_alert")
+            .ok()
+            .flatten()
+            .and_then(|v| v["at"].as_i64())
+            .is_some_and(|t| at - t < 86400)
+        {
+            out.push(Observation::new("backup","capacity","A backup waited 30 minutes for memory and is running at lowest priority. Stop unused workloads or upgrade the server.".into(),"#/backups",false));
+        }
         match s.store.get_setting("backups.last_restore_test_error") {
             Ok(Some(v)) if v.as_str().is_some_and(|v| !v.is_empty()) => out.push(Observation::new(
                 "backup",

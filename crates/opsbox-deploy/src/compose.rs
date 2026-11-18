@@ -407,7 +407,8 @@ pub type ExtractedComposeServices = (Vec<ComposeServiceInfo>, Vec<(String, Strin
 
 /// Extract service metadata and dependency edges from a Compose JSON/YAML value.
 pub fn extract_compose_services(doc: &Value) -> Result<ExtractedComposeServices, DeployError> {
-    let Some(services_map) = doc.get("services").and_then(Value::as_object) else {
+    let limited = with_capacity_limits(doc)?;
+    let Some(services_map) = limited.get("services").and_then(Value::as_object) else {
         return Err(val_err(
             "yaml",
             "Compose configuration contains no 'services' mapping.",
@@ -440,7 +441,11 @@ pub fn extract_compose_services(doc: &Value) -> Result<ExtractedComposeServices,
             .get("network_mode")
             .and_then(Value::as_str)
             .is_some_and(|m| m.trim().eq_ignore_ascii_case("host"));
+        let (_, cpu_limit_millis, _) =
+            capacity_requirements(&serde_json::json!({"services":{"workload":val}}))?;
         services.push(ComposeServiceInfo {
+            memory_limit_mb: compose_memory_mb(&val["mem_limit"])?,
+            cpu_limit_millis,
             name: name.clone(),
             image,
             port,
@@ -641,6 +646,105 @@ pub fn inspect_compose_risks(doc: &Value, service_dir: &Path) -> ComposeRiskRepo
     ComposeRiskReport {
         reasons: reasons.into_iter().collect(),
     }
+}
+
+/// Normalize every service to a real memory limit. JSON is also valid Compose YAML.
+/// Refuse unknown/zero limits and replicas rather than under-reserving them.
+pub fn with_capacity_limits(doc: &Value) -> Result<Value, DeployError> {
+    let mut out = doc.clone();
+    let services = out
+        .get_mut("services")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| val_err("yaml", "Compose needs services."))?;
+    for (_, s) in services {
+        let s = s
+            .as_object_mut()
+            .ok_or_else(|| val_err("yaml", "Invalid Compose service."))?;
+        let deploy = s.get("deploy");
+        if deploy
+            .and_then(|v| v.get("replicas"))
+            .is_some_and(|n| n.as_u64() != Some(1))
+            || s.get("scale").is_some_and(|n| n.as_u64() != Some(1))
+        {
+            return Err(val_err(
+                "yaml",
+                "Use one replica per service so capacity can be enforced.",
+            ));
+        }
+        let raw = s
+            .get("mem_limit")
+            .or_else(|| deploy.and_then(|v| v.pointer("/resources/limits/memory")));
+        let mb = match raw {
+            None => opsbox_capacity::requirements::DEFAULT_MB,
+            Some(v) => compose_memory_mb(v)?,
+        };
+        s.insert("mem_limit".into(), Value::String(format!("{mb}m")));
+        // A deploy.resources limit must agree with mem_limit in Compose.
+        if let Some(v) = s
+            .get_mut("deploy")
+            .and_then(|v| v.pointer_mut("/resources/limits"))
+            .and_then(Value::as_object_mut)
+        {
+            v.insert("memory".into(), Value::String(format!("{mb}m")));
+        }
+    }
+    Ok(out)
+}
+fn compose_memory_mb(v: &Value) -> Result<u64, DeployError> {
+    let bytes = if let Some(n) = v.as_u64() {
+        Some(n)
+    } else {
+        v.as_str().and_then(|s| {
+            let s = s.trim().to_ascii_lowercase();
+            let i = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+            let n = s[..i].parse::<u64>().ok()?;
+            let multiplier = match &s[i..] {
+                "" | "b" => 1,
+                "k" | "kb" | "kib" => 1 << 10,
+                "m" | "mb" | "mib" => 1 << 20,
+                "g" | "gb" | "gib" => 1 << 30,
+                _ => return None,
+            };
+            n.checked_mul(multiplier)
+        })
+    }
+    .ok_or_else(|| {
+        val_err(
+            "yaml",
+            "Use a whole number memory limit such as 128m or 1g.",
+        )
+    })?;
+    let mb = bytes.div_ceil(1 << 20);
+    if !(64..=1_048_576).contains(&mb) {
+        return Err(val_err(
+            "yaml",
+            "Each memory limit must be between 64 MB and 1 TB.",
+        ));
+    }
+    Ok(mb)
+}
+pub fn capacity_requirements(doc: &Value) -> Result<(u64, u64, bool), DeployError> {
+    let doc = with_capacity_limits(doc)?;
+    let services = doc["services"].as_object().expect("normalized services");
+    let mut memory = 0u64;
+    let mut cpu = 0u64;
+    let mut builds = false;
+    for s in services.values() {
+        memory = memory.saturating_add(compose_memory_mb(&s["mem_limit"])?);
+        builds |= s.get("build").is_some();
+        if let Some(c) = s
+            .get("cpus")
+            .or_else(|| s.pointer("/deploy/resources/limits/cpus"))
+        {
+            let n = c
+                .as_f64()
+                .or_else(|| c.as_str()?.parse::<f64>().ok())
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .ok_or_else(|| val_err("yaml", "Invalid Compose CPU limit."))?;
+            cpu = cpu.saturating_add((n * 1000.0).ceil() as u64);
+        }
+    }
+    Ok((memory, cpu, builds))
 }
 
 #[cfg(test)]

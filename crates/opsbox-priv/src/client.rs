@@ -208,6 +208,13 @@ impl PrivClient {
         self
     }
 
+    pub async fn capacity(&self, rid: &str) -> Result<opsbox_capacity::Snapshot, ClientError> {
+        match self.call(rid, None, PrivOp::Capacity).await? {
+            PrivReply::Capacity(s) => Ok(*s),
+            _ => Err(ClientError::Protocol("expected capacity profile".into())),
+        }
+    }
+
     pub fn socket_path(&self) -> &std::path::Path {
         &self.socket_path
     }

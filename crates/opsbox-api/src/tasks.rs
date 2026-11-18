@@ -139,6 +139,12 @@ impl Tasks {
         Ok(id)
     }
 
+    pub(crate) fn is_running(&self, kind: &str) -> bool {
+        self.lock()
+            .values()
+            .any(|t| t.kind == kind && t.status == Status::Running)
+    }
+
     pub fn get(&self, id: &str) -> Option<Task> {
         self.lock().get(id).cloned()
     }

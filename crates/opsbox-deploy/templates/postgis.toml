@@ -1,3 +1,5 @@
+min_memory_mb = 256
+recommended_memory_mb = 512
 id = "postgis"
 name = "PostgreSQL + PostGIS"
 category = "databases"

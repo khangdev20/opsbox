@@ -247,6 +247,11 @@ async fn spawn_mock_daemon(
                         state.lock().unwrap().actions.push("restart:web-1".into());
                         write_http_empty(&mut stream, 204, "No Content").await;
                     }
+                    // Start/Restart enforce a memory limit via Docker update before acting.
+                    ("POST", p) if p.ends_with("/update") => {
+                        state.lock().unwrap().actions.push(format!("update:{p}"));
+                        write_http_empty(&mut stream, 200, "OK").await;
+                    }
                     ("DELETE", "/containers/web-1") => {
                         write_http_json(
                             &mut stream,

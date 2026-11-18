@@ -46,6 +46,18 @@ pub struct PrivRequest {
 pub enum PrivOp {
     /// Liveness check. Answered with [`PrivReply::Pong`].
     Ping,
+    Capacity,
+    CapacityImageSize {
+        image: String,
+    },
+    WorkloadMemory {
+        container: String,
+        service: String,
+        memory_mb: u64,
+    },
+    CapacityAddSwap {
+        size_mb: u64,
+    },
     PortHolders {
         ports: Vec<u16>,
     },
@@ -411,6 +423,10 @@ impl PrivOp {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Ping => "ping",
+            Self::Capacity => "capacity",
+            Self::CapacityImageSize { .. } => "capacity_image_size",
+            Self::WorkloadMemory { .. } => "workload_memory",
+            Self::CapacityAddSwap { .. } => "capacity_add_swap",
             Self::PortHolders { .. } => "port_holders",
             Self::ProxyNetwork => "proxy_network",
             Self::ProxyTakeover { .. } => "proxy_takeover",
@@ -557,6 +573,10 @@ impl PrivResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum PrivReply {
+    Capacity(Box<opsbox_capacity::Snapshot>),
+    CapacityImageSize {
+        disk_mb: u64,
+    },
     PortHolders(Vec<crate::PortHolder>),
     ProxyNetwork {
         network: Box<crate::ProxyNetwork>,

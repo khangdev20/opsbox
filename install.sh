@@ -37,6 +37,8 @@ DRY_RUN=0
 LOCAL_ONLY=0
 PAIR=""
 WEB=0
+FORCE=0
+BELOW_MINIMUM=0
 
 # ------------------------------------------------------------------ output
 
@@ -73,6 +75,7 @@ Usage: install.sh [options]
   --channel NAME      stable or beta, passed on to opsbox
   --pair SECRET       pairing secret from the desktop app, passed on to opsbox
   --web               turn the web panel on, passed on to opsbox
+  --force             install below minimum (512 MB RAM / 2 GB free disk)
   --local-only        listen on 127.0.0.1 only (requires an SSH tunnel to reach the UI)
 
 Development:
@@ -119,6 +122,7 @@ while [ $# -gt 0 ]; do
     --channel) [ $# -ge 2 ] || die "--channel needs a value"; CHANNEL="$2"; shift 2 ;;
     --pair) [ $# -ge 2 ] || die "--pair needs a value"; PAIR="$2"; shift 2 ;;
     --web) WEB=1; shift ;;
+    --force) FORCE=1; shift ;;
     --local-only) LOCAL_ONLY=1; shift ;;
     --binary) [ $# -ge 2 ] || die "--binary needs a path"; LOCAL_BINARY="$2"; shift 2 ;;
     --units-dir) [ $# -ge 2 ] || die "--units-dir needs a path"; UNITS_DIR="$2"; shift 2 ;;
@@ -132,6 +136,46 @@ done
 if [ -n "$LOCAL_BINARY" ] && [ "$DEV" -ne 1 ]; then
   die "--binary installs something that was never signed; add --dev to confirm that is what you want"
 fi
+
+# BEGIN capacity-preflight
+capacity_preflight() {
+  capacity_meminfo=/proc/meminfo
+  if [ "$DEV" -eq 1 ] && [ "$DRY_RUN" -eq 1 ]; then
+    capacity_meminfo=${OPSBOX_TEST_MEMINFO:-/proc/meminfo}
+  fi
+  if [ ! -r "$capacity_meminfo" ]; then
+    [ "$DRY_RUN" -eq 1 ] && { warn "capacity profile unavailable on this development host"; return; }
+    die "cannot read the host memory profile"
+  fi
+  capacity_ram=$(awk '/^MemTotal:/ {print int($2/1024)}' "$capacity_meminfo")
+  capacity_swap=$(awk '/^SwapTotal:/ {print int($2/1024)}' "$capacity_meminfo")
+  capacity_ram=${capacity_ram:-0}
+  capacity_swap=${capacity_swap:-0}
+  capacity_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')
+  capacity_free=$(df -Pk / | awk 'NR==2 {print int($4/1024)}')
+  capacity_free=${capacity_free:-0}
+  capacity_swap_text="${capacity_swap} MB swap"
+  [ "$capacity_swap" -ne 0 ] || capacity_swap_text="no swap"
+  if [ "$capacity_ram" -lt 512 ] || [ "$capacity_free" -lt 2048 ]; then
+    capacity_tier="below minimum"
+    BELOW_MINIMUM=1
+  elif [ "$capacity_ram" -lt 768 ]; then
+    capacity_tier="panel: Docker needs at least 768 MB RAM"
+  elif [ "$capacity_ram" -lt 2048 ]; then
+    capacity_tier="small: Docker apps OK, builds on server not recommended"
+  else
+    capacity_tier="standard: check live capacity before builds"
+  fi
+  say "$capacity_cpu vCPU, $capacity_ram MB RAM, $capacity_swap_text, $((capacity_free/1024)) GB free — $capacity_tier"
+  if [ "$BELOW_MINIMUM" -eq 1 ]; then
+    [ "$FORCE" -eq 1 ] || die "opsbox needs at least 512 MB RAM and 2 GB free disk. Upgrade this server, or use --force to install below minimum."
+    warn "forcing an install below minimum; capacity will be marked below minimum"
+  fi
+}
+# END capacity-preflight
+capacity_preflight
+# Fixture mode exits before downloads, privilege escalation or host changes.
+if [ "$DEV" -eq 1 ] && [ "$DRY_RUN" -eq 1 ] && [ "${OPSBOX_TEST_PREFLIGHT:-0}" -eq 1 ]; then exit 0; fi
 
 # ------------------------------------------------------------------ root
 
@@ -428,6 +472,11 @@ run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-watchdog.service" "$UNIT_
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-priv.service" "$UNIT_DIR/opsbox-priv.service"
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-proxy.service" "$UNIT_DIR/opsbox-proxy.service"
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox.service" "$UNIT_DIR/opsbox.service"
+if [ "$BELOW_MINIMUM" -eq 1 ]; then
+  run touch "$STATE_DIR/below-minimum"
+else
+  run rm -f "$STATE_DIR/below-minimum"
+fi
 run systemctl daemon-reload
 check_proxy_ports
 run systemctl enable opsbox-watchdog.service opsbox-priv.service opsbox-proxy.service opsbox.service

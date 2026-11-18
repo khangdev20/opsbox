@@ -111,6 +111,10 @@ pub struct TemplateSpec {
     pub kind: TemplateKind,
     pub description: String,
     pub resources: String,
+    #[serde(default = "opsbox_capacity::requirements::default_mb")]
+    pub min_memory_mb: u64,
+    #[serde(default = "opsbox_capacity::requirements::recommended_mb")]
+    pub recommended_memory_mb: u64,
     pub image: String,
     pub versions: Vec<String>,
     pub port: u16,

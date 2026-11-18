@@ -122,6 +122,10 @@ async fn spawn_mock_daemon(
                 let path = strip_api_prefix(raw_path);
 
                 match (method.as_str(), path) {
+                    ("POST", p) if p.ends_with("/update") => {
+                        write_http_empty(&mut stream, 200, "OK").await;
+                    }
+
                     ("GET", "/version") => {
                         write_http_json(
                             &mut stream,
@@ -349,6 +353,20 @@ async fn priv_docker_round_trip_and_validation() {
     let uid = own_uid(srv_dir.path());
     let sock = srv_dir.path().join("priv.sock");
     let mut cfg = PrivConfig::new(&sock, vec![uid]);
+    cfg.capacity_profile = Some(opsbox_capacity::Profile {
+        memory_mb: 8192,
+        available_mb: 8192,
+        cpu_millis: 4000,
+        online_cpus: 4,
+        cgroup_v2: true,
+        disks: vec![opsbox_capacity::Disk {
+            path: "/".into(),
+            total_mb: 102400,
+            free_mb: 80000,
+        }],
+        ..Default::default()
+    });
+    cfg.capacity_image_size_mb = Some(64);
     cfg.master_key_path = srv_dir.path().join("master.key");
     cfg.docker_socket = docker_sock;
 
@@ -488,6 +506,20 @@ async fn priv_docker_unavailable_reports_unsupported_cleanly() {
     let uid = own_uid(srv_dir.path());
     let sock = srv_dir.path().join("priv.sock");
     let mut cfg = PrivConfig::new(&sock, vec![uid]);
+    cfg.capacity_profile = Some(opsbox_capacity::Profile {
+        memory_mb: 8192,
+        available_mb: 8192,
+        cpu_millis: 4000,
+        online_cpus: 4,
+        cgroup_v2: true,
+        disks: vec![opsbox_capacity::Disk {
+            path: "/".into(),
+            total_mb: 102400,
+            free_mb: 80000,
+        }],
+        ..Default::default()
+    });
+    cfg.capacity_image_size_mb = Some(64);
     cfg.master_key_path = srv_dir.path().join("master.key");
     cfg.docker_socket = srv_dir.path().join("nonexistent-docker.sock");
 

@@ -4,6 +4,7 @@
 
 mod access;
 pub(crate) mod backup;
+pub(crate) mod capacity;
 pub mod cleanup;
 pub(crate) mod cron;
 pub(crate) mod database;
@@ -42,6 +43,9 @@ use crate::secrets::Secrets;
 
 /// What operations need besides their arguments.
 pub(crate) struct Env {
+    pub capacity: capacity::State,
+    pub capacity_image_size_mb: Option<u64>,
+    pub capacity_profile: Option<opsbox_capacity::Profile>,
     pub secrets: Secrets,
     pub master_key: std::path::PathBuf,
     pub config_path: std::path::PathBuf,
@@ -96,6 +100,23 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         | PrivOp::ProxyTakeover { .. }
         | PrivOp::ProxyUndo { .. }
         | PrivOp::ProxyKeepPorts { .. } => network::dispatch(op, env),
+        PrivOp::WorkloadMemory {
+            container,
+            service,
+            memory_mb,
+        } => docker::block_on_fut(
+            env.docker
+                .set_workload_memory(container, service, *memory_mb),
+        )?
+        .map_err(|e| docker::map_docker_err(e, env.docker.socket_path()))
+        .map(|()| PrivReply::Done),
+        PrivOp::CapacityImageSize { image } => {
+            capacity::image_size(env, image).map(|disk_mb| PrivReply::CapacityImageSize { disk_mb })
+        }
+        PrivOp::Capacity => capacity::collect(env).map(|s| PrivReply::Capacity(Box::new(s))),
+        PrivOp::CapacityAddSwap { size_mb } => {
+            capacity::add_swap(env, *size_mb).map(|()| PrivReply::Done)
+        }
         PrivOp::Ping => Ok(ping::run()),
         PrivOp::HostInfo => host_info::run().map(PrivReply::HostInfo),
         PrivOp::Doctor => Ok(PrivReply::Doctor(doctor::collect_with(

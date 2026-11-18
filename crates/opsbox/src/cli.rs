@@ -46,6 +46,8 @@ pub enum Command {
     Status(StatusArgs),
     /// Print the version
     Version,
+    /// Show the host capacity and every feature requirement
+    Capacity,
     /// Set this machine up. Phase 0: a stub that only prints what it would do
     Install(InstallArgs),
     /// Check that this binary works on this machine (used by the updater)
@@ -342,6 +344,7 @@ impl Command {
             Self::Serve(_)
             | Self::Priv(_)
             | Self::Status(_)
+            | Self::Capacity
             | Self::Version
             | Self::Install(_)
             | Self::Selftest
@@ -390,6 +393,7 @@ mod tests {
             "install",
             "install --pair abc --web --channel beta",
             "status",
+            "capacity",
             "pair",
             "web enable",
             "web enable --domain panel.example.com",
