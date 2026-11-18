@@ -1,17 +1,15 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/16f-notification-bell.md` (Notification bell, attention dedup, unread state, popover, overview banner; `tools/check-notifications-ui.mjs` passed). Prior: `16d` (tag `v0.1.0-alpha.20`).
+Last completed prompt: `docs/prompts/archive/03c1-site-logo.md` (landing site OpsBox mark + wordmark, PNG favicons; no release tag — `site/` only). Prior: `16f` (tag `v0.1.0-alpha.20`).
 
-## What works (16f)
-- Attention items have stable ids, severity, and `since`; same-subject backup/disk/etc. sources dedupe to one item (higher severity wins).
-- Per-user read / read-all / snooze on `/api/v1/attention`; `GET` returns `{ items, unread, critical }`.
-- Header notification bell (badge, ring/pop on new unread, critical pulse), popover with mark-read/snooze, shared poll with Overview.
-- Overview: large "Needs attention" card removed; thin critical banner when unread critical items exist.
-- UI contract: `tools/check-notifications-ui.mjs` passed.
+## What works (03c1)
+- Landing nav/footer logo matches the panel: `img/logo-mark-128.png` + `Ops<b>Box</b>`, `Box` via `--brand` (`#FC5801`); accessible name on the home link.
+- Favicons use PNG marks (`logo-mark-64` / `256`); unused `site/favicon.svg` removed.
+- Relative `img/` paths work for GitHub Pages project URL `/opsbox/`.
 
 ## Verified
-- Prompt 16f (Notification bell, attention dedup, unread state, popover, overview banner, `tools/check-notifications-ui.mjs` passed) completed.
-- Earlier: `node --check` on `web/js/**/*.js`; capacity/alerts/network UI contracts; 16d Playwright demo pass.
+- Prompt 03c1: logo/favicon markup and `--brand` token aligned with `web/css/app.css` `.brand`; `favicon.svg` unreferenced and removed.
+- Earlier: prompt 16f notification bell / attention UI (`tools/check-notifications-ui.mjs` passed).
 
 ## Partial / Found, not fixed
 - Screenshots use demo data (`?mode=mock`); real VM shots need Owner + 2FA session state.
@@ -22,4 +20,4 @@ Last completed prompt: `docs/prompts/archive/16f-notification-bell.md` (Notifica
 ## Next
 - `docs/prompts/16e-transport-security.md` (lowest remaining), then `16g-capacity-page.md` and the rest of the 16* release-prep series, then `17-alpha-release.md`.
 - VM: `cd /home/ubuntu/opsbox`; `CARGO_TARGET_DIR=~/target ~/.cargo/bin/cargo build --release --locked`; `sudo sh install.sh --dev --binary ~/target/release/opsbox`; UI via `ssh -L 8443:127.0.0.1:8443 ubuntu@192.168.252.2`.
-- Check: bell badge/unread, mark-read and snooze; one wrong sign-in code must still be refused.
+- Check: open `site/index.html` (or `python3 -m http.server` in `site/`) — logo and favicon in both themes at ~1440px and ~390px; unused `favicon.svg` gone.

@@ -8,6 +8,7 @@
 }
 [data-theme="dark"]{
   color-scheme:dark;
+  --brand:#FC5801;
   --bg:#17171A;--hl:#1F1F23;--line:#2E2E33;--ls:#3E3E44;
   --text:#EEEEF0;--muted:#A3A3AB;--accent:#FF6A3D;--onaccent:#17171A;
   --ok:#5FD08A;--warn:#E8B64A;--danger:#FF8FB8;
@@ -16,6 +17,7 @@
 }
 [data-theme="light"]{
   color-scheme:light;
+  --brand:#FC5801;
   --bg:#F6F6F3;--hl:#FFFFFF;--line:#E6E5E0;--ls:#D5D4CE;
   --text:#1A1A18;--muted:#5E5D58;--accent:#C9300F;--onaccent:#FFFFFF;
   --ok:#1F7A3D;--warn:#8A5A00;--danger:#9B1B5A;
@@ -52,7 +54,7 @@ code,kbd{font-family:var(--mono)}
 .logo{display:inline-flex;align-items:center;gap:8px;color:var(--text)}
 .logo img{display:block;width:30px;height:30px;object-fit:contain}
 .logo .wm{font:700 19px/1 var(--ui);letter-spacing:-.035em}
-.logo .wm b{font-weight:700;color:#FC5801}
+.logo .wm b{font-weight:700;color:var(--brand)}
 .links{display:flex;gap:24px;font-size:14.5px}
 .links a{color:var(--muted)}
 .links a:hover{color:var(--text)}
