@@ -4,6 +4,18 @@ import { listeners } from '../store.js';
 
 const KIND = { active: ['ok', 'running'], building: ['build', 'building'], failed: ['fail', 'failed'], idle: ['off', 'idle'] };
 const DST = { live: ['ok', 'live'], replaced: ['off', 'replaced'], failed: ['fail', 'failed'], building: ['build', 'building'] };
+const LINK_ICON = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px" aria-hidden="true"><path d="M6.5 9.5a3.5 3.5 0 0 0 5 0l2-2a3.5 3.5 0 0 0-5-5l-1 1"/><path d="M9.5 6.5a3.5 3.5 0 0 0-5 0l-2 2a3.5 3.5 0 0 0 5 5l1-1"/></svg>';
+const varRefTarget = (val) => {
+  const m = typeof val === 'string' && val.match(/^\$\{\{\s*([a-z0-9-]+)\.([A-Z_][A-Z0-9_]*)\s*\}\}$/);
+  return m ? { svc: m[1], key: m[2] } : null;
+};
+const networkModeOf = (s) => s.networkMode || (s.internalOnly ? 'internal' : s.publicPort ? 'public' : 'loopback');
+const exposureLabel = (s) => {
+  const m = networkModeOf(s);
+  if (m === 'internal') return 'Private project network only (no host port)';
+  if (m === 'public') return `Public internet port (0.0.0.0:${s.hostPort || s.port || '—'})`;
+  return `Loopback proxy only (127.0.0.1:${s.hostPort || s.port || '—'})`;
+};
 
 export async function view({ query }) {
   let proj = await api.getProject();
@@ -86,17 +98,30 @@ export async function view({ query }) {
       : [['web', 'api'], ['web', 'postgres'], ['api', 'postgres'], ['api', 'redis'], ['worker', 'redis'], ['worker', 'postgres']];
     const edges = rawEdges
       .map(([a, b]) => [proj.services.find((s) => s.id === a), proj.services.find((s) => s.id === b)]).filter(([a, b]) => a && b);
+    const seg = (l, t, w, h) => `<div class="edge topo-edge ${h > w ? 'v' : 'h'}" style="left:${l}px;top:${t}px;width:${Math.max(2, w)}px;height:${Math.max(2, h)}px;animation-delay:-${((l + t) % 9) / 10}s"></div>`;
     const ed = edges.map(([a, b]) => {
-      const x1 = a.x + 220, y1 = a.y + 52, x2 = b.x, y2 = b.y + 52, mx = (x1 + x2) / 2;
-      const seg = (l, t, w, h) => `<div class="edge topo-edge ${h > w ? 'v' : 'h'}" style="left:${l}px;top:${t}px;width:${Math.max(2, w)}px;height:${Math.max(2, h)}px;animation-delay:-${((l + t) % 9) / 10}s"></div>`;
-      return seg(x1, y1, mx - x1, 1) + seg(mx, Math.min(y1, y2), 1, Math.abs(y2 - y1)) + seg(mx, y2, x2 - mx, 1);
+      const ax = a.x || 0, ay = a.y || 0, bx = b.x || 0, by = b.y || 0;
+      if (ax + 220 <= bx) {
+        const x1 = ax + 220, y1 = ay + 52, x2 = bx, y2 = by + 52, mx = (x1 + x2) / 2;
+        return seg(x1, y1, mx - x1, 1) + seg(mx, Math.min(y1, y2), 1, Math.abs(y2 - y1)) + seg(mx, y2, x2 - mx, 1);
+      }
+      if (bx + 220 <= ax) {
+        const x1 = ax, y1 = ay + 52, x2 = bx + 220, y2 = by + 52, mx = (x1 + x2) / 2;
+        return seg(x2, y2, mx - x2, 1) + seg(mx, Math.min(y1, y2), 1, Math.abs(y2 - y1)) + seg(mx, y1, x1 - mx, 1);
+      }
+      const x1 = ax + 110, x2 = bx + 110;
+      const [y1, y2] = ay <= by ? [ay + 104, by] : [ay, by + 104];
+      const my = (y1 + y2) / 2;
+      const topA = Math.min(y1, my), topB = Math.min(my, y2);
+      return seg(x1, topA, 1, Math.abs(my - y1)) + seg(Math.min(x1, x2), my, Math.abs(x2 - x1), 1) + seg(x2, topB, 1, Math.abs(y2 - my));
     }).join('');
+    const maxX = Math.max(960, ...proj.services.map((s) => (s.x || 0) + 240));
     const maxY = Math.max(300, ...proj.services.map((s) => (s.y || 0) + 140));
     const nodes = proj.services.map((s) => {
       const [k, t] = KIND[s.state] || KIND.idle;
       return html`<button type="button" class="node topo-node ${entered ? '' : 'enter'} ${s.id === sel ? 'on' : ''}" style="left:${s.x}px;top:${s.y}px;animation-delay:${((s.x + s.y) / 2000).toFixed(2)}s" data-act="select" data-id="${s.id}" aria-pressed="${s.id === sel}"><b>${s.id}</b><span class="sm muted">${s.repo}</span>${st(k, t)}</button>`;
     });
-    return html`<div style="overflow-x:auto"><div class="graph" style="height:${maxY}px">${raw(ed)}${nodes}</div></div>`;
+    return html`<div style="overflow-x:auto"><div class="graph" style="width:${maxX}px;height:${maxY}px">${raw(ed)}${nodes}</div></div>`;
   };
 
   const dnsSt = (d) => {
@@ -186,31 +211,62 @@ export async function view({ query }) {
     const isDb = s.kind === 'db';
     const items = isDb ? ['Overview', 'Variables', 'Settings'] : ['Deploys', 'Variables', 'Domains & SSL', 'Settings'];
     const t = Math.min(tab, items.length - 1);
-    const varsBody = () => html`${s.vars.length ? table('Variables', [['Name'], ['Value'], ['', 'r']], s.vars.map(([k, v, isSec]) => [
-      html`<span class="mono">${k}</span>${isSec ? html` <span class="tag-sm">secret</span>` : ''}`,
-      html`<span class="mono muted">${isSec === true || (isSec === undefined && /URL|SECRET|KEY|PASS/.test(k)) ? '••••••••' : v}</span>`,
-      btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' }),
-    ])) : html`<p class="muted">No variables yet.</p>`}<div style="margin-top:12px">${btn('Add variable', { act: 'addvar' })}</div>`;
+    const dbsInProj = proj.services.filter((x) => x.kind === 'db' && x.id !== s.id);
+    const varsBody = () => html`${s.vars.length ? table('Variables', [['Name'], ['Value'], ['', 'r']], s.vars.map(([k, v, isSec, isRefFlag]) => {
+      const ref = varRefTarget(v);
+      const isRef = Boolean(isRefFlag || ref);
+      const hasTarget = ref && proj.services.some((x) => x.id === ref.svc);
+      const valCell = isRef
+        ? (hasTarget
+          ? html`<button type="button" class="btn link mono" data-act="select" data-id="${ref.svc}" title="Open ${ref.svc}">${raw(LINK_ICON)}${v}</button>`
+          : html`<span class="mono" style="color:var(--accent)">${raw(LINK_ICON)}${v}</span>`)
+        : html`<span class="mono muted">${isSec === true || (isSec === undefined && /URL|SECRET|KEY|PASS/.test(k)) ? '••••••••' : v}</span>`;
+      return [
+        html`<span class="mono">${k}</span>${isSec && !isRef ? html` <span class="tag-sm">secret</span>` : ''}${isRef ? html` <span class="tag-sm">linked</span>` : ''}`,
+        valCell,
+        btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' }),
+      ];
+    })) : html`<p class="muted">No variables yet.</p>`}<div class="row" style="margin-top:12px">${btn('Add variable', { act: 'addvar' })}${!isDb && dbsInProj.length ? btn('Connect database', { act: 'conndb' }) : ''}</div>`;
     const settingsBody = () => html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
         <dt class="muted">Source</dt><dd class="mono">${s.templateId ? `template:${s.templateId}` : s.composeStack ? `compose:${s.composeStack}` : (s.sourceKind || 'github')} · ${s.repo}</dd>
         <dt class="muted">Branch / Version</dt><dd class="mono">${s.branch || '—'}</dd>
         <dt class="muted">Build</dt><dd>${s.build || '—'}</dd>
         <dt class="muted">Health check</dt><dd class="mono">${s.healthPath || '/'}</dd>
-        <dt class="muted">Network</dt><dd class="mono">${s.internalOnly ? 'Project network only (internal)' : 'Loopback proxy enabled'}</dd>
+        <dt class="muted">Network</dt><dd class="mono">${exposureLabel(s)}</dd>
         <dt class="muted">Auto-deploy</dt><dd>${s.autoDeploy === false ? 'Off' : 'On'}</dd>
         <dt class="muted">Domain</dt><dd class="mono">${s.domain || '—'}</dd>
-        <dt class="muted">Port</dt><dd class="mono">${s.port || '—'}${s.hostPort ? ` (127.0.0.1:${s.hostPort})` : ''}</dd>
+        <dt class="muted">Port</dt><dd class="mono">${s.port || '—'}${s.hostPort ? ` (${networkModeOf(s) === 'public' ? '0.0.0.0' : '127.0.0.1'}:${s.hostPort})` : ''}</dd>
       </dl>
       <div class="row" style="margin-top:16px">
+        ${isDb ? btn('Network exposure…', { act: 'setexposure' }) : ''}
         ${s.sourceKind !== 'docker_image' && !s.templateId && !s.composeStack ? btn(s.autoDeploy === false ? 'Enable auto-deploy' : 'Disable auto-deploy', { act: 'toggleAuto' }) : ''}
         ${btn('Delete service', { act: 'delsvc', kind: 'danger' })}
       </div>`;
     let body;
-    if (isDb && t === 0) body = html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
-      <dt class="muted">Engine</dt><dd class="mono">${s.repo}</dd>
-      <dt class="muted">Host on network</dt><dd class="mono">${s.id}:${s.port || '—'}</dd>
-      <dt class="muted">Volume / Backup</dt><dd>${s.note || 'Persistent named volume'}${s.backup ? ` · ${s.backup.enabled ? `auto ${s.backup.method} (${s.backup.cron})` : 'auto backup off'}` : ''}</dd>
-    </dl><p class="sm muted" style="margin-top:12px">Credentials are encrypted at rest. Reach this database from services in the same project via <span class="mono">${s.id}:${s.port || ''}</span>.</p>`;
+    if (isDb && t === 0) {
+      const connectedApps = s.connectedApps || [];
+      const staleApps = connectedApps.filter((c) => c.needsRedeploy);
+      body = html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
+        <dt class="muted">Engine</dt><dd class="mono">${s.repo}</dd>
+        <dt class="muted">Host on network</dt><dd class="mono">${s.id}:${s.port || '—'}</dd>
+        <dt class="muted">Network exposure</dt><dd class="mono">${exposureLabel(s)} ${btn('Change', { act: 'setexposure', kind: 'link' })}</dd>
+        <dt class="muted">Credentials rotated</dt><dd>${s.credentialsRotatedAt ? ago(s.credentialsRotatedAt) : 'Never'}</dd>
+        <dt class="muted">Volume / Backup</dt><dd>${s.note || 'Persistent named volume'}${s.backup ? ` · ${s.backup.enabled ? `auto ${s.backup.method} (${s.backup.cron})` : 'auto backup off'}` : ''}</dd>
+      </dl>
+      <div class="row" style="margin-top:14px">
+        ${btn('Rotate credentials', { act: 'rotatedb', disabled: s.state !== 'active' })}
+        ${staleApps.length ? btn(`Redeploy ${staleApps.length} stale app${staleApps.length === 1 ? '' : 's'}`, { act: 'redeployStale', kind: 'primary' }) : ''}
+      </div>
+      ${s.state !== 'active' ? html`<p class="sm muted" style="margin-top:6px">Database must be running to rotate credentials.</p>` : ''}
+      <div style="margin-top:18px">
+        ${connectedApps.length ? table('Connected apps', [['App'], ['Variables'], ['Status'], ['', 'r']], connectedApps.map((c) => [
+          html`<button type="button" class="btn link mono" data-act="select" data-id="${c.id}">${c.id}</button>`,
+          html`${(c.vars || []).map((k) => html`<span class="mono tag-sm">${k}</span> `)}`,
+          c.needsRedeploy ? st('warn', 'Needs redeploy') : st('ok', 'Up to date'),
+          html`<span class="row" style="justify-content:flex-end">${c.needsRedeploy ? btn('Redeploy', { act: 'redeployApp', data: { id: c.id }, kind: 'primary' }) : ''}${btn('Disconnect', { act: 'disconndb', data: { app: c.id }, kind: 'link' })}</span>`,
+        ])) : html`<p class="sm muted">No connected apps yet. Open an app's <b>Variables</b> tab and click <b>Connect database</b>.</p>`}
+      </div>`;
+    }
     else if (isDb && t === 1) body = varsBody();
     else if (isDb) body = settingsBody();
     else if (t === 0) body = html`${s.deploys.length ? table('Deploys', [['Commit'], ['Message'], ['Status'], ['When'], ['', 'r']], s.deploys.map((d) => {
@@ -392,7 +448,7 @@ export async function view({ query }) {
             title: 'Add variable',
             fields: [
               { name: 'k', label: 'Name', placeholder: 'API_KEY' },
-              { name: 'v', label: 'Value' },
+              { name: 'v', label: 'Value', hint: 'Supports ${{ service.KEY }} references to other services in this project.' },
               { name: 'sec', label: 'Visibility', options: ['Auto (mask secret-looking names)', 'Secret (masked & --secret mount)', 'Plaintext (visible & build arg)'], value: 'Auto (mask secret-looking names)' },
             ],
             submit: 'Add',
@@ -401,6 +457,114 @@ export async function view({ query }) {
             return api.addVar(sel, o.k.trim(), o.v, isSec);
           });
           if (out !== null) await reload();
+        },
+        conndb: async () => {
+          const dbs = proj.services.filter((x) => x.kind === 'db' && x.id !== sel);
+          if (!dbs.length) {
+            toast('Add a database first from New service → Templates.', 'err');
+            return;
+          }
+          const out = await askForm({
+            title: `Connect database to ${sel}`,
+            body: 'Inserts a ${{ db.KEY }} reference variable resolved securely inside opsbox-priv at deploy time without duplicating secrets.',
+            fields: [
+              { name: 'database', label: 'Database', options: dbs.map((d) => d.id), value: dbs[0].id },
+              { name: 'scope', label: 'Variables to inject', options: ['Primary connection URL (e.g. DATABASE_URL)', 'All connection variables (URL, host, user, password, DB)'], value: 'Primary connection URL (e.g. DATABASE_URL)' },
+              { name: 'asKey', label: 'Variable name override (optional)', placeholder: 'Leave empty for default (DATABASE_URL / REDIS_URL)' },
+            ],
+            submit: 'Connect',
+          }, (o) => api.connectDatabase(sel, {
+            database: o.database,
+            includeAll: o.scope.startsWith('All'),
+            asKey: o.asKey?.trim() || undefined,
+          }));
+          if (out !== null) {
+            toast(`Connected ${out.database} to ${sel}.`);
+            await reload();
+            if (out.needsRedeploy && await confirmDialog({ title: `Redeploy ${sel}?`, body: `${sel} is currently running. Redeploy now so the container receives the connected database reference.`, confirm: 'Redeploy now' })) {
+              const r2 = await api.redeploy(sel);
+              toast('Deploy started.');
+              tab = 0;
+              await reload();
+              if (r2?.id) await openLogFor(r2.id);
+            }
+          }
+        },
+        disconndb: async (el) => {
+          const appId = el.dataset.app;
+          if (!await confirmDialog({ title: `Disconnect ${appId}?`, body: `Removes reference variables linking ${appId} to ${sel}. ${appId} will need a redeploy to pick up the removal.`, confirm: 'Disconnect', danger: true })) return;
+          await api.disconnectDatabase(appId, sel);
+          toast(`Disconnected ${appId} from ${sel}.`);
+          await reload();
+        },
+        rotatedb: async () => {
+          const s = svc();
+          const count = s?.connectedApps?.length || 0;
+          const warnApps = count ? ` ${count} connected service${count === 1 ? '' : 's'} will need to be redeployed to use the new password.` : '';
+          if (!await confirmDialog({ title: `Rotate credentials for ${sel}?`, body: `Updates the password inside the running ${sel} container and re-seals credentials at rest.${warnApps}`, confirm: 'Rotate credentials' })) return;
+          const res = await api.rotateDatabase(sel);
+          toast(`Credentials rotated for ${sel}.`);
+          await reload();
+          const stale = (res.affectedApps || []).filter((a) => a.needsRedeploy);
+          if (stale.length && await confirmDialog({ title: 'Redeploy connected apps?', body: `${stale.map((a) => a.id).join(', ')} use${stale.length === 1 ? 's' : ''} rotated credentials and need a redeploy.`, confirm: 'Redeploy affected apps' })) {
+            for (const a of stale) {
+              await api.redeploy(a.id);
+            }
+            toast(`Started redeploy for ${stale.map((a) => a.id).join(', ')}.`);
+            await reload();
+          }
+        },
+        redeployApp: async (el) => {
+          await api.redeploy(el.dataset.id);
+          toast(`Redeploy started for ${el.dataset.id}.`);
+          await reload();
+        },
+        redeployStale: async () => {
+          const s = svc();
+          const stale = (s?.connectedApps || []).filter((a) => a.needsRedeploy);
+          for (const a of stale) {
+            await api.redeploy(a.id);
+          }
+          toast(`Started redeploy for ${stale.map((a) => a.id).join(', ')}.`);
+          await reload();
+        },
+        setexposure: async () => {
+          const s = svc();
+          if (!s) return;
+          const curMode = networkModeOf(s);
+          const labels = {
+            internal: 'Private project network only (Recommended)',
+            loopback: 'Loopback only (127.0.0.1)',
+            public: 'Public internet port (0.0.0.0 — NOT recommended)',
+          };
+          const out = await formDialog({
+            title: `Network exposure for ${sel}`,
+            body: 'Databases stay on the private project network by default so no ports are exposed on the host.',
+            fields: [
+              { name: 'mode', label: 'Exposure mode', options: [labels.internal, labels.loopback, labels.public], value: labels[curMode] || labels.internal },
+            ],
+            submit: 'Save',
+          });
+          if (!out) return;
+          const mode = out.mode.startsWith('Public') ? 'public' : out.mode.startsWith('Loopback') ? 'loopback' : 'internal';
+          let confirmed = false;
+          if (mode === 'public') {
+            confirmed = await confirmDialog({
+              title: `Publish ${sel} port ${s.port || ''} to the internet?`,
+              body: 'Exposing a database port on 0.0.0.0 makes it reachable from the internet and subject to automated scanners and brute-force attacks. Only continue if you have restricted access via a firewall.',
+              confirm: 'Publish publicly',
+              danger: true,
+            });
+            if (!confirmed) return;
+          }
+          const res = await api.setServiceExposure(sel, { mode, confirm: confirmed });
+          toast(`Updated ${sel} network exposure to ${res.mode}.`);
+          await reload();
+          if (res.redeployRequired && await confirmDialog({ title: `Restart ${sel} to apply port change?`, body: 'Docker port bindings apply when the container is restarted via Redeploy.', confirm: 'Redeploy now' })) {
+            await api.redeploy(sel);
+            toast(`Redeploying ${sel}…`);
+            await reload();
+          }
         },
         rmvar: async (el) => { await api.removeVar(sel, el.dataset.k); await reload(); },
         toggleAuto: async () => {
@@ -411,7 +575,10 @@ export async function view({ query }) {
           await reload();
         },
         delsvc: async () => {
-          if (await confirmDialog({ title: `Delete ${sel}?`, body: 'The service stops and its container is removed. This cannot be undone.', confirm: 'Delete', danger: true, typed: sel })) {
+          const s = svc();
+          const refs = (s?.connectedApps || []).map((a) => a.id);
+          const extra = refs.length ? ` Warning: ${refs.join(', ')} still reference this database!` : '';
+          if (await confirmDialog({ title: `Delete ${sel}?`, body: `The service stops and its container is removed. This cannot be undone.${extra}`, confirm: 'Delete', danger: true, typed: sel })) {
             stopWs();
             logDeploy = null;
             await api.removeService(sel);
@@ -425,7 +592,7 @@ export async function view({ query }) {
       this._t = () => {
         api.getProject().then((p) => {
           const changed = p.services.length !== proj.services.length
-            || p.services.some((s, i) => s.state !== proj.services[i]?.state || s.deploys?.[0]?.status !== proj.services[i]?.deploys?.[0]?.status);
+            || p.services.some((s, i) => s.state !== proj.services[i]?.state || s.deploys?.[0]?.status !== proj.services[i]?.deploys?.[0]?.status || JSON.stringify(s.connectedApps || []) !== JSON.stringify(proj.services[i]?.connectedApps || []));
           if (changed) { proj = p; paint(); }
         }).catch(() => {});
       };

@@ -9,13 +9,14 @@ use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use opsbox_deploy::compose::parse_compose_yaml;
+use opsbox_deploy::refs::parse_pure_var_ref;
 use opsbox_deploy::templates::{
     TemplateCategory, TemplateKind, TemplateSpec, catalog, generate_instance_env, get_template,
-    parse_disk_gb,
+    parse_disk_gb, rotated_secret_key,
 };
 use opsbox_proto::{
-    ComposeDeployRequest, ComposeValidateRequest, DeployEnvSpec, ErrorCode, Role,
-    valid_service_name,
+    ComposeDeployRequest, ComposeValidateRequest, DatabaseRotateRequest, DeployEnvSpec,
+    DeployRefSource, ErrorCode, Role, valid_service_name,
 };
 use opsbox_store::{
     DeployRecord, DeployTrigger, NewService, ServiceKind, ServiceRecord, SourceKind, UpdateService,
@@ -28,7 +29,8 @@ use tracing::warn;
 use crate::deploy::{
     DeployStream, audit_user, enqueue_deploy, fail_and_report, fetch_live_cert_domains, forbidden,
     invalid, next_graph_pos, now_secs, parse_vars_input, resolve_owner_id, resolve_service_view,
-    seal_and_store_vars, service_env_specs,
+    seal_and_store_vars, service_env_specs, service_readable, service_ref_sources,
+    service_writable, validate_vars_refs_before_create,
 };
 use crate::json::ApiJson;
 use crate::session::{Client, Deployer, Viewer, deny_token};
@@ -95,6 +97,10 @@ pub(crate) struct CreateTemplateInstanceBody {
     backup: Option<bool>,
     #[serde(alias = "internal_only")]
     internal_only: Option<bool>,
+    #[serde(alias = "public_port", alias = "publishPort", alias = "publish_port")]
+    public_port: Option<bool>,
+    #[serde(default)]
+    confirm: bool,
     #[serde(alias = "database_url")]
     database_url: Option<String>,
     vars: Option<Value>,
@@ -147,7 +153,27 @@ pub(crate) async fn create_template_instance(
     let disk_gb =
         parse_disk_gb(body.disk.as_deref()).map_err(|e| invalid("disk", e.to_string()))?;
     let backup_enabled = body.backup.unwrap_or(tmpl.backup.enabled_by_default);
-    let internal_only = body.internal_only.unwrap_or(tmpl.internal_by_default);
+    let public_port = body.public_port.unwrap_or(false);
+    if body.internal_only == Some(true) && public_port {
+        return Err(invalid(
+            "publicPort",
+            "Cannot enable both internalOnly and publicPort.",
+        ));
+    }
+    let internal_only = if public_port {
+        false
+    } else {
+        body.internal_only.unwrap_or(tmpl.internal_by_default)
+    };
+    if public_port && tmpl.kind == TemplateKind::Db && !body.confirm {
+        return Err(HttpError::new(
+            ErrorCode::ConfirmationRequired,
+            format!(
+                "Publishing {} port {} to the internet (0.0.0.0) exposes the database to external network scanners and brute-force attacks. Keep it on the private project network or bind to 127.0.0.1 instead, or confirm to publish publicly.",
+                tmpl.name, tmpl.port
+            ),
+        ));
+    }
 
     if let Some(mem) = body.memory_limit_mb
         && !(64..=1_048_576).contains(&mem)
@@ -182,10 +208,13 @@ pub(crate) async fn create_template_instance(
             .find(|(k, _, _)| k == "DATABASE_URL")
             .map(|(_, v, _)| v.trim())
             .unwrap_or("");
-        if !(db_url.starts_with("postgres://") || db_url.starts_with("postgresql://")) {
+        if !(db_url.starts_with("postgres://")
+            || db_url.starts_with("postgresql://")
+            || parse_pure_var_ref(db_url).is_some())
+        {
             return Err(invalid(
                 "databaseUrl",
-                "Umami needs a PostgreSQL DATABASE_URL connection string.",
+                "Umami needs a PostgreSQL DATABASE_URL connection string or service reference (${{ db.DATABASE_URL }}).",
             ));
         }
     }
@@ -217,6 +246,8 @@ pub(crate) async fn create_template_instance(
         ));
     }
 
+    validate_vars_refs_before_create(&state, &proj.id, &env.id, &name, &overrides)?;
+
     let existing = state
         .store
         .list_services(&proj.id, &env.id)
@@ -239,6 +270,8 @@ pub(crate) async fn create_template_instance(
         },
         if internal_only {
             "internal only"
+        } else if public_port {
+            "public port (0.0.0.0)"
         } else {
             "loopback proxy"
         }
@@ -246,7 +279,7 @@ pub(crate) async fn create_template_instance(
 
     let svc = state
         .store
-        .create_service_with_meta(
+        .create_service_with_exposure(
             NewService {
                 project_id: &proj.id,
                 env_id: &env.id,
@@ -275,6 +308,7 @@ pub(crate) async fn create_template_instance(
             None,
             Some(&tmpl.id),
             internal_only,
+            public_port,
         )
         .map_err(|_| HttpError::internal())?;
 
@@ -283,8 +317,7 @@ pub(crate) async fn create_template_instance(
         .iter()
         .map(|v| (v.key.clone(), v.value.clone(), v.is_secret))
         .collect();
-    if let Err(e) =
-        seal_and_store_vars(&state, &rid, &who.user.name, &svc.id, &seal_pairs, now).await
+    if let Err(e) = seal_and_store_vars(&state, &rid, &who.user.name, &svc, &seal_pairs, now).await
     {
         let _ = state.store.delete_service(&svc.id);
         return Err(e);
@@ -308,7 +341,7 @@ pub(crate) async fn create_template_instance(
         Some(&client.ip),
         "template.create",
         Some(&svc.name),
-        json!({ "template": tmpl.id, "version": version, "internalOnly": internal_only }),
+        json!({ "template": tmpl.id, "version": version, "internalOnly": internal_only, "publicPort": public_port }),
     );
 
     let (dep, task_id) = enqueue_deploy(
@@ -326,7 +359,7 @@ pub(crate) async fn create_template_instance(
     .await?;
 
     let live_certs = fetch_live_cert_domains(&state).await;
-    let view = resolve_service_view(&state, &rid, &who.user.name, &svc, &live_certs).await?;
+    let view = resolve_service_view(&state, &rid, &who, &svc, &live_certs).await?;
 
     Ok((
         StatusCode::CREATED,
@@ -651,7 +684,7 @@ pub(crate) async fn deploy_compose(
         retained_ids.insert(svc.id.clone());
         raw_to_node.insert(info.name.clone(), svc.name.clone());
         if !initial_vars.is_empty() {
-            seal_and_store_vars(&state, &rid, &who.user.name, &svc.id, &initial_vars, now).await?;
+            seal_and_store_vars(&state, &rid, &who.user.name, &svc, &initial_vars, now).await?;
         }
         service_records.push(svc);
     }
@@ -757,6 +790,26 @@ async fn execute_compose_deploy(
     via_token: bool,
     ip: Option<String>,
 ) -> Result<crate::tasks::Outcome, HttpError> {
+    let mut ref_sources: Vec<DeployRefSource> = Vec::new();
+    let mut seen_sources: HashSet<String> = HashSet::new();
+    for (svc, _, _) in &targets {
+        for src in service_ref_sources(&state, &svc.id) {
+            if seen_sources.insert(src.service.clone()) {
+                ref_sources.push(src);
+            }
+        }
+    }
+    let ref_seqs: Vec<(String, i64)> = targets
+        .iter()
+        .filter_map(|(svc, _, _)| {
+            state
+                .store
+                .capture_service_ref_seq(&svc.id)
+                .ok()
+                .map(|seq| (svc.id.clone(), seq))
+        })
+        .collect();
+
     for (svc, dep, stream) in &targets {
         state.deploy_hub.emit(
             &state.store,
@@ -777,6 +830,7 @@ async fn execute_compose_deploy(
                 yaml,
                 confirm,
                 vars,
+                ref_sources,
             },
         )
         .await
@@ -814,13 +868,18 @@ async fn execute_compose_deploy(
             .unwrap_or(&svc.repo);
         let host_port = deployed.and_then(|d| d.host_port).unwrap_or(0);
 
-        let _ = state.store.complete_deploy_switch(
+        let seq_opt = ref_seqs
+            .iter()
+            .find(|(id, _)| id == &svc.id)
+            .map(|(_, s)| *s);
+        let _ = state.store.complete_deploy_switch_with_refs(
             &svc.id,
             &dep.id,
             img,
             cid,
             host_port,
             Some("Compose"),
+            seq_opt,
             now_secs(),
         );
         state
@@ -993,4 +1052,253 @@ pub(crate) async fn delete_compose_stack(
     );
 
     Ok(Json(json!({ "ok": true })))
+}
+
+/// `POST /api/v1/services/{id}/rotate`: rotate credentials inside the running database
+/// container (in `opsbox-priv`), update sealed variables, and mark dependent apps as
+/// needing redeploy.
+pub(crate) async fn rotate_database(
+    State(state): State<AppState>,
+    Deployer(who): Deployer,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, HttpError> {
+    deny_token(&who)?;
+    let svc = state
+        .store
+        .get_service(&id)
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Service not found."))?;
+    if !service_writable(&who, &svc) {
+        return Err(forbidden("You cannot rotate credentials for this service."));
+    }
+    if svc.kind != ServiceKind::Db {
+        return Err(invalid(
+            "service",
+            "Credential rotation is only available for database services.",
+        ));
+    }
+    let tmpl_id = svc.template_id.as_deref().ok_or_else(|| {
+        invalid(
+            "template",
+            "Credential rotation is only supported for managed database templates.",
+        )
+    })?;
+    if rotated_secret_key(tmpl_id).is_none() {
+        return Err(invalid(
+            "template",
+            "Credential rotation is not supported for this database template.",
+        ));
+    }
+
+    if state
+        .deploy_hub
+        .inner
+        .active_service_tasks
+        .lock()
+        .unwrap()
+        .contains_key(&svc.id)
+    {
+        return Err(HttpError::new(
+            ErrorCode::Conflict,
+            "Wait for the running deploy to finish before rotating credentials.",
+        ));
+    }
+    let container_id = svc.active_container.as_deref().ok_or_else(|| {
+        HttpError::new(
+            ErrorCode::Conflict,
+            "Database container must be running to rotate credentials.",
+        )
+    })?;
+
+    let vars = service_env_specs(&state, &svc.id);
+    let rotated = state
+        .priv_client
+        .database_rotate(
+            &rid,
+            &who.user.name,
+            DatabaseRotateRequest {
+                service_id: svc.id.clone(),
+                service_name: svc.name.clone(),
+                template_id: tmpl_id.to_owned(),
+                container_id: container_id.to_owned(),
+                vars,
+            },
+        )
+        .await?;
+
+    let now = now_secs();
+    let mut rotated_keys = Vec::with_capacity(rotated.vars.len());
+    for spec in &rotated.vars {
+        state
+            .store
+            .upsert_service_var(&svc.id, &spec.key, &spec.value_enc, spec.is_secret, now)
+            .map_err(|_| HttpError::internal())?;
+        rotated_keys.push(spec.key.as_str());
+    }
+
+    let affected = state
+        .store
+        .mark_credentials_rotated(&svc.id, &rotated_keys, now)
+        .map_err(|_| HttpError::internal())?;
+
+    let affected_json: Vec<Value> = affected
+        .into_iter()
+        .filter(|r| service_readable(&who, &r.service))
+        .map(|r| {
+            json!({
+                "id": r.service.name,
+                "name": r.service.name,
+                "kind": r.service.kind.as_str(),
+                "state": r.service.state.as_str(),
+                "vars": r.var_keys,
+                "needsRedeploy": r.needs_redeploy,
+            })
+        })
+        .collect();
+
+    audit_user(
+        &state,
+        &who.user.name,
+        who.via_token,
+        Some(&client.ip),
+        "service.database.rotate",
+        Some(&svc.name),
+        json!({ "rotatedKeys": rotated_keys, "affectedCount": affected_json.len() }),
+    );
+
+    Ok(Json(json!({
+        "ok": true,
+        "service": svc.name,
+        "rotatedKeys": rotated_keys,
+        "rotatedAt": now.saturating_mul(1000),
+        "affectedApps": affected_json,
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SetExposureBody {
+    mode: Option<String>,
+    #[serde(alias = "internal_only")]
+    internal_only: Option<bool>,
+    #[serde(alias = "public_port", alias = "publishPort", alias = "publish_port")]
+    public_port: Option<bool>,
+    #[serde(default)]
+    confirm: bool,
+}
+
+/// `PUT /api/v1/services/{id}/exposure`: configure network exposure (`internal`,
+/// `loopback`, or `public`) for a database/template service. Publishing a database port
+/// publicly requires `confirm: true` (returns `409 confirmation_required` otherwise).
+pub(crate) async fn set_service_exposure(
+    State(state): State<AppState>,
+    Deployer(who): Deployer,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<SetExposureBody>,
+) -> Result<Json<Value>, HttpError> {
+    deny_token(&who)?;
+    let svc = state
+        .store
+        .get_service(&id)
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Service not found."))?;
+    if !service_writable(&who, &svc) {
+        return Err(forbidden(
+            "You cannot change network exposure for this service.",
+        ));
+    }
+
+    let (internal_only, public_port) = if let Some(ref mode_raw) = body.mode {
+        match mode_raw.trim().to_ascii_lowercase().as_str() {
+            "internal" | "private" => (true, false),
+            "loopback" | "local" => (false, false),
+            "public" => (false, true),
+            _ => {
+                return Err(invalid(
+                    "mode",
+                    "Exposure mode must be 'internal', 'loopback', or 'public'.",
+                ));
+            }
+        }
+    } else {
+        let pub_flag = body.public_port.unwrap_or(false);
+        let int_flag =
+            body.internal_only
+                .unwrap_or(if pub_flag { false } else { svc.internal_only });
+        if int_flag && pub_flag {
+            return Err(invalid(
+                "publicPort",
+                "Cannot enable both internalOnly and publicPort.",
+            ));
+        }
+        (int_flag, pub_flag)
+    };
+
+    if public_port && svc.kind == ServiceKind::Db && !body.confirm {
+        return Err(HttpError::new(
+            ErrorCode::ConfirmationRequired,
+            format!(
+                "Publishing {} port {} to the internet (0.0.0.0) exposes the database to external network scanners and brute-force attacks. Keep it on the private project network or loopback (127.0.0.1) instead, or confirm to publish publicly.",
+                svc.name, svc.port
+            ),
+        ));
+    }
+
+    if internal_only && svc.domain.is_some() {
+        return Err(invalid(
+            "mode",
+            "Remove custom domains before making this service internal-only.",
+        ));
+    }
+
+    if state
+        .deploy_hub
+        .inner
+        .active_service_tasks
+        .lock()
+        .unwrap()
+        .contains_key(&svc.id)
+    {
+        return Err(HttpError::new(
+            ErrorCode::Conflict,
+            "Wait for the running deploy to finish before updating exposure.",
+        ));
+    }
+
+    let changed = svc.internal_only != internal_only || svc.public_port != public_port;
+    let updated = state
+        .store
+        .set_service_exposure(&svc.id, internal_only, public_port, now_secs())
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Service not found."))?;
+
+    let mode_str = if internal_only {
+        "internal"
+    } else if public_port {
+        "public"
+    } else {
+        "loopback"
+    };
+    audit_user(
+        &state,
+        &who.user.name,
+        who.via_token,
+        Some(&client.ip),
+        "service.exposure.update",
+        Some(&updated.name),
+        json!({ "mode": mode_str, "internalOnly": internal_only, "publicPort": public_port }),
+    );
+
+    let live_certs = fetch_live_cert_domains(&state).await;
+    let view = resolve_service_view(&state, &rid, &who, &updated, &live_certs).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "mode": mode_str,
+        "redeployRequired": changed && updated.active_container.is_some(),
+        "service": view,
+    })))
 }

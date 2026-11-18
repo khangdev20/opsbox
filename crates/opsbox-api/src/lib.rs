@@ -363,6 +363,22 @@ pub fn router(state: AppState) -> Router {
             put(deploy::put_var).delete(deploy::delete_var),
         )
         .route(
+            "/api/v1/services/{id}/databases",
+            post(deploy::connect_database),
+        )
+        .route(
+            "/api/v1/services/{id}/databases/{db}",
+            delete(deploy::disconnect_database),
+        )
+        .route(
+            "/api/v1/services/{id}/rotate",
+            post(templates::rotate_database),
+        )
+        .route(
+            "/api/v1/services/{id}/exposure",
+            put(templates::set_service_exposure),
+        )
+        .route(
             "/api/v1/services/{id}/domains",
             get(domains::get_domains).post(domains::add_domain),
         )

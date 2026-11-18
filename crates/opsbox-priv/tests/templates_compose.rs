@@ -6,10 +6,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Mutex};
 
 use nix::unistd::Uid;
-use opsbox_priv::{PrivClient, PrivConfig, PrivServer};
+use opsbox_priv::{ClientError, PrivClient, PrivConfig, PrivServer};
 use opsbox_proto::{
-    ComposeDeployRequest, ComposeValidateRequest, DeployEnvSpec, PrivErrorCode, Secret,
-    TemplateStartRequest,
+    ComposeDeployRequest, ComposeValidateRequest, DatabaseRotateRequest, DeployEnvSpec,
+    DeployRefSource, PrivErrorCode, Secret, TemplateStartRequest,
 };
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -100,6 +100,7 @@ struct MockDockerState {
     removed_containers: Vec<String>,
     compose_containers: Vec<(String, String, Option<u16>)>,
     running_containers: HashMap<String, bool>,
+    exec_bodies: Vec<(String, Value)>,
 }
 
 fn spawn_mock_docker(sock_path: &std::path::Path, state: Arc<Mutex<MockDockerState>>) {
@@ -280,7 +281,7 @@ fn spawn_mock_docker(sock_path: &std::path::Path, state: Arc<Mutex<MockDockerSta
                             .trim_start_matches("/containers/")
                             .trim_end_matches("/json")
                             .to_owned();
-                        let (running, compose_port) = {
+                        let (running, compose_port, tpl_port) = {
                             let guard = st.lock().unwrap();
                             let running =
                                 guard.running_containers.get(&cid).copied().unwrap_or(true);
@@ -289,13 +290,34 @@ fn spawn_mock_docker(sock_path: &std::path::Path, state: Arc<Mutex<MockDockerSta
                                 .iter()
                                 .find(|(id, _, _)| id == &cid)
                                 .and_then(|(_, _, port)| *port);
-                            (running, cp)
+                            let tp = cid
+                                .strip_prefix("tpl-cid-")
+                                .and_then(|n| n.parse::<usize>().ok())
+                                .and_then(|idx| guard.created_bodies.get(idx - 1))
+                                .and_then(|body| {
+                                    body["HostConfig"]["PortBindings"]
+                                        .as_object()
+                                        .and_then(|m| m.iter().next())
+                                        .map(|(k, arr)| {
+                                            let ip = arr
+                                                .as_array()
+                                                .and_then(|a| a.first())
+                                                .and_then(|o| o["HostIp"].as_str())
+                                                .unwrap_or("127.0.0.1")
+                                                .to_owned();
+                                            (k.clone(), ip)
+                                        })
+                                });
+                            (running, cp, tp)
                         };
-                        let ports = match compose_port {
-                            Some(hp) => json!({
+                        let ports = match (compose_port, tpl_port) {
+                            (Some(hp), _) => json!({
                                 "80/tcp": [{ "HostIp": "127.0.0.1", "HostPort": hp.to_string() }]
                             }),
-                            None => json!({}),
+                            (None, Some((key, ip))) => json!({
+                                key: [{ "HostIp": ip, "HostPort": "35432" }]
+                            }),
+                            (None, None) => json!({}),
                         };
                         write_http_json(
                             &mut stream,
@@ -313,6 +335,12 @@ fn spawn_mock_docker(sock_path: &std::path::Path, state: Arc<Mutex<MockDockerSta
                         .await;
                     }
                     ("POST", p) if p.starts_with("/containers/") && p.ends_with("/exec") => {
+                        let cid = p
+                            .trim_start_matches("/containers/")
+                            .trim_end_matches("/exec")
+                            .to_owned();
+                        let v: Value = serde_json::from_slice(&body).unwrap_or_default();
+                        st.lock().unwrap().exec_bodies.push((cid, v));
                         write_http_json(&mut stream, 201, "Created", &json!({"Id": "exec-1"}))
                             .await;
                     }
@@ -451,7 +479,10 @@ async fn template_start_creates_volume_keeps_internal_only_and_scrubs_failures()
                 version: "16.4".into(),
                 image_ref: "postgres:16.4".into(),
                 internal_only: true,
+                public_port: false,
+                confirm_public_port: false,
                 vars: vars.clone(),
+                ref_sources: vec![],
                 memory_limit_mb: Some(256),
                 cpu_limit_millis: None,
             },
@@ -500,7 +531,10 @@ async fn template_start_creates_volume_keeps_internal_only_and_scrubs_failures()
                 version: "16.4".into(),
                 image_ref: "postgres:16.4".into(),
                 internal_only: true,
+                public_port: false,
+                confirm_public_port: false,
                 vars,
+                ref_sources: vec![],
                 memory_limit_mb: None,
                 cpu_limit_millis: None,
             },
@@ -685,6 +719,7 @@ services:
                 yaml: safe_yaml.into(),
                 confirm: false,
                 vars: vec![],
+                ref_sources: vec![],
             },
         )
         .await
@@ -729,6 +764,266 @@ services:
         .await
         .unwrap();
     assert!(!tmp.path().join("apps/shop").exists());
+
+    let _ = tx.send(());
+    let _ = srv_task.await;
+}
+
+#[tokio::test]
+async fn template_ref_resolution_public_port_guard_and_db_rotation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let docker_sock = tmp.path().join("docker.sock");
+    let state = Arc::new(Mutex::new(MockDockerState::default()));
+    spawn_mock_docker(&docker_sock, state.clone());
+
+    let priv_sock = tmp.path().join("priv.sock");
+    let mut cfg = PrivConfig::new(&priv_sock, vec![Uid::current().as_raw()]);
+    cfg.master_key_path = tmp.path().join("master.key");
+    cfg.xfer_dir = tmp.path().join("xfer");
+    cfg.trash_dir = tmp.path().join("trash");
+    cfg.apps_dir = tmp.path().join("apps");
+    cfg.docker_socket = docker_sock;
+
+    let srv = PrivServer::bind(cfg).unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let srv_task = tokio::spawn(async move {
+        srv.run(async {
+            let _ = rx.await;
+        })
+        .await;
+    });
+    let client = PrivClient::new(&priv_sock);
+
+    let seal = |ctx: &str, val: &str| {
+        let client = &client;
+        let ctx = ctx.to_owned();
+        let val = val.to_owned();
+        async move {
+            client
+                .secret_seal("s", Some("admin"), &ctx, Secret::new(val))
+                .await
+                .unwrap()
+        }
+    };
+
+    let pg_user = seal("deploy:var:pg-1:POSTGRES_USER", "appuser").await;
+    let pg_db = seal("deploy:var:pg-1:POSTGRES_DB", "appdb").await;
+    let pg_pw = seal("deploy:var:pg-1:POSTGRES_PASSWORD", "old-pg-secret-123").await;
+    let pg_pgpw = seal("deploy:var:pg-1:PGPASSWORD", "old-pg-secret-123").await;
+    let pg_url = seal(
+        "deploy:var:pg-1:DATABASE_URL",
+        "postgresql://appuser:old-pg-secret-123@pg-main:5432/appdb",
+    )
+    .await;
+    let pg_specs = vec![
+        DeployEnvSpec {
+            key: "POSTGRES_USER".into(),
+            value_enc: pg_user,
+            seal_context: "deploy:var:pg-1:POSTGRES_USER".into(),
+            is_secret: false,
+        },
+        DeployEnvSpec {
+            key: "POSTGRES_DB".into(),
+            value_enc: pg_db,
+            seal_context: "deploy:var:pg-1:POSTGRES_DB".into(),
+            is_secret: false,
+        },
+        DeployEnvSpec {
+            key: "POSTGRES_PASSWORD".into(),
+            value_enc: pg_pw,
+            seal_context: "deploy:var:pg-1:POSTGRES_PASSWORD".into(),
+            is_secret: true,
+        },
+        DeployEnvSpec {
+            key: "PGPASSWORD".into(),
+            value_enc: pg_pgpw,
+            seal_context: "deploy:var:pg-1:PGPASSWORD".into(),
+            is_secret: true,
+        },
+        DeployEnvSpec {
+            key: "DATABASE_URL".into(),
+            value_enc: pg_url,
+            seal_context: "deploy:var:pg-1:DATABASE_URL".into(),
+            is_secret: true,
+        },
+    ];
+
+    // 1) Public port without confirmation MUST be rejected by opsbox-priv with ConfirmRequired.
+    let err = client
+        .template_start(
+            "r1",
+            "admin",
+            TemplateStartRequest {
+                project: "acme".into(),
+                service: "pg-main".into(),
+                deploy_id: "dep-guard".into(),
+                template_id: "postgres".into(),
+                version: "16.4".into(),
+                image_ref: "postgres:16.4".into(),
+                internal_only: false,
+                public_port: true,
+                confirm_public_port: false,
+                vars: pg_specs.clone(),
+                ref_sources: vec![],
+                memory_limit_mb: None,
+                cpu_limit_millis: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::Remote(pe) => assert_eq!(pe.code, PrivErrorCode::ConfirmRequired),
+        other => panic!("expected ConfirmRequired, got {other:?}"),
+    }
+    assert!(state.lock().unwrap().created_bodies.is_empty());
+
+    // 2) Confirming public port binds 0.0.0.0 intentionally.
+    let started_pub = client
+        .template_start(
+            "r2",
+            "admin",
+            TemplateStartRequest {
+                project: "acme".into(),
+                service: "pg-main".into(),
+                deploy_id: "dep-pub".into(),
+                template_id: "postgres".into(),
+                version: "16.4".into(),
+                image_ref: "postgres:16.4".into(),
+                internal_only: false,
+                public_port: true,
+                confirm_public_port: true,
+                vars: pg_specs.clone(),
+                ref_sources: vec![],
+                memory_limit_mb: None,
+                cpu_limit_millis: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(started_pub.host_port, 35432);
+    {
+        let st = state.lock().unwrap();
+        let pb = &st.created_bodies[0]["HostConfig"]["PortBindings"]["5432/tcp"];
+        assert_eq!(pb[0]["HostIp"], "0.0.0.0");
+    }
+
+    // 3) Reference resolution on an app template (`umami`) resolves `${{ pg-main.DATABASE_URL }}`
+    // inside `priv` and injects the real connection string into the container Env.
+    let umami_db_url = seal(
+        "deploy:var:umami-1:DATABASE_URL",
+        "${{ pg-main.DATABASE_URL }}",
+    )
+    .await;
+    let umami_secret = seal("deploy:var:umami-1:APP_SECRET", "umami-secret-val").await;
+    let umami_started = client
+        .template_start(
+            "r3",
+            "admin",
+            TemplateStartRequest {
+                project: "acme".into(),
+                service: "analytics".into(),
+                deploy_id: "dep-umami".into(),
+                template_id: "umami".into(),
+                version: "postgresql-latest".into(),
+                image_ref: "ghcr.io/umami-software/umami:postgresql-latest".into(),
+                internal_only: true,
+                public_port: false,
+                confirm_public_port: false,
+                vars: vec![
+                    DeployEnvSpec {
+                        key: "DATABASE_URL".into(),
+                        value_enc: umami_db_url,
+                        seal_context: "deploy:var:umami-1:DATABASE_URL".into(),
+                        is_secret: false,
+                    },
+                    DeployEnvSpec {
+                        key: "APP_SECRET".into(),
+                        value_enc: umami_secret,
+                        seal_context: "deploy:var:umami-1:APP_SECRET".into(),
+                        is_secret: true,
+                    },
+                ],
+                ref_sources: vec![DeployRefSource {
+                    service: "pg-main".into(),
+                    vars: pg_specs.clone(),
+                }],
+                memory_limit_mb: None,
+                cpu_limit_millis: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(umami_started.container_id, "tpl-cid-2");
+    {
+        let st = state.lock().unwrap();
+        let env_arr = st.created_bodies[1]["Env"].as_array().unwrap();
+        assert!(
+            env_arr.iter().any(|e| {
+                e == "DATABASE_URL=postgresql://appuser:old-pg-secret-123@pg-main:5432/appdb"
+            }),
+            "resolved ref must be injected into app env: {env_arr:?}"
+        );
+    }
+
+    // 4) Credential rotation runs `docker exec` on the live DB container with password via Env
+    // (never argv) and returns newly sealed POSTGRES_PASSWORD / PGPASSWORD / DATABASE_URL.
+    let rotated = client
+        .database_rotate(
+            "r4",
+            "admin",
+            DatabaseRotateRequest {
+                service_id: "pg-1".into(),
+                service_name: "pg-main".into(),
+                template_id: "postgres".into(),
+                container_id: started_pub.container_id.clone(),
+                vars: pg_specs,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(rotated.vars.len(), 3);
+    {
+        let st = state.lock().unwrap();
+        let (cid, exec_body) = st.exec_bodies.last().unwrap();
+        assert_eq!(cid, "tpl-cid-1");
+        let cmd = exec_body["Cmd"].as_array().unwrap();
+        let cmd_joined = cmd
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !cmd_joined.contains("old-pg-secret-123"),
+            "old secret must not appear in exec argv"
+        );
+        assert_eq!(cmd[0], "psql");
+        let env_arr = exec_body["Env"].as_array().unwrap();
+        assert!(
+            env_arr.iter().any(|e| e == "PGPASSWORD=old-pg-secret-123"),
+            "expected PGPASSWORD in exec Env: {env_arr:?}"
+        );
+    }
+    let new_url_spec = rotated
+        .vars
+        .iter()
+        .find(|v| v.key == "DATABASE_URL")
+        .unwrap();
+    let reopened = client
+        .secret_open(
+            "o1",
+            Some("admin"),
+            &new_url_spec.seal_context,
+            &new_url_spec.value_enc,
+        )
+        .await
+        .unwrap();
+    assert!(
+        reopened.expose().starts_with("postgresql://appuser:")
+            && !reopened.expose().contains("old-pg-secret-123")
+            && reopened.expose().ends_with("@pg-main:5432/appdb"),
+        "unexpected rotated DATABASE_URL: {}",
+        reopened.expose()
+    );
 
     let _ = tx.send(());
     let _ = srv_task.await;

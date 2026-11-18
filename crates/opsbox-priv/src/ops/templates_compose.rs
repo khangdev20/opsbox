@@ -11,22 +11,27 @@ use opsbox_deploy::compose::{
     extract_compose_services, inspect_compose_risks, precheck_compose_yaml,
 };
 use opsbox_deploy::pipeline::scrub_secrets;
-use opsbox_deploy::templates::{get_template, template_volume_name};
-use opsbox_docker::{DockerError, TemplateContainerSpec};
+use opsbox_deploy::templates::{
+    compute_rotated_vars, get_template, random_password, rotated_secret_key, template_volume_name,
+};
+use opsbox_docker::{DockerError, PortBindMode, TemplateContainerSpec};
 use opsbox_proto::{
     ComposeDeployRequest, ComposeDeployResult, ComposeDeployedService, ComposeValidateRequest,
-    ComposeValidationResult, DeployStartResult, DockerExecRequest, PrivError, PrivErrorCode,
-    TemplateStartRequest, valid_compose_service_name, valid_docker_image_ref, valid_docker_ref,
-    valid_service_name,
+    ComposeValidationResult, DatabaseRotateRequest, DatabaseRotateResult, DeployEnvSpec,
+    DeployStartResult, DockerExecRequest, PrivError, PrivErrorCode, PrivReply, Secret,
+    TemplateStartRequest, valid_compose_service_name, valid_db_identifier, valid_docker_image_ref,
+    valid_docker_ref, valid_service_name,
 };
 use serde_json::Value;
 use tempfile::NamedTempFile;
 
 use super::Env;
 use super::deploy::{
-    err, find_binary, http_health_probe_host, open_deploy_vars, safe_env_base, short_deploy_suffix,
+    err, find_binary, http_health_probe_host, open_and_resolve_deploy_vars, open_deploy_vars,
+    safe_env_base, short_deploy_suffix,
 };
 use super::docker::{block_on_fut, map_docker_err};
+use super::sealed;
 
 const MAX_COMPOSE_LOG_LINES: usize = 500;
 
@@ -94,7 +99,24 @@ pub fn start_template_with(
         ));
     }
 
-    let (opened_vars, scrub_owned) = open_deploy_vars(&env.secrets, &req.vars)?;
+    if req.public_port && req.internal_only {
+        return Err(err(
+            PrivErrorCode::Invalid,
+            "Cannot publish a public port while internal-only is enabled.",
+        ));
+    }
+    if req.public_port && !req.confirm_public_port {
+        return Err(err(
+            PrivErrorCode::ConfirmRequired,
+            format!(
+                "Publishing {} port {} to the internet (0.0.0.0) exposes it to external network and brute-force attacks. Keep it on the private project network or bind to 127.0.0.1 instead, or confirm to publish publicly.",
+                req.service, tmpl.port
+            ),
+        ));
+    }
+
+    let (opened_vars, scrub_owned) =
+        open_and_resolve_deploy_vars(&env.secrets, &req.service, &req.vars, &req.ref_sources)?;
     let scrub_refs: Vec<&str> = scrub_owned.iter().map(String::as_str).collect();
 
     // Keep client connection helper vars (e.g. PGHOST/PGDATABASE/DATABASE_URL on Postgres)
@@ -148,7 +170,13 @@ pub fn start_template_with(
         cmd: &tmpl.cmd,
         volume_binds: &volume_binds,
         container_port: tmpl.port,
-        expose_loopback: !req.internal_only,
+        port_bind: if req.internal_only {
+            PortBindMode::InternalOnly
+        } else if req.public_port {
+            PortBindMode::Public
+        } else {
+            PortBindMode::Loopback
+        },
         memory_limit_mb: req.memory_limit_mb,
         cpu_limit_millis: req.cpu_limit_millis,
     };
@@ -533,7 +561,8 @@ pub fn deploy_compose_with(
         ));
     }
 
-    let (opened_vars, scrub_owned) = open_deploy_vars(&env.secrets, &req.vars)?;
+    let (opened_vars, scrub_owned) =
+        open_and_resolve_deploy_vars(&env.secrets, &req.stack, &req.vars, &req.ref_sources)?;
     let scrub_refs: Vec<&str> = scrub_owned.iter().map(String::as_str).collect();
     let extra_env: Vec<(&str, &str)> = opened_vars
         .iter()
@@ -779,4 +808,261 @@ pub fn remove_compose_service_with(env: &Env, stack: &str, service: &str) -> Res
         }
     }
     Ok(())
+}
+
+/// Rotate credentials inside a running managed database container (`docker exec`) and return
+/// newly sealed environment/connection variables without returning plaintext to `serve`.
+pub fn rotate_database_with(
+    env: &Env,
+    req: &DatabaseRotateRequest,
+) -> Result<DatabaseRotateResult, PrivError> {
+    if req.service_id.is_empty()
+        || req.service_id.len() > 64
+        || req.service_id.contains("..")
+        || !req
+            .service_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || !valid_service_name(&req.service_name)
+        || !valid_docker_ref(&req.container_id)
+    {
+        return Err(err(
+            PrivErrorCode::Invalid,
+            "Invalid database service parameters for credential rotation.",
+        ));
+    }
+
+    let tmpl = get_template(&req.template_id).ok_or_else(|| {
+        err(
+            PrivErrorCode::Invalid,
+            format!("Unknown database template '{}'.", req.template_id),
+        )
+    })?;
+    let secret_key = rotated_secret_key(&req.template_id).ok_or_else(|| {
+        err(
+            PrivErrorCode::Invalid,
+            format!("Credential rotation is not supported for '{}'.", tmpl.name),
+        )
+    })?;
+
+    for v in &req.vars {
+        let expected_ctx = format!("deploy:var:{}:{}", req.service_id, v.key);
+        if v.seal_context != expected_ctx {
+            return Err(err(
+                PrivErrorCode::Refused,
+                "Secret sealing context does not match database service.",
+            ));
+        }
+    }
+
+    let (opened_vars, mut scrub_owned) = open_deploy_vars(&env.secrets, &req.vars)?;
+    let find_var = |key: &str| -> Option<&str> {
+        opened_vars
+            .iter()
+            .find(|v| v.key == key)
+            .map(|v| v.value.as_str())
+    };
+
+    let running = match block_on_fut(env.docker.is_container_running(&req.container_id))? {
+        Ok(r) => r,
+        Err(DockerError::NotFound(_)) => false,
+        Err(e) => return Err(map_docker_err(e, env.docker.socket_path())),
+    };
+    if !running {
+        return Err(err(
+            PrivErrorCode::Conflict,
+            "Start or deploy this database before rotating its credentials.",
+        ));
+    }
+
+    let new_password = random_password(24).map_err(map_deploy_err)?;
+    let current_tuples: Vec<(String, String, bool)> = opened_vars
+        .iter()
+        .map(|v| (v.key.clone(), v.value.clone(), v.is_secret))
+        .collect();
+    let updated_vars =
+        compute_rotated_vars(tmpl, &req.service_name, &current_tuples, &new_password)
+            .map_err(map_deploy_err)?;
+
+    scrub_owned.push(new_password.clone());
+    for (_, val, sec) in &updated_vars {
+        if *sec && !val.is_empty() {
+            scrub_owned.push(val.clone());
+        }
+    }
+    let scrub_refs: Vec<&str> = scrub_owned.iter().map(String::as_str).collect();
+
+    let exec_req = match req.template_id.as_str() {
+        "postgres" => {
+            let user = find_var("POSTGRES_USER").unwrap_or("app");
+            let db = find_var("POSTGRES_DB").unwrap_or("app");
+            let old_pw = find_var(secret_key).unwrap_or("");
+            if !valid_db_identifier(user) || !valid_db_identifier(db) {
+                return Err(err(
+                    PrivErrorCode::Invalid,
+                    "Invalid PostgreSQL user or database identifier.",
+                ));
+            }
+            DockerExecRequest {
+                id: req.container_id.clone(),
+                cmd: vec![
+                    "psql".into(),
+                    "-v".into(),
+                    "ON_ERROR_STOP=1".into(),
+                    "-U".into(),
+                    user.to_owned(),
+                    "-d".into(),
+                    db.to_owned(),
+                ],
+                user: None,
+                env: vec![format!("PGPASSWORD={old_pw}")],
+                working_dir: None,
+                stdin: Some(
+                    format!("ALTER USER \"{user}\" WITH PASSWORD '{new_password}';\n").into_bytes(),
+                ),
+            }
+        }
+        "mysql" => {
+            let user = find_var("MYSQL_USER").unwrap_or("app");
+            let old_root_pw = find_var("MYSQL_ROOT_PASSWORD").unwrap_or("");
+            if !valid_db_identifier(user) {
+                return Err(err(
+                    PrivErrorCode::Invalid,
+                    "Invalid MySQL user identifier.",
+                ));
+            }
+            DockerExecRequest {
+                id: req.container_id.clone(),
+                cmd: vec![
+                    "mysql".into(),
+                    "-h".into(),
+                    "127.0.0.1".into(),
+                    "-uroot".into(),
+                ],
+                user: None,
+                env: vec![format!("MYSQL_PWD={old_root_pw}")],
+                working_dir: None,
+                stdin: Some(
+                    format!("ALTER USER '{user}'@'%' IDENTIFIED BY '{new_password}'; FLUSH PRIVILEGES;\n")
+                        .into_bytes(),
+                ),
+            }
+        }
+        "mariadb" => {
+            let user = find_var("MARIADB_USER").unwrap_or("app");
+            let old_root_pw = find_var("MARIADB_ROOT_PASSWORD").unwrap_or("");
+            if !valid_db_identifier(user) {
+                return Err(err(
+                    PrivErrorCode::Invalid,
+                    "Invalid MariaDB user identifier.",
+                ));
+            }
+            DockerExecRequest {
+                id: req.container_id.clone(),
+                cmd: vec![
+                    "sh".into(),
+                    "-c".into(),
+                    "exec \"$(command -v mariadb || command -v mysql)\" -h 127.0.0.1 -uroot".into(),
+                ],
+                user: None,
+                env: vec![format!("MYSQL_PWD={old_root_pw}")],
+                working_dir: None,
+                stdin: Some(
+                    format!("ALTER USER '{user}'@'%' IDENTIFIED BY '{new_password}'; FLUSH PRIVILEGES;\n")
+                        .into_bytes(),
+                ),
+            }
+        }
+        "redis" => {
+            let old_pw = find_var(secret_key).unwrap_or("");
+            DockerExecRequest {
+                id: req.container_id.clone(),
+                cmd: vec!["redis-cli".into(), "--no-auth-warning".into()],
+                user: None,
+                env: vec![format!("REDISCLI_AUTH={old_pw}")],
+                working_dir: None,
+                stdin: Some(format!("CONFIG SET requirepass {new_password}\n").into_bytes()),
+            }
+        }
+        "mongo" => {
+            let user = find_var("MONGO_INITDB_ROOT_USERNAME").unwrap_or("app");
+            let old_pw = find_var(secret_key).unwrap_or("");
+            if !valid_db_identifier(user) {
+                return Err(err(
+                    PrivErrorCode::Invalid,
+                    "Invalid MongoDB user identifier.",
+                ));
+            }
+            DockerExecRequest {
+                id: req.container_id.clone(),
+                cmd: vec![
+                    "mongosh".into(),
+                    "mongodb://127.0.0.1:27017/admin".into(),
+                    "--quiet".into(),
+                ],
+                user: None,
+                env: vec![
+                    format!("OPSBOX_DB_USER={user}"),
+                    format!("OPSBOX_OLD_PW={old_pw}"),
+                    format!("OPSBOX_NEW_PW={new_password}"),
+                ],
+                working_dir: None,
+                stdin: Some(
+                    b"if (!db.auth(process.env.OPSBOX_DB_USER, process.env.OPSBOX_OLD_PW)) { quit(1); }\ndb.changeUserPassword(process.env.OPSBOX_DB_USER, process.env.OPSBOX_NEW_PW);\n"
+                        .to_vec(),
+                ),
+            }
+        }
+        _ => {
+            return Err(err(
+                PrivErrorCode::Invalid,
+                "Credential rotation is not supported for this template.",
+            ));
+        }
+    };
+
+    let exec_out = block_on_fut(env.docker.exec(exec_req))?.map_err(|mut e| {
+        if let DockerError::Internal(ref mut m) = e {
+            *m = scrub_secrets(m, &scrub_refs);
+        }
+        map_docker_err(e, env.docker.socket_path())
+    })?;
+
+    let stdout_txt = String::from_utf8_lossy(&exec_out.stdout);
+    let redis_err = req.template_id == "redis"
+        && (stdout_txt.contains("ERR ") || stdout_txt.contains("NOAUTH"));
+    if exec_out.exit_code != 0 || redis_err {
+        let raw_detail = if !exec_out.stderr.trim().is_empty() {
+            exec_out.stderr.trim()
+        } else if !stdout_txt.trim().is_empty() {
+            stdout_txt.trim()
+        } else {
+            "command returned a non-zero exit code"
+        };
+        let clean = scrub_secrets(raw_detail, &scrub_refs);
+        return Err(err(
+            PrivErrorCode::Internal,
+            format!("Database credential rotation failed: {clean}"),
+        ));
+    }
+
+    let mut sealed_vars = Vec::with_capacity(updated_vars.len());
+    for (key, val, is_secret) in updated_vars {
+        let ctx = format!("deploy:var:{}:{key}", req.service_id);
+        let PrivReply::Sealed { sealed } = sealed::seal(&env.secrets, &ctx, &Secret::new(val))?
+        else {
+            return Err(err(
+                PrivErrorCode::Internal,
+                "Unexpected response while sealing rotated credential.",
+            ));
+        };
+        sealed_vars.push(DeployEnvSpec {
+            key,
+            value_enc: sealed,
+            seal_context: ctx,
+            is_secret,
+        });
+    }
+
+    Ok(DatabaseRotateResult { vars: sealed_vars })
 }

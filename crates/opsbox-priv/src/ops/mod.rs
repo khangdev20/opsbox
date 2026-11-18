@@ -286,6 +286,9 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::TemplateStart(req) => {
             templates_compose::start_template_with(env, req).map(PrivReply::DeployStarted)
         }
+        PrivOp::DatabaseRotate(req) => {
+            templates_compose::rotate_database_with(env, req).map(PrivReply::DatabaseRotated)
+        }
         PrivOp::ComposeValidate(req) => {
             templates_compose::validate_compose_with(env, req).map(PrivReply::ComposeValidated)
         }

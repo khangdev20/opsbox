@@ -6,14 +6,15 @@ use std::time::Duration;
 use opsbox_proto::frame;
 use opsbox_proto::{
     AccessState, CleanupFreed, CleanupScan, CommandOutcome, ComposeDeployRequest,
-    ComposeDeployResult, ComposeValidateRequest, ComposeValidationResult, DeployBuildFrame,
-    DeployBuildRequest, DeployPullRequest, DeployStartRequest, DeployStartResult, DirListing,
-    DockerContainer, DockerContainerAction, DockerContainerInspect, DockerContainerStat,
-    DockerExecOutput, DockerExecRequest, DockerImage, DockerLogFrame, DockerLogLine, DockerNetwork,
-    DockerStatus, DockerVolume, FileContent, FirewallChange, FirewallState, HostInfo, HostSettings,
-    JobInfo, JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
-    PrivResponse, PrivResult, PtyFrame, RawSample, Secret, SecurityScan, Staged, SystemFacts,
-    SystemUser, TemplateStartRequest, UnitActionKind, UnitInfo, WatchdogStatus,
+    ComposeDeployResult, ComposeValidateRequest, ComposeValidationResult, DatabaseRotateRequest,
+    DatabaseRotateResult, DeployBuildFrame, DeployBuildRequest, DeployPullRequest,
+    DeployStartRequest, DeployStartResult, DirListing, DockerContainer, DockerContainerAction,
+    DockerContainerInspect, DockerContainerStat, DockerExecOutput, DockerExecRequest, DockerImage,
+    DockerLogFrame, DockerLogLine, DockerNetwork, DockerStatus, DockerVolume, FileContent,
+    FirewallChange, FirewallState, HostInfo, HostSettings, JobInfo, JournalEntry, NewRule,
+    PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
+    PtyFrame, RawSample, Secret, SecurityScan, Staged, SystemFacts, SystemUser,
+    TemplateStartRequest, UnitActionKind, UnitInfo, WatchdogStatus,
 };
 use tokio::net::{
     UnixStream,
@@ -1418,6 +1419,21 @@ impl PrivClient {
             .with_timeout(Duration::from_secs(300))
             .expect(rid, Some(actor), PrivOp::TemplateStart(req), |r| match r {
                 PrivReply::DeployStarted(v) => Ok(v),
+                o => Err(o),
+            })
+            .await
+    }
+
+    pub async fn database_rotate(
+        &self,
+        rid: &str,
+        actor: &str,
+        req: DatabaseRotateRequest,
+    ) -> Result<DatabaseRotateResult, ClientError> {
+        self.clone()
+            .with_timeout(Duration::from_secs(60))
+            .expect(rid, Some(actor), PrivOp::DatabaseRotate(req), |r| match r {
+                PrivReply::DatabaseRotated(v) => Ok(v),
                 o => Err(o),
             })
             .await

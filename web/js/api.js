@@ -52,6 +52,7 @@ const REAL = new Set([
   'getGithubStatus', 'startGithubManifest', 'completeGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook',
   'disconnectGithub', 'getRepos', 'inspectPublicRepo', 'listDeployKeys', 'createDeployKey', 'deleteDeployKey',
   'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'buildLog', 'addVar', 'removeVar', 'removeService',
+  'connectDatabase', 'disconnectDatabase', 'rotateDatabase', 'setServiceExposure',
   'getDomains', 'addDomain', 'checkDns', 'issueDomainCert', 'updateDomain', 'removeDomain', 'makePrimary',
   'getTemplates', 'addTemplate', 'deployCompose',
 ]);
@@ -70,7 +71,7 @@ export const PAGE_USES = {
   // (Keys opsbox uses to reach other servers arrive with the desktop app; the section is hidden until then.)
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
   alerts: ['connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
-  apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'updateDomain', 'updateService'],
+  apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
   backupdest: ['PROVIDERS', 'saveDestination', 'testDestination'],
   backups: ['getBackups', 'restoreBackup', 'runBackup'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
@@ -87,7 +88,7 @@ export const PAGE_USES = {
   settings: ['checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
-  templates: ['getTemplates', 'addTemplate', 'deployCompose'],
+  templates: ['addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
   // In http mode the page shows only this server (the demo hosts and shell are mock-only).
   terminal: ['getTerminalUsers', 'openTerminal'],
 };
@@ -272,18 +273,19 @@ const S = {
   networks: [{ name: 'bridge', driver: 'bridge' }, { name: 'shop-platform', driver: 'bridge' }, { name: 'host', driver: 'host' }],
   project: {
     name: 'shop-platform', env: 'production',
+    edges: [['web', 'postgres'], ['web', 'redis'], ['api', 'postgres'], ['worker', 'redis']],
     services: [
       { id: 'web', kind: 'app', state: 'active', repo: 'acme/shop', branch: 'main', build: 'Dockerfile', domain: 'shop.example.com', port: 3000, x: 0, y: 98,
-        vars: [['NODE_ENV', 'production'], ['DATABASE_URL', 'postgres://app:••••@postgres:5432/app'], ['REDIS_URL', 'redis://redis:6379']],
+        vars: [['NODE_ENV', 'production', false], ['DATABASE_URL', '${{ postgres.DATABASE_URL }}', true, true], ['REDIS_URL', '${{ redis.REDIS_URL }}', false, true]],
         deploys: [
           { id: 'a3f9c21', msg: 'Fix cart when out of stock', status: 'live', at: now() - 2 * MIN, secs: 48 },
           { id: '7be1d04', msg: 'Add checkout page', status: 'replaced', at: now() - DAY, secs: 51 },
           { id: '1c80ae7', msg: 'Update dependencies', status: 'failed', at: now() - 3 * DAY, secs: 33 },
         ] },
-      { id: 'api', kind: 'app', state: 'building', repo: 'acme/shop-api', branch: 'main', build: 'Nixpacks', domain: 'api.shop.example.com', port: 4000, x: 370, y: 10, vars: [['PORT', '4000']], deploys: [{ id: '5d2e8b0', msg: 'Add orders endpoint', status: 'building', at: now() - 40000, secs: 0 }] },
-      { id: 'worker', kind: 'app', state: 'active', repo: 'acme/shop-api', branch: 'main', build: 'npm run worker', domain: '', port: 0, x: 370, y: 186, vars: [], deploys: [{ id: '5c1a7f4', msg: 'Retry failed jobs', status: 'live', at: now() - 2 * DAY, secs: 40 }] },
-      { id: 'postgres', kind: 'db', state: 'active', repo: 'PostgreSQL 16 · volume 4.2 GB', domain: '', x: 740, y: 10, note: 'backup daily 02:00', deploys: [], vars: [] },
-      { id: 'redis', kind: 'db', state: 'active', repo: 'Redis 7 · 24 MB', domain: '', x: 740, y: 186, note: 'internal only', deploys: [], vars: [] },
+      { id: 'api', kind: 'app', state: 'building', repo: 'acme/shop-api', branch: 'main', build: 'Nixpacks', domain: 'api.shop.example.com', port: 4000, x: 370, y: 10, vars: [['PORT', '4000', false], ['DATABASE_URL', '${{ postgres.DATABASE_URL }}', true, true]], deploys: [{ id: '5d2e8b0', msg: 'Add orders endpoint', status: 'building', at: now() - 40000, secs: 0 }] },
+      { id: 'worker', kind: 'app', state: 'active', repo: 'acme/shop-api', branch: 'main', build: 'npm run worker', domain: '', port: 0, x: 370, y: 186, vars: [['REDIS_URL', '${{ redis.REDIS_URL }}', false, true]], deploys: [{ id: '5c1a7f4', msg: 'Retry failed jobs', status: 'live', at: now() - 2 * DAY, secs: 40 }] },
+      { id: 'postgres', kind: 'db', state: 'active', repo: 'PostgreSQL 16 · volume 4.2 GB', templateId: 'postgres', port: 5432, internalOnly: true, publicPort: false, networkMode: 'internal', domain: '', x: 740, y: 10, note: 'backup daily 02:00', connectedApps: [{ id: 'web', name: 'web', kind: 'app', state: 'active', vars: ['DATABASE_URL'], needsRedeploy: false }, { id: 'api', name: 'api', kind: 'app', state: 'building', vars: ['DATABASE_URL'], needsRedeploy: false }], deploys: [], vars: [['POSTGRES_USER', 'app', false], ['POSTGRES_PASSWORD', '••••••••', true], ['DATABASE_URL', '••••••••', true]] },
+      { id: 'redis', kind: 'db', state: 'active', repo: 'Redis 7 · 24 MB', templateId: 'redis', port: 6379, internalOnly: true, publicPort: false, networkMode: 'internal', domain: '', x: 740, y: 186, note: 'internal only', connectedApps: [{ id: 'web', name: 'web', kind: 'app', state: 'active', vars: ['REDIS_URL'], needsRedeploy: false }, { id: 'worker', name: 'worker', kind: 'app', state: 'active', vars: ['REDIS_URL'], needsRedeploy: false }], deploys: [], vars: [['REDIS_URL', '••••••••', true]] },
     ],
   },
   repos: [
@@ -986,6 +988,93 @@ export async function removeService(svc) {
   if (real('removeService')) return http(`/services/${encodeURIComponent(svc)}`, { method: 'DELETE' });
   await lag(300); S.project.services = S.project.services.filter((x) => x.id !== svc); audit(`delete service ${svc}`);
 }
+export async function connectDatabase(svc, opts = {}) {
+  sample('connectDatabase');
+  if (real('connectDatabase')) {
+    return http(`/services/${encodeURIComponent(svc)}/databases`, {
+      method: 'POST',
+      body: {
+        database: opts.database,
+        sourceKey: opts.sourceKey || undefined,
+        asKey: opts.asKey || undefined,
+        includeAll: !!opts.includeAll,
+      },
+    });
+  }
+  await lag(180);
+  const s = S.project.services.find((x) => x.id === svc);
+  const db = S.project.services.find((x) => x.id === opts.database && x.kind === 'db');
+  if (!s || !db) throw new Error('Service or database not found.');
+  const key = opts.asKey || opts.sourceKey || (db.templateId === 'redis' ? 'REDIS_URL' : db.templateId === 'mysql' || db.templateId === 'mariadb' ? 'MYSQL_URL' : db.templateId === 'mongo' ? 'MONGODB_URI' : 'DATABASE_URL');
+  const srcKey = opts.sourceKey || key;
+  const expr = `\${{ ${db.id}.${srcKey} }}`;
+  s.vars = (s.vars || []).filter((x) => x[0] !== key);
+  s.vars.push([key, expr, true, true]);
+  S.project.edges = S.project.edges || [];
+  if (!S.project.edges.some(([a, b]) => a === s.id && b === db.id)) S.project.edges.push([s.id, db.id]);
+  db.connectedApps = db.connectedApps || [];
+  const ex = db.connectedApps.find((c) => c.id === s.id);
+  const need = s.state === 'active';
+  if (ex) { if (!ex.vars.includes(key)) ex.vars.push(key); if (need) ex.needsRedeploy = true; }
+  else db.connectedApps.push({ id: s.id, name: s.id, kind: s.kind, state: s.state, vars: [key], needsRedeploy: need });
+  audit(`connect ${db.id} to ${s.id}`);
+  return { ok: true, database: db.id, vars: [[key, expr, true, true]], needsRedeploy: need };
+}
+export async function disconnectDatabase(svc, dbId) {
+  sample('disconnectDatabase');
+  if (real('disconnectDatabase')) {
+    return http(`/services/${encodeURIComponent(svc)}/databases/${encodeURIComponent(dbId)}`, { method: 'DELETE' });
+  }
+  await lag(150);
+  const s = S.project.services.find((x) => x.id === svc);
+  const db = S.project.services.find((x) => x.id === dbId);
+  if (!s || !db) throw new Error('Not found');
+  const pat = new RegExp(`^\\$\\{\\{\\s*${dbId}\\.`);
+  const removedKeys = [];
+  s.vars = (s.vars || []).filter((x) => {
+    if (pat.test(String(x[1] || ''))) { removedKeys.push(x[0]); return false; }
+    return true;
+  });
+  S.project.edges = (S.project.edges || []).filter(([a, b]) => !(a === s.id && b === dbId));
+  db.connectedApps = (db.connectedApps || []).filter((c) => c.id !== s.id);
+  audit(`disconnect ${dbId} from ${svc}`);
+  return { ok: true, database: dbId, removedKeys };
+}
+export async function rotateDatabase(dbId) {
+  sample('rotateDatabase');
+  if (real('rotateDatabase')) return http(`/services/${encodeURIComponent(dbId)}/rotate`, { method: 'POST' });
+  await lag(400);
+  const db = S.project.services.find((x) => x.id === dbId && x.kind === 'db');
+  if (!db) throw new Error('Database not found');
+  const rotatedAt = Date.now();
+  db.credentialsRotatedAt = rotatedAt;
+  db.connectedApps = (db.connectedApps || []).map((c) => ({ ...c, needsRedeploy: true }));
+  audit(`rotate credentials for ${dbId}`);
+  return { ok: true, service: dbId, rotatedKeys: ['POSTGRES_PASSWORD', 'DATABASE_URL'], rotatedAt, affectedApps: clone(db.connectedApps) };
+}
+export async function setServiceExposure(svc, opts = {}) {
+  sample('setServiceExposure');
+  if (real('setServiceExposure')) {
+    return http(`/services/${encodeURIComponent(svc)}/exposure`, {
+      method: 'PUT',
+      body: { mode: opts.mode, internalOnly: opts.internalOnly, publicPort: opts.publicPort, confirm: !!opts.confirm },
+    });
+  }
+  await lag(200);
+  const s = S.project.services.find((x) => x.id === svc);
+  if (!s) throw new Error('Service not found');
+  const mode = opts.mode || (opts.publicPort ? 'public' : opts.internalOnly ? 'internal' : 'loopback');
+  if (mode === 'public' && s.kind === 'db' && !opts.confirm) {
+    const err = new Error('Publishing database port publicly requires explicit confirmation.');
+    err.code = 'confirmation_required';
+    throw err;
+  }
+  s.networkMode = mode;
+  s.internalOnly = mode === 'internal';
+  s.publicPort = mode === 'public';
+  audit(`set ${svc} network exposure to ${mode}`);
+  return { ok: true, mode, redeployRequired: true, service: clone(s) };
+}
 
 // ---------------------------------------------------------------- backups
 const BK = {
@@ -1087,6 +1176,8 @@ export async function addTemplate(id, cfg) {
         disk: cfg.disk,
         backup: cfg.backup,
         internalOnly: cfg.internalOnly,
+        publicPort: !!cfg.publicPort,
+        confirm: !!cfg.confirm,
         databaseUrl: cfg.databaseUrl || undefined,
       },
     });
@@ -1099,7 +1190,7 @@ export async function addTemplate(id, cfg) {
   if (!/^[a-z][a-z0-9-]{1,30}$/.test(name)) throw new Error('Name: lowercase letters, numbers and dashes, starting with a letter.');
   if (S.project.services.some((x) => x.id === name)) throw new Error(`A service named "${name}" already exists.`);
   const idx = S.project.services.length;
-  S.project.services.push({ id: name, kind: t.id === 'minio' || t.id === 'kuma' || t.id === 'umami' || t.id === 'n8n' || t.id === 'grafana' ? 'tool' : 'db', state: 'active', repo: `${t.name} ${cfg.version || t.versions[0]} · volume ${cfg.disk || '1 GB'}`, domain: '', x: 370 * (idx % 3), y: 10 + 176 * Math.floor(idx / 3), note: cfg.backup ? 'backup daily 02:00' : 'no backup', deploys: [], vars: [] });
+  S.project.services.push({ id: name, kind: t.id === 'minio' || t.id === 'kuma' || t.id === 'umami' || t.id === 'n8n' || t.id === 'grafana' ? 'tool' : 'db', state: 'active', repo: `${t.name} ${cfg.version || t.versions[0]} · volume ${cfg.disk || '1 GB'}`, templateId: t.id, port: t.port, internalOnly: cfg.internalOnly !== false, publicPort: !!cfg.publicPort, networkMode: cfg.publicPort ? 'public' : (cfg.internalOnly !== false ? 'internal' : 'loopback'), connectedApps: [], domain: '', x: 370 * (idx % 3), y: 10 + 176 * Math.floor(idx / 3), note: cfg.backup ? 'backup daily 02:00' : 'no backup', deploys: [], vars: [] });
   audit(`add ${t.name} as ${name}`);
   return { id: name, connectionVar: 'DATABASE_URL', connectionUrl: t.id === 'postgres' ? `postgresql://app:demo@${name}:5432/app` : undefined };
 }

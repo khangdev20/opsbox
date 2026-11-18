@@ -17,12 +17,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use opsbox_auth::Principal;
+use opsbox_deploy::refs::{VarRef, canonical_ref_expr, extract_var_refs, parse_pure_var_ref};
+use opsbox_deploy::templates::get_template;
 use opsbox_deploy::{looks_secret_var_key, normalize_repo_source, validate_public_repo_url};
 use opsbox_proto::{
     DeployBuildFrame, DeployBuildRequest, DeployEnvSpec, DeployGitSource, DeployPullRequest,
-    DeployStartRequest, ErrorCode, Role, Secret, TemplateStartRequest, valid_commit_sha,
-    valid_docker_image_ref, valid_domain_name, valid_env_key, valid_git_branch, valid_health_path,
-    valid_rel_repo_path, valid_service_name,
+    DeployRefSource, DeployStartRequest, ErrorCode, Role, Secret, TemplateStartRequest,
+    valid_commit_sha, valid_docker_image_ref, valid_domain_name, valid_env_key, valid_git_branch,
+    valid_health_path, valid_rel_repo_path, valid_service_name,
 };
 use opsbox_store::{
     ActorKind, AuditResult, DeployRecord, DeployStatus, DeployTrigger, NewAudit, NewService,
@@ -221,23 +223,169 @@ pub(crate) fn resolve_owner_id(
     Ok(Some(u.id))
 }
 
+fn has_ref_path(state: &AppState, start_id: &str, goal_id: &str) -> Result<bool, HttpError> {
+    let mut visited = HashSet::new();
+    let mut stack = vec![start_id.to_owned()];
+    while let Some(cur) = stack.pop() {
+        if cur == goal_id {
+            return Ok(true);
+        }
+        if !visited.insert(cur.clone()) {
+            continue;
+        }
+        let refs = state
+            .store
+            .list_service_var_refs(&cur)
+            .map_err(|_| HttpError::internal())?;
+        for r in refs {
+            stack.push(r.target_service_id);
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) type ParsedVarRefs = (Option<String>, Vec<(String, String)>);
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn parse_and_validate_var_refs(
+    state: &AppState,
+    project_id: &str,
+    env_id: &str,
+    self_service_name: Option<&str>,
+    self_service_id: Option<&str>,
+    field: &'static str,
+    value: &str,
+) -> Result<ParsedVarRefs, HttpError> {
+    let refs = extract_var_refs(value).map_err(|e| invalid(field, e.to_string()))?;
+    if refs.is_empty() {
+        return Ok((None, Vec::new()));
+    }
+
+    let project_services = state
+        .store
+        .list_services(project_id, env_id)
+        .map_err(|_| HttpError::internal())?;
+    let by_name: HashMap<&str, &ServiceRecord> = project_services
+        .iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+
+    let mut targets: Vec<(String, String)> = Vec::new();
+    let mut seen = HashSet::new();
+    let mut vars_cache: HashMap<String, Vec<opsbox_store::ServiceVarRecord>> = HashMap::new();
+
+    for r in refs {
+        if self_service_name.is_some_and(|n| n == r.service) {
+            return Err(invalid(
+                field,
+                "A service variable cannot reference the same service.",
+            ));
+        }
+        let target = by_name.get(r.service.as_str()).copied().ok_or_else(|| {
+            invalid(
+                field,
+                format!(
+                    "Referenced service '{}' was not found in this project.",
+                    r.service
+                ),
+            )
+        })?;
+        if let Some(svc_id) = self_service_id
+            && has_ref_path(state, &target.id, svc_id)?
+        {
+            return Err(invalid(
+                field,
+                format!(
+                    "Circular variable reference detected involving '{}'.",
+                    target.name
+                ),
+            ));
+        }
+        let t_vars = match vars_cache.get(&target.id) {
+            Some(v) => v,
+            None => {
+                let loaded = state
+                    .store
+                    .list_service_vars(&target.id)
+                    .map_err(|_| HttpError::internal())?;
+                vars_cache.insert(target.id.clone(), loaded);
+                vars_cache.get(&target.id).expect("inserted")
+            }
+        };
+        if !t_vars.iter().any(|v| v.key == r.key) {
+            return Err(invalid(
+                field,
+                format!(
+                    "Variable '{}' was not found on service '{}'.",
+                    r.key, target.name
+                ),
+            ));
+        }
+        let pair = (target.id.clone(), r.key);
+        if seen.insert(pair.clone()) {
+            targets.push(pair);
+        }
+    }
+
+    let ref_expr = parse_pure_var_ref(value).map(|r| canonical_ref_expr(&r));
+    Ok((ref_expr, targets))
+}
+
+pub(crate) fn validate_vars_refs_before_create(
+    state: &AppState,
+    project_id: &str,
+    env_id: &str,
+    service_name: &str,
+    vars: &[(String, String, bool)],
+) -> Result<(), HttpError> {
+    for (_, val, _) in vars {
+        parse_and_validate_var_refs(
+            state,
+            project_id,
+            env_id,
+            Some(service_name),
+            None,
+            "vars",
+            val,
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn seal_and_store_vars(
     state: &AppState,
     rid: &str,
     actor: &str,
-    service_id: &str,
+    svc: &ServiceRecord,
     vars: &[(String, String, bool)],
     now: i64,
 ) -> Result<(), HttpError> {
     for (k, val, is_secret) in vars {
-        let ctx = var_seal_context(service_id, k);
+        let (ref_expr, targets) = parse_and_validate_var_refs(
+            state,
+            &svc.project_id,
+            &svc.env_id,
+            Some(&svc.name),
+            Some(&svc.id),
+            "vars",
+            val,
+        )?;
+        let ctx = var_seal_context(&svc.id, k);
         let sealed = state
             .priv_client
             .secret_seal(rid, Some(actor), &ctx, Secret::new(val.clone()))
             .await?;
         state
             .store
-            .upsert_service_var(service_id, k, &sealed, *is_secret, now)
+            .upsert_service_var_with_refs(
+                &svc.id,
+                k,
+                &sealed,
+                *is_secret,
+                ref_expr.as_deref(),
+                &targets,
+                now,
+            )
             .map_err(|_| HttpError::internal())?;
     }
     Ok(())
@@ -350,24 +498,26 @@ pub(crate) async fn fetch_live_cert_domains(state: &AppState) -> HashSet<String>
 pub(crate) async fn resolve_service_view(
     state: &AppState,
     rid: &str,
-    actor: &str,
+    who: &Principal,
     svc: &ServiceRecord,
     live_certs: &HashSet<String>,
 ) -> Result<Value, HttpError> {
     let store = state.store.clone();
     let svc_id = svc.id.clone();
     let stack_id = svc.compose_stack_id.clone();
-    let (vars, deploys, stack_name, backup) = tokio::task::spawn_blocking(move || {
+    let (vars, deploys, stack_name, backup, referencing) = tokio::task::spawn_blocking(move || {
         let stack_name = stack_id
             .as_deref()
             .and_then(|sid| store.get_compose_stack(sid).ok().flatten())
             .map(|st| st.name);
         let backup = store.get_backup_job_for_service(&svc_id).ok().flatten();
+        let referencing = store.list_referencing_services(&svc_id).unwrap_or_default();
         (
             store.list_service_vars(&svc_id).unwrap_or_default(),
             store.list_deploys(&svc_id, 30).unwrap_or_default(),
             stack_name,
             backup,
+            referencing,
         )
     })
     .await
@@ -375,13 +525,18 @@ pub(crate) async fn resolve_service_view(
 
     let mut rendered_vars = Vec::with_capacity(vars.len());
     for v in vars {
+        if let Some(ref expr) = v.ref_expr {
+            // Never open or resolve reference vars in `serve` — show reference syntax only.
+            rendered_vars.push(json!([v.key, expr, v.is_secret, true]));
+            continue;
+        }
         let display_val = if v.is_secret {
             "••••••••".to_owned()
         } else {
             let ctx = var_seal_context(&svc.id, &v.key);
             match state
                 .priv_client
-                .secret_open(rid, Some(actor), &ctx, &v.value_enc)
+                .secret_open(rid, Some(&who.user.name), &ctx, &v.value_enc)
                 .await
             {
                 Ok(sec) => sec.expose().to_owned(),
@@ -390,6 +545,21 @@ pub(crate) async fn resolve_service_view(
         };
         rendered_vars.push(json!([v.key, display_val, v.is_secret]));
     }
+
+    let connected_apps: Vec<Value> = referencing
+        .into_iter()
+        .filter(|r| service_readable(who, &r.service))
+        .map(|r| {
+            json!({
+                "id": r.service.name,
+                "name": r.service.name,
+                "kind": r.service.kind.as_str(),
+                "state": r.service.state.as_str(),
+                "vars": r.var_keys,
+                "needsRedeploy": r.needs_redeploy,
+            })
+        })
+        .collect();
 
     let rendered_deploys: Vec<Value> = deploys
         .into_iter()
@@ -456,6 +626,10 @@ pub(crate) async fn resolve_service_view(
         "templateId": svc.template_id,
         "composeStack": stack_name,
         "internalOnly": svc.internal_only,
+        "publicPort": svc.public_port,
+        "networkMode": if svc.internal_only { "internal" } else if svc.public_port { "public" } else { "loopback" },
+        "credentialsRotatedAt": svc.credentials_rotated_at.map(|ts| ts.saturating_mul(1000)),
+        "connectedApps": connected_apps,
         "backup": backup_json,
         "vars": rendered_vars,
         "deploys": rendered_deploys,
@@ -483,10 +657,11 @@ pub(crate) async fn get_project(
     let store = state.store.clone();
     let pid = proj.id.clone();
     let eid = env.id.clone();
-    let (services, compose_stacks) = tokio::task::spawn_blocking(move || {
+    let (services, compose_stacks, var_ref_edges) = tokio::task::spawn_blocking(move || {
         Ok::<_, opsbox_store::StoreError>((
             store.list_services(&pid, &eid)?,
             store.list_compose_stacks(&pid, &eid)?,
+            store.list_project_var_ref_edges(&pid, &eid)?,
         ))
     })
     .await
@@ -495,26 +670,39 @@ pub(crate) async fn get_project(
 
     let live_certs = fetch_live_cert_domains(&state).await;
     let mut out_services = Vec::new();
+    let mut visible_names: HashSet<String> = HashSet::new();
     let mut compose_node_map: HashMap<(String, String), String> = HashMap::new();
     for svc in services {
         if service_readable(&who, &svc) {
+            visible_names.insert(svc.name.clone());
             if let Some(ref stack_id) = svc.compose_stack_id {
                 compose_node_map.insert((stack_id.clone(), svc.branch.clone()), svc.name.clone());
             }
-            out_services
-                .push(resolve_service_view(&state, &rid, &who.user.name, &svc, &live_certs).await?);
+            out_services.push(resolve_service_view(&state, &rid, &who, &svc, &live_certs).await?);
         }
     }
 
     let mut edges = Vec::new();
+    let mut seen_edges: HashSet<(String, String)> = HashSet::new();
     for stack in compose_stacks {
         for (from_raw, to_raw) in stack.depends_edges {
             if let (Some(from_id), Some(to_id)) = (
                 compose_node_map.get(&(stack.id.clone(), from_raw)),
                 compose_node_map.get(&(stack.id.clone(), to_raw)),
-            ) {
+            ) && visible_names.contains(from_id)
+                && visible_names.contains(to_id)
+                && seen_edges.insert((from_id.clone(), to_id.clone()))
+            {
                 edges.push(json!([from_id, to_id]));
             }
+        }
+    }
+    for (from_id, to_id) in var_ref_edges {
+        if visible_names.contains(&from_id)
+            && visible_names.contains(&to_id)
+            && seen_edges.insert((from_id.clone(), to_id.clone()))
+        {
+            edges.push(json!([from_id, to_id]));
         }
     }
 
@@ -861,6 +1049,8 @@ pub(crate) async fn create_service(
         .map_err(|_| HttpError::internal())?
         .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Project not found."))?;
 
+    validate_vars_refs_before_create(&state, &proj.id, &env.id, &name, &initial_vars)?;
+
     if state
         .store
         .get_service(&name)
@@ -934,7 +1124,7 @@ pub(crate) async fn create_service(
         })
         .map_err(|_| HttpError::internal())?;
 
-    seal_and_store_vars(&state, &rid, &who.user.name, &svc.id, &initial_vars, now).await?;
+    seal_and_store_vars(&state, &rid, &who.user.name, &svc, &initial_vars, now).await?;
 
     audit_user(
         &state,
@@ -966,7 +1156,7 @@ pub(crate) async fn create_service(
     };
 
     let live_certs = fetch_live_cert_domains(&state).await;
-    let view = resolve_service_view(&state, &rid, &who.user.name, &svc, &live_certs).await?;
+    let view = resolve_service_view(&state, &rid, &who, &svc, &live_certs).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({
@@ -996,7 +1186,7 @@ pub(crate) async fn get_service(
     }
     let live_certs = fetch_live_cert_domains(&state).await;
     Ok(Json(
-        resolve_service_view(&state, &rid, &who.user.name, &svc, &live_certs).await?,
+        resolve_service_view(&state, &rid, &who, &svc, &live_certs).await?,
     ))
 }
 
@@ -1181,7 +1371,7 @@ pub(crate) async fn update_service(
 
     let live_certs = fetch_live_cert_domains(&state).await;
     Ok(Json(
-        resolve_service_view(&state, &rid, &who.user.name, &updated, &live_certs).await?,
+        resolve_service_view(&state, &rid, &who, &updated, &live_certs).await?,
     ))
 }
 
@@ -1475,6 +1665,16 @@ pub(crate) async fn put_var(
         return Err(forbidden("You cannot modify variables for this service."));
     }
 
+    let (ref_expr, targets) = parse_and_validate_var_refs(
+        &state,
+        &svc.project_id,
+        &svc.env_id,
+        Some(&svc.name),
+        Some(&svc.id),
+        "value",
+        &body.value,
+    )?;
+
     let is_secret = body.is_secret.unwrap_or_else(|| looks_secret_var_key(&key));
     let ctx = var_seal_context(&svc.id, &key);
     let sealed = state
@@ -1488,7 +1688,15 @@ pub(crate) async fn put_var(
         .await?;
     state
         .store
-        .upsert_service_var(&svc.id, &key, &sealed, is_secret, now_secs())
+        .upsert_service_var_with_refs(
+            &svc.id,
+            &key,
+            &sealed,
+            is_secret,
+            ref_expr.as_deref(),
+            &targets,
+            now_secs(),
+        )
         .map_err(|_| HttpError::internal())?;
 
     audit_user(
@@ -1498,14 +1706,273 @@ pub(crate) async fn put_var(
         Some(&client.ip),
         "service.var.set",
         Some(&svc.name),
-        json!({ "key": key, "secret": is_secret }),
+        json!({ "key": key, "secret": is_secret, "isRef": ref_expr.is_some() }),
     );
+
+    if let Some(ref expr) = ref_expr {
+        return Ok(Json(json!({
+            "ok": true,
+            "key": key,
+            "value": expr,
+            "isSecret": is_secret,
+            "isRef": true,
+        })));
+    }
 
     Ok(Json(json!({
         "ok": true,
         "key": key,
         "value": if is_secret { "••••••••" } else { &body.value },
         "isSecret": is_secret,
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConnectDatabaseBody {
+    #[serde(alias = "database_id", alias = "db", alias = "target")]
+    database: String,
+    #[serde(alias = "source_key", alias = "targetVar", alias = "target_var")]
+    source_key: Option<String>,
+    #[serde(alias = "env_var", alias = "envVar", alias = "key", alias = "asKey")]
+    as_key: Option<String>,
+    #[serde(default, alias = "include_all")]
+    include_all: bool,
+}
+
+/// `POST /api/v1/services/{id}/databases`: insert `${{ db.KEY }}` reference variable(s)
+/// linking an app/tool service to a database in the same project/environment.
+pub(crate) async fn connect_database(
+    State(state): State<AppState>,
+    Deployer(who): Deployer,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<ConnectDatabaseBody>,
+) -> Result<Json<Value>, HttpError> {
+    deny_token(&who)?;
+    let svc = state
+        .store
+        .get_service(&id)
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Service not found."))?;
+    if !service_writable(&who, &svc) {
+        return Err(forbidden("You cannot modify variables for this service."));
+    }
+    if svc.kind == ServiceKind::Db {
+        return Err(invalid(
+            "database",
+            "Connect databases from an application or tool service.",
+        ));
+    }
+
+    let db_query = body.database.trim();
+    if db_query.is_empty() {
+        return Err(invalid("database", "Select a database to connect."));
+    }
+    let db_svc = state
+        .store
+        .get_service(db_query)
+        .map_err(|_| HttpError::internal())?
+        .filter(|d| d.project_id == svc.project_id && d.env_id == svc.env_id)
+        .ok_or_else(|| {
+            HttpError::new(ErrorCode::NotFound, "Database not found in this project.")
+        })?;
+    if !service_readable(&who, &db_svc) {
+        return Err(forbidden("You do not have access to this database."));
+    }
+    if db_svc.id == svc.id {
+        return Err(invalid("database", "A service cannot connect to itself."));
+    }
+    if db_svc.kind != ServiceKind::Db {
+        return Err(invalid("database", "Selected service is not a database."));
+    }
+    if has_ref_path(&state, &db_svc.id, &svc.id)? {
+        return Err(invalid(
+            "database",
+            "Circular variable reference detected between services.",
+        ));
+    }
+
+    let db_vars = state
+        .store
+        .list_service_vars(&db_svc.id)
+        .map_err(|_| HttpError::internal())?;
+    let var_map: HashMap<&str, &opsbox_store::ServiceVarRecord> =
+        db_vars.iter().map(|v| (v.key.as_str(), v)).collect();
+
+    let tmpl = db_svc.template_id.as_deref().and_then(get_template);
+    let primary_default = tmpl
+        .and_then(|t| t.connection.primary_var.as_deref())
+        .filter(|k| var_map.contains_key(k))
+        .or_else(|| {
+            ["DATABASE_URL", "MYSQL_URL", "REDIS_URL", "MONGODB_URI"]
+                .into_iter()
+                .find(|k| var_map.contains_key(k))
+        })
+        .or_else(|| db_vars.first().map(|v| v.key.as_str()))
+        .ok_or_else(|| {
+            invalid(
+                "database",
+                "Database has no connection variables to reference.",
+            )
+        })?;
+
+    let pairs: Vec<(String, String)> = if body.source_key.is_some()
+        || body.as_key.is_some()
+        || !body.include_all
+    {
+        let src_key = body
+            .source_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(primary_default)
+            .to_owned();
+        if !valid_env_key(&src_key) || !var_map.contains_key(src_key.as_str()) {
+            return Err(invalid(
+                "sourceKey",
+                format!(
+                    "Variable '{}' does not exist on database '{}'.",
+                    src_key, db_svc.name
+                ),
+            ));
+        }
+        let as_key = body
+            .as_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&src_key)
+            .to_owned();
+        if !valid_env_key(&as_key) {
+            return Err(invalid(
+                "asKey",
+                "Variable name must start with a letter or '_' and contain only letters, digits, and '_'.",
+            ));
+        }
+        vec![(as_key, src_key)]
+    } else {
+        let mut out = Vec::new();
+        let mut seen_keys = HashSet::new();
+        if let Some(t) = tmpl {
+            for c in &t.connection.vars {
+                if var_map.contains_key(c.key.as_str()) && seen_keys.insert(c.key.clone()) {
+                    out.push((c.key.clone(), c.key.clone()));
+                }
+            }
+        }
+        if out.is_empty() {
+            out.push((primary_default.to_owned(), primary_default.to_owned()));
+        }
+        out
+    };
+
+    let now = now_secs();
+    let mut linked_vars = Vec::with_capacity(pairs.len());
+    for (env_key, src_key) in pairs {
+        let ref_expr = canonical_ref_expr(&VarRef {
+            service: db_svc.name.clone(),
+            key: src_key.clone(),
+        });
+        let is_secret = var_map
+            .get(src_key.as_str())
+            .map(|v| v.is_secret)
+            .unwrap_or_else(|| looks_secret_var_key(&env_key));
+        let ctx = var_seal_context(&svc.id, &env_key);
+        let sealed = state
+            .priv_client
+            .secret_seal(
+                &rid,
+                Some(&who.user.name),
+                &ctx,
+                Secret::new(ref_expr.clone()),
+            )
+            .await?;
+        state
+            .store
+            .upsert_service_var_with_refs(
+                &svc.id,
+                &env_key,
+                &sealed,
+                is_secret,
+                Some(&ref_expr),
+                &[(db_svc.id.clone(), src_key)],
+                now,
+            )
+            .map_err(|_| HttpError::internal())?;
+        linked_vars.push(json!([env_key, ref_expr, is_secret, true]));
+    }
+
+    let needs_redeploy = svc.active_deploy_id.is_some() || svc.active_container.is_some();
+    audit_user(
+        &state,
+        &who.user.name,
+        who.via_token,
+        Some(&client.ip),
+        "service.database.connect",
+        Some(&svc.name),
+        json!({ "database": db_svc.name }),
+    );
+
+    Ok(Json(json!({
+        "ok": true,
+        "database": db_svc.name,
+        "vars": linked_vars,
+        "needsRedeploy": needs_redeploy,
+    })))
+}
+
+/// `DELETE /api/v1/services/{id}/databases/{db}`: remove reference variables linking
+/// an app/tool service to the named database.
+pub(crate) async fn disconnect_database(
+    State(state): State<AppState>,
+    Deployer(who): Deployer,
+    client: Client,
+    Path((id, db)): Path<(String, String)>,
+) -> Result<Json<Value>, HttpError> {
+    deny_token(&who)?;
+    let svc = state
+        .store
+        .get_service(&id)
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Service not found."))?;
+    if !service_writable(&who, &svc) {
+        return Err(forbidden("You cannot modify variables for this service."));
+    }
+    let db_svc = state
+        .store
+        .get_service(db.trim())
+        .map_err(|_| HttpError::internal())?
+        .filter(|d| d.project_id == svc.project_id && d.env_id == svc.env_id)
+        .ok_or_else(|| {
+            HttpError::new(ErrorCode::NotFound, "Database not found in this project.")
+        })?;
+
+    let removed_keys = state
+        .store
+        .delete_service_vars_referencing(&svc.id, &db_svc.id)
+        .map_err(|_| HttpError::internal())?;
+    if removed_keys.is_empty() {
+        return Err(HttpError::new(
+            ErrorCode::NotFound,
+            "Service is not connected to this database.",
+        ));
+    }
+
+    audit_user(
+        &state,
+        &who.user.name,
+        who.via_token,
+        Some(&client.ip),
+        "service.database.disconnect",
+        Some(&svc.name),
+        json!({ "database": db_svc.name, "removedKeys": removed_keys }),
+    );
+    Ok(Json(json!({
+        "ok": true,
+        "database": db_svc.name,
+        "removedKeys": removed_keys,
     })))
 }
 
@@ -1981,6 +2448,7 @@ async fn run_deploy_pipeline(
     let image_tag = format!("opsbox/{}:{short_id}", svc.name);
 
     let vars_specs = service_env_specs(&state, &svc.id);
+    let ref_sources = service_ref_sources(&state, &svc.id);
     let mut detected_method: Option<String> = None;
 
     if let Some(ref stack_id) = svc.compose_stack_id {
@@ -2002,6 +2470,7 @@ async fn run_deploy_pipeline(
     if let Some(ref template_id) = svc.template_id {
         let tmpl_image = svc.image_ref.clone().unwrap_or_else(|| svc.repo.clone());
         let tmpl_version = svc.branch.clone();
+        let ref_seq = state.store.capture_service_ref_seq(&svc.id).ok();
         state.deploy_hub.emit(
             &state.store,
             &stream,
@@ -2021,7 +2490,10 @@ async fn run_deploy_pipeline(
                     version: tmpl_version,
                     image_ref: tmpl_image.clone(),
                     internal_only: svc.internal_only,
+                    public_port: svc.public_port,
+                    confirm_public_port: svc.public_port,
                     vars: vars_specs,
+                    ref_sources,
                     memory_limit_mb: svc.memory_limit_mb,
                     cpu_limit_millis: svc.cpu_limit_millis,
                 },
@@ -2051,6 +2523,7 @@ async fn run_deploy_pipeline(
             &tmpl_image,
             started,
             None,
+            ref_seq,
             &actor,
             via_token,
             ip.as_deref(),
@@ -2188,6 +2661,7 @@ async fn run_deploy_pipeline(
                     image_tag: image_tag.clone(),
                     cache_from,
                     vars: vars_specs.clone(),
+                    ref_sources,
                     timeout_secs: state.deploy.build_timeout_secs,
                     memory_limit_mb: svc.memory_limit_mb,
                 },
@@ -2320,6 +2794,8 @@ async fn run_release_switch_flow(
     );
 
     let vars_specs = service_env_specs(state, &svc.id);
+    let ref_sources = service_ref_sources(state, &svc.id);
+    let ref_seq = state.store.capture_service_ref_seq(&svc.id).ok();
     let started = match state
         .priv_client
         .deploy_start_and_check(
@@ -2334,6 +2810,7 @@ async fn run_release_switch_flow(
                 health_path: svc.health_path.clone(),
                 health_retries: state.deploy.health_retries,
                 vars: vars_specs,
+                ref_sources,
                 memory_limit_mb: svc.memory_limit_mb,
                 cpu_limit_millis: svc.cpu_limit_millis,
             },
@@ -2363,6 +2840,7 @@ async fn run_release_switch_flow(
         image_ref,
         started,
         detected_method,
+        ref_seq,
         actor,
         via_token,
         ip,
@@ -2381,6 +2859,7 @@ async fn finalize_release_switch(
     image_ref: &str,
     started: opsbox_proto::DeployStartResult,
     detected_method: Option<&str>,
+    max_ref_seq: Option<i64>,
     actor: &str,
     via_token: bool,
     ip: Option<&str>,
@@ -2399,13 +2878,14 @@ async fn finalize_release_switch(
         &format!("Health check passed on {endpoint_desc}. Switching traffic..."),
     );
 
-    let prev_container = match state.store.complete_deploy_switch(
+    let prev_container = match state.store.complete_deploy_switch_with_refs(
         &svc.id,
         deploy_id,
         image_ref,
         &started.container_id,
         started.host_port,
         detected_method,
+        max_ref_seq,
         now_secs(),
     ) {
         Ok(p) => p,
@@ -2539,4 +3019,36 @@ pub(crate) fn service_env_specs(state: &AppState, service_id: &str) -> Vec<Deplo
             }
         })
         .collect()
+}
+
+pub(crate) fn service_ref_sources(state: &AppState, service_id: &str) -> Vec<DeployRefSource> {
+    let mut seen_ids = HashSet::new();
+    seen_ids.insert(service_id.to_owned());
+    let mut frontier = vec![service_id.to_owned()];
+    let mut out = Vec::new();
+    for _depth in 0..4 {
+        let mut next = Vec::new();
+        for cur in frontier {
+            let Ok(refs) = state.store.list_service_var_refs(&cur) else {
+                continue;
+            };
+            for r in refs {
+                if seen_ids.insert(r.target_service_id.clone())
+                    && let Ok(Some(target)) = state.store.get_service(&r.target_service_id)
+                {
+                    let vars = service_env_specs(state, &target.id);
+                    out.push(DeployRefSource {
+                        service: target.name,
+                        vars,
+                    });
+                    next.push(target.id);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    out
 }

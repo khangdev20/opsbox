@@ -1,4 +1,4 @@
-import { html, btn, table, section, header, bindActions, formDialog, toast } from '../ui.js';
+import { html, btn, table, section, header, bindActions, confirmDialog, formDialog, toast } from '../ui.js';
 import * as api from '../api.js';
 
 const YML = `services:
@@ -20,11 +20,12 @@ const NEW_TABS = [
 ];
 
 export async function view() {
-  const catalog = await api.getTemplates();
+  const [catalog, proj] = await Promise.all([api.getTemplates(), api.getProject().catch(() => ({ services: [] }))]);
   const databases = catalog.databases || [];
   const tools = catalog.tools || [];
   const all = [...databases, ...tools];
-  let pick = all[0] || { id: 'postgres', name: 'PostgreSQL', versions: ['16.4'], port: 5432 };
+  const pgDbs = (proj.services || []).filter((s) => s.kind === 'db' && (s.templateId === 'postgres' || /postgres/i.test(s.repo || '')));
+  let pick = all[0] || { id: 'postgres', name: 'PostgreSQL', versions: ['16.4'], port: 5432, category: 'databases' };
   let busy = '';
   let root;
 
@@ -41,14 +42,23 @@ export async function view() {
   const form = () => {
     const backupDefault = pick.backup?.enabledByDefault ?? (pick.category === 'databases');
     const internalDefault = pick.internalByDefault ?? true;
+    const isDb = pick.kind === 'db' || pick.category === 'databases';
     const isUmami = pick.id === 'umami' || pick.requiresDatabase;
+    const defaultPgRef = pgDbs[0] ? `\${{ ${pgDbs[0].id}.DATABASE_URL }}` : '';
     return section(`Add ${pick.name}`, html`
       <div class="field"><label for="tn">Name</label><input class="input" id="tn" value="${pick.id}-main" autocomplete="off"><span class="hint">Other services reach it at <span class="mono">${pick.id}-main:${pick.port}</span> on the project network.</span></div>
       <div class="field"><label for="tv">Version</label><select class="select" id="tv">${(pick.versions || []).map((v) => html`<option>${v}</option>`)}</select></div>
       <div class="field"><label for="td">Disk for data</label><select class="select" id="td">${['1 GB', '5 GB', '20 GB'].map((v) => html`<option>${v}</option>`)}</select></div>
-      ${isUmami ? html`<div class="field"><label for="tdb">PostgreSQL DATABASE_URL</label><input class="input mono" id="tdb" placeholder="postgresql://app:password@pg-main:5432/app" autocomplete="off"><span class="hint">Umami stores analytics in an existing PostgreSQL instance.</span></div>` : ''}
+      ${isUmami ? html`
+        ${pgDbs.length ? html`<div class="field"><label for="tpg">PostgreSQL service</label><select class="select" id="tpg"><option value="">Custom connection string</option>${pgDbs.map((d, idx) => html`<option value="${d.id}"${idx === 0 ? ' selected' : ''}>${d.id} (link via \${{ ${d.id}.DATABASE_URL }})</option>`)}</select></div>` : ''}
+        <div class="field"><label for="tdb">PostgreSQL DATABASE_URL</label><input class="input mono" id="tdb" value="${defaultPgRef}" placeholder="postgresql://app:password@pg-main:5432/app" autocomplete="off"><span class="hint">Use <span class="mono">\${{ db.DATABASE_URL }}</span> to link a project PostgreSQL instance safely without duplicating its password.</span></div>
+      ` : ''}
       <div class="item-row"><label><input type="checkbox" id="tb"${backupDefault ? ' checked' : ''}><span><b>Back up daily at 02:00</b></span></label></div>
-      <div class="item-row"><label><input type="checkbox" id="ti"${internalDefault ? ' checked' : ''}><span><b>Only reachable from other services</b><span class="sm muted">Keep off the internet (project network only)</span></span></label></div>
+      <div class="field"><label for="tnw">Network exposure</label><select class="select" id="tnw">
+        <option value="internal"${internalDefault ? ' selected' : ''}>Private project network only (Recommended)</option>
+        <option value="loopback"${!internalDefault ? ' selected' : ''}>Loopback only (127.0.0.1 — reverse proxy / local SSH tunnel)</option>
+        ${isDb ? html`<option value="public">Public internet port (0.0.0.0 — NOT recommended)</option>` : ''}
+      </select><span class="hint">${isDb ? 'Database ports stay off the internet by default; apps connect over the internal project network.' : 'Internal-only services bind no host port.'}</span></div>
       <p class="sm muted">Credentials are generated, encrypted at rest, and shown once upon creation.</p>
       <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p>
       <div>${btn(busy === 'tpl' ? `Starting ${pick.name}…` : `Add ${pick.name}`, { act: 'add', kind: 'primary', disabled: busy === 'tpl' })}</div>`);
@@ -77,6 +87,12 @@ export async function view() {
     mount(r) {
       root = r;
       paint();
+      root.addEventListener('change', (e) => {
+        if (e.target.id === 'tpg') {
+          const inp = root.querySelector('#tdb');
+          if (inp && e.target.value) inp.value = `\${{ ${e.target.value}.DATABASE_URL }}`;
+        }
+      });
       bindActions(root, {
         src: (el) => {
           const i = +el.dataset.i;
@@ -89,12 +105,26 @@ export async function view() {
         add: async () => {
           const errEl = root.querySelector('#err');
           if (errEl) errEl.textContent = '';
+          const nw = root.querySelector('#tnw')?.value || 'internal';
+          const isPublic = nw === 'public';
+          let confirmed = false;
+          if (isPublic) {
+            confirmed = await confirmDialog({
+              title: `Publish ${pick.name} port ${pick.port} publicly?`,
+              body: 'Exposing a database port on 0.0.0.0 makes it reachable from the internet and subject to automated brute-force attacks. Keep it on the private project network unless strictly needed.',
+              confirm: 'Publish publicly',
+              danger: true,
+            });
+            if (!confirmed) return;
+          }
           const cfg = {
             name: root.querySelector('#tn')?.value.trim(),
             version: root.querySelector('#tv')?.value,
             disk: root.querySelector('#td')?.value,
             backup: !!root.querySelector('#tb')?.checked,
-            internalOnly: !!root.querySelector('#ti')?.checked,
+            internalOnly: nw === 'internal',
+            publicPort: isPublic,
+            confirm: confirmed,
             databaseUrl: root.querySelector('#tdb')?.value.trim(),
           };
           busy = 'tpl';
@@ -102,7 +132,7 @@ export async function view() {
           try {
             const res = await api.addTemplate(pick.id, cfg);
             toast(`${pick.name} is running.`);
-            if (res.connectionUrl) {
+            if (res.connectionUrl && !String(res.connectionUrl).startsWith('${{')) {
               const out = await formDialog({
                 title: `${pick.name} is running`,
                 body: `Copy this ${res.connectionVar || 'connection URL'} now — OpsBox encrypts it at rest and will not show the plaintext secret again.`,

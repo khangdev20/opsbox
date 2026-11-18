@@ -4,12 +4,14 @@
 //! Only `opsbox-priv` executes `git`, `docker`, `nixpacks`, or touches `/var/lib/opsbox/apps`
 //! directly; every input from `serve` is re-validated here before touching the host.
 
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 
+use opsbox_deploy::refs::resolve_template_value;
 use opsbox_deploy::{
     CheckoutBuildPlan, plan_checkout_build, scrub_secrets, static_site_dockerfile,
     validate_public_repo_url,
@@ -17,10 +19,10 @@ use opsbox_deploy::{
 use opsbox_docker::{DockerError, ServiceContainerSpec};
 use opsbox_proto::{
     DeployBuildFrame, DeployBuildRequest, DeployBuildResult, DeployEnvSpec, DeployGitSource,
-    DeployPullRequest, DeployStartRequest, DeployStartResult, PrivError, PrivErrorCode, PrivReply,
-    PrivRequest, PrivResponse, PrivResult, frame, valid_commit_sha, valid_docker_image_ref,
-    valid_docker_ref, valid_env_key, valid_git_branch, valid_health_path, valid_rel_repo_path,
-    valid_service_name,
+    DeployPullRequest, DeployRefSource, DeployStartRequest, DeployStartResult, PrivError,
+    PrivErrorCode, PrivReply, PrivRequest, PrivResponse, PrivResult, frame, valid_commit_sha,
+    valid_docker_image_ref, valid_docker_ref, valid_env_key, valid_git_branch, valid_health_path,
+    valid_rel_repo_path, valid_service_name,
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
@@ -170,6 +172,71 @@ pub(crate) fn open_deploy_vars(
     Ok((opened, scrub))
 }
 
+/// Open sealed service variables and resolve any `${{ service.KEY }}` references against
+/// sealed variables from `ref_sources` exclusively inside `opsbox-priv`.
+pub(crate) fn open_and_resolve_deploy_vars(
+    secrets: &Secrets,
+    self_service: &str,
+    specs: &[DeployEnvSpec],
+    ref_sources: &[DeployRefSource],
+) -> Result<(Vec<OpenedVar>, Vec<String>), PrivError> {
+    if !valid_service_name(self_service) {
+        return Err(err(PrivErrorCode::Invalid, "Invalid service name."));
+    }
+    let (mut opened, mut scrub) = open_deploy_vars(secrets, specs)?;
+    if ref_sources.is_empty() && !opened.iter().any(|v| v.value.contains("${{")) {
+        return Ok((opened, scrub));
+    }
+
+    let mut ref_map: HashMap<(String, String), (String, bool)> = HashMap::new();
+    for src in ref_sources {
+        if !valid_service_name(&src.service) {
+            return Err(err(
+                PrivErrorCode::Invalid,
+                format!("Invalid referenced service name '{}'.", src.service),
+            ));
+        }
+        if src.service == self_service {
+            return Err(err(
+                PrivErrorCode::Invalid,
+                format!("Service '{self_service}' cannot reference its own variables."),
+            ));
+        }
+        let (src_opened, src_scrub) = open_deploy_vars(secrets, &src.vars)?;
+        scrub.extend(src_scrub);
+        for item in src_opened {
+            ref_map.insert(
+                (src.service.clone(), item.key),
+                (item.value, item.is_secret),
+            );
+        }
+    }
+
+    let lookup = |svc: &str, key: &str| {
+        ref_map
+            .get(&(svc.to_owned(), key.to_owned()))
+            .map(|(v, sec)| (v.as_str(), *sec))
+    };
+
+    for var in &mut opened {
+        if var.value.contains("${{") {
+            let (resolved, used_secret) = resolve_template_value(&var.value, self_service, &lookup)
+                .map_err(|e| err(PrivErrorCode::Invalid, e.to_string()))?;
+            var.value = resolved;
+            if used_secret {
+                var.is_secret = true;
+            }
+            if var.is_secret && var.value.len() >= 4 {
+                scrub.push(var.value.clone());
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    scrub.retain(|s| seen.insert(s.clone()));
+    Ok((opened, scrub))
+}
+
 fn validate_build_req(req: &DeployBuildRequest, allow_test_git: bool) -> Result<(), PrivError> {
     if !valid_service_name(&req.service) {
         return Err(err(PrivErrorCode::Invalid, "Invalid service name."));
@@ -211,6 +278,22 @@ fn validate_build_req(req: &DeployBuildRequest, allow_test_git: bool) -> Result<
                 PrivErrorCode::Invalid,
                 format!("Invalid variable name '{}'.", v.key),
             ));
+        }
+    }
+    for src in &req.ref_sources {
+        if !valid_service_name(&src.service) {
+            return Err(err(
+                PrivErrorCode::Invalid,
+                format!("Invalid referenced service '{}'.", src.service),
+            ));
+        }
+        for v in &src.vars {
+            if !valid_env_key(&v.key) {
+                return Err(err(
+                    PrivErrorCode::Invalid,
+                    format!("Invalid variable name '{}'.", v.key),
+                ));
+            }
         }
     }
     Ok(())
@@ -527,20 +610,22 @@ pub(crate) async fn handle_deploy_build_stream(
         return;
     }
 
-    let (opened_vars, mut scrub_owned) = match open_deploy_vars(&env.secrets, &req.vars) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = write_frame(
-                stream,
-                &PrivResponse {
-                    id: request.id.clone(),
-                    result: PrivResult::Failure { error: e },
-                },
-            )
-            .await;
-            return;
-        }
-    };
+    let (opened_vars, mut scrub_owned) =
+        match open_and_resolve_deploy_vars(&env.secrets, &req.service, &req.vars, &req.ref_sources)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = write_frame(
+                    stream,
+                    &PrivResponse {
+                        id: request.id.clone(),
+                        result: PrivResult::Failure { error: e },
+                    },
+                )
+                .await;
+                return;
+            }
+        };
 
     let opened_deploy_key = if let Some(enc) = &req.deploy_key_enc {
         let Some(ctx) = req.deploy_key_context.as_deref() else {
@@ -1149,7 +1234,8 @@ pub fn start_and_check_with(
             "Invalid deploy start parameters.",
         ));
     }
-    let (opened_vars, scrub_owned) = open_deploy_vars(&env.secrets, &req.vars)?;
+    let (opened_vars, scrub_owned) =
+        open_and_resolve_deploy_vars(&env.secrets, &req.service, &req.vars, &req.ref_sources)?;
     let scrub_refs: Vec<&str> = scrub_owned.iter().map(String::as_str).collect();
     let env_strings: Vec<String> = opened_vars
         .into_iter()
