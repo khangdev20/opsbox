@@ -26,16 +26,17 @@ export async function view({ query }) {
   const load = async () => { listing = await api.listDir(dir); picked.clear(); };
   await load();
   const crumbs = () => { const parts = dir.split('/').filter(Boolean); let acc = ''; return html`<nav class="path" aria-label="Path"><a href="#" data-act="go" data-p="/">/</a>${parts.map((p, i) => { acc += '/' + p; return html`<a href="#" data-act="go" data-p="${acc}">${p}</a>${i < parts.length - 1 ? '/' : ''}`; })}</nav>`; };
-  const list = () => table('Files', [['', ''], ['Name'], ['Mode'], ['Size', 'r'], ['Modified']], [
+  const list = () => table('Files', [['', { label: false }], ['Name'], ['Mode'], ['Size', { align: 'r', label: 'Size' }], ['Modified']], [
     ...(dir !== '/' ? [[ '', html`<a href="#" data-act="go" data-p="${dir.split('/').slice(0, -1).join('/') || '/'}" class="mono">../</a>`, '', '', '']] : []),
     ...listing.entries.map((e) => Object.assign([html`<input type="checkbox" data-act="pick" data-p="${e.path}" aria-label="Select ${e.name}" ${raw(picked.has(e.path) ? 'checked' : '')}>`,
       e.type === 'd' ? html`<a href="#" class="mono" data-act="go" data-p="${e.path}">${e.name}/</a>` : html`<a href="#" class="mono" data-act="open" data-p="${e.path}">${e.name}</a>${api.downloadUrl(e.path) ? html` <a href="${api.downloadUrl(e.path)}" class="muted" title="Download" aria-label="Download ${e.name}" download>↓</a>` : ''}${e.warn ? html` <span class="st warn" title="Readable by everyone">▲ world-readable secrets</span>` : ''}`,
-      html`<span class="mono">${e.mode}</span>`, e.size == null ? '' : bytes(e.size), e.mtime], { meta: { key: e.path, sig: `${e.mtime}|${e.size}` } }))]);
+      html`<span class="mono">${e.mode}</span>`, e.size == null ? '' : bytes(e.size), e.mtime], { meta: { key: e.path, sig: `${e.mtime}|${e.size}` } }))], { sticky: true, cards: false });
   const editor = () => open ? html`<section class="sec"><div class="sec-h"><h2 class="mono">${open.path}</h2><span class="row">${btn('Save', { act: 'save', kind: 'primary' })}${api.downloadUrl(open.path) ? html`<a class="btn" href="${api.downloadUrl(open.path)}" download>Download</a>` : ''}${btn('Permissions', { act: 'chmod' })}${btn('Close', { act: 'close' })}</span></div>
     <div id="mon" role="group" aria-label="Editor for ${open.path}" style="height:420px;border:1px solid var(--ls);border-radius:8px;background:#1e1e1e"><p class="muted sm" style="padding:16px">Loading editor…</p></div><p class="sm muted mono" id="es" style="margin-top:6px">${open.mode} · ${langOf(open.path)} · Ctrl S to save</p></section>` : '';
   let fresh = false; // opening another folder is a new view: nothing enters or flashes
   const paint = () => {
     const opts = fresh ? { animate: false } : undefined; fresh = false;
+    root.classList.toggle('editing', !!open);
     patch(root.querySelector('#c'), crumbs().toString(), opts); patch(root.querySelector('#l'), list().toString(), opts); root.querySelector('#e').innerHTML = editor().toString();
     root.querySelector('#del').disabled = !picked.size;
     disposeEd();
@@ -53,7 +54,7 @@ export async function view({ query }) {
   };
   return {
     nav: 'files', title: 'Files',
-    html: html`<main>${header('Files', 'Browse and edit files on this server.', html`<span class="row">${btn('New folder', { act: 'mkdir' })}${raw(btn('Delete', { act: 'delete', kind: 'danger', disabled: true }).toString().replace('<button', '<button id="del"'))}</span>`)}<div id="c"></div>${dropzone({ id: 'up', label: 'Drop a file here to upload it to this folder, or', browse: 'choose a file' })}<div id="l"></div><div id="e" style="margin-top:24px"></div></main>`,
+    html: html`<main class="files-page">${header('Files', 'Browse and edit files on this server.', html`<span class="row">${btn('New folder', { act: 'mkdir' })}${raw(btn('Delete', { act: 'delete', kind: 'danger', disabled: true }).toString().replace('<button', '<button id="del"'))}</span>`)}<div id="c"></div>${dropzone({ id: 'up', label: 'Drop a file here to upload it to this folder, or', browse: 'choose a file' })}<div id="l"></div><div id="e" style="margin-top:24px"></div></main>`,
     mount(r) {
       root = r; paint();
       const rl = async () => { await load(); paint(); };

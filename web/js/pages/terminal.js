@@ -27,7 +27,7 @@ async function realView() {
   let users = null, loadError = '', hostName = 'this server';
   try { hostName = (await api.getHost()).name || hostName; } catch { /* keep the generic name */ }
   if (isAdmin) { try { users = await api.getTerminalUsers(); } catch (e) { loadError = e.message; } }
-  let root, term = null, fit = null, conn = null, ro = null, state = 'idle';
+  let root, term = null, fit = null, conn = null, ro = null, vv = null, state = 'idle', ctrlLatch = false;
   const status = (text, kind = '') => { const el = root?.querySelector('#stat'); if (el) { el.textContent = text; el.className = `sm ${kind}`.trim(); } };
   const controls = () => {
     const live = state === 'connecting' || state === 'open';
@@ -37,6 +37,30 @@ async function realView() {
   };
   const theme = () => { const cs = getComputedStyle(document.documentElement); return { background: cs.getPropertyValue('--code').trim() || '#111113', foreground: cs.getPropertyValue('--codetext').trim() || '#DADADF', cursor: cs.getPropertyValue('--accent').trim() || '#FF6A3D' }; };
   const size = () => { try { fit.fit(); } catch { /* not laid out yet */ } return { cols: term.cols || 80, rows: term.rows || 24 }; };
+  const fitViewport = () => {
+    const host = root?.querySelector('#xt');
+    const box = root?.querySelector('.term');
+    if (!host || !box || !fit) return;
+    const vvH = window.visualViewport?.height;
+    if (vvH) {
+      const top = box.getBoundingClientRect().top;
+      const keys = root.querySelector('.term-keys');
+      const foot = root.querySelector('.term-foot');
+      const chrome = (keys?.offsetHeight || 0) + (foot?.offsetHeight || 0) + 8;
+      const h = Math.max(160, Math.floor(vvH - top - chrome));
+      box.style.setProperty('--term-h', `${h}px`);
+      box.classList.add('vv-fit');
+    }
+    try { fit.fit(); } catch { /* hidden */ }
+  };
+  const sendKey = (seq) => {
+    if (!term || !conn) return;
+    if (ctrlLatch && seq.length === 1) {
+      const code = seq.toUpperCase().charCodeAt(0) - 64;
+      if (code >= 0 && code < 32) { term.input(String.fromCharCode(code)); ctrlLatch = false; root.querySelector('[data-tk=ctrl]')?.setAttribute('aria-pressed', 'false'); return; }
+    }
+    term.input(seq);
+  };
 
   const start = async (user, confirmRoot) => {
     state = 'connecting'; controls(); status('Connecting…');
@@ -47,12 +71,24 @@ async function realView() {
         term = new window.Terminal({ cursorBlink: true, fontFamily: 'Geist Mono, ui-monospace, monospace', fontSize: 14, scrollback: 5000, theme: theme(), allowProposedApi: false });
         fit = new window.FitAddon.FitAddon(); term.loadAddon(fit);
         term.open(root.querySelector('#xt'));
-        term.onData((d) => conn?.send(d));
+        term.onData((d) => {
+          if (ctrlLatch && d.length === 1) {
+            const c = d.toUpperCase().charCodeAt(0);
+            if (c >= 64 && c < 96) { conn?.send(String.fromCharCode(c - 64)); ctrlLatch = false; root.querySelector('[data-tk=ctrl]')?.setAttribute('aria-pressed', 'false'); return; }
+          }
+          conn?.send(d);
+        });
         term.onBinary((d) => conn?.sendBytes(Uint8Array.from(d, (c) => c.charCodeAt(0))));
         term.onResize(({ cols, rows }) => conn?.resize(cols, rows));
         // Keyboard users must be able to leave the terminal: Tab belongs to the shell.
         term.attachCustomKeyEventHandler((e) => { if (e.type === 'keydown' && e.key === 'Escape' && e.shiftKey) { root.querySelector('#u')?.focus(); return false; } return true; });
-        if (typeof ResizeObserver !== 'undefined') { let raf; ro = new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { try { fit.fit(); } catch { /* hidden */ } }); }); ro.observe(root.querySelector('#xt')); }
+        if (typeof ResizeObserver !== 'undefined') { let raf; ro = new ResizeObserver(() => { cancelAnimationFrame(raf); raf = requestAnimationFrame(fitViewport); }); ro.observe(root.querySelector('#xt')); }
+        if (window.visualViewport) {
+          vv = () => fitViewport();
+          window.visualViewport.addEventListener('resize', vv);
+          window.visualViewport.addEventListener('scroll', vv);
+        }
+        fitViewport();
       } else term.reset();
       dims = size();
     } catch (e) {
@@ -89,6 +125,15 @@ async function realView() {
         <span id="stat" class="sm muted" role="status" aria-live="polite"></span></div>
       ${users.default ? '' : html`<p class="muted sm">This server has no ordinary user account to open a terminal as. Choose one, or root.</p>`}
       <div class="term"><div id="xt" class="xterm-host" aria-label="Terminal"></div>
+        <div class="term-keys" role="toolbar" aria-label="Terminal keys">
+          <button type="button" class="tk" data-tk="esc">Esc</button>
+          <button type="button" class="tk" data-tk="tab">Tab</button>
+          <button type="button" class="tk" data-tk="ctrl" aria-pressed="false">Ctrl</button>
+          <button type="button" class="tk" data-tk="up" aria-label="Up">↑</button>
+          <button type="button" class="tk" data-tk="down" aria-label="Down">↓</button>
+          <button type="button" class="tk" data-tk="left" aria-label="Left">←</button>
+          <button type="button" class="tk" data-tk="right" aria-label="Right">→</button>
+        </div>
         <div class="term-foot"><span>Ctrl+D or <span class="mono">exit</span> ends the session</span><span>Shift+Esc leaves the terminal</span><span>Idle sessions close on their own</span></div></div>`;
   return {
     nav: 'terminal', title: 'Terminal',
@@ -101,10 +146,32 @@ async function realView() {
         connect: () => connectAs(root.querySelector('#u').value),
         disconnect: () => { conn?.close(); },
       });
+      root.querySelector('.term-keys')?.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-tk]'); if (!b || !term) return;
+        const k = b.dataset.tk;
+        if (k === 'ctrl') {
+          ctrlLatch = !ctrlLatch;
+          b.setAttribute('aria-pressed', String(ctrlLatch));
+          term.focus();
+          return;
+        }
+        const map = { esc: '\x1b', tab: '\t', up: '\x1b[A', down: '\x1b[B', right: '\x1b[C', left: '\x1b[D' };
+        if (map[k]) sendKey(map[k]);
+        term.focus();
+      });
       controls();
       if (users.default) connectAs(users.default).catch((e) => toast(e.message, 'err'));
     },
-    unmount() { try { conn?.close(); ro?.disconnect(); term?.dispose(); } catch { /* leaving anyway */ } conn = null; term = null; },
+    unmount() {
+      try {
+        conn?.close(); ro?.disconnect(); term?.dispose();
+        if (vv && window.visualViewport) {
+          window.visualViewport.removeEventListener('resize', vv);
+          window.visualViewport.removeEventListener('scroll', vv);
+        }
+      } catch { /* leaving anyway */ }
+      conn = null; term = null; vv = null;
+    },
   };
 }
 

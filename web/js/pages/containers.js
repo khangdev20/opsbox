@@ -147,7 +147,7 @@ export async function view() {
       }
       put(el, table(
         'Containers',
-        [['Container'], ['State'], ['CPU', 'r'], ['Memory', 'r'], ['Ports'], [html`<span class="sr">Actions</span>`, 'r']],
+        [['Container'], ['State'], ['CPU', { align: 'r', label: 'CPU' }], ['Memory', { align: 'r', label: 'Memory' }], ['Ports'], [html`<span class="sr">Actions</span>`, { align: 'r', label: false }]],
         data.map((c) => {
           const img = shortImage(c.image);
           const live = c.state === 'running' || c.state === 'restarting' || c.state === 'paused';

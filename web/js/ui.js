@@ -388,18 +388,41 @@ export async function withBusy(el, fn) {
   setBusy(el, true);
   try { return await fn(); } finally { setBusy(el, false); }
 }
+// Head cell: [text] | [text, 'r'] | [text, { align:'r', label:'Name'|false }].
+// `label` becomes data-label for card mode under 700 px (false / '' skips that cell as a field).
+function headMeta(h) {
+  const text = h?.[0] ?? '';
+  const opt = h?.[1];
+  let align = '', label;
+  if (opt === 'r') { align = 'r'; label = typeof text === 'string' ? text : ''; }
+  else if (opt && typeof opt === 'object') {
+    align = opt.align === 'r' ? 'r' : '';
+    label = opt.label !== undefined ? opt.label : (typeof text === 'string' ? text : '');
+  } else label = typeof text === 'string' ? text : '';
+  if (label === false || label == null) label = '';
+  return { text, align, label: String(label) };
+}
 // `meta` on a row: { key, sig, cls, attrs }. key makes the row keyed (patch updates it in place);
 // sig is what counts as a change worth flashing (default: the whole row).
-export function table(caption, heads, rows, { rowAttrs, flip = false } = {}) {
-  const th = heads.map(([t, a]) => html`<th class="${a === 'r' ? 'r' : ''}">${t}</th>`);
+// cards (default): under 700 px each row is a card via data-label. sticky: wide tables scroll
+// inside .tw with the first column pinned instead (never scroll the page sideways).
+export function table(caption, heads, rows, { rowAttrs, flip = false, cards = true, sticky = false } = {}) {
+  const meta = heads.map(headMeta);
+  const th = meta.map((h) => html`<th class="${h.align}">${h.text}</th>`);
   const tr = rows.map((cells, ri) => {
-    const meta = cells.meta || {};
-    const attrs = rowAttrs ? rowAttrs(ri) : (meta.attrs || '');
-    const key = meta.key !== undefined ? ` data-key="${esc(meta.key)}"` : '';
-    const sig = meta.sig !== undefined ? ` data-sig="${esc(meta.sig)}"` : '';
-    return html`<tr class="${meta.cls || ''}"${raw(key)}${raw(sig)} ${raw(attrs)}>${cells.map((c, i) => html`<td class="${heads[i] && heads[i][1] === 'r' ? 'r' : ''}">${c}</td>`)}</tr>`;
+    const rowMeta = cells.meta || {};
+    const attrs = rowAttrs ? rowAttrs(ri) : (rowMeta.attrs || '');
+    const key = rowMeta.key !== undefined ? ` data-key="${esc(rowMeta.key)}"` : '';
+    const sig = rowMeta.sig !== undefined ? ` data-sig="${esc(rowMeta.sig)}"` : '';
+    return html`<tr class="${rowMeta.cls || ''}"${raw(key)}${raw(sig)} ${raw(attrs)}>${cells.map((c, i) => {
+      const h = meta[i] || { align: '', label: '' };
+      const lbl = h.label ? ` data-label="${esc(h.label)}"` : '';
+      const isAct = !h.label && i === cells.length - 1;
+      return html`<td class="${h.align}${isAct ? ' td-acts' : ''}"${raw(lbl)}>${c}</td>`;
+    })}</tr>`;
   });
-  return html`<div class="tw${rows.length > 12 ? ' tall' : ''}"><table><caption class="sr">${caption}</caption><thead><tr>${th}</tr></thead><tbody${raw(flip ? ' data-flip' : '')}>${tr}</tbody></table></div>`;
+  const mode = sticky ? ' scroll sticky-col' : (cards ? ' cards' : '');
+  return html`<div class="tw${rows.length > 12 ? ' tall' : ''}${mode}"><table><caption class="sr">${caption}</caption><thead><tr>${th}</tr></thead><tbody${raw(flip ? ' data-flip' : '')}>${tr}</tbody></table></div>`;
 }
 export function section(title, body, right = '', cls = '') {
   return html`<section class="sec${cls ? ` ${cls}` : ''}"><div class="sec-h"><h2>${title}</h2>${right}</div>${body}</section>`;
@@ -545,6 +568,7 @@ export function openModal(d, focus) {
 export function confirmDialog({ title, body, confirm = 'Confirm', danger = false, typed = null }) {
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
+    d.className = 'dlg compact';
     d.setAttribute('aria-labelledby', 'dlg-t');
     d.innerHTML = `<form method="dialog"><div class="d-b"><h2 id="dlg-t">${esc(title)}</h2><p class="muted">${esc(body)}</p>${typed ? `<div class="field"><label for="cf">Type <b class="mono">${esc(typed)}</b> to confirm</label><input id="cf" class="input" autocomplete="off"></div>` : ''}</div><div class="d-f"><button type="button" class="btn" data-no>Cancel</button><button type="submit" class="btn ${danger ? 'danger' : 'primary'}" value="yes" ${typed ? 'disabled' : ''}>${esc(confirm)}</button></div></form>`;
     d.querySelector('[data-no]').addEventListener('click', () => d.close('no'));
@@ -652,8 +676,9 @@ const fieldHtml = (x) => {
 export function formDialog({ title, body = '', fields, submit = 'Save', danger = false, capacity = null, run = null }) {
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
+    d.className = 'dlg sheet';
     d.setAttribute('aria-labelledby', 'dlg-t');
-    d.innerHTML = `<form method="dialog" novalidate><div class="d-b"><h2 id="dlg-t">${esc(title)}</h2>${body ? `<p class="muted">${esc(body)}</p>` : ''}${fields.map(fieldHtml).join('')}<p class="form-err" role="alert" tabindex="-1"></p></div><div class="d-f"><button type="button" class="btn" data-no>Cancel</button><button type="submit" class="btn ${danger ? 'danger' : 'primary'}" value="yes">${esc(submit)}</button></div></form>`;
+    d.innerHTML = `<form method="dialog" novalidate><div class="d-handle" aria-hidden="true"></div><div class="d-b"><h2 id="dlg-t">${esc(title)}</h2>${body ? `<p class="muted">${esc(body)}</p>` : ''}${fields.map(fieldHtml).join('')}<p class="form-err" role="alert" tabindex="-1"></p></div><div class="d-f"><button type="button" class="btn" data-no>Cancel</button><button type="submit" class="btn ${danger ? 'danger' : 'primary'}" value="yes">${esc(submit)}</button></div></form>`;
     const form = d.querySelector('form'), ok = d.querySelector('button[type=submit]'), errLine = d.querySelector('.form-err');
     d.querySelector('[data-no]').addEventListener('click', () => d.close('no'));
     let result = null, capacityControl, capacityModule;
@@ -700,6 +725,7 @@ export function download(name, text, type = 'text/plain') {
 // `until` is when the server undoes the change (unix seconds). `keep()` tells it to keep it.
 export function keepOrUndoDialog({ title = 'Keep this change?', body, until, keep }) {
   const d = document.createElement('dialog');
+  d.className = 'dlg compact';
   d.setAttribute('aria-labelledby', 'dlg-t');
   d.innerHTML = `<form method="dialog"><div class="d-b"><h2 id="dlg-t">${esc(title)}</h2><p class="muted">${esc(body)}</p><p class="mono" id="kc" role="timer" style="font-size:20px"></p></div><div class="d-f"><button class="btn primary" value="keep">Yes, keep it</button></div></form>`;
   const kc = d.querySelector('#kc');

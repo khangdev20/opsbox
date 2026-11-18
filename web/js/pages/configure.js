@@ -46,7 +46,7 @@ export async function view({ query }) {
         <div class="field"><label for="vars">Environment variables</label><textarea class="input" id="vars" name="vars" rows="4" placeholder="KEY=value (one per line)" style="height:auto;font-family:var(--mono)"></textarea></div>
         ${capacityFields(128)}
         <p id="err" class="form-err" role="alert" tabindex="-1"></p>
-        <div class="row"><button class="btn primary" type="submit">Deploy</button><a class="btn link" href="#/apps/new">Back</a></div>
+        <div class="row wiz-actions"><button class="btn primary" type="submit">Deploy</button><a class="btn link" href="#/apps/new">Back</a></div>
       </form></main>`,
     mount(root) {
       const f = root.querySelector('#f');

@@ -49,7 +49,7 @@ export async function view() {
         ), isAdmin ? btn('+ Add schedule', { act: 'addjob' }) : '')}
         ${section('Available backups', table(
           'Backups',
-          [['Taken (UTC)'], ['What'], ['Size', 'r'], ['Where'], ['Check'], ['', 'r']],
+          [['Taken (UTC)'], ['What'], ['Size', { align: 'r', label: 'Size' }], ['Where'], ['Check'], ['', { label: false }]],
           d.items.length
             ? d.items.map((k) => [
               html`<span class="mono">${k.at}</span>`,
@@ -62,6 +62,7 @@ export async function view() {
                 : '',
             ])
             : [[html`<span class="muted">No snapshots yet — click <b>Back up now</b> to create the first encrypted snapshot.</span>`, '', '', '', '', '']],
+          { sticky: true, cards: false },
         ), isAdmin ? html`<span class="row">${btn('Prune old', { act: 'prune', kind: 'link' })}${btn('Verify checksums', { act: 'check', kind: 'link' })}${btn('Run restore test', { act: 'testrestoreall', kind: 'link' })}</span>` : '')}
       </div><div>
         ${section('Destinations', table(

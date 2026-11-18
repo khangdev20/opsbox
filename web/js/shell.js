@@ -433,6 +433,7 @@ export async function refreshHelperBanner() {
 }
 
 export function unmountShell() {
+  closeDrawer({ skipHistory: true });
   if (stopAttnPoll) { stopAttnPoll(); stopAttnPoll = null; }
   if (stopHelperPoll) { stopHelperPoll(); stopHelperPoll = null; }
   helperState = 'ok||';
@@ -443,19 +444,127 @@ export function unmountShell() {
   prevCritIds = new Set();
 }
 
+const MENU_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>';
+const SEARCH_SVG = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>';
+const FOCUSABLE_DRAWER = 'a[href],button:not([disabled]),[tabindex]:not([tabindex="-1"])';
+let drawerOpen = false;
+let drawerFocusPrev = null;
+let drawerTouchX = null;
+
+function isNarrowShell() {
+  return typeof window.matchMedia === 'function' && window.matchMedia('(max-width:900px)').matches;
+}
+
+function clearDrawerHistory() {
+  if (!history.state?.opsboxDrawer) return;
+  const next = { ...history.state };
+  delete next.opsboxDrawer;
+  try { history.replaceState(Object.keys(next).length ? next : null, ''); } catch { /* ignore */ }
+}
+
+function closeDrawer(opts = {}) {
+  const { focusBtn = false, skipHistory = false } = opts;
+  const shell = document.querySelector('.shell');
+  const btn = document.getElementById('nav-btn');
+  const side = document.getElementById('side');
+  const back = document.getElementById('side-backdrop');
+  if (!shell || !drawerOpen) {
+    if (focusBtn) btn?.focus();
+    return;
+  }
+  drawerOpen = false;
+  shell.classList.remove('drawer-open');
+  document.body.classList.remove('drawer-open');
+  btn?.setAttribute('aria-expanded', 'false');
+  btn?.setAttribute('aria-label', 'Open menu');
+  if (back) back.hidden = true;
+  side?.setAttribute('aria-hidden', 'true');
+  if (!skipHistory && history.state?.opsboxDrawer) {
+    try { history.back(); } catch { clearDrawerHistory(); }
+  } else clearDrawerHistory();
+  const ret = drawerFocusPrev;
+  drawerFocusPrev = null;
+  if (focusBtn) (btn || ret)?.focus?.({ preventScroll: true });
+}
+
+function openDrawer() {
+  if (!isNarrowShell()) return;
+  const shell = document.querySelector('.shell');
+  const btn = document.getElementById('nav-btn');
+  const side = document.getElementById('side');
+  const back = document.getElementById('side-backdrop');
+  if (!shell || drawerOpen) return;
+  closeMenu();
+  closeNotifPop(false);
+  drawerOpen = true;
+  drawerFocusPrev = document.activeElement;
+  shell.classList.add('drawer-open');
+  document.body.classList.add('drawer-open');
+  btn?.setAttribute('aria-expanded', 'true');
+  btn?.setAttribute('aria-label', 'Close menu');
+  if (back) back.hidden = false;
+  side?.removeAttribute('aria-hidden');
+  if (!history.state?.opsboxDrawer) {
+    try { history.pushState({ ...(history.state || {}), opsboxDrawer: 1 }, ''); } catch { /* ignore */ }
+  }
+  const first = side?.querySelector(FOCUSABLE_DRAWER);
+  (first || side)?.focus?.({ preventScroll: true });
+}
+
+function toggleDrawer() {
+  if (drawerOpen) closeDrawer({ focusBtn: true });
+  else openDrawer();
+}
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest?.('#nav-btn')) { toggleDrawer(); return; }
+  if (e.target.closest?.('#side-backdrop')) { closeDrawer({ focusBtn: true }); return; }
+  if (drawerOpen && e.target.closest?.('#side a[href]')) closeDrawer({ skipHistory: true });
+});
+document.addEventListener('keydown', (e) => {
+  if (!drawerOpen) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeDrawer({ focusBtn: true }); return; }
+  if (e.key !== 'Tab') return;
+  const side = document.getElementById('side');
+  if (!side) return;
+  const f = [...side.querySelectorAll(FOCUSABLE_DRAWER)].filter((x) => !x.disabled && x.offsetParent !== null);
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && (document.activeElement === first || !side.contains(document.activeElement))) { last.focus(); e.preventDefault(); }
+  else if (!e.shiftKey && document.activeElement === last) { first.focus(); e.preventDefault(); }
+});
+window.addEventListener('hashchange', () => closeDrawer({ skipHistory: true }));
+window.addEventListener('popstate', () => {
+  if (drawerOpen) closeDrawer({ skipHistory: true, focusBtn: true });
+});
+document.addEventListener('touchstart', (e) => {
+  if (!drawerOpen) return;
+  const t = e.changedTouches?.[0];
+  if (t) drawerTouchX = t.clientX;
+}, { passive: true });
+document.addEventListener('touchend', (e) => {
+  if (!drawerOpen || drawerTouchX == null) return;
+  const t = e.changedTouches?.[0];
+  const dx = t ? t.clientX - drawerTouchX : 0;
+  drawerTouchX = null;
+  if (dx < -56) closeDrawer({ focusBtn: true });
+}, { passive: true });
+
 export function mountShell(app) {
   app.innerHTML = `
   <header class="topbar"><div class="wrap">
+    <button type="button" class="btn icon nav-btn" id="nav-btn" aria-controls="side" aria-expanded="false" aria-label="Open menu">${MENU_SVG}</button>
     ${logo({ href: '#/' })}
     <span class="crumb">${api.MODE === 'http' ? esc(hostName) : 'srv-sgn-01<s>/</s>shop-platform<s>/</s><b>production</b>'}</span>
     <span class="grow"></span>
-    <button type="button" class="btn pal-btn" id="open-pal">Search or run a command<kbd class="kbd">Ctrl K</kbd></button>
+    <button type="button" class="btn pal-btn" id="open-pal" aria-label="Search or run a command">${SEARCH_SVG}<span class="pal-lbl">Search or run a command</span><kbd class="kbd">Ctrl K</kbd></button>
     ${notificationBell({ data: attnData })}
     <button type="button" class="btn icon" id="theme-btn"></button>
     ${accountMenu()}
   </div></header>
   <div class="shell">
-    <aside class="side" aria-label="Main"><nav id="nav" class="nav" aria-label="Sections"></nav>
+    <div class="side-backdrop" id="side-backdrop" hidden></div>
+    <aside class="side" id="side" aria-label="Main"><nav id="nav" class="nav" aria-label="Sections"></nav>
       <div class="side-foot"><button type="button" class="side-toggle" id="side-toggle" aria-label="Collapse sidebar" title="Collapse sidebar">${svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/>')}<span class="lbl">Collapse</span></button></div></aside>
     <div class="content">
       <div id="helper-banner" class="helper-banner"></div>
@@ -479,6 +588,7 @@ export function mountShell(app) {
   const setC = (c) => { shell.classList.toggle('collapsed', c); const l = c ? 'Expand sidebar' : 'Collapse sidebar'; tg.setAttribute('aria-label', l); tg.title = l; try { localStorage.setItem('opsbox.side', c ? '1' : '0'); } catch {} };
   let c0 = false; try { c0 = localStorage.getItem('opsbox.side') === '1'; } catch {} setC(c0);
   tg.addEventListener('click', () => setC(!shell.classList.contains('collapsed')));
+  closeDrawer({ skipHistory: true });
   return document.getElementById('view');
 }
 

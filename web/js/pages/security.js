@@ -46,7 +46,7 @@ export async function view() {
       <div class="row" style="margin:0">${btn('Apply', { act: 'filter' })}${btn('Export CSV', { act: 'export' })}</div>
     </div>
     <p class="sm muted mt6">Loopback addresses show as local; the reverse proxy hop shows as panel.</p>`;
-    return section('Audit log', html`${filtersUi}${table('Audit log', [['Time'], ['User'], ['IP'], ['Action']], rows)}`);
+    return section('Audit log', html`${filtersUi}${table('Audit log', [['Time'], ['User'], ['IP'], ['Action']], rows, { sticky: true, cards: false })}`);
   };
   const body = () => html`<div class="cols"><div class="w2">${section(`Checks · ${d.passing} of ${d.total} passing`, d.checks.map((c) => html`<div class="list-row"><span>${chk(c.ok ? 'ok' : 'warn', c.t)}</span>${c.action && c.id !== 'sshd' ? btn(c.action, { act: 'enable', data: { id: c.id } }) : c.id === 'sshd' ? btn(d.checks.find((x) => x.id === 'sshd').warn ? 'Open now' : c.action, { act: 'ssh' }) : c.link && !c.ok ? btn('Open', { href: c.link }) : ''}</div>`))}
       ${section('Allowed IPs', html`<div class="row"><input class="input grow mono" id="ips" value="${d.allowIps}" aria-label="Allowed IP addresses"><button type="button" class="btn" data-act="saveips">Save</button></div><p class="sm muted mt6">Comma-separated IPs or CIDR ranges.</p>`)}</div>

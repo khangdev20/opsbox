@@ -214,6 +214,15 @@
    "expand": "fill",
    "is_interactive": true
   },
+  "Mobile.dc.html": {
+   "x": 7800,
+   "y": 1736,
+   "w": 1680,
+   "h": 900,
+   "title": "M \u00b7 Mobile (16s)",
+   "expand": "fill",
+   "is_interactive": true
+  },
   "AppDomains.dc.html": {
    "x": 7800,
    "y": 4200,
@@ -268,7 +277,8 @@
   "Header.dc.html",
   "Nav.dc.html",
   "Status.dc.html",
-  "Landing.dc.html"
+  "Landing.dc.html",
+  "Mobile.dc.html"
  ],
  "pages": [],
  "title": "opsbox \u2014 Web UI design"

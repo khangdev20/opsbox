@@ -442,6 +442,8 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 
 **Verification.** Screenshots come from demo mode, not `opsbox-vm` (Owner credentials plus 2FA are not available to automation).
 
+**Mobile (16s).** The panel follows the Mobile board in `design/project/Mobile.dc.html` (drawer under 900 px, card tables under 700 px, bottom sheets under 640 px). See prompt 16s / `tools/check-responsive-ui.mjs`.
+
 ## Prompt 16e (transport security)
 
 **The proxy proves itself with a shared secret; loopback alone is not trust.** `serve` believes `X-Forwarded-For` and `X-Forwarded-Proto` only from a loopback TCP peer that also sends `X-Opsbox-Proxy-Secret`. An SSH tunnel and any local program also arrive from loopback, so a loopback check alone would let them forge a client address (past the allowed-address list) or a scheme. The secret is created by `serve` (and `opsbox web`) in the settings table (`opsbox.proxy.forward_secret`, database mode 0600) and travels to the proxy in the panel `Route` (`forward_secret`, a redacted `Secret`). The proxy removes any client copy of the header on every route and adds its own only on the panel route, so apps never see it. A file-based secret was rejected because `serve` runs unprivileged and `/etc/opsbox` is not writable by it.
