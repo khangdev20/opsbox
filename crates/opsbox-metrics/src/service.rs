@@ -1,6 +1,7 @@
 //! The sampler: once a second ask `priv` for counters, keep the live ring, publish
 //! to subscribers and write minute/hour rollups.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -35,6 +36,7 @@ struct State {
     containers: Vec<DockerContainerStat>,
     restarting_containers: Vec<String>,
     restarting_known: bool,
+    attention_since: HashMap<String, i64>,
     /// Whether the last sample worked, for the "unavailable" answer.
     last_error: Option<String>,
 }
@@ -62,6 +64,7 @@ impl Metrics {
                 containers: Vec::new(),
                 restarting_containers: Vec::new(),
                 restarting_known: false,
+                attention_since: HashMap::new(),
                 last_error: None,
             })),
             tx,
@@ -102,19 +105,10 @@ impl Metrics {
         self.tx.subscribe()
     }
 
-    /// The "needs attention" items right now.
+    /// The "needs attention" items right now, with stable first-seen timestamps.
     pub fn attention(&self) -> Vec<Attention> {
-        let s = self.lock();
-        let disks = s
-            .latest
-            .as_ref()
-            .map(|l| l.disks.as_slice())
-            .unwrap_or_default();
-        let mut facts = s.facts.clone();
-        if s.restarting_known {
-            facts.restarting_containers = s.restarting_containers.clone();
-        }
-        attention::compute(&facts, disks)
+        let mut s = self.lock();
+        reconcile_attention_since(&mut s, unix_now())
     }
 
     /// Cached successful source groups for alerts. Expired samples are unknown.
@@ -171,6 +165,7 @@ impl Metrics {
                 let rows = s.rollup.push(&snap.point, &snap.disks);
                 let snap = Arc::new(snap);
                 s.latest = Some(snap.clone());
+                reconcile_attention_since(&mut s, now);
                 (snap, rows)
             };
             // No subscribers is the normal case; the send error just says so.
@@ -205,6 +200,8 @@ impl Metrics {
                     s.facts = f;
                     s.facts_ok = true;
                     s.facts_at = unix_now();
+                    let at = s.facts_at;
+                    reconcile_attention_since(&mut s, at);
                 }
                 other => debug!(?other, "could not refresh system facts"),
             }
@@ -258,6 +255,7 @@ impl Metrics {
                     if let Some(st) = stats {
                         s.containers = st;
                     }
+                    reconcile_attention_since(&mut s, unix_now());
                     DOCKER_ACTIVE_EVERY
                 }
                 Ok(Err(ClientError::Remote(_))) => {
@@ -265,6 +263,7 @@ impl Metrics {
                     s.containers.clear();
                     s.restarting_containers.clear();
                     s.restarting_known = true;
+                    reconcile_attention_since(&mut s, unix_now());
                     DOCKER_IDLE_EVERY
                 }
                 other => {
@@ -278,6 +277,27 @@ impl Metrics {
             }
         }
     }
+}
+
+fn reconcile_attention_since(s: &mut State, now: i64) -> Vec<Attention> {
+    let disks = s
+        .latest
+        .as_ref()
+        .map(|l| l.disks.as_slice())
+        .unwrap_or_default();
+    let mut facts = s.facts.clone();
+    if s.restarting_known {
+        facts.restarting_containers = s.restarting_containers.clone();
+    }
+    let mut items = attention::compute_at(&facts, disks, now);
+    let mut next_since = HashMap::with_capacity(items.len());
+    for item in &mut items {
+        let first = s.attention_since.get(&item.id).copied().unwrap_or(now);
+        item.since = first;
+        next_since.insert(item.id.clone(), first);
+    }
+    s.attention_since = next_since;
+    items
 }
 
 fn unix_now() -> i64 {

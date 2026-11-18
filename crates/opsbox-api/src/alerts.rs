@@ -692,29 +692,130 @@ pub(crate) async fn quiet(
     Ok(Json(json!({"ok":true})))
 }
 
+/// Map an alert rule + target to the canonical attention item `id` (`kind:subject`) so
+/// built-in checks and fired alerts describing the same issue deduplicate cleanly.
+pub(crate) fn canonical_attention_id(
+    store: &opsbox_store::Store,
+    rule: &str,
+    target: &str,
+) -> String {
+    match (rule, target) {
+        ("deploy", svc_id) => {
+            let subject = store
+                .get_service(svc_id)
+                .ok()
+                .flatten()
+                .map_or_else(|| svc_id.to_owned(), |s| s.name);
+            format!("deploy:{subject}")
+        }
+        ("tls", domain) => format!("cert:{domain}"),
+        ("backup", "restore-test") => "backup:restore-test".to_owned(),
+        ("backup", "capacity") => "backup:capacity".to_owned(),
+        ("backup", t) if t.starts_with("checksum-") => "backup:checksum".to_owned(),
+        ("backup" | "missed", job_id) => {
+            if job_id == opsbox_store::OPSBOX_SELF_JOB_ID {
+                "backup:opsbox".to_owned()
+            } else {
+                format!("backup:{job_id}")
+            }
+        }
+        (r, t) => format!("{r}:{t}"),
+    }
+}
+
 /// Only administrators can follow host-wide alerts. Other roles retain their
 /// existing scoped attention links and cannot infer global alert targets.
-pub(crate) async fn attention_links(
+pub(crate) async fn merge_alert_attention(
     s: &AppState,
     who: &opsbox_auth::Principal,
     items: Vec<opsbox_metrics::Attention>,
-) -> Value {
+) -> Vec<crate::metrics::AttentionEntry> {
+    use opsbox_metrics::Severity;
+    use std::collections::BTreeMap;
+
+    let mut map: BTreeMap<String, crate::metrics::AttentionEntry> = BTreeMap::new();
+    for a in items {
+        let entry = crate::metrics::AttentionEntry {
+            id: a.id.clone(),
+            kind: a.kind,
+            severity: a.severity,
+            since: a.since.max(1),
+            text: a.text,
+            link: a.link,
+            alert_id: None,
+            read: false,
+            snoozed: false,
+            snoozed_until: None,
+        };
+        if let Some(prev) = map.get_mut(&entry.id) {
+            if entry.severity > prev.severity {
+                *prev = entry;
+            } else if entry.severity == prev.severity && entry.since < prev.since {
+                prev.since = entry.since;
+            }
+        } else {
+            map.insert(entry.id.clone(), entry);
+        }
+    }
+
     if who.user.role != Role::Admin || who.scoped_service.is_some() {
-        return json!(items);
+        return map.into_values().collect();
     }
     let _guard = s.alerts.lock.lock().await;
     let Ok(e) = load(s) else {
-        return json!(items);
+        return map.into_values().collect();
     };
-    let mut result: Vec<Value> = items
-        .into_iter()
-        .filter(|a| {
-            !e.incidents.values().any(|i| {
-                i.rule == a.kind && matches!(i.state, AlertState::Pending | AlertState::Firing)
-            })
-        })
-        .map(|a| json!(a))
-        .collect();
-    result.extend(e.incidents.values().filter(|i|matches!(i.state,AlertState::Pending|AlertState::Firing)).map(|i|json!({"kind":i.rule,"text":i.msg,"alertId":i.id,"link":["View alert →",format!("#/alerts?id={}",encode(&i.id))]})));
-    json!(result)
+    for i in e
+        .incidents
+        .values()
+        .filter(|i| i.state == AlertState::Firing)
+    {
+        let id = canonical_attention_id(&s.store, &i.rule, &i.target);
+        let alert_sev = Severity::parse(&i.level);
+        let alert_since = i.since.max(1);
+        let alert_link = (
+            "View alert →".to_owned(),
+            format!("#/alerts?id={}", encode(&i.id)),
+        );
+        if let Some(existing) = map.get_mut(&id) {
+            if existing.alert_id.is_some() {
+                if alert_sev > existing.severity
+                    || (alert_sev == existing.severity && alert_since > existing.since)
+                {
+                    existing.severity = alert_sev;
+                    existing.since = alert_since;
+                    existing.text = i.msg.clone();
+                    existing.link = alert_link;
+                    existing.alert_id = Some(i.id.clone());
+                }
+            } else {
+                if alert_sev > existing.severity {
+                    existing.severity = alert_sev;
+                    existing.since = alert_since;
+                    existing.text = i.msg.clone();
+                } else {
+                    existing.since = existing.since.min(alert_since);
+                }
+                existing.link = alert_link;
+                existing.alert_id = Some(i.id.clone());
+            }
+        } else {
+            map.insert(
+                id.clone(),
+                crate::metrics::AttentionEntry {
+                    id,
+                    kind: i.rule.clone(),
+                    severity: alert_sev,
+                    since: alert_since,
+                    text: i.msg.clone(),
+                    link: alert_link,
+                    alert_id: Some(i.id.clone()),
+                    read: false,
+                    snoozed: false,
+                    snoozed_until: None,
+                },
+            );
+        }
+    }
+    map.into_values().collect()
 }

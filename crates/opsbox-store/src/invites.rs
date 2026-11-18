@@ -90,11 +90,16 @@ impl Store {
         Ok(n)
     }
 
-    /// Delete an account with its sessions and invitation.
+    /// Delete an account with its sessions, invitation and notification state.
     pub fn delete_user(&self, user_id: &str) -> Result<bool, StoreError> {
-        Ok(self
-            .lock()
-            .execute("DELETE FROM users WHERE id = ?1", params![user_id])?
-            > 0)
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM attention_state WHERE user_id = ?1",
+            params![user_id],
+        )?;
+        let deleted = tx.execute("DELETE FROM users WHERE id = ?1", params![user_id])? > 0;
+        tx.commit()?;
+        Ok(deleted)
     }
 }

@@ -1,5 +1,5 @@
-// App shell: top bar, section nav, status bar, command palette.
-import { html, raw, esc, toast, num, patch, withBusy, reportPoll, liveState, onLive, clock, logo, initials } from './ui.js';
+// App shell: top bar, section nav, notification bell, status bar, command palette.
+import { html, raw, esc, toast, num, patch, withBusy, reportPoll, liveState, onLive, clock, logo, initials, poll, ago, announce, reducedMotion } from './ui.js';
 import * as api from './api.js';
 import { theme, toggleTheme, session, server } from './store.js';
 
@@ -67,6 +67,7 @@ function closeMenu(focusBtn = false) {
 }
 function openMenu(focusFirst) {
   const m = document.getElementById('acct-menu'), b = document.getElementById('acct-btn'); if (!m) return;
+  closeNotifPop(false);
   m.hidden = false; b.setAttribute('aria-expanded', 'true');
   if (focusFirst) m.querySelector('[role=menuitem]').focus();
 }
@@ -90,12 +91,318 @@ document.addEventListener('keydown', (e) => {
 });
 window.addEventListener('hashchange', () => closeMenu());
 
+const paintBell = () => {
+  const btn = document.getElementById('notif-btn');
+  const badge = document.getElementById('notif-badge');
+  const readAll = document.getElementById('notif-read-all');
+  const list = document.getElementById('notif-list');
+  const { items, unread, critical } = attnData;
+  if (btn) btn.setAttribute('aria-label', `Notifications, ${unread} unread`);
+  if (badge) {
+    badge.hidden = !unread;
+    badge.textContent = unread > 9 ? '9+' : String(unread);
+    badge.classList.toggle('crit', critical > 0);
+  }
+  if (readAll) readAll.disabled = !unread;
+  if (list) {
+    const activeItem = document.activeElement?.closest?.('.notif-item');
+    const activeKey = activeItem?.getAttribute('data-key');
+    patch(list, renderNotifItems(items).toString());
+    if (activeItem && !activeItem.isConnected && !document.getElementById('notif-pop')?.hidden) {
+      const next = (activeKey && list.querySelector(`.notif-item[data-key="${CSS.escape(activeKey)}"]`)) || list.querySelector('.notif-item') || document.getElementById('notif-pop');
+      next?.focus?.();
+    }
+  }
+};
+
+const SEV_ICONS = {
+  critical: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>',
+  warning: '<path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
+};
+
+function renderNotifItems(items = [], demo = false) {
+  if (!items.length) return html`<div class="notif-empty muted">All clear</div>`;
+  return items.map((it) => {
+    const tsMs = it.since > 1e12 ? it.since : it.since * 1000;
+    const href = it.link?.[1] || '#/';
+    const linkLbl = it.link?.[0] || 'View →';
+    return html`<div class="notif-item${it.read ? '' : ' unread'}${it.snoozed ? ' snoozed' : ''} sev-${it.severity || 'warning'}" data-key="n-${it.id}" data-id="${it.id}" data-sig="${it.severity}|${!!it.read}|${!!it.snoozed}|${it.since}|${it.text}|${href}" tabindex="-1">
+      <span class="notif-ico" aria-hidden="true">${raw(svg(SEV_ICONS[it.severity] || SEV_ICONS.warning, 16))}</span>
+      <div class="notif-body">
+        <div class="notif-txt">${it.read ? '' : html`<span class="notif-dot" aria-label="Unread"></span>`}${it.text}</div>
+        <div class="notif-meta sm muted"><span>${it.since ? ago(tsMs) : 'just now'}</span>${it.snoozed ? html`<span>· snoozed</span>` : ''}<a class="notif-go" href="${href}">${linkLbl}</a></div>
+      </div>
+      <div class="notif-acts">
+        <button type="button" class="btn icon row-act notif-more" aria-haspopup="menu" aria-expanded="false" aria-label="Notification actions"${raw(demo ? '' : ` data-nact="menu" data-id="${esc(it.id)}"`)}>⋯</button>
+        <div class="notif-menu" role="menu" hidden>
+          ${!it.read ? html`<button type="button" role="menuitem" tabindex="-1" class="menu-item"${raw(demo ? '' : ` data-nact="read" data-id="${esc(it.id)}"`)}>Mark read</button>` : ''}
+          <button type="button" role="menuitem" tabindex="-1" class="menu-item"${raw(demo ? '' : ` data-nact="snooze" data-min="60" data-id="${esc(it.id)}"`)}>Snooze 1 h</button>
+          <button type="button" role="menuitem" tabindex="-1" class="menu-item"${raw(demo ? '' : ` data-nact="snooze" data-min="1440" data-id="${esc(it.id)}"`)}>Snooze 24 h</button>
+        </div>
+      </div>
+    </div>`;
+  });
+}
+
+// `demo` (UI kit): static preview states without ids so shell listeners ignore them.
+export function notificationBell({ data = { items: [], unread: 0, critical: 0 }, demo = false, open = false } = {}) {
+  const items = data?.items || [];
+  const unread = data?.unread ?? 0;
+  const critical = data?.critical ?? 0;
+  const titleId = demo ? '' : 'notif-title';
+  return html`<div class="notif"${raw(demo ? '' : ' id="notif"')}>
+    <button type="button" class="btn icon notif-btn"${raw(demo ? '' : ' id="notif-btn" aria-controls="notif-pop"')} aria-haspopup="dialog" aria-expanded="${String(open)}" aria-label="Notifications, ${unread} unread">
+      ${raw(svg(ICONS.alerts, 18))}
+      <span class="notif-badge${critical > 0 ? ' crit' : ''}"${raw(demo ? '' : ' id="notif-badge"')}${raw(unread ? '' : ' hidden')} aria-hidden="true">${unread > 9 ? '9+' : unread}</span>
+    </button>
+    <div class="notif-pop"${raw(demo ? '' : ' id="notif-pop"')} role="dialog" ${raw(demo ? 'aria-label="Notifications"' : `aria-labelledby="${titleId}"`)} tabindex="-1"${raw(open ? '' : ' hidden')}>
+      <div class="notif-head"><h2${raw(demo ? '' : ` id="${titleId}"`)}>Notifications</h2><button type="button" class="btn link"${raw(demo ? '' : ' id="notif-read-all"')}${raw(unread ? '' : ' disabled')}>Mark all read</button></div>
+      <div class="notif-list"${raw(demo ? '' : ' id="notif-list"')} data-flip>${renderNotifItems(items, demo)}</div>
+    </div>
+  </div>`;
+}
+
+// Shared attention state & single poller across header bell + Overview.
+const attnSubs = new Set();
+let attnData = { items: [], unread: 0, critical: 0 };
+let attnInflight = null;
+let attnBooted = false;
+let prevUnread = null;
+let prevCritIds = new Set();
+let stopAttnPoll = null;
+
+function normalizeAttn(rawData) {
+  if (Array.isArray(rawData)) {
+    const items = rawData.map((x, i) => ({
+      id: x.id || `${x.kind || 'item'}:${i}`,
+      kind: x.kind || 'info',
+      severity: x.severity || 'warning',
+      since: x.since || Math.floor(Date.now() / 1000),
+      text: x.text || '',
+      link: x.link || ['View →', '#/'],
+      read: !!x.read,
+      snoozed: !!x.snoozed,
+    }));
+    return { items, unread: items.filter((i) => !i.read).length, critical: items.filter((i) => i.severity === 'critical' && !i.read).length };
+  }
+  const items = Array.isArray(rawData?.items) ? rawData.items : [];
+  return {
+    items,
+    unread: rawData?.unread ?? items.filter((i) => !i.read).length,
+    critical: rawData?.critical ?? items.filter((i) => i.severity === 'critical' && !i.read).length,
+  };
+}
+
+function triggerBellMotion() {
+  if (reducedMotion()) return;
+  const btn = document.getElementById('notif-btn');
+  const badge = document.getElementById('notif-badge');
+  if (btn) {
+    btn.classList.remove('ring');
+    void btn.offsetWidth;
+    btn.classList.add('ring');
+    clearTimeout(btn._rt);
+    btn._rt = setTimeout(() => btn.classList.remove('ring'), 660);
+  }
+  if (badge && !badge.hidden) {
+    badge.classList.remove('pop');
+    void badge.offsetWidth;
+    badge.classList.add('pop');
+    clearTimeout(badge._pt);
+    badge._pt = setTimeout(() => badge.classList.remove('pop'), 380);
+  }
+}
+
+function applyAttn(next) {
+  const data = normalizeAttn(next);
+  const unreadCrit = data.items.filter((i) => i.severity === 'critical' && !i.read);
+  const nextCritIds = new Set(unreadCrit.map((i) => i.id));
+  if (prevUnread !== null) {
+    const newCrits = unreadCrit.filter((i) => !prevCritIds.has(i.id));
+    if (data.unread > prevUnread || newCrits.length > 0) triggerBellMotion();
+    if (newCrits.length > 0) {
+      announce(newCrits.length === 1 ? `Critical alert: ${newCrits[0].text}` : `${newCrits.length} new critical alerts. ${newCrits[0].text}`);
+    }
+  }
+  prevUnread = data.unread;
+  prevCritIds = nextCritIds;
+  attnData = data;
+  attnBooted = true;
+  paintBell();
+  attnSubs.forEach((fn) => { try { fn(attnData); } catch {} });
+}
+
+export async function refreshAttention() {
+  if (attnInflight) return attnInflight;
+  attnInflight = api.quiet(() => api.getAttention())
+    .then((d) => { applyAttn(d); return attnData; })
+    .finally(() => { attnInflight = null; });
+  return attnInflight;
+}
+
+export async function sharedAttention() {
+  if (attnInflight) return attnInflight;
+  if (attnBooted) return attnData;
+  return refreshAttention();
+}
+
+export function onAttention(fn) {
+  attnSubs.add(fn);
+  return () => attnSubs.delete(fn);
+}
+
+function closeNotifMenus(within = document) {
+  within.querySelectorAll('.notif-menu:not([hidden])').forEach((m) => { m.hidden = true; });
+  within.querySelectorAll('.notif-more[aria-expanded=true]').forEach((b) => { b.setAttribute('aria-expanded', 'false'); });
+}
+
+function closeNotifPop(focusBtn = false) {
+  const p = document.getElementById('notif-pop'), b = document.getElementById('notif-btn');
+  if (!p || p.hidden) return;
+  closeNotifMenus(p);
+  p.hidden = true;
+  b?.setAttribute('aria-expanded', 'false');
+  if (focusBtn) b?.focus();
+}
+
+function openNotifPop() {
+  const p = document.getElementById('notif-pop'), b = document.getElementById('notif-btn');
+  if (!p) return;
+  closeMenu();
+  p.hidden = false;
+  b?.setAttribute('aria-expanded', 'true');
+  const first = p.querySelector('.notif-item') || (!document.getElementById('notif-read-all')?.disabled && document.getElementById('notif-read-all')) || p;
+  first?.focus();
+}
+
+export function openNotifications() {
+  const p = document.getElementById('notif-pop');
+  if (!p) return;
+  if (p.hidden) openNotifPop();
+}
+
+document.addEventListener('click', (e) => {
+  const nb = e.target.closest?.('#notif-btn');
+  if (nb) {
+    const p = document.getElementById('notif-pop');
+    if (p) (p.hidden ? openNotifPop() : closeNotifPop(true));
+    return;
+  }
+  const pop = document.getElementById('notif-pop');
+  if (!pop || pop.hidden) return;
+  if (e.target.closest?.('#notif-read-all')) {
+    const btn = e.target.closest('#notif-read-all');
+    withBusy(btn, async () => applyAttn(await api.markAllAttentionRead()));
+    return;
+  }
+  const nactEl = e.target.closest?.('[data-nact]');
+  if (nactEl && pop.contains(nactEl)) {
+    const act = nactEl.dataset.nact;
+    const id = nactEl.dataset.id;
+    if (act === 'menu') {
+      const acts = nactEl.closest('.notif-acts');
+      const menu = acts?.querySelector('.notif-menu');
+      const wasHidden = menu?.hidden;
+      closeNotifMenus(pop);
+      if (menu && wasHidden) {
+        menu.hidden = false;
+        nactEl.setAttribute('aria-expanded', 'true');
+        if (e.detail === 0) menu.querySelector('[role=menuitem]')?.focus();
+      }
+      return;
+    }
+    closeNotifMenus(pop);
+    const runAction = async () => {
+      try {
+        const res = act === 'read'
+          ? await api.markAttentionRead(id)
+          : await api.snoozeAttention(id, Number(nactEl.dataset.min));
+        applyAttn(res);
+      } catch (err) {
+        if (err.status === 404) await refreshAttention();
+        else toast(err.message || 'Could not update notification.', 'err');
+      }
+    };
+    withBusy(nactEl, runAction);
+    return;
+  }
+  if (e.target.closest?.('.notif-go') && pop.contains(e.target)) {
+    closeNotifPop(false);
+    return;
+  }
+  if (!e.target.closest?.('.notif-acts')) closeNotifMenus(pop);
+  if (!e.target.closest?.('#notif') && !e.target.closest?.('[data-act="open-bell"]')) closeNotifPop(false);
+});
+
+document.addEventListener('keydown', (e) => {
+  const pop = document.getElementById('notif-pop');
+  if (!pop || pop.hidden) return;
+  const openMenuEl = pop.querySelector('.notif-menu:not([hidden])');
+  if (openMenuEl) {
+    const menuItems = [...openMenuEl.querySelectorAll('[role=menuitem]')];
+    const idx = menuItems.indexOf(document.activeElement);
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      const more = openMenuEl.closest('.notif-acts')?.querySelector('.notif-more');
+      closeNotifMenus(pop);
+      more?.focus();
+    } else if (e.key === 'ArrowDown' && menuItems.length) {
+      e.preventDefault();
+      menuItems[(idx + 1) % menuItems.length].focus();
+    } else if (e.key === 'ArrowUp' && menuItems.length) {
+      e.preventDefault();
+      menuItems[(idx - 1 + menuItems.length) % menuItems.length].focus();
+    } else if (e.key === 'Home' && menuItems.length) {
+      e.preventDefault();
+      menuItems[0].focus();
+    } else if (e.key === 'End' && menuItems.length) {
+      e.preventDefault();
+      menuItems[menuItems.length - 1].focus();
+    } else if (e.key === 'Tab') {
+      closeNotifMenus(pop);
+    }
+    return;
+  }
+  if (e.key === 'Escape') { e.preventDefault(); closeNotifPop(true); return; }
+  const items = [...pop.querySelectorAll('.notif-item')];
+  if (!items.length) return;
+  const curItem = document.activeElement?.closest?.('.notif-item');
+  const at = curItem ? items.indexOf(curItem) : -1;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    items[(at + 1) % items.length].focus();
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    items[at <= 0 ? items.length - 1 : at - 1].focus();
+  } else if (e.key === 'Home') {
+    e.preventDefault();
+    items[0].focus();
+  } else if (e.key === 'End') {
+    e.preventDefault();
+    items[items.length - 1].focus();
+  } else if (e.key === 'Enter' && document.activeElement?.classList.contains('notif-item')) {
+    const link = document.activeElement.querySelector('.notif-go');
+    if (link) { e.preventDefault(); link.click(); }
+  }
+});
+window.addEventListener('hashchange', () => closeNotifPop(false));
+
 const sunIcon = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
 const moonIcon = '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>';
 function paintTheme() {
   const b = document.getElementById('theme-btn'); if (!b) return;
   const l = theme() === 'light';
   b.innerHTML = svg(l ? moonIcon : sunIcon, 18); b.setAttribute('aria-label', l ? 'Switch to dark theme' : 'Switch to light theme'); b.title = b.getAttribute('aria-label');
+}
+
+export function unmountShell() {
+  if (stopAttnPoll) { stopAttnPoll(); stopAttnPoll = null; }
+  attnData = { items: [], unread: 0, critical: 0 };
+  attnInflight = null;
+  attnBooted = false;
+  prevUnread = null;
+  prevCritIds = new Set();
 }
 
 export function mountShell(app) {
@@ -105,6 +412,7 @@ export function mountShell(app) {
     <span class="crumb">${api.MODE === 'http' ? esc(hostName) : 'srv-sgn-01<s>/</s>shop-platform<s>/</s><b>production</b>'}</span>
     <span class="grow"></span>
     <button type="button" class="btn pal-btn" id="open-pal">Search or run a command<kbd class="kbd">Ctrl K</kbd></button>
+    ${notificationBell({ data: attnData })}
     <button type="button" class="btn icon" id="theme-btn"></button>
     ${accountMenu()}
   </div></header>
@@ -116,7 +424,9 @@ export function mountShell(app) {
       <footer class="statusbar" aria-label="Server status"><div class="wrap" id="status"></div></footer>
     </div>
   </div>`;
-  paintTheme(); loadHostName();
+  paintTheme(); paintBell(); loadHostName();
+  if (stopAttnPoll) stopAttnPoll();
+  stopAttnPoll = poll(refreshAttention, 15000, { immediate: true });
   document.getElementById('theme-btn').addEventListener('click', () => { toggleTheme(); paintTheme(); });
   document.getElementById('open-pal').addEventListener('click', openPalette);
   const shell = app.querySelector('.shell'), tg = document.getElementById('side-toggle');

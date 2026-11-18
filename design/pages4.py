@@ -37,7 +37,7 @@ def card(icon,title,text):
 
 nav_l=f'''<header style="position: sticky; top: 0; z-index: 30; background: color-mix(in srgb, var(--bg) 80%, transparent); backdrop-filter: saturate(1.4) blur(12px); -webkit-backdrop-filter: saturate(1.4) blur(12px); border-bottom: 1px solid var(--line)">
 <div style="max-width: 1160px; margin: 0 auto; padding: 0 32px; min-height: 64px; box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 28px">
-<a href="#top" style="font: 700 19px 'Geist', sans-serif; letter-spacing: -0.04em; color: var(--text)">opsbox<span style="color: var(--accent)">_</span></a>
+{logo(30,19,'#top')}
 <nav aria-label="Landing" style="display: flex; flex-wrap: wrap; gap: 4px 24px; font-size: 14.5px">
 <a href="#features" style="color: var(--muted)">Features</a><a href="#how" style="color: var(--muted)">How it works</a><a href="#security" style="color: var(--muted)">Security</a><a href="#faq" style="color: var(--muted)">FAQ</a><a href="#docs" style="color: var(--muted)">Docs</a></nav>
 <span style="flex: 1"></span>
@@ -195,7 +195,7 @@ cta=f'''<section style="max-width: 1160px; margin: 96px auto 0; padding: 0 32px;
 <div style="position: relative; display: flex; flex-wrap: wrap; justify-content: center; gap: 12px">{L_btn('Star on GitHub','primary',icon='gh')}{L_btn('Read the docs')}</div></div></section>'''
 
 foot=f'''<footer style="max-width: 1160px; margin: 96px auto 0; padding: 32px 32px 48px; box-sizing: border-box; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 24px 48px; align-items: flex-start; font-size: 14px">
-<div style="flex: 1 1 260px; display: flex; flex-direction: column; gap: 10px"><span style="font: 700 18px 'Geist', sans-serif; letter-spacing: -0.04em">opsbox<span style="color: var(--accent)">_</span></span><span style="color: var(--muted)">Self-hosted server management. Apache-2.0.</span></div>
+<div style="flex: 1 1 260px; display: flex; flex-direction: column; gap: 10px">{logo(28,18)}<span style="color: var(--muted)">Self-hosted server management. Apache-2.0.</span></div>
 <div style="display: flex; flex-direction: column; gap: 10px"><b style="font-weight: 600">Product</b><a href="#features" style="color: var(--muted)">Features</a><a href="#security" style="color: var(--muted)">Security</a><a href="#install" style="color: var(--muted)">Install</a></div>
 <div style="display: flex; flex-direction: column; gap: 10px"><b style="font-weight: 600">Project</b><a href="#github" style="color: var(--muted)">GitHub</a><a href="#docs" style="color: var(--muted)">Docs</a><a href="#roadmap" style="color: var(--muted)">Roadmap</a><a href="#security" style="color: var(--muted)">Report a vulnerability</a></div>
 <div style="display: flex; flex-direction: column; gap: 10px"><b style="font-weight: 600">Community</b><a href="#discussions" style="color: var(--muted)">Discussions</a><a href="#changelog" style="color: var(--muted)">Changelog</a></div>

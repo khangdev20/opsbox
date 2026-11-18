@@ -29,7 +29,7 @@ use opsbox_backup::validation::{
     validate_volume_list,
 };
 use opsbox_deploy::templates::{generate_instance_env, get_template};
-use opsbox_metrics::Attention;
+use opsbox_metrics::{Attention, Severity};
 use opsbox_priv::PrivClient;
 use opsbox_proto::{
     BackupCheckRequest, BackupCheckState, BackupDbKind, BackupDestinationTestRequest,
@@ -1013,10 +1013,20 @@ pub(crate) fn collect_attention_items(state: &AppState, who: &Principal) -> Vec<
             continue;
         }
 
+        let subject = if job.id == OPSBOX_SELF_JOB_ID {
+            "opsbox"
+        } else {
+            job.id.as_str()
+        };
+        let item_id = format!("backup:{subject}");
+
         if job.last_status.as_deref() == Some("failed") {
             let reason = job.last_error.as_deref().unwrap_or("Backup failed");
             out.push(Attention {
-                kind: "backup",
+                id: item_id,
+                kind: "backup".into(),
+                severity: Severity::Critical,
+                since: job.last_run_at.unwrap_or(job.updated_at).max(1),
                 text: format!("Backup failed for {}: {reason}", job.name),
                 link: ("View backups →".to_owned(), "#/backups".to_owned()),
             });
@@ -1030,8 +1040,16 @@ pub(crate) fn collect_attention_items(state: &AppState, who: &Principal) -> Vec<
                 MISSED_RUN_GRACE_SECS,
             )
         {
+            let missed_since = CronSchedule::parse(&job.cron)
+                .ok()
+                .and_then(|s| s.prev_run_at_or_before(now.saturating_sub(MISSED_RUN_GRACE_SECS)))
+                .unwrap_or(job.updated_at)
+                .max(1);
             out.push(Attention {
-                kind: "backup",
+                id: item_id,
+                kind: "backup".into(),
+                severity: Severity::Warning,
+                since: missed_since,
                 text: format!(
                     "Scheduled backup missed for {} ({})",
                     job.name,
@@ -1043,16 +1061,28 @@ pub(crate) fn collect_attention_items(state: &AppState, who: &Principal) -> Vec<
     }
 
     if who.scoped_service.is_none()
-        && let Ok(snaps) = state.store.list_backup_snapshots(50)
+        && let Ok(snaps) = state.store.list_failed_backup_snapshots()
     {
-        let failed_count = snaps
-            .iter()
+        let failed: Vec<_> = snaps
+            .into_iter()
             .filter(|s| s.check_state == BackupCheckState::ChecksumFailed)
-            .count();
-        if failed_count > 0 {
+            .collect();
+        if !failed.is_empty() {
+            let since = failed
+                .iter()
+                .map(|s| s.checked_at.unwrap_or(s.updated_at))
+                .max()
+                .unwrap_or(now)
+                .max(1);
             out.push(Attention {
-                kind: "backup",
-                text: format!("Backup checksum verification failed on {failed_count} snapshot(s)"),
+                id: "backup:checksum".into(),
+                kind: "backup".into(),
+                severity: Severity::Critical,
+                since,
+                text: format!(
+                    "Backup checksum verification failed on {} snapshot(s)",
+                    failed.len()
+                ),
                 link: ("Inspect backups →".to_owned(), "#/backups".to_owned()),
             });
         }
@@ -1060,8 +1090,19 @@ pub(crate) fn collect_attention_items(state: &AppState, who: &Principal) -> Vec<
             && let Some(err_s) = err_v.as_str()
             && !err_s.trim().is_empty()
         {
+            let since = state
+                .store
+                .get_setting(SETTING_LAST_RESTORE_TEST_AT)
+                .ok()
+                .flatten()
+                .and_then(|v| v.as_i64())
+                .unwrap_or(now)
+                .max(1);
             out.push(Attention {
-                kind: "backup",
+                id: "backup:restore-test".into(),
+                kind: "backup".into(),
+                severity: Severity::Critical,
+                since,
                 text: format!("Monthly backup restore test failed: {err_s}"),
                 link: ("Inspect backups →".to_owned(), "#/backups".to_owned()),
             });

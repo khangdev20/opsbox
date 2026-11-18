@@ -49,8 +49,10 @@ code,kbd{font-family:var(--mono)}
 /* header */
 .top{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--bg) 80%,transparent);backdrop-filter:saturate(1.4) blur(12px);-webkit-backdrop-filter:saturate(1.4) blur(12px);border-bottom:1px solid var(--line)}
 .top .wrap{min-height:64px;display:flex;align-items:center;gap:28px}
-.logo{font:700 19px var(--ui);letter-spacing:-.04em}
-.logo i{font-style:normal;color:var(--accent)}
+.logo{display:inline-flex;align-items:center;gap:8px;color:var(--text)}
+.logo img{display:block;width:30px;height:30px;object-fit:contain}
+.logo .wm{font:700 19px/1 var(--ui);letter-spacing:-.035em}
+.logo .wm b{font-weight:700;color:#FC5801}
 .links{display:flex;gap:24px;font-size:14.5px}
 .links a{color:var(--muted)}
 .links a:hover{color:var(--text)}
@@ -163,7 +165,9 @@ h2{margin:0;font-size:clamp(30px,4.4vw,40px);line-height:1.1;font-weight:600;let
 footer{margin-top:96px;border-top:1px solid var(--line)}
 footer .wrap{padding-top:32px;padding-bottom:48px;display:flex;flex-wrap:wrap;gap:24px 48px;font-size:14px}
 footer .brand{flex:1 1 260px;display:flex;flex-direction:column;gap:10px;color:var(--muted)}
-footer .brand .logo{color:var(--text);font-size:18px}
+footer .brand .logo{color:var(--text)}
+footer .brand .logo img{width:26px;height:26px}
+footer .brand .logo .wm{font-size:17px}
 footer nav{display:flex;flex-direction:column;gap:10px}
 footer nav b{font-weight:600}
 footer nav a{color:var(--muted)}

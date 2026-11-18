@@ -40,7 +40,7 @@ const REAL = new Set([
   'getAlerts', 'setRule', 'testAlert', 'connectChannel', 'disconnectChannel', 'silenceAlert', 'setQuiet',
   'auth.session', 'auth.login', 'auth.logout', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
   'auth.enroll', 'auth.enrollConfirm', 'signOutAll',
-  'getMetrics', 'getAttention',
+  'getMetrics', 'getAttention', 'markAttentionRead', 'markAllAttentionRead', 'snoozeAttention',
   'getUpdates', 'installUpdates', 'setAutoUpdates', 'reboot', 'cancelReboot', 'getUnits', 'unitAction', 'getJournal',
   'getJobs', 'runJob', 'addJob', 'removeJob', 'getFirewall', 'addRule', 'removeRule', 'confirmFirewall', 'openSsh',
   'listDir', 'readFile', 'writeFile', 'chmod', 'mkdir', 'removePaths', 'upload',
@@ -512,16 +512,69 @@ export async function getMetrics() {
   return { cpu: [...m.cpu], mem: [...m.mem], cpuNow: m.cpu[m.cpu.length - 1], memUsed: m.memUsed, memTotal: S.host.memTotal, cache: m.cache,
     disk: m.disk, diskTotal: S.host.diskTotal, netIn: m.netIn, netOut: m.netOut, conns: m.conns, load: [...m.load], procs: clone(S.procs).sort((a, b) => b.cpu - a.cpu) };
 }
+const MOCK_ATTN_SINCE = Math.floor(Date.now() / 1000);
+const mockAttnRead = new Map();
+const mockAttnSnooze = new Map();
+const SEV_RANK = { info: 0, warning: 1, critical: 2 };
+
+function mockAttentionItems() {
+  const sec = S.updates.filter((u) => u.sec).length;
+  const raw = [];
+  if (sec) raw.push({ id: 'security:host', kind: 'security', severity: 'warning', since: MOCK_ATTN_SINCE - 3600, text: `${sec} security updates are waiting (${S.updates.filter((u) => u.sec).map((u) => u.pkg.replace('-generic', '')).join(', ')})`, link: ['Review and install →', '#/system'] });
+  if (S.rebootRequired) raw.push({ id: 'reboot:host', kind: 'reboot', severity: 'warning', since: MOCK_ATTN_SINCE - 7200, text: 'A new kernel is installed. Reboot to use it.', link: ['Schedule reboot →', '#/system'] });
+  const used = S.metrics.disk / S.host.diskTotal * 100;
+  if (used > 75) raw.push({ id: 'disk:/', kind: 'disk', severity: used >= 95 ? 'critical' : 'warning', since: MOCK_BOOT_DAY_SEC(1800), text: `Disk / is at ${Math.round(used)}%. ${S.cleanup.reduce((a, c) => a + c.gb, 0).toFixed(1)} GB can be reclaimed.`, link: ['Clean up →', '#/cleanup'] });
+  for (const c of S.containers) {
+    if (c.state === 'restarting') raw.push({ id: `containers:${c.name}`, kind: 'containers', severity: 'critical', since: Math.floor((c.since || Date.now()) / 1000), text: `Container ${c.name} is restarting.`, link: ['View containers →', '#/containers'] });
+  }
+  return raw;
+}
+const MOCK_BOOT_DAY_SEC = (offset) => MOCK_ATTN_SINCE - offset;
+
+function mockAttentionView() {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const items = [];
+  for (const it of mockAttentionItems()) {
+    const r = mockAttnRead.get(it.id);
+    const sn = mockAttnSnooze.get(it.id);
+    const rank = SEV_RANK[it.severity] ?? 1;
+    const read = !!(r && it.since <= r.since && rank <= r.rank);
+    const activeSnooze = sn && sn.until > nowSec && rank <= sn.rank ? sn.until : null;
+    if (activeSnooze && it.severity !== 'critical') continue;
+    items.push({ ...it, read, snoozed: !!activeSnooze, ...(activeSnooze ? { snoozedUntil: activeSnooze } : {}) });
+  }
+  items.sort((a, b) => ((a.severity !== 'critical') - (b.severity !== 'critical')) || (a.snoozed - b.snoozed) || (b.since - a.since) || a.id.localeCompare(b.id));
+  return {
+    items,
+    unread: items.filter((i) => !i.read).length,
+    critical: items.filter((i) => i.severity === 'critical' && !i.read).length,
+  };
+}
+
 export async function getAttention() {
   if (real('getAttention')) return http('/attention'); // GET /api/v1/attention
   sample('getAttention');
-  const sec = S.updates.filter((u) => u.sec).length;
-  const out = [];
-  if (sec) out.push({ kind: 'security', text: `${sec} security updates are waiting (${S.updates.filter((u) => u.sec).map((u) => u.pkg.replace('-generic', '')).join(', ')})`, link: ['Review and install →', '#/system'] });
-  if (S.rebootRequired) out.push({ kind: 'reboot', text: 'A new kernel is installed. Reboot to use it.', link: ['Schedule reboot →', '#/system'] });
-  const used = S.metrics.disk / S.host.diskTotal * 100;
-  if (used > 75) out.push({ kind: 'disk', text: `Disk / is at ${Math.round(used)}%. ${S.cleanup.reduce((a, c) => a + c.gb, 0).toFixed(1)} GB can be reclaimed.`, link: ['Clean up →', '#/cleanup'] });
-  return out;
+  return mockAttentionView();
+}
+export async function markAttentionRead(id) {
+  if (real('markAttentionRead')) return http(`/attention/${enc(id)}/read`, { method: 'POST' });
+  sample('markAttentionRead');
+  const it = mockAttentionItems().find((x) => x.id === id);
+  if (it) mockAttnRead.set(id, { since: it.since, rank: SEV_RANK[it.severity] ?? 1 });
+  return { ok: true, ...mockAttentionView() };
+}
+export async function markAllAttentionRead() {
+  if (real('markAllAttentionRead')) return http('/attention/read-all', { method: 'POST' });
+  sample('markAllAttentionRead');
+  for (const it of mockAttentionView().items) mockAttnRead.set(it.id, { since: it.since, rank: SEV_RANK[it.severity] ?? 1 });
+  return { ok: true, ...mockAttentionView() };
+}
+export async function snoozeAttention(id, minutes) {
+  if (real('snoozeAttention')) return http(`/attention/${enc(id)}/snooze`, { method: 'POST', body: { minutes } });
+  sample('snoozeAttention');
+  const it = mockAttentionItems().find((x) => x.id === id);
+  if (it) mockAttnSnooze.set(id, { until: Math.floor(Date.now() / 1000) + minutes * 60, rank: SEV_RANK[it.severity] ?? 1 });
+  return { ok: true, ...mockAttentionView() };
 }
 
 // ---------------------------------------------------------------- containers

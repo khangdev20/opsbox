@@ -29,6 +29,7 @@ fn migrates_an_empty_database() {
         table_names(&path),
         [
             "api_tokens",
+            "attention_state",
             "audit",
             "backup_destinations",
             "backup_jobs",
@@ -1523,4 +1524,52 @@ fn backup_jobs_snapshots_and_online_hot_backup() {
         LOCAL_DESTINATION_ID
     );
     assert!(store.get_backup_snapshot(&single.id).unwrap().is_none());
+}
+
+#[test]
+fn attention_state_read_and_snooze_are_per_user_and_clean_up_on_delete() {
+    let store = Store::open_in_memory().unwrap();
+    let u1 = store
+        .create_user("alice", opsbox_proto::Role::Admin, "hash1", 100)
+        .unwrap();
+    let u2 = store
+        .create_user("bob", opsbox_proto::Role::Viewer, "hash2", 100)
+        .unwrap();
+
+    store
+        .mark_attention_read(&u1.id, "disk:/", 1000, 1, 1005)
+        .unwrap();
+    store
+        .snooze_attention(&u1.id, "backup:opsbox", 5000, 1, 1005)
+        .unwrap();
+
+    let s1 = store.list_attention_state(&u1.id).unwrap();
+    assert_eq!(s1["disk:/"].read_since, Some(1000));
+    assert_eq!(s1["disk:/"].read_severity, Some(1));
+    assert_eq!(s1["backup:opsbox"].snooze_until, Some(5000));
+    assert!(store.list_attention_state(&u2.id).unwrap().is_empty());
+
+    // Snooze preserves existing read state and vice-versa.
+    store
+        .mark_attention_read(&u1.id, "backup:opsbox", 900, 1, 1010)
+        .unwrap();
+    let s1 = store.list_attention_state(&u1.id).unwrap();
+    assert_eq!(s1["backup:opsbox"].read_since, Some(900));
+    assert_eq!(s1["backup:opsbox"].snooze_until, Some(5000));
+
+    // Mark-all updates multiple items atomically.
+    store
+        .mark_all_attention_read(
+            &u2.id,
+            &[("disk:/".into(), 1000, 1), ("cpu:host".into(), 1100, 2)],
+            1200,
+        )
+        .unwrap();
+    let s2 = store.list_attention_state(&u2.id).unwrap();
+    assert_eq!(s2.len(), 2);
+    assert_eq!(s2["cpu:host"].read_severity, Some(2));
+
+    // Deleting a user removes its attention_state rows too.
+    assert!(store.delete_user(&u1.id).unwrap());
+    assert!(store.list_attention_state(&u1.id).unwrap().is_empty());
 }

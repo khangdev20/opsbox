@@ -47,6 +47,36 @@ Token buckets: each IP has burst 120, refill 2/sec; login/setup/invitation/enrol
 
 Streams revalidate their session/token, role and allowed address every five seconds and end on revocation/expiry. Merely receiving output does not extend session idle expiry. Authenticated mutations first persist a `request.accepted` audit entry; inability to write it prevents dispatch. Named handler entries record detailed outcomes. Secrets, request bodies and query strings are excluded from the acceptance record.
 
+## Notifications and attention
+
+`GET /api/v1/attention` (viewer+) returns `{items,unread,critical}` scoped by role, service ownership and token scope (`read`/`deploy` tokens can read; browser mutations require Origin/CSRF). Each item has `{id,kind,severity,since,text,link,alertId?,read,snoozed,snoozedUntil?}` where `severity` is `critical`, `warning`, or `info`, `since` is Unix seconds, and `link` is `[label, route]`. Items sort critical-first (unsnoozed criticals above snoozed criticals), then newest `since` first.
+
+- `POST /api/v1/attention/{id}/read`: marks an active visible item read for the current user (`read` becomes `false` again if `since` advances or `severity` increases).
+- `POST /api/v1/attention/read-all`: marks all currently visible non-snoozed items (including snoozed critical items) read for the current user.
+- `POST /api/v1/attention/{id}/snooze {minutes}`: snoozes an active visible item (`1..=10080`, max 7 days). Snoozed `warning`/`info` items leave `items` and `unread` until expiry; snoozed `critical` items remain in `items` (dimmed, below unsnoozed criticals) and stay counted in `unread` and `critical`.
+
+When a built-in check and a fired host alert (admin only) map to the same canonical `id`, one item is returned keeping the higher `severity` and linking to the fired alert (`#/alerts?id=...` with `alertId`), otherwise linking to the feature page:
+
+| Source / check | Alert rule & target | Canonical `id` | Default severity |
+|---|---|---|---|
+| Pending security updates | `security` / `host` | `security:host` | `warning` |
+| Reboot required (`/run/reboot-required`) | — | `reboot:host` | `warning` |
+| Disk usage > 75% (critical >= 95%) | `disk` / `<mount>` | `disk:<mount>` | `warning` / `critical` |
+| Failed systemd service | `units` / `<unit>` | `units:<unit>` | `critical` |
+| Restarting or down container | `containers` / `<name>` | `containers:<name>` | `critical` |
+| CPU high (> 90%, critical >= 99%) | `cpu` / `host` | `cpu:host` | `warning` / `critical` |
+| Memory high (> 90%, critical >= 95%) | `memory` / `host` | `memory:host` | `warning` / `critical` |
+| opsbox release available | — | `update:<version>` | `info` |
+| Failed latest service deploy | `deploy` / `<serviceId>` | `deploy:<serviceName>` | `critical` |
+| Expiring / failing TLS certificate | `tls` / `<domain>` | `cert:<domain>` | `warning` / `critical` |
+| Backup job failed or scheduled run overdue | `backup` or `missed` / `opsbox-self` or `<jobId>` | `backup:opsbox` or `backup:<jobId>` | `critical` / `warning` |
+| Backup snapshot checksum failed | `backup` / `checksum-<snapshotId>` | `backup:checksum` | `critical` |
+| Monthly backup restore test failed | `backup` / `restore-test` | `backup:restore-test` | `critical` |
+| Scheduled backup waited for memory | `backup` / `capacity` | `backup:capacity` | `critical` |
+| Emergency SSH access open | `ssh` / `<target>` | `ssh:<target>` | `critical` |
+| Repeated failed sign-ins | `signins` / `host` | `signins:host` | `critical` |
+| Unhealthy metrics / proxy / port conflict | `health` / `host \| proxy \| proxy-ports` | `health:<target>` | `critical` |
+
 ## Alerts (Spec 7.13)
 
 Alert configuration and history require an administrator. Channel connect/disconnect and test also require an interactive session (full API tokens are refused). Other roles keep their existing scoped Overview links. Browser mutations use the normal Origin/CSRF and audit guards.
@@ -145,6 +175,9 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `POST` | `/api/v1/alerts/silence` | [alerts::silence](../crates/opsbox-api/src/alerts.rs) |
 | `POST` | `/api/v1/alerts/test` | [alerts::test](../crates/opsbox-api/src/alerts.rs) |
 | `GET` | `/api/v1/attention` | [metrics::get_attention](../crates/opsbox-api/src/metrics.rs) |
+| `POST` | `/api/v1/attention/read-all` | [metrics::read_all_attention](../crates/opsbox-api/src/metrics.rs) |
+| `POST` | `/api/v1/attention/{id}/read` | [metrics::read_attention](../crates/opsbox-api/src/metrics.rs) |
+| `POST` | `/api/v1/attention/{id}/snooze` | [metrics::snooze_attention](../crates/opsbox-api/src/metrics.rs) |
 | `POST` | `/api/v1/auth/login` | [auth::login](../crates/opsbox-api/src/auth.rs) |
 | `POST` | `/api/v1/auth/logout` | [auth::logout](../crates/opsbox-api/src/auth.rs) |
 | `POST` | `/api/v1/auth/sessions/revoke-all` | [auth::revoke_all](../crates/opsbox-api/src/auth.rs) |

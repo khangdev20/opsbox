@@ -1345,10 +1345,13 @@ async fn app_domains_dns_acme_www_redirect_force_https_hsts_primary_and_renewal_
     let (_, attn_a) =
         send_cookie(&app, &ca, &ca_csrf, Method::GET, "/api/v1/attention", None).await;
     assert!(
-        attn_a.as_array().unwrap().iter().any(|i| {
+        attn_a["items"].as_array().unwrap().iter().any(|i| {
             i["kind"] == "tls"
-                && i["link"][1] == "#/apps?s=web&tab=domains"
-                && i["text"].as_str().unwrap_or("").contains("renewal failed")
+                && i["id"] == "cert:shop.example.com"
+                && (i["link"][1] == "#/apps?s=web&tab=domains"
+                    || i["link"][1] == "#/alerts?id=tls%3Ashop.example.com")
+                && (i["text"].as_str().unwrap_or("").contains("renewal failed")
+                    || i["text"].as_str().unwrap_or("").contains("could not renew"))
         }),
         "{attn_a}"
     );
@@ -1362,7 +1365,7 @@ async fn app_domains_dns_acme_www_redirect_force_https_hsts_primary_and_renewal_
     )
     .await;
     assert!(
-        attn_d1
+        attn_d1["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -1379,7 +1382,7 @@ async fn app_domains_dns_acme_www_redirect_force_https_hsts_primary_and_renewal_
     )
     .await;
     assert!(
-        !attn_d2
+        !attn_d2["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -1445,7 +1448,7 @@ async fn app_domains_dns_acme_www_redirect_force_https_hsts_primary_and_renewal_
     let (_, attn_clear) =
         send_cookie(&app, &ca, &ca_csrf, Method::GET, "/api/v1/attention", None).await;
     assert!(
-        !attn_clear
+        !attn_clear["items"]
             .as_array()
             .unwrap()
             .iter()

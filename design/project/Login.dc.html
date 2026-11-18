@@ -15,6 +15,19 @@ a{text-decoration:none}
 [data-theme="dark"]{--fill:rgba(255,255,255,.06);--fill2:rgba(255,255,255,.10);--shadow:0 1px 0 rgba(255,255,255,.04) inset,0 8px 24px -12px rgba(0,0,0,.6);--bg:#17171A;--hl:#1F1F23;--input:#1A1A1D;--line:#2E2E33;--ls:#3E3E44;--ctl:#74747C;--text:#EEEEF0;--muted:#A3A3AB;--accent:#FF6A3D;--onaccent:#17171A;--ok:#5FD08A;--warn:#E8B64A;--danger:#FF8FB8;--code:#111113;--codetext:#DADADF}
 [data-theme="light"]{--fill:rgba(16,16,20,.045);--fill2:rgba(16,16,20,.08);--shadow:0 1px 2px rgba(16,16,20,.04),0 8px 24px -16px rgba(16,16,20,.18);--bg:#F6F6F3;--hl:#FFFFFF;--input:#FFFFFF;--line:#E6E5E0;--ls:#D5D4CE;--ctl:#84837C;--text:#1A1A18;--muted:#5E5D58;--accent:#C9300F;--onaccent:#FFFFFF;--ok:#1F7A3D;--warn:#8A5A00;--danger:#9B1B5A;--code:#0A0A09;--codetext:#D9D9D3}
 
+select{-webkit-appearance:none!important;appearance:none!important;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23A3A3AB' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")!important;background-repeat:no-repeat!important;background-position:right 12px center!important;background-size:16px 16px!important;padding-right:38px!important;cursor:pointer;transition:border-color .12s}
+select:hover{border-color:var(--muted)!important}
+select:focus-visible{outline:none;border-color:var(--accent)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)}
+select option{background:var(--hl);color:var(--text)}
+input[type=checkbox]{-webkit-appearance:none!important;appearance:none!important;margin:0;flex:none;border-radius:7px!important;border:1.5px solid var(--ctl)!important;background:var(--input) no-repeat center/72% 72%!important;cursor:pointer;transition:background-color .18s cubic-bezier(.2,.8,.2,1),border-color .18s,box-shadow .18s,transform .12s}
+input[type=checkbox]:hover{border-color:var(--muted)!important;box-shadow:0 0 0 4px var(--fill)}
+input[type=checkbox]:active{transform:scale(.92)}
+input[type=checkbox]:checked{background-color:var(--accent)!important;border-color:var(--accent)!important;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E")!important}
+input[type=checkbox]:checked:hover{box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 18%,transparent)}
+input[type=checkbox]:focus-visible{outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
+input[type=radio]{-webkit-appearance:none!important;appearance:none!important;margin:0;flex:none;width:20px;height:20px;border-radius:999px!important;border:1.5px solid var(--ctl)!important;background:var(--input)!important;cursor:pointer;transition:border-color .18s,box-shadow .18s}
+input[type=radio]:checked{border:6px solid var(--accent)!important}
+@media (prefers-reduced-motion:reduce){input[type=checkbox],input[type=radio],select{transition:none!important}}
 @keyframes topo-in{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
 @keyframes topo-flow-h{to{background-position:24px 0}}
 @keyframes topo-flow-v{to{background-position:0 24px}}
@@ -33,7 +46,7 @@ a{text-decoration:none}
 </helmet>
 <div data-theme="{{theme}}" style="min-height: 100vh; display: flex; flex-wrap: wrap; background: var(--bg); color: var(--text); font-family: 'Geist', system-ui, sans-serif">
 <div style="flex: 1 1 440px; box-sizing: border-box; padding: 56px 64px; display: flex; flex-direction: column; justify-content: space-between; gap: 48px; border-right: 1px solid var(--ls)">
-<span style="font-family: 'Geist', system-ui, sans-serif; font-variant-numeric: tabular-nums; font-size: 22px; font-weight: 600; letter-spacing: -0.02em">opsbox<span style="color: var(--accent)">_</span></span>
+<span aria-label="OpsBox" style="display: inline-flex; align-items: center; gap: 9px; color: var(--text); text-decoration: none; "><img src="assets/logo-mark-128.png" alt="" width="36" height="36" style="display: block; width: 36px; height: 36px; object-fit: contain"><span style="font: 700 23px 'Geist', sans-serif; letter-spacing: -0.035em; color: var(--text)">Ops<span style="color: #FC5801">Box</span></span></span>
 <div style="display: flex; flex-direction: column; gap: 20px; max-width: 520px"><h1 style="margin: 0; font-size: 40px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.1">Deploy from Git to your own Linux box.</h1><p style="margin: 0; font-size: 16px; line-height: 1.6; color: var(--muted)">Builds, domains, SSL, databases, terminal and files for one server, in a single binary.</p></div>
 <div style="display: flex; flex-direction: column; gap: 8px"><span style="font-size: 13px; color: var(--muted)">Install on a fresh instance</span><pre style="margin: 0; padding: 14px 16px; background: var(--code); color: var(--codetext); font: 13px/1.6 'Geist Mono', monospace; overflow-x: auto; border-radius: 8px">$ curl -fsSL https://get.opsbox.example/install.sh | sudo sh</pre></div>
 </div>

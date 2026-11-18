@@ -1290,7 +1290,7 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
     )
     .await;
     assert_eq!(st, StatusCode::OK);
-    let att_items = att.as_array().unwrap();
+    let att_items = att["items"].as_array().unwrap();
     assert!(
         att_items.iter().any(|i| {
             i["kind"] == "backup"
@@ -1781,7 +1781,7 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
     .await;
     assert_eq!(st, StatusCode::OK);
     assert!(
-        att2.as_array().unwrap().iter().any(|i| {
+        att2["items"].as_array().unwrap().iter().any(|i| {
             i["kind"] == "backup"
                 && i["text"]
                     .as_str()

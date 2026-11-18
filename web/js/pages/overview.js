@@ -1,8 +1,23 @@
-import { html, chk, legend, section, header, bindActions, num, patch, createChart, poll, refreshing, segBar, st, empty, ago, clock, bar, liveState } from '../ui.js';
+import { html, raw, legend, section, header, bindActions, num, patch, createChart, poll, refreshing, segBar, st, empty, ago, clock, bar, liveState } from '../ui.js';
 import * as api from '../api.js';
 import { capacityCard, addSwap } from '../capacity.js';
 import { networkBanner, networkActions } from '../network.js';
+import { sharedAttention, onAttention, openNotifications } from '../shell.js';
 import { listeners } from '../store.js';
+
+const CRIT_ICO = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>';
+function criticalBanner(att) {
+  const crits = (att?.items || []).filter((a) => a.severity === 'critical' && !a.read);
+  if (!crits.length) return '';
+  const top = crits[0];
+  const rest = crits.length - 1;
+  return html`<div class="crit-banner" role="region" aria-label="Critical alert">
+    <span class="crit-ico" aria-hidden="true">${raw(CRIT_ICO)}</span>
+    <span class="crit-txt">${top.text}</span>
+    <a class="btn link" href="${top.link?.[1] || '#/alerts'}">${top.link?.[0] || 'View →'}</a>
+    ${rest > 0 ? html`<button type="button" class="btn link crit-more" data-act="open-bell">and ${rest} more</button>` : ''}
+  </div>`;
+}
 
 const kpi = (l, v, u, p, extra = '', thresholds = true) => html`<div class="kpi"><span class="l">${l}</span><span class="v">${v}<small>${u}</small></span>${bar(p / 100, l, { thresholds })}${extra}</div>`;
 
@@ -35,7 +50,7 @@ function topProcesses(m, sortBy) {
     <div class="heavy"><span class="col"><span class="sm muted">Heaviest right now</span><b>${top.name}</b></span>
       <span class="heavy-v mono"><span><span class="muted">CPU </span>${num(top.cpu, 'pct1')}</span><span><span class="muted">mem </span>${num(top.mem, 'mb')}</span></span></div>
     <div class="pr pr-h" role="row"><span class="pr-rank">#</span><span>Process</span><span class="r">CPU</span><span class="r">Memory</span></div>
-    ${list.map((p, i) => procRow(p, i, maxCpu, memTotalMb))}
+    <div class="pr-list" data-flip>${list.map((p, i) => procRow(p, i, maxCpu, memTotalMb))}</div>
   </div>`;
 }
 const sortSwitch = (sortBy) => html`<div class="seg-radio" role="radiogroup" aria-label="Sort by">${[['cpu', 'CPU'], ['mem', 'Memory']].map(([k, l]) => html`<button type="button" role="radio" aria-checked="${String(sortBy === k)}" data-act="ps-sort" data-by="${k}">${l}</button>`)}</div>`;
@@ -44,7 +59,7 @@ const sortSwitch = (sortBy) => html`<div class="seg-radio" role="radiogroup" ari
 function containersSection(list) {
   const rows = (list || []).slice(0, 5);
   const chip = (c) => c.state === 'running' ? st('ok', c.since > 0 ? `up ${ago(c.since).replace(' ago', '')}` : 'running') : c.state === 'restarting' ? st('warn', 'restarting') : c.state === 'paused' ? st('warn', 'paused') : st('off', c.state || 'stopped');
-  return section('Containers', rows.length ? html`<div>${rows.map((c) => html`<div class="list-row mrow" data-key="c${c.id || c.name}" data-sig="-"><span class="mono">${c.name}</span>${chip(c)}</div>`)}${list.length > rows.length ? html`<p class="sm muted" style="padding-top:10px">+${list.length - rows.length} more</p>` : ''}</div>` : empty('No containers yet.'), html`<a class="btn link" href="#/containers">View all</a>`, 'span2');
+  return section('Containers', rows.length ? html`<div><div class="flip-list" data-flip>${rows.map((c) => html`<div class="list-row mrow" data-key="c${c.id || c.name}" data-sig="-"><span class="mono">${c.name}</span>${chip(c)}</div>`)}</div>${list.length > rows.length ? html`<p class="sm muted" style="padding-top:10px">+${list.length - rows.length} more</p>` : ''}</div>` : empty('No containers yet.'), html`<a class="btn link" href="#/containers">View all</a>`, 'span2');
 }
 const SEG = ['var(--accent)', 'var(--text)', 'var(--warn)', 'var(--muted)', 'var(--ctl)'];
 function reclaimSection(d) {
@@ -64,7 +79,7 @@ function activitySection(rows) {
 }
 
 export async function view() {
-  const [h, m, att] = await Promise.all([api.getHost(), api.getMetrics(), api.getAttention()]);
+  const [h, m, att] = await Promise.all([api.getHost(), api.getMetrics(), sharedAttention()]);
   const capacity = await api.getCapacity().catch(() => null);
   const network = await api.getProxyNetwork().catch(() => null);
   const m0 = m;
@@ -91,8 +106,8 @@ export async function view() {
   return {
     nav: 'overview', title: 'Overview',
     html: html`<main>${header('Overview', `${h.name} · ${h.os} · kernel ${h.kernel} · up ${h.upDays} days · ${h.cores} cores`, html`<a class="btn primary" href="#/apps/new">New service</a>`)}
+      <div id="crit-banner">${criticalBanner(att)}</div>
       <div id="proxy-network-banner">${networkBanner(network)}</div>
-      ${section(`Needs attention${att.length ? ` · ${att.length}` : ''}`, att.length ? html`<div>${att.map((a) => html`<div class="list-row">${chk('warn', a.text)}<a class="btn link" href="${a.alertId ? `#/alerts?id=${encodeURIComponent(a.alertId)}` : a.link[1]}">${a.link[0]}</a></div>`)}</div>` : chk('ok', 'Nothing needs attention.'))}
       <div id="capacity-card">${capacityCard(capacity)}</div>
       <div class="ov"><div id="live">${body(m)}</div><div class="ov-grid" id="ov-row2">${row2(x0)}</div></div></main>`,
     mount(root) {
@@ -100,9 +115,11 @@ export async function view() {
       const refreshNetwork = async () => { const b = root.querySelector('#proxy-network-banner'); if (b) patch(b, networkBanner(await api.getProxyNetwork()).toString()); };
       bindActions(root, {
         ...networkActions(refreshNetwork, () => {}),
+        'open-bell': () => openNotifications(),
         'capacity-swap': async (el) => { await addSwap(Number(el.dataset.mb)); const c = card(); if (c) patch(c, capacityCard(await api.getCapacity()).toString()); },
         'ps-sort': (el) => { sortBy = el.dataset.by; repaint(lastM); },
       });
+      this._unsubAttn = onAttention((next) => { const b = root.querySelector('#crit-banner'); if (b) patch(b, criticalBanner(next).toString()); });
       const live = root.querySelector('#live');
       const chart = createChart(root.querySelector('#cpu-chart'), { label: 'CPU and memory over time', series: [{ color: 'var(--muted)', width: 1.5, dash: '5 4' }, { color: 'var(--text)', width: 2 }], cap: 100, floor: 20, h: 300 });
       const draw = (m) => chart.update([m.mem, m.cpu]);
@@ -116,6 +133,6 @@ export async function view() {
         await refreshing(c, async () => { if (c) patch(c, capacityCard(cap).toString()); if (b) patch(b, networkBanner(data).toString()); if (r2) patch(r2, row2(x).toString()); });
       }, 5000);
     },
-    unmount() { listeners.delete(this._f); if (this._stopPoll) this._stopPoll(); },
+    unmount() { listeners.delete(this._f); if (this._stopPoll) this._stopPoll(); if (this._unsubAttn) this._unsubAttn(); },
   };
 }

@@ -112,6 +112,7 @@ pub struct AppState {
     pub deploy_hub: DeployHub,
     pub backups: backups::BackupRunner,
     pub alerts: alerts::Alerts,
+    pub(crate) attention_seen: Arc<std::sync::Mutex<std::collections::HashMap<String, i64>>>,
 }
 
 impl AppState {
@@ -165,6 +166,7 @@ impl AppState {
             deploy_hub: DeployHub::default(),
             backups,
             alerts: alerts::Alerts::default(),
+            attention_seen: Default::default(),
         }
     }
 
@@ -304,6 +306,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/system/timezone", put(system::set_timezone))
         .route("/api/v1/metrics", get(metrics::get_metrics))
         .route("/api/v1/attention", get(metrics::get_attention))
+        .route(
+            "/api/v1/attention/read-all",
+            post(metrics::read_all_attention),
+        )
+        .route("/api/v1/attention/{id}/read", post(metrics::read_attention))
+        .route(
+            "/api/v1/attention/{id}/snooze",
+            post(metrics::snooze_attention),
+        )
         .route("/api/v1/alerts", get(alerts::get))
         .route("/api/v1/alerts/rules/{id}", put(alerts::set_rule))
         .route(

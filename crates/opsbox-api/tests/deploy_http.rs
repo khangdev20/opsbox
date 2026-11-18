@@ -790,10 +790,15 @@ exit 0
     )
     .await;
     assert!(
-        attn.as_array().unwrap().iter().any(|i| i["text"]
-            .as_str()
-            .unwrap_or("")
-            .contains("Deploy failed for web")),
+        attn["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == "deploy:web"
+                && i["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("Deploy failed for web")),
         "{attn}"
     );
 
@@ -883,10 +888,14 @@ exit 0
     )
     .await;
     assert!(
-        !attn_after.as_array().unwrap().iter().any(|i| i["text"]
-            .as_str()
-            .unwrap_or("")
-            .contains("Deploy failed for web")),
+        !attn_after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Deploy failed for web")),
         "attention should clear after live rollback: {attn_after}"
     );
     let _ = (sha1, d2_id);

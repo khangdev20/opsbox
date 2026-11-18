@@ -3,7 +3,7 @@
 import { html, raw, st, btn, sw, tabs, table, section, empty, sk, skeletonSection, bar, segBar, num, numberField, dropzone, chk,
   toast, confirmDialog, formDialog, keepOrUndoDialog, bindActions, flash, patch, createChart, trackTask, setSwitch, announce,
   initUi, reportPoll, liveState, logo, iconAct } from './ui.js';
-import { accountMenu, navMarkup } from './shell.js';
+import { accountMenu, navMarkup, notificationBell } from './shell.js';
 import { procRow } from './pages/overview.js';
 import { applyTheme, initialTheme, toggleTheme } from './store.js';
 
@@ -18,7 +18,15 @@ const sub = (title, body, note = '') => html`<section class="sec kit-sec"><div c
 // ----- live simulation state -----
 const sim = { on: false, timer: null, n: 0, seq: 3, cpu: 34, mem: 2.6, disk: 61, net: 3.2, conns: 120,
   mem48: Array(48).fill(55), cpu48: Array(48).fill(30), net48: Array(48).fill(2),
-  rows: [{ id: 'web', state: 'running', cpu: 4.2, mem: 180 }, { id: 'api', state: 'running', cpu: 11.5, mem: 320 }, { id: 'worker', state: 'restarting', cpu: 0, mem: 0 }] };
+  rows: [{ id: 'web', state: 'running', cpu: 4.2, mem: 180 }, { id: 'api', state: 'running', cpu: 11.5, mem: 320 }, { id: 'worker', state: 'restarting', cpu: 0, mem: 0 }],
+  shuffleSeq: 5,
+  shuffle: [
+    { id: 'r1', name: 'postgres', state: 'ok', v: '12.4%' },
+    { id: 'r2', name: 'nginx', state: 'ok', v: '8.1%' },
+    { id: 'r3', name: 'node', state: 'warn', v: '6.3%' },
+    { id: 'r4', name: 'redis', state: 'ok', v: '2.0%' },
+    { id: 'r5', name: 'opsbox', state: 'ok', v: '0.4%' },
+  ] };
 const walk = (v, s, lo, hi) => Math.min(hi, Math.max(lo, v + (Math.random() - 0.5) * s));
 const kpi = (l, v, u, r, th = true) => html`<div class="kpi">${html`<span class="l">${l}</span><span class="v">${v}<small>${u}</small></span>`}${bar(r, l, { thresholds: th })}</div>`;
 const liveKpis = () => html`<div class="kpis kit-kpis">${kpi('CPU', num(sim.cpu, 'int'), '%', sim.cpu / 100)}${kpi('Memory', num(sim.mem, 'dec1'), ' / 4 GB', sim.mem / 4)}${kpi('Disk /', num(sim.disk, 'int'), ' / 100 GB', sim.disk / 100)}${kpi('Network', num(sim.net, 'dec1'), ' MB/s', Math.min(1, sim.net / 12), false)}</div>`;
@@ -37,6 +45,11 @@ const stateTick = () => {
   else if (x < .7) { const r = sim.rows[Math.floor(Math.random() * sim.rows.length)]; r.state = r.state === 'running' ? (Math.random() < .5 ? 'restarting' : 'exited') : 'running'; if (r.state === 'running') { r.cpu = 3; r.mem = 150; } }
 };
 const charts = [];
+const shuffleRows = () => sim.shuffle.map((r) => html`<div class="list-row mrow" data-key="${r.id}" data-sig="${r.v}"><span class="mono">${r.name}</span>${st(r.state, r.v)}</div>`).join('');
+const paintShuffle = () => {
+  document.querySelectorAll('[data-kit-flip]').forEach((h) => patch(h, shuffleRows()));
+  document.querySelectorAll('[data-kit-plain]').forEach((h) => patch(h, shuffleRows()));
+};
 const paintLive = () => {
   document.querySelectorAll('[data-live=kpis]').forEach((h) => patch(h, liveKpis().toString()));
   document.querySelectorAll('[data-live=rows]').forEach((h) => patch(h, liveRows().toString()));
@@ -58,7 +71,16 @@ function fakeTask(fail = false) {
   }, 1100);
 }
 
-// ----- one pane (rendered once per theme; `s` keeps ids unique) -----
+const DEMO_NOTIFS = {
+  items: [
+    { id: 'disk:/', kind: 'disk', severity: 'critical', since: Math.floor(Date.now() / 1000) - 180, text: 'Disk / is at 96%.', link: ['Clean up →', '#/cleanup'], read: false, snoozed: false },
+    { id: 'cpu:host', kind: 'cpu', severity: 'critical', since: Math.floor(Date.now() / 1000) - 900, text: 'CPU is at 99%. Review busy processes.', link: ['View alert →', '#/alerts?id=cpu%3Ahost'], read: false, snoozed: true },
+    { id: 'backup:opsbox', kind: 'backup', severity: 'warning', since: Math.floor(Date.now() / 1000) - 3600, text: 'Scheduled backup missed for opsbox (daily 02:00)', link: ['View backups →', '#/backups'], read: false, snoozed: false },
+    { id: 'update:0.2.0', kind: 'update', severity: 'info', since: Math.floor(Date.now() / 1000) - 7200, text: 'opsbox 0.2.0 is available', link: ['Review in Settings →', '#/settings'], read: true, snoozed: false },
+  ],
+  unread: 3,
+  critical: 2,
+};
 const pane = (theme, s) => {
   const btnRow = (label, kind) => html`<div class="kit-row"><span class="kit-l">${label}</span>${STATES.map((x) => cell(x, html`<button type="button" class="btn ${kind}${cls(x)}${x === 'loading' ? ' busy' : ''}"${raw(x === 'disabled' ? ' disabled' : '')}${raw(x === 'loading' ? ' aria-busy="true" data-busy="1"' : '')}>${kind === 'link dg' ? 'Delete' : 'Save'}</button>`))}</div>`;
   const field = (label, x, id, extra = '') => cell(label, html`<div class="field"><label for="${id}-${s}">Label</label><input class="input${cls(x)}" id="${id}-${s}" value="${x === 'default' || x === 'invalid' ? '' : 'Value'}" placeholder="Placeholder"${raw(x === 'disabled' ? ' disabled' : x === 'readonly' ? ' readonly' : '')}${raw(x === 'invalid' ? ' aria-invalid="true"' : '')}${raw(extra)}>${x === 'invalid' ? html`<span class="hint bad">Use lowercase letters and dashes.</span>` : html`<span class="hint">Hint text</span>`}</div>`);
@@ -69,6 +91,7 @@ const pane = (theme, s) => {
       <div class="kit-row"><span class="kit-l">Async</span>${cell('click: 1.5 s call', html`<button type="button" class="btn primary" data-act="slow">Save changes</button>`)}${cell('A link button', html`<a class="btn" href="#">Anchor as button</a>`)}</div>`, 'Height 36 px, 44 px touch target. A button that calls the API shows a spinner, keeps its width and cannot be double-clicked.')}
     ${sub('Brand and shell', html`<div class="kit-row"><span class="kit-l">Logo</span>${cell('top bar (30 px)', logo({ href: '#' }))}${cell('sign-in (36 px)', logo({ size: 'lg' }))}${cell('safe mode (26 px)', logo({ size: 'sm' }))}</div>
       <div class="kit-row"><span class="kit-l">Account menu</span>${cell('closed (pill)', html`<div class="kit-menu">${accountMenu({ user: 'minh.dev', role: 'Owner', demo: true })}</div>`)}${cell('open: name, role, 2FA, items, sign out in danger colour', html`<div class="kit-menu open">${accountMenu({ user: 'minh.dev', role: 'Owner', demo: true })}</div>`)}</div>
+      <div class="kit-row"><span class="kit-l">Notification bell</span>${cell('0 unread', html`<div class="kit-notif">${notificationBell({ data: { items: [], unread: 0, critical: 0 }, demo: true })}</div>`)}${cell('3 warnings', html`<div class="kit-notif">${notificationBell({ data: { items: [], unread: 3, critical: 0 }, demo: true })}</div>`)}${cell('2 critical (pulse)', html`<div class="kit-notif">${notificationBell({ data: { items: [], unread: 2, critical: 2 }, demo: true })}</div>`)}${cell('open popover (critical on top, snoozed dimmed, unread dot)', html`<div class="kit-notif open">${notificationBell({ data: DEMO_NOTIFS, demo: true, open: true })}</div>`)}${cell('empty ("All clear")', html`<div class="kit-notif open">${notificationBell({ data: { items: [], unread: 0, critical: 0 }, demo: true, open: true })}</div>`)}</div>
       <div class="kit-row"><span class="kit-l">Sidebar groups</span>${cell('expanded', html`<div class="kit-side"><aside class="side" aria-label="Sidebar demo"><nav class="nav">${raw(navMarkup('containers'))}</nav><div class="side-foot"><button type="button" class="side-toggle">${raw('<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg>')}<span class="lbl">Collapse</span></button></div></aside></div>`)}
         ${cell('collapsed: labels become dividers, icon only', html`<div class="kit-side"><div class="shell collapsed"><aside class="side" aria-label="Collapsed sidebar demo"><nav class="nav">${raw(navMarkup('apps'))}</nav><div class="side-foot"><button type="button" class="side-toggle">${raw('<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg>')}<span class="lbl">Collapse</span></button></div></aside></div></div>`)}</div>
       <div class="kit-row"><span class="kit-l">Top process rows</span>${cell('rank, tile, name + pid, CPU and memory bars, "this" badge', html`<div class="kit-w2 procs"><div class="pr pr-h"><span class="pr-rank">#</span><span>Process</span><span class="r">CPU</span><span class="r">Memory</span></div>${[{ name: 'postgres', pid: 1204, cpu: 8.1, mem: 612 }, { name: 'node', pid: 2231, cpu: 6.4, mem: 388 }, { name: 'opsbox', pid: 412, cpu: 0.1, mem: 14, self: true }].map((p, i) => procRow(p, i, 8.1, 8192))}</div>`)}${cell('sort switch and live badge', html`<div class="col gap12"><div class="seg-radio" role="radiogroup" aria-label="Sort by"><button type="button" role="radio" aria-checked="true">CPU</button><button type="button" role="radio" aria-checked="false">Memory</button></div><span><span class="live-badge">● live</span> <span class="live-badge stale">● paused</span></span><a class="more" href="#">All →</a></div>`)}</div>
@@ -98,6 +121,8 @@ const pane = (theme, s) => {
       <div class="kit-row"><span class="kit-l">Chart: append, stable axis</span></div>
       <div class="chart kit-chart" data-chart="pct" data-keep></div><div class="chart kit-chart" data-chart="net" data-keep></div>
       <div data-live="rows">${liveRows()}</div>
+      <div class="kit-row"><span class="kit-l">Stable live lists</span>${btn('Shuffle', { act: 'shuffle', kind: 'primary' })}</div>
+      <div class="kit-flip-grid"><div class="kit-flip-box"><h3>With data-flip (constant height, rows glide)</h3><div class="flip-list" data-flip data-kit-flip></div></div><div class="kit-flip-box"><h3>Without data-flip (leaving rows fade out)</h3><div class="flip-list" data-kit-plain></div></div></div>
       <div class="kit-row"><span class="kit-l">Flash</span>${btn('Flash value', { act: 'flash-ok' })}${btn('Flash warning', { act: 'flash-warn' })}${btn('Flash error', { act: 'flash-err' })}<span class="kit-flash mono">12.4 MB</span></div>`)}
   </div>`;
 };
@@ -113,6 +138,7 @@ function mount() {
     c.kind = h.dataset.chart; charts.push(c);
   });
   paintLive();
+  paintShuffle();
   const toggleSim = () => {
     sim.on = !sim.on; const b = document.getElementById('sim');
     b.textContent = sim.on ? 'Stop simulation' : 'Simulate live data'; b.classList.toggle('primary', !sim.on);
@@ -140,6 +166,13 @@ function mount() {
     'flash-ok': () => flashIt('ok'), 'flash-warn': () => flashIt('warn'), 'flash-err': () => flashIt('err'),
     fake: () => fakeTask(false), fakefail: () => fakeTask(true),
     theme: () => toggleTheme(),
+    shuffle: () => {
+      const dropIdx = 1;
+      const kept = sim.shuffle.filter((_, i) => i !== dropIdx).reverse();
+      kept.splice(2, 0, { id: `r${++sim.shuffleSeq}`, name: `worker-${sim.shuffleSeq}`, state: 'ok', v: `${(Math.random() * 9 + 1).toFixed(1)}%` });
+      sim.shuffle = kept;
+      paintShuffle();
+    },
     live: () => { reportPoll(!liveState().ok); announce(liveState().ok ? 'Live' : 'Reconnecting'); },
   });
 }

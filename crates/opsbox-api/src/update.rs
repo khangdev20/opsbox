@@ -28,6 +28,7 @@ pub struct Updater {
     xfer_dir: PathBuf,
     version: &'static str,
     cached: Arc<RwLock<Option<CheckResult>>>,
+    first_seen: Arc<RwLock<Option<(String, i64)>>>,
 }
 
 impl Updater {
@@ -43,6 +44,7 @@ impl Updater {
             xfer_dir,
             version,
             cached: Arc::new(RwLock::new(None)),
+            first_seen: Arc::new(RwLock::new(None)),
         };
         updater.sync_outcome_to_audit();
         let bg = updater.clone();
@@ -93,6 +95,29 @@ impl Updater {
         } else {
             None
         }
+    }
+
+    pub fn latest_available_with_since(&self) -> Option<(String, i64)> {
+        let guard = self.cached.read().ok()?;
+        let res = guard.as_ref()?;
+        if !res.update_available {
+            return None;
+        }
+        let rel = res.latest.as_ref()?;
+        if let Some(ref pub_at) = rel.published_at
+            && let Ok(dt) =
+                time::OffsetDateTime::parse(pub_at, &time::format_description::well_known::Rfc3339)
+        {
+            return Some((rel.version.clone(), dt.unix_timestamp().max(1)));
+        }
+        let seen = self
+            .first_seen
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .filter(|(v, _)| v == &rel.version)
+            .map_or_else(|| res.checked_at.max(1), |(_, ts)| ts.max(1));
+        Some((rel.version.clone(), seen))
     }
 
     pub fn snapshot(&self) -> Value {
@@ -170,6 +195,18 @@ impl Updater {
                 .map_err(|e| {
                     HttpError::new(ErrorCode::Internal, format!("Update check failed: {e}"))
                 })?;
+        if let Ok(mut seen) = self.first_seen.write() {
+            if res.update_available
+                && let Some(ref rel) = res.latest
+            {
+                let same = seen.as_ref().is_some_and(|(v, _)| v == &rel.version);
+                if !same {
+                    *seen = Some((rel.version.clone(), res.checked_at.max(1)));
+                }
+            } else {
+                *seen = None;
+            }
+        }
         if let Ok(mut guard) = self.cached.write() {
             *guard = Some(res.clone());
         }

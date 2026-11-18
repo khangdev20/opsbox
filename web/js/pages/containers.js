@@ -168,6 +168,7 @@ export async function view() {
             </span>`,
           ], { meta: { key: c.id, sig: c.state } });
         }),
+        { flip: true },
       ));
       return;
     }

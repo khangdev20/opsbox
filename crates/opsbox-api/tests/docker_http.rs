@@ -674,7 +674,7 @@ async fn docker_routes_enforce_auth_roles_validation_and_end_to_end_flows() {
             }
         }
         let att = viewer.get("/api/v1/attention").await.json();
-        if att
+        if att["items"]
             .as_array()
             .is_some_and(|items| items.iter().any(|a| a["kind"] == "containers"))
         {

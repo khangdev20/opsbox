@@ -644,6 +644,8 @@ tr:hover .acts,tr:focus-within .acts{opacity:1}
 .more{font-size:13px;color:var(--accent);border-radius:6px}
 .more:hover{text-decoration:underline;text-underline-offset:3px}
 .procs{display:flex;flex-direction:column}
+.pr-list{display:flex;flex-direction:column;position:relative}
+.pr-list>.pr{background:var(--hl);will-change:transform}
 .heavy{display:flex;align-items:center;gap:14px;padding:14px 16px;margin-bottom:8px;border-radius:12px;background:color-mix(in srgb,var(--accent) 9%,transparent);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent)}
 .heavy .col{flex:1;gap:2px;min-width:0}
 .heavy b{font-size:16px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -691,3 +693,68 @@ tr:hover .acts,tr:focus-within .acts{opacity:1}
 .kit-side .side{position:static;height:auto;min-height:420px}.kit-side{display:flex;border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .kit-side{width:max-content;max-width:100%}
 @media (max-width:640px){.crumb{display:none}}
+
+/* =====================================================================
+   16f. notification bell, popover, critical banner, stable flip lists
+   ===================================================================== */
+.notif{position:relative}
+.notif-btn.btn{position:relative;width:40px;height:40px;min-height:40px;background:var(--fill)}
+.notif-btn.ring svg{transform-origin:50% 15%;animation:bell-ring 600ms var(--ease-out) 1}
+.notif-badge{position:absolute;top:-4px;right:-4px;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--warn);color:var(--onaccent);font:700 11px/18px var(--ui);text-align:center;box-shadow:0 0 0 2px var(--bg);pointer-events:none}
+.notif-badge[hidden]{display:none}
+.notif-badge.pop{animation:badge-pop var(--dur-3) var(--ease-out) 1}
+.notif-badge.crit{background:var(--danger);animation:badge-crit 2.4s var(--ease-in-out) infinite}
+.notif-badge.crit.pop{animation:badge-pop var(--dur-3) var(--ease-out) 1,badge-crit 2.4s var(--ease-in-out) var(--dur-3) infinite}
+@keyframes bell-ring{0%,100%{transform:rotate(0)}15%{transform:rotate(16deg)}30%{transform:rotate(-14deg)}45%{transform:rotate(10deg)}60%{transform:rotate(-7deg)}75%{transform:rotate(4deg)}}
+@keyframes badge-pop{0%{transform:scale(.6)}55%{transform:scale(1.22)}100%{transform:scale(1)}}
+@keyframes badge-crit{0%,100%{box-shadow:0 0 0 2px var(--bg),0 0 0 0 color-mix(in srgb,var(--danger) 45%,transparent)}50%{box-shadow:0 0 0 2px var(--bg),0 0 0 6px color-mix(in srgb,var(--danger) 0%,transparent)}}
+@keyframes sheet-down{from{opacity:0;transform:translateY(-12px)}}
+
+.notif-pop{position:absolute;right:0;top:calc(100% + 8px);z-index:55;width:min(420px,calc(100vw - 32px));border:1px solid var(--line);border-radius:14px;background:var(--hl);box-shadow:var(--pop);display:flex;flex-direction:column;overflow:hidden;animation:menu-in var(--dur-2) var(--ease-out)}
+.notif-pop[hidden]{display:none}
+.notif-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.notif-head h2{font-size:15px;font-weight:600}
+.notif-list{display:flex;flex-direction:column;max-height:min(65vh,440px);overflow-y:auto;position:relative}
+.notif-empty{padding:32px 16px;text-align:center;font-size:14px}
+.notif-item{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--hl);position:relative;will-change:transform;transition:background-color var(--dur-1) var(--ease-out)}
+.notif-item:last-child{border-bottom:0}
+.notif-item:focus-visible{outline:0;box-shadow:inset 0 0 0 2px var(--accent)}
+.notif-item.unread{background:color-mix(in srgb,var(--accent) 6%,var(--hl))}
+.notif-item.snoozed{opacity:.6}
+.notif-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:7px;vertical-align:middle}
+.notif-item.sev-critical .notif-dot{background:var(--danger)}
+.notif-ico{flex:none;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:var(--fill);color:var(--warn)}
+.notif-item.sev-critical .notif-ico{color:var(--danger);background:color-mix(in srgb,var(--danger) 14%,transparent)}
+.notif-item.sev-warning .notif-ico{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent)}
+.notif-item.sev-info .notif-ico{color:var(--c1);background:color-mix(in srgb,var(--c1) 14%,transparent)}
+.notif-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.notif-txt{font-size:13.5px;line-height:1.4;overflow-wrap:anywhere}
+.notif-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.notif-go{color:var(--accent);font-weight:500}
+.notif-go:hover{text-decoration:underline;text-underline-offset:3px}
+.notif-acts{position:relative;flex:none}
+.notif-menu{position:absolute;right:0;top:calc(100% + 4px);z-index:10;min-width:140px;padding:4px;border:1px solid var(--line);border-radius:10px;background:var(--hl);box-shadow:var(--pop);display:flex;flex-direction:column;gap:2px}
+.notif-menu[hidden]{display:none}
+.notif-menu .menu-item{min-height:34px;font-size:13px}
+@media (max-width:640px){
+  .notif-pop{position:fixed;left:0;right:0;top:0;width:100%;max-height:82vh;border-radius:0 0 16px 16px;border-top:0;z-index:70;animation:sheet-down var(--dur-2) var(--ease-out)}
+}
+@media (prefers-reduced-motion:reduce){
+  .notif-btn.ring svg,.notif-badge.pop,.notif-badge.crit,.notif-badge.crit.pop{animation:none!important}
+}
+
+#crit-banner:empty{display:none}
+.crit-banner{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 14px;border:1px solid color-mix(in srgb,var(--danger) 45%,transparent);border-radius:12px;background:color-mix(in srgb,var(--danger) 8%,var(--hl));font-size:14px}
+.crit-ico{flex:none;display:flex;color:var(--danger)}
+.crit-txt{flex:1 1 240px;min-width:0;font-weight:500}
+
+.flip-list{display:flex;flex-direction:column;position:relative}
+.flip-list>*{background:var(--hl);will-change:transform}
+tbody[data-flip]>tr{will-change:transform;background:var(--hl)}
+
+.kit-notif{min-height:48px}.kit-notif.open{width:min(100%,420px)}
+.kit-notif .notif-pop{animation:none}
+.kit-notif.open .notif-pop{position:static;margin-top:8px;width:100%}
+.kit-flip-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.kit-flip-box{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--hl)}
+.kit-flip-box h3{font-size:13px;font-weight:600;margin-bottom:8px;color:var(--muted)}

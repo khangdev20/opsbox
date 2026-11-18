@@ -182,12 +182,13 @@ async fn silence_is_per_target_persistent_and_attention_links_match() {
         .set_setting("alerts.engine.v1", &serde_json::to_value(e).unwrap())
         .unwrap();
     let att = b.get("/api/v1/attention").await.json();
-    let item = att
+    let item = att["items"]
         .as_array()
         .unwrap()
         .iter()
         .find(|a| a["alertId"] == "disk:/")
         .unwrap();
+    assert_eq!(item["id"], "disk:/");
     assert_eq!(item["link"][1], "#/alerts?id=disk%3A%2F");
     assert_eq!(
         b.post(

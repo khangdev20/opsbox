@@ -4,6 +4,7 @@
 //! synchronous; async callers wrap them in `spawn_blocking`.
 
 mod accounts;
+mod attention;
 mod audit;
 mod backup;
 mod databases;
@@ -23,6 +24,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 pub use accounts::{Session, SessionKind, User};
+pub use attention::AttentionStateRecord;
 pub use audit::{
     ActorKind, AuditEntry, AuditError, AuditReport, AuditResult, GENESIS_HASH, NewAudit,
 };

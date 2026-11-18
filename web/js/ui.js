@@ -163,7 +163,7 @@ function syncAttrs(a, b) {
 }
 
 function enter(node) {
-  if (node.nodeType !== 1 || !node.hasAttribute('data-key')) return;
+  if (reducedMotion() || node.nodeType !== 1 || !node.hasAttribute('data-key')) return;
   node.classList.add('enter');
   setTimeout(() => node.classList.remove('enter'), DUR[3] + 60);
 }
@@ -218,6 +218,11 @@ function morphNode(a, b, ctx) {
 
 function morphChildren(a, b, ctx) {
   const olds = [...a.childNodes].filter((n) => !isLeaving(n));
+  // data-flip: a ranked list with a fixed number of rows (Top processes). Rows that drop out are
+  // removed at once instead of fading in place (which made the list grow, then shrink), and rows
+  // that change position glide from their old spot (FLIP).
+  const flip = ctx.animate && a.nodeType === 1 && a.hasAttribute('data-flip');
+  const first = flip ? new Map(olds.filter((n) => keyOf(n) !== null).map((n) => [n, n.getBoundingClientRect().top])) : null;
   const byKey = new Map();
   olds.forEach((n) => { const k = keyOf(n); if (k !== null) byKey.set(k, n); });
   const used = new Set();
@@ -234,7 +239,7 @@ function morphChildren(a, b, ctx) {
     }
     if (match) { used.add(match); morphNode(match, nn, ctx); plan.push(match); } else plan.push({ fresh: nn });
   }
-  olds.forEach((n) => { if (!used.has(n)) { if (ctx.animate) leave(n); else n.remove(); } });
+  olds.forEach((n) => { if (!used.has(n)) { if (ctx.animate && !flip) leave(n); else n.remove(); } });
   const live = () => [...a.childNodes].filter((n) => !isLeaving(n));
   let nodes = live(); let idx = 0;
   for (const p of plan) {
@@ -249,6 +254,24 @@ function morphChildren(a, b, ctx) {
       nodes = live(); idx = nodes.indexOf(node) + 1;
     } else if (nodes[idx] === node) idx++;
     else { a.insertBefore(node, nodes[idx] || null); nodes = live(); idx = nodes.indexOf(node) + 1; }
+  }
+  if (flip) {
+    const sc = a.closest?.('.tw.tall');
+    const visH = sc && sc.clientHeight > 0
+      ? Math.min(a.clientHeight || sc.clientHeight, sc.clientHeight)
+      : (a.clientHeight || 0);
+    for (const [n, top] of first) {
+      if (!n.isConnected || typeof n.animate !== 'function') continue;
+      if (n._flipAnim) { try { n._flipAnim.cancel(); } catch {} n._flipAnim = null; }
+      const dy = top - n.getBoundingClientRect().top;
+      if (Math.abs(dy) < 1 || !visH || Math.abs(dy) > visH) continue;
+      n._flipAnim = n.animate(
+        [{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }],
+        { duration: DUR[3], easing: 'cubic-bezier(.2,.8,.2,1)' },
+      );
+    }
+  } else if (a.nodeType === 1 && a.hasAttribute('data-flip')) {
+    for (const n of used) if (n._flipAnim) { try { n._flipAnim.cancel(); } catch {} n._flipAnim = null; }
   }
 }
 
@@ -367,7 +390,7 @@ export async function withBusy(el, fn) {
 }
 // `meta` on a row: { key, sig, cls, attrs }. key makes the row keyed (patch updates it in place);
 // sig is what counts as a change worth flashing (default: the whole row).
-export function table(caption, heads, rows, { rowAttrs } = {}) {
+export function table(caption, heads, rows, { rowAttrs, flip = false } = {}) {
   const th = heads.map(([t, a]) => html`<th class="${a === 'r' ? 'r' : ''}">${t}</th>`);
   const tr = rows.map((cells, ri) => {
     const meta = cells.meta || {};
@@ -376,7 +399,7 @@ export function table(caption, heads, rows, { rowAttrs } = {}) {
     const sig = meta.sig !== undefined ? ` data-sig="${esc(meta.sig)}"` : '';
     return html`<tr class="${meta.cls || ''}"${raw(key)}${raw(sig)} ${raw(attrs)}>${cells.map((c, i) => html`<td class="${heads[i] && heads[i][1] === 'r' ? 'r' : ''}">${c}</td>`)}</tr>`;
   });
-  return html`<div class="tw${rows.length > 12 ? ' tall' : ''}"><table><caption class="sr">${caption}</caption><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
+  return html`<div class="tw${rows.length > 12 ? ' tall' : ''}"><table><caption class="sr">${caption}</caption><thead><tr>${th}</tr></thead><tbody${raw(flip ? ' data-flip' : '')}>${tr}</tbody></table></div>`;
 }
 export function section(title, body, right = '', cls = '') {
   return html`<section class="sec${cls ? ` ${cls}` : ''}"><div class="sec-h"><h2>${title}</h2>${right}</div>${body}</section>`;

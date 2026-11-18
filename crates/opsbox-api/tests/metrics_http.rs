@@ -156,9 +156,19 @@ async fn attention_is_a_list_of_kind_text_and_link() {
     let mut b = h.signed_in("viewer1", Role::Viewer);
     warmed_up(&h).await;
     let v = b.get("/api/v1/attention").await.json();
-    let items = v.as_array().expect("a list");
+    assert!(v["unread"].is_u64() && v["critical"].is_u64(), "{v}");
+    let items = v["items"].as_array().expect("items array");
     for a in items {
-        assert!(a["kind"].is_string() && a["text"].is_string(), "{a}");
+        assert!(
+            a["id"].is_string()
+                && a["kind"].is_string()
+                && a["severity"].is_string()
+                && a["since"].is_i64()
+                && a["text"].is_string()
+                && a["read"].is_boolean()
+                && a["snoozed"].is_boolean(),
+            "{a}"
+        );
         assert!(
             a["link"]
                 .as_array()
@@ -166,6 +176,313 @@ async fn attention_is_a_list_of_kind_text_and_link() {
             "{a}"
         );
     }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn attention_deduplicates_tracks_read_and_snooze_and_enforces_rbac_and_csrf() {
+    use axum::http::Method;
+    use common::Opts;
+    use opsbox_alerts::{Engine, Observation};
+    use serde_json::json;
+    use std::collections::BTreeSet;
+
+    let h = Harness::new(false);
+    let mut admin = h.signed_in("admin1", Role::Admin);
+    let mut viewer = h.signed_in("viewer1", Role::Viewer);
+
+    // 1. Seed a missed backup on `opsbox-self` (built-in backup:opsbox) AND a firing
+    //    `missed:opsbox-self` alert + `disk:/` warning + `cpu:host` critical alert.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    h.store
+        .update_backup_job(
+            opsbox_store::OPSBOX_SELF_JOB_ID,
+            opsbox_store::UpdateBackupJob {
+                cron: Some("0 * * * *"), // hourly :00 -> missed > 15m ago if created earlier
+                now: now - 7200,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let mut eng = Engine::default();
+    let known = BTreeSet::from(["missed".into(), "disk".into(), "cpu".into()]);
+    let obs = vec![
+        Observation::new(
+            "missed",
+            opsbox_store::OPSBOX_SELF_JOB_ID,
+            "Backup opsbox is overdue. Check its schedule and destination.".into(),
+            "#/backups",
+            false,
+        ),
+        Observation::new("disk", "/", "Disk / is at 82%.".into(), "#/cleanup", false),
+        Observation::new(
+            "cpu",
+            "host",
+            "CPU is at 99%. Review busy processes.".into(),
+            "#/overview",
+            true,
+        ),
+    ];
+    eng.evaluate(obs.clone(), &known, now - 1000);
+    eng.evaluate(obs, &known, now - 650);
+    h.store
+        .set_setting("alerts.engine.v1", &serde_json::to_value(&eng).unwrap())
+        .unwrap();
+
+    // Admin sees 3 deduplicated items: backup:opsbox (linked to alert), disk:/, cpu:host (critical on top).
+    let att = admin.get("/api/v1/attention").await.json();
+    let items = att["items"].as_array().unwrap();
+    let backup_count = items.iter().filter(|i| i["id"] == "backup:opsbox").count();
+    assert_eq!(backup_count, 1, "missed backup must deduplicate: {att}");
+    let backup_item = items.iter().find(|i| i["id"] == "backup:opsbox").unwrap();
+    assert_eq!(backup_item["link"][1], "#/alerts?id=missed%3Aopsbox-self");
+    assert_eq!(items[0]["id"], "cpu:host");
+    assert_eq!(items[0]["severity"], "critical");
+    assert_eq!(att["unread"], 3);
+    assert_eq!(att["critical"], 1);
+
+    // Non-admin viewer does NOT see host-wide alerts (cpu:host, disk:/ alert), only built-in backup:opsbox!
+    let v_att = viewer.get("/api/v1/attention").await.json();
+    assert!(
+        !v_att["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == "cpu:host"),
+        "viewer must not see host-wide cpu alert: {v_att}"
+    );
+    assert_eq!(
+        viewer
+            .post("/api/v1/attention/cpu%3Ahost/read", json!({}))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // 2. CSRF & Origin refusal on POST attention mutations.
+    assert_eq!(
+        admin
+            .send(
+                Method::POST,
+                "/api/v1/attention/read-all",
+                None,
+                Opts {
+                    csrf: false,
+                    ..Opts::default()
+                },
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        admin
+            .send(
+                Method::POST,
+                "/api/v1/attention/disk%3A%2F/read",
+                None,
+                Opts {
+                    origin: Some("http://evil.example".to_owned()),
+                    ..Opts::default()
+                },
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+
+    // Read token cannot mutate attention state.
+    let tok = admin
+        .post(
+            "/api/v1/tokens",
+            json!({"name": "reader-tok", "scope": "read"}),
+        )
+        .await
+        .json()["secret"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut script = h.browser();
+    assert_eq!(
+        script
+            .send(
+                Method::POST,
+                "/api/v1/attention/read-all",
+                None,
+                Opts {
+                    csrf: false,
+                    origin: None,
+                    extra: vec![("authorization".into(), format!("Bearer {tok}"))],
+                    ..Opts::default()
+                },
+            )
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+
+    // 3. Mark disk:/ read (percent-encoded %2F works) -> unread drops to 2; viewer's unread unaffected.
+    let r = admin
+        .send(
+            Method::POST,
+            "/api/v1/attention/disk%3A%2F/read",
+            None,
+            Opts::default(),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    let after_read = r.json();
+    assert_eq!(after_read["unread"], 2);
+    assert_eq!(after_read["critical"], 1);
+    assert!(
+        after_read["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == "disk:/")
+            .unwrap()["read"]
+            == true
+    );
+    assert_eq!(viewer.get("/api/v1/attention").await.json()["unread"], 1);
+
+    // 4. Severity escalation on disk:/ (warning -> critical) makes it unread again!
+    let mut eng2: Engine =
+        serde_json::from_value(h.store.get_setting("alerts.engine.v1").unwrap().unwrap()).unwrap();
+    let obs_crit = vec![
+        Observation::new(
+            "missed",
+            opsbox_store::OPSBOX_SELF_JOB_ID,
+            "Backup opsbox is overdue. Check its schedule and destination.".into(),
+            "#/backups",
+            false,
+        ),
+        Observation::new("disk", "/", "Disk / is at 96%.".into(), "#/cleanup", true),
+        Observation::new(
+            "cpu",
+            "host",
+            "CPU is at 99%. Review busy processes.".into(),
+            "#/overview",
+            true,
+        ),
+    ];
+    eng2.evaluate(obs_crit, &known, now - 600);
+    h.store
+        .set_setting("alerts.engine.v1", &serde_json::to_value(&eng2).unwrap())
+        .unwrap();
+    let esc = admin.get("/api/v1/attention").await.json();
+    assert_eq!(esc["unread"], 3);
+    assert_eq!(esc["critical"], 2);
+    assert_eq!(
+        esc["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == "disk:/")
+            .unwrap()["read"],
+        false
+    );
+
+    // 5. Snooze validation + invariant:
+    //    - 0 and > 7 days (10081) fail with 400
+    //    - snoozing warning backup:opsbox removes it from items & unread
+    //    - snoozing critical cpu:host keeps it in items (dimmed, after unsnoozed critical disk:/) AND keeps it in unread & critical count!
+    assert_eq!(
+        admin
+            .post(
+                "/api/v1/attention/backup%3Aopsbox/snooze",
+                json!({"minutes": 0})
+            )
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        admin
+            .post(
+                "/api/v1/attention/backup%3Aopsbox/snooze",
+                json!({"minutes": 10081})
+            )
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let sn_warn = admin
+        .post(
+            "/api/v1/attention/backup%3Aopsbox/snooze",
+            json!({"minutes": 60}),
+        )
+        .await;
+    assert_eq!(sn_warn.status, StatusCode::OK, "{}", sn_warn.text());
+    let sn_warn_j = sn_warn.json();
+    assert_eq!(sn_warn_j["unread"], 2);
+    assert!(
+        !sn_warn_j["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["id"] == "backup:opsbox")
+    );
+
+    let sn_crit = admin
+        .post(
+            "/api/v1/attention/cpu%3Ahost/snooze",
+            json!({"minutes": 60}),
+        )
+        .await;
+    assert_eq!(sn_crit.status, StatusCode::OK, "{}", sn_crit.text());
+    let sn_crit_j = sn_crit.json();
+    assert_eq!(
+        sn_crit_j["unread"], 2,
+        "snoozing critical must NOT reduce unread count: {sn_crit_j}"
+    );
+    assert_eq!(
+        sn_crit_j["critical"], 2,
+        "snoozing critical must NOT reduce critical count: {sn_crit_j}"
+    );
+    let crit_items = sn_crit_j["items"].as_array().unwrap();
+    assert_eq!(crit_items[0]["id"], "disk:/");
+    assert_eq!(crit_items[1]["id"], "cpu:host");
+    assert_eq!(crit_items[1]["snoozed"], true);
+
+    // 6. New `since` on a previously read item makes it unread again.
+    let ra = admin
+        .send(
+            Method::POST,
+            "/api/v1/attention/read-all",
+            None,
+            Opts::default(),
+        )
+        .await
+        .json();
+    assert_eq!(ra["unread"], 0);
+    assert_eq!(ra["critical"], 0);
+
+    // Resolve cpu:host, then re-fire with a newer `since`.
+    let mut eng3: Engine =
+        serde_json::from_value(h.store.get_setting("alerts.engine.v1").unwrap().unwrap()).unwrap();
+    eng3.evaluate(vec![], &known, now - 400);
+    let cpu_obs = vec![Observation::new(
+        "cpu",
+        "host",
+        "CPU spiked again.".into(),
+        "#/overview",
+        true,
+    )];
+    eng3.evaluate(cpu_obs.clone(), &known, now - 320);
+    eng3.evaluate(cpu_obs, &known, now);
+    h.store
+        .set_setting("alerts.engine.v1", &serde_json::to_value(&eng3).unwrap())
+        .unwrap();
+    let again = admin.get("/api/v1/attention").await.json();
+    assert_eq!(again["unread"], 1);
+    assert_eq!(again["critical"], 1);
+    assert_eq!(again["items"][0]["id"], "cpu:host");
+    assert_eq!(again["items"][0]["read"], false);
+
     h.shutdown().await;
 }
 

@@ -1,7 +1,7 @@
 // Router + boot. Hash routes: #/ #/apps #/apps/new #/apps/new/configure #/containers ...
 import { applyTheme, initialTheme, session, server, listeners } from './store.js';
 import * as api from './api.js';
-import { mountShell, setNav, refreshStatus } from './shell.js';
+import { mountShell, unmountShell, setNav, refreshStatus } from './shell.js';
 import { toast, confirmDialog, formDialog, keepOrUndoDialog, initUi, reportPoll, liveState, skeletonPage } from './ui.js';
 
 applyTheme(initialTheme());
@@ -44,7 +44,7 @@ async function navigate() {
     if (name === 'login' && server.setupRequired) { location.hash = '#/setup'; return; }
   }
   let root, sk = 0;
-  if (bare) { app.innerHTML = '<div id="view" style="flex:1;display:flex;flex-direction:column"></div>'; root = document.getElementById('view'); shellUp = false; }
+  if (bare) { unmountShell(); app.innerHTML = '<div id="view" style="flex:1;display:flex;flex-direction:column"></div>'; root = document.getElementById('view'); shellUp = false; }
   else { if (!shellUp || !document.getElementById('nav')) { root = mountShell(app); shellUp = true; } else root = document.getElementById('view'); }
   // A first load never leaves the page blank: after a moment, show blocks shaped like the page.
   if (!bare) sk = setTimeout(() => { if (my !== gen) return; const h = document.createElement('div'); h.style.cssText = 'flex:1;display:flex;flex-direction:column'; h.innerHTML = skeletonPage().toString(); root.replaceChildren(h); }, 140);

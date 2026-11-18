@@ -6,6 +6,6 @@ pub mod engine;
 pub mod rollup;
 mod service;
 
-pub use attention::Attention;
+pub use attention::{Attention, Severity};
 pub use engine::{DiskView, Engine, Point, ProcView, Snapshot};
 pub use service::Metrics;
