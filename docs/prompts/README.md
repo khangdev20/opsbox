@@ -25,7 +25,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 09 | Deploy pipeline (`09-deploy-pipeline.md`) | 3 | ✓ |
 | 10 | App domains (`10-app-domains.md`) | 4 | ✓ |
 | 11 | Templates and Compose (`11-templates-compose.md`) | 3 | ✓ |
-| 12 | Databases part A: link to apps (`12-databases-link.md`) | 3 | |
+| 12 | Databases part A: link to apps (`12-databases-link.md`) | 3 | ✓ |
 | 13 | Backups engine (`13-backups-engine.md`) | 5 | |
 | 14 | Backup destinations and restore (`14-backup-destinations-restore.md`) | 5 | |
 | 15 | Alerts (`15-alerts.md`) | 5 | |
