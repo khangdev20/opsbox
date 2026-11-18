@@ -50,5 +50,11 @@ Supabase-style backend services (end-user auth, auto-generated REST, realtime, s
 Design still needed: "Connect database" in the Variables tab, database detail page (connected apps, users, extensions, sizes, slow queries, SQL console entry).
 Spec still needed: reference variables, rotation and per-app users in docs/BACKEND_SPEC.md (sections 7.5, 7.6).
 
+## opsbox Cloud (decided 2026-11-18, later)
+A separate official site that creates an instance in the user's own provider account, installs opsbox with cloud-init, and hands over the panel link plus a one-time claim link. The user pays the provider; opsbox charges a small fee. The site stores no provider keys, panel credentials or SSH keys. See ARCHITECTURE.md section 3.
+Status: idea and threat model recorded only; not started. Finish the Linux panel first.
+Order: alpha stable → open source with real users → opsbox Cloud → opsbox Desktop (Cloud and Desktop may share the multi-server core later).
+Prerequisites in opsbox: unattended install with a claim token file, busy-host installs (03c), capacity tiers (15b), machine-readable install result.
+
 ## Before trusting it with company data
 Independent security review, SECURITY.md, threat model, signed releases.
