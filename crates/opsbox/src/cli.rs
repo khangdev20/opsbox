@@ -14,7 +14,7 @@ use crate::config::LogFormat;
 #[derive(Debug, Parser)]
 #[command(
     name = "opsbox",
-    version,
+    version = opsbox_version::VERSION,
     about = "All-in-one Linux server manager",
     propagate_version = true
 )]

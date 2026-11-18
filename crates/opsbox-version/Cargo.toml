@@ -1,0 +1,12 @@
+[package]
+name = "opsbox-version"
+description = "The release version this build reports (stamped from the tag in CI)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+build = "build.rs"
+
+[lints]
+workspace = true

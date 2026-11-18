@@ -23,7 +23,7 @@ Release archives are signed with [minisign](https://jedisct1.github.io/minisign/
 ## Cutting a release
 
 1. Ensure `dev` is green in CI (`cargo fmt`, `cargo clippy`, `cargo test`, `cargo deny check`, musl builds).
-2. Update the version in `Cargo.toml` if needed, commit, and push to `origin/dev`.
+2. Commit and push to `origin/dev`. You do not edit the version in `Cargo.toml`: the release workflow stamps it from the tag (see below).
 3. Create and push a tag:
 
    ```sh
@@ -32,6 +32,18 @@ Release archives are signed with [minisign](https://jedisct1.github.io/minisign/
    ```
 
    Tags containing `-alpha`, `-beta`, or `-rc` (for example `v0.1.0-alpha.1`) are automatically marked as **pre-release** on GitHub.
+
+### Version stamping
+
+The tag is the version. On a `v*` tag the workflow runs `tools/stamp-version.sh <tag>` (sets the workspace version in `Cargo.toml` and refreshes `Cargo.lock`) and builds with `OPSBOX_BUILD_VERSION=<tag without v>`. The binary reports that string everywhere: `opsbox --version`, `opsbox status`, `/healthz`, the update panel. The job fails if `opsbox --version` does not print exactly `opsbox <version>`. CI repeats the stamping with a made-up tag (`v9.9.9-alpha.1`) on every push, so a broken stamp is caught before a release.
+
+Local and CI builds without `OPSBOX_BUILD_VERSION` report `0.1.0-dev+<short sha>`. A dev build is never offered updates; install a release on it with `sudo opsbox update --version v<version>`.
+
+### Update channels
+
+- Every `-alpha`, `-beta` or `-rc` tag is a GitHub pre-release and is only seen on the **beta** channel. The stable channel finds nothing until a plain `vX.Y.Z` is published.
+- The channel is, in order: the panel setting, `[update] channel` in `/etc/opsbox/config.toml` (`install.sh --channel beta`, or installing a pre-release with `--version`, writes it), then a default: beta while the running version is a pre-release, otherwise stable.
+- Servers installed before version stamping report `0.1.0`. They are offered the newest `0.1.0-alpha.N` once, with a note that their install predates version tagging. If the panel cannot do it, run `sudo opsbox update --version v0.1.0-alpha.<N>` on the server (an explicit version skips the comparison).
 
 The release workflow builds static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` binaries, packages `opsbox-<version>-<target>.tar.gz`, generates `.sha256` checksums, signs each archive with `minisign` (`.minisig`), attaches a CycloneDX SBOM (`opsbox-<version>.cdx.json`), and uploads `install.sh` as a release asset.
 

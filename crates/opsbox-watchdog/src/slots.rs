@@ -133,7 +133,7 @@ impl SlotManager {
         let from_ver = self
             .current_slot_version()
             .or_else(|| state.current_version.clone())
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+            .unwrap_or_else(|| opsbox_version::VERSION.to_owned());
 
         let tmp = self.symlink.with_extension("tmp-link");
         let _ = fs::remove_file(&tmp);

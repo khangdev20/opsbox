@@ -1757,6 +1757,7 @@ dependencies = [
  "opsbox-proxy",
  "opsbox-store",
  "opsbox-update",
+ "opsbox-version",
  "opsbox-watchdog",
  "rpassword",
  "serde",
@@ -1809,6 +1810,7 @@ dependencies = [
  "opsbox-proxy",
  "opsbox-store",
  "opsbox-update",
+ "opsbox-version",
  "rcgen 0.13.2",
  "rcgen 0.14.10",
  "rust-embed",
@@ -1948,6 +1950,7 @@ dependencies = [
  "opsbox-proto",
  "opsbox-store",
  "opsbox-update",
+ "opsbox-version",
  "proptest",
  "pty-process",
  "rustix",
@@ -1995,6 +1998,7 @@ dependencies = [
  "nix",
  "opsbox-priv",
  "opsbox-proto",
+ "opsbox-version",
  "rcgen 0.14.10",
  "rustls-pki-types",
  "serde",
@@ -2038,6 +2042,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "minisign-verify",
+ "opsbox-version",
  "semver",
  "serde",
  "serde_json",
@@ -2047,6 +2052,10 @@ dependencies = [
  "thiserror",
  "ureq",
 ]
+
+[[package]]
+name = "opsbox-version"
+version = "0.1.0"
 
 [[package]]
 name = "opsbox-watchdog"
@@ -2063,6 +2072,7 @@ dependencies = [
  "nix",
  "opsbox-proto",
  "opsbox-store",
+ "opsbox-version",
  "rcgen 0.13.2",
  "rustls-pki-types",
  "serde",

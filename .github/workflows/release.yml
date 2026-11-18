@@ -49,11 +49,31 @@ jobs:
             exit 1
           fi
 
+      - name: Stamp the tag as the version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          sh tools/stamp-version.sh "$TAG"
+          echo "OPSBOX_BUILD_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
       - name: Build static musl targets
         run: |
           cargo zigbuild --release --locked \
             --target x86_64-unknown-linux-musl \
             --target aarch64-unknown-linux-musl
+
+      - name: Check the binaries report the tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          got="$(target/x86_64-unknown-linux-musl/release/opsbox --version)"
+          if [ "$got" != "opsbox $VERSION" ]; then
+            echo "error: opsbox --version printed '$got', expected 'opsbox $VERSION'" >&2
+            exit 1
+          fi
+          # The arm64 binary cannot run on this runner; its version string is embedded.
+          if ! grep -aqF "$VERSION" target/aarch64-unknown-linux-musl/release/opsbox; then
+            echo "error: the aarch64 binary does not contain version $VERSION" >&2
+            exit 1
+          fi
 
       - name: Package, checksum, sign, and generate SBOM
         env:

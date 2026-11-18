@@ -213,6 +213,12 @@ impl AppState {
         self
     }
 
+    /// The update channel named in the config file, used when the panel has none.
+    pub fn with_update_channel(mut self, channel: Option<opsbox_update::Channel>) -> Self {
+        self.updater = self.updater.with_config_channel(channel);
+        self
+    }
+
     /// The allowed-address list as text (empty when there is none).
     pub fn allow_list_text(&self) -> String {
         allowlist::render(&self.allow.get())

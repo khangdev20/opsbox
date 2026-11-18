@@ -23,7 +23,7 @@ pub use proxy::sha256_hex;
 pub use server::{ProxyConfig, ProxyServer, ProxyServerError};
 
 /// Version reported by `Ping` over `proxy.sock`.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = opsbox_version::VERSION;
 
 /// Run the reverse proxy until `shutdown` completes.
 pub async fn run(

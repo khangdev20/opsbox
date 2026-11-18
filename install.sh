@@ -72,7 +72,7 @@ usage() {
 Usage: install.sh [options]
 
   --version VERSION   install this release (default: the latest)
-  --channel NAME      stable or beta, passed on to opsbox
+  --channel NAME      stable or beta; beta is kept in config.toml so updates stay on it
   --pair SECRET       pairing secret from the desktop app, passed on to opsbox
   --web               turn the web panel on, passed on to opsbox
   --force             install below minimum (512 MB RAM / 2 GB free disk)
@@ -132,6 +132,11 @@ while [ $# -gt 0 ]; do
     *) usage; die "unknown option: $1" ;;
   esac
 done
+
+case "$CHANNEL" in
+  ""|stable|beta) ;;
+  *) die "--channel must be stable or beta" ;;
+esac
 
 if [ -n "$LOCAL_BINARY" ] && [ "$DEV" -ne 1 ]; then
   die "--binary installs something that was never signed; add --dev to confirm that is what you want"
@@ -256,6 +261,36 @@ latest_version() {
     sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$tmp_json" | head -n 1
   fi
 }
+
+# BEGIN update-channel
+# The channel to keep in config.toml: beta when asked for, or when a pre-release was
+# installed by --version (an alpha can only be updated from the beta channel). A stable
+# install writes nothing, so the default applies.
+channel_to_record() { # channel_to_record CHANNEL VERSION
+  if [ "$1" = "beta" ]; then
+    printf 'beta\n'
+  elif [ -z "$1" ]; then
+    case "${2#v}" in
+      *-*) printf 'beta\n' ;;
+    esac
+  fi
+}
+
+# Set `[update] channel = "<channel>"` in a config file, keeping everything else.
+write_update_channel() { # write_update_channel FILE CHANNEL
+  if grep -q '^\[update\]' "$1"; then
+    if grep -q '^[[:space:]]*channel[[:space:]]*=' "$1"; then
+      sed "s/^[[:space:]]*channel[[:space:]]*=.*/channel = \"$2\"/" "$1" >"$1.new" || return 1
+    else
+      sed "/^\[update\]/a\\
+channel = \"$2\"" "$1" >"$1.new" || return 1
+    fi
+    cat "$1.new" >"$1" && rm -f "$1.new"
+  else
+    printf '\n[update]\nchannel = "%s"\n' "$2" >>"$1"
+  fi
+}
+# END update-channel
 
 ensure_minisign() {
   command -v minisign >/dev/null 2>&1 && return 0
@@ -456,11 +491,25 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 # dir = "/var/backups/opsbox"
 # cache_dir = "/var/cache/opsbox/restic"
 
+# [update]
+# channel = "stable"   # or "beta"; the Settings page can override it
+
 # [log]
 # level = "info"
 # format = "text"
 EOF
     chmod 0644 "$CONF_DIR/config.toml"
+  fi
+fi
+
+# Keep the channel the install came from, so the panel looks for updates there.
+RECORD_CHANNEL="$(channel_to_record "$CHANNEL" "$VERSION")"
+if [ -n "$RECORD_CHANNEL" ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "+ set [update] channel = \"$RECORD_CHANNEL\" in $CONF_DIR/config.toml"
+  else
+    write_update_channel "$CONF_DIR/config.toml" "$RECORD_CHANNEL" ||
+      warn "could not write the update channel to $CONF_DIR/config.toml"
   fi
 fi
 

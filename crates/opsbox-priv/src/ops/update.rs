@@ -201,7 +201,7 @@ pub(super) fn install(
     }
 
     let layout = SlotLayout::default();
-    let current_ver = env!("CARGO_PKG_VERSION");
+    let current_ver = crate::VERSION;
     let prev = layout
         .install_and_switch(
             staged_path,
@@ -260,7 +260,7 @@ pub(super) fn rollback(to_version: Option<&str>) -> Result<(), PrivError> {
     let from_ver = prev_state
         .current_version
         .clone()
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+        .unwrap_or_else(|| crate::VERSION.to_owned());
 
     let rolled = layout
         .rollback_slot(to_version, current_db_schema)

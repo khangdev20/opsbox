@@ -17,22 +17,43 @@ fn now_secs() -> i64 {
 }
 
 pub fn run_update(config: &Config, channel: Option<&str>, version: Option<&str>) -> Result<()> {
-    let ch = match channel {
-        Some(c) => Channel::parse(c)
-            .with_context(|| format!("unknown channel '{c}' (use stable or beta)"))?,
-        None => Channel::Stable,
+    // --channel, then [update] channel from the config file, then the default for this
+    // version. (The panel's own setting lives in the database; the CLI does not read it.)
+    let explicit = match channel {
+        Some(c) => Some(
+            Channel::parse(c)
+                .with_context(|| format!("unknown channel '{c}' (use stable or beta)"))?,
+        ),
+        None => config.update_channel,
     };
     let target_ver = match version {
+        // An explicit version skips the comparison: this is the manual path for an
+        // install that cannot see a newer release.
         Some(v) => v.trim_start_matches('v').to_owned(),
         None => {
-            let res = opsbox_update::check_latest(VERSION, ch)
-                .context("checking GitHub Releases failed")?;
+            let res = match explicit {
+                Some(ch) => opsbox_update::check_latest(VERSION, ch),
+                None => opsbox_update::check_latest_default_channel(VERSION),
+            }
+            .context("checking GitHub Releases failed")?;
+            if res.dev_build {
+                println!(
+                    "opsbox {VERSION} is a development build and is not updated automatically.\n\
+                     To install a release, run: opsbox update --version v<version>"
+                );
+                return Ok(());
+            }
             if !res.update_available {
                 println!(
                     "opsbox {VERSION} is already up to date ({} channel).",
-                    ch.as_str()
+                    res.channel.as_str()
                 );
                 return Ok(());
+            }
+            if res.migration {
+                println!(
+                    "Your install predates version tagging; updating to get accurate versions."
+                );
             }
             res.latest
                 .map(|r| r.version)

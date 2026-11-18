@@ -58,6 +58,13 @@ pub struct CheckResult {
     pub latest: Option<ReleaseInfo>,
     pub update_available: bool,
     pub checked_at: i64,
+    /// The running build predates version tagging (it reports a plain `0.1.0`), so the
+    /// offered pre-release only looks like a downgrade to semver.
+    #[serde(default)]
+    pub migration: bool,
+    /// The running build is a local development build; it is never offered updates.
+    #[serde(default)]
+    pub dev_build: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -103,13 +110,19 @@ fn release_download_base(version: &str) -> String {
 }
 
 /// Pick the highest matching release from a GitHub Releases JSON payload.
+///
+/// * A development build (`0.1.0-dev+<sha>`) is never offered anything.
+/// * An old build that reports a plain `0.1.0` while the newest release on the channel is
+///   a `0.1.0-alpha.N` is offered that alpha once (`migration`), because semver ranks
+///   `0.1.0-alpha.N` below `0.1.0` even though the build is older.
 pub fn select_release(
     current_version: &str,
     channel: Channel,
     releases_json: &str,
     checked_at: i64,
 ) -> Result<CheckResult, UpdateError> {
-    let cur = Version::parse(current_version.trim_start_matches('v'))
+    let clean_current = current_version.trim_start_matches('v');
+    let cur = Version::parse(clean_current)
         .map_err(|e| UpdateError::InvalidVersion(format!("{current_version}: {e}")))?;
     let items: Vec<GhRelease> =
         serde_json::from_str(releases_json).map_err(|e| UpdateError::Http(e.to_string()))?;
@@ -141,24 +154,75 @@ pub fn select_release(
         }
     }
 
-    let update_available = best.as_ref().is_some_and(|(v, _)| *v > cur);
-    Ok(CheckResult {
-        current_version: current_version.trim_start_matches('v').to_owned(),
+    let mut result = CheckResult {
+        current_version: clean_current.to_owned(),
         channel,
-        latest: best.map(|(_, info)| info),
-        update_available,
+        latest: None,
+        update_available: false,
         checked_at,
-    })
+        migration: false,
+        dev_build: false,
+    };
+    if opsbox_version::is_dev(clean_current) {
+        result.dev_build = true;
+        return Ok(result);
+    }
+    if let Some((v, info)) = best {
+        result.migration = channel == Channel::Beta
+            && cur.pre.is_empty()
+            && !v.pre.is_empty()
+            && (v.major, v.minor, v.patch) == (cur.major, cur.minor, cur.patch);
+        result.update_available = v > cur || result.migration;
+        result.latest = Some(info);
+    }
+    Ok(result)
+}
+
+/// Like [`select_release`], for an install whose channel was never chosen. An old build
+/// (plain `0.1.0`) has no stable release to move to, so when the stable channel is empty
+/// the beta channel is checked, and only a migration offer from it is used.
+pub fn select_release_default_channel(
+    current_version: &str,
+    releases_json: &str,
+    checked_at: i64,
+) -> Result<CheckResult, UpdateError> {
+    let channel = default_channel(current_version);
+    let res = select_release(current_version, channel, releases_json, checked_at)?;
+    if channel == Channel::Stable && res.latest.is_none() && !res.dev_build {
+        let beta = select_release(current_version, Channel::Beta, releases_json, checked_at)?;
+        if beta.migration {
+            return Ok(beta);
+        }
+    }
+    Ok(res)
+}
+
+/// The channel to use when neither the panel setting nor the config file names one:
+/// beta while the running version is a pre-release, stable otherwise.
+pub fn default_channel(current_version: &str) -> Channel {
+    match Version::parse(current_version.trim_start_matches('v')) {
+        Ok(v) if !v.pre.is_empty() => Channel::Beta,
+        _ => Channel::Stable,
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
 /// Query GitHub Releases for the latest version on `channel`.
 pub fn check_latest(current_version: &str, channel: Channel) -> Result<CheckResult, UpdateError> {
-    let url = releases_url();
-    let body = http_get_text(&url)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    select_release(current_version, channel, &body, now)
+    let body = http_get_text(&releases_url())?;
+    select_release(current_version, channel, &body, now_secs())
+}
+
+/// Query GitHub Releases for an install whose channel was never chosen
+/// (see [`select_release_default_channel`]).
+pub fn check_latest_default_channel(current_version: &str) -> Result<CheckResult, UpdateError> {
+    let body = http_get_text(&releases_url())?;
+    select_release_default_channel(current_version, &body, now_secs())
 }
 
 fn http_get_text(url: &str) -> Result<String, UpdateError> {

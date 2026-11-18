@@ -49,6 +49,7 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[watchdog] listen` | `<api.listen ip>:8444` | `--listen ADDR` | `OPSBOX_WATCHDOG_LISTEN` | watchdog, status |
 | `[watchdog] runtime_dir` | `/run/opsbox-watchdog` | `--runtime-dir PATH` | `OPSBOX_WATCHDOG_RUNTIME_DIR` | watchdog, recovery-code |
 | `[store] db_path` | `/var/lib/opsbox/opsbox.db` | `--db PATH` | `OPSBOX_DB` | serve, watchdog |
+| `[update] channel` | unset (`"beta"` while the running version is a pre-release, else `"stable"`) | `opsbox update --channel` | | serve, update |
 | `[log] level` | `"info"` | `--log-level FILTER` | `OPSBOX_LOG_LEVEL` | all |
 | `[log] format` | `"text"` (`"json"`) | `--log-format text\|json` | `OPSBOX_LOG_FORMAT` | all |
 | (config file path) | `/etc/opsbox/config.toml` | `--config FILE` | `OPSBOX_CONFIG` | all |

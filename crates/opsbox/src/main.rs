@@ -13,7 +13,7 @@ use clap::Parser;
 use crate::cli::{AuditAction, BackupAction, CleanupAction, Cli, Command, WebAction};
 use crate::config::{Config, Overrides};
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = opsbox_version::VERSION;
 
 /// Exit status for a command that is declared but not built yet.
 const EXIT_NOT_IMPLEMENTED: u8 = 2;

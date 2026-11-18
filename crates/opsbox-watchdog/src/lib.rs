@@ -234,7 +234,7 @@ fn build_status(p: SnapshotParams<'_>) -> WatchdogStatus {
         .slots
         .current_slot_version()
         .or(update_state.current_version)
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned());
+        .unwrap_or_else(|| opsbox_version::VERSION.to_owned());
 
     WatchdogStatus {
         running: true,
@@ -401,7 +401,7 @@ pub async fn run_with_listener(
         updated_at: now_secs(),
         current_version: slots
             .current_slot_version()
-            .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned()),
+            .unwrap_or_else(|| opsbox_version::VERSION.to_owned()),
         previous_version: slots.available_previous_slot(),
         can_rollback: slots.available_previous_slot().is_some(),
         update_message: None,

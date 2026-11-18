@@ -23,6 +23,7 @@ opsbox-auth = { path = "crates/opsbox-auth" }
 opsbox-metrics = { path = "crates/opsbox-metrics" }
 opsbox-proxy = { path = "crates/opsbox-proxy" }
 opsbox-update = { path = "crates/opsbox-update" }
+opsbox-version = { path = "crates/opsbox-version" }
 opsbox-watchdog = { path = "crates/opsbox-watchdog" }
 
 [workspace.lints.rust]

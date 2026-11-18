@@ -12,6 +12,7 @@ While working:
 - Current, maintained crates only. Record substitutions and resolved ambiguities in `docs/DECISIONS.md` (one short entry each).
 - No `unsafe` unless unavoidable, with a comment saying why.
 - UI: reuse existing styles and components in `web/`. Keep plain language for users (say what happened and what to do, not internals). In `web/js/api.js`, move a function from mock to real by adding it to the `REAL` map; remove the "sample data" badge from a section once it is real.
+- UI must stay usable at 390 px wide: no horizontal page scroll, touch targets of 44 px, dialogs as sheets under 640 px (full rules in prompt 16s). New screens are checked at 390 px before the prompt is done.
 - Product principles: good defaults over options, one screen per task, safe by default for people who do not know security.
 
 Finishing:

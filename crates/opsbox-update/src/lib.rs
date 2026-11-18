@@ -4,9 +4,9 @@ pub mod release;
 pub mod slots;
 
 pub use release::{
-    Channel, CheckResult, DEFAULT_REPO, ReleaseInfo, check_latest, current_target,
-    download_and_verify, download_and_verify_for_target, select_release, verify_minisign,
-    verify_sha256,
+    Channel, CheckResult, DEFAULT_REPO, ReleaseInfo, check_latest, check_latest_default_channel,
+    current_target, default_channel, download_and_verify, download_and_verify_for_target,
+    select_release, select_release_default_channel, verify_minisign, verify_sha256,
 };
 pub use slots::{
     BIN_SLOTS_DIR, SYMLINK_PATH, SlotLayout, SlotMeta, UPDATE_STATE_PATH, UpdateOutcome,
@@ -79,6 +79,83 @@ mod tests {
 
         let up_to_date = select_release("0.2.0-beta.1", Channel::Beta, json, 100).unwrap();
         assert!(!up_to_date.update_available);
+    }
+
+    /// Every published release so far is an alpha, newest first, as GitHub returns them.
+    const ALPHAS: &str = r#"[
+        {"tag_name": "v0.1.0-alpha.20", "draft": false, "prerelease": true, "html_url": "https://example.com/20"},
+        {"tag_name": "v0.1.0-alpha.14", "draft": false, "prerelease": true, "html_url": "https://example.com/14"},
+        {"tag_name": "v0.1.0-alpha.13", "draft": false, "prerelease": true, "html_url": "https://example.com/13"}
+    ]"#;
+
+    #[test]
+    fn beta_channel_sees_a_newer_alpha() {
+        let res = select_release("0.1.0-alpha.13", Channel::Beta, ALPHAS, 100).unwrap();
+        assert!(res.update_available);
+        assert!(!res.migration);
+        assert_eq!(res.latest.unwrap().version, "0.1.0-alpha.20");
+
+        let current = select_release("0.1.0-alpha.20", Channel::Beta, ALPHAS, 100).unwrap();
+        assert!(!current.update_available);
+    }
+
+    #[test]
+    fn stable_channel_with_only_prereleases_has_no_release() {
+        let res = select_release("0.1.0-alpha.13", Channel::Stable, ALPHAS, 100).unwrap();
+        assert!(res.latest.is_none());
+        assert!(!res.update_available);
+    }
+
+    #[test]
+    fn old_untagged_build_is_offered_the_newest_alpha_once() {
+        let res = select_release("0.1.0", Channel::Beta, ALPHAS, 100).unwrap();
+        assert!(res.update_available);
+        assert!(res.migration);
+        assert_eq!(res.latest.unwrap().version, "0.1.0-alpha.20");
+
+        // Once the build reports its tag the offer is gone.
+        let after = select_release("0.1.0-alpha.20", Channel::Beta, ALPHAS, 100).unwrap();
+        assert!(!after.update_available && !after.migration);
+
+        // A different major.minor.patch is not a migration.
+        let other = select_release("0.2.0", Channel::Beta, ALPHAS, 100).unwrap();
+        assert!(!other.update_available && !other.migration);
+
+        // A real 0.1.0 release being published wins over the alphas: no migration.
+        let with_final = r#"[
+            {"tag_name": "v0.1.0", "draft": false, "prerelease": false, "html_url": "x"},
+            {"tag_name": "v0.1.0-alpha.20", "draft": false, "prerelease": true, "html_url": "y"}
+        ]"#;
+        let res = select_release("0.1.0", Channel::Beta, with_final, 100).unwrap();
+        assert!(!res.update_available && !res.migration);
+    }
+
+    #[test]
+    fn unchosen_channel_still_migrates_an_old_build() {
+        // The installer never wrote a channel, so the default (stable) finds nothing;
+        // the migration offer must still come through.
+        let res = select_release_default_channel("0.1.0", ALPHAS, 100).unwrap();
+        assert!(res.migration && res.update_available);
+        assert_eq!(res.channel, Channel::Beta);
+
+        // A tagged alpha defaults to beta and sees newer alphas.
+        let res = select_release_default_channel("0.1.0-alpha.13", ALPHAS, 100).unwrap();
+        assert!(res.update_available && !res.migration);
+
+        assert_eq!(default_channel("0.1.0-alpha.13"), Channel::Beta);
+        assert_eq!(default_channel("0.1.0"), Channel::Stable);
+    }
+
+    #[test]
+    fn dev_builds_are_never_offered_updates() {
+        for ch in [Channel::Stable, Channel::Beta] {
+            let res = select_release("0.1.0-dev+abc123def", ch, ALPHAS, 100).unwrap();
+            assert!(res.dev_build);
+            assert!(res.latest.is_none());
+            assert!(!res.update_available);
+        }
+        let res = select_release_default_channel("0.1.0-dev", ALPHAS, 100).unwrap();
+        assert!(res.dev_build && !res.update_available);
     }
 
     #[test]

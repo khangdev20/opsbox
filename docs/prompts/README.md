@@ -19,7 +19,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 03b | Cleanup page performance (`03b-cleanup-performance.md`) | 1 (fix) | ✓ |
 | 03c | Proxy port conflicts handled automatically (`03c-proxy-port-conflict.md`) | 1 (fix) | ✓ |
 | 03c1 | Landing site: check and commit the new logo (`03c1-site-logo.md`) | site | ✓ |
-| 03d | Fix self-update versions and channel (`03d-self-update-versions.md`) | 2 (fix) | |
+| 03d | Fix self-update versions and channel (`03d-self-update-versions.md`) | 2 (fix) | ✓ |
 | 03e | Self-update: say why nothing is offered (`03e-update-check-reasons.md`) | 2 (fix) | |
 | 04 | Public first run (`04-public-first-run.md`) | 1c | ✓ |
 | 05 | Proxy and panel domain (`05-proxy-panel-domain.md`) | 4 (panel first) | ✓ |
@@ -52,4 +52,5 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 16p | Stable live lists (FLIP) everywhere (`16p-stable-live-lists.md`) | release prep | |
 | 16q | Import configuration on a new server (`16q-import-config.md`) | release prep | |
 | 16r | Default security headers on every response (`16r-security-headers.md`) | release prep | |
+| 16s | Responsive panel: phones and tablets (`16s-responsive-panel.md`) | release prep | |
 | 17 | Alpha release (`17-alpha-release.md`) | release | |

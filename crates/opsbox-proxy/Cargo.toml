@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+opsbox-version.workspace = true
 opsbox-proto.workspace = true
 opsbox-priv.workspace = true
 bytes = "1"

@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+opsbox-version.workspace = true
 opsbox-proto.workspace = true
 opsbox-store.workspace = true
 argon2 = { version = "0.6", features = ["alloc"] }

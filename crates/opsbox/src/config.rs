@@ -49,6 +49,7 @@ struct FileConfig {
     #[serde(rename = "priv")]
     privileged: PrivSection,
     store: StoreSection,
+    update: UpdateSection,
     log: LogSection,
 }
 
@@ -234,6 +235,13 @@ impl Default for StoreSection {
     }
 }
 
+/// Self-update settings. `install.sh --channel beta` writes `channel = "beta"` here.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct UpdateSection {
+    channel: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct LogSection {
@@ -284,6 +292,8 @@ pub struct Config {
     pub watchdog_listen: SocketAddr,
     pub watchdog_runtime_dir: PathBuf,
     pub db_path: PathBuf,
+    /// `[update] channel`, if the file names one (the panel setting still wins).
+    pub update_channel: Option<opsbox_update::Channel>,
     pub log_level: String,
     pub log_format: LogFormat,
     /// The file the values were read from, if one was found.
@@ -395,6 +405,12 @@ impl Config {
             .watchdog_listen
             .or(file.watchdog.listen)
             .unwrap_or_else(|| SocketAddr::new(listen.ip(), 8444));
+        let update_channel = match file.update.channel.as_deref() {
+            Some(c) => Some(opsbox_update::Channel::parse(c).with_context(|| {
+                format!("update.channel {c:?} is not a channel (use \"stable\" or \"beta\")")
+            })?),
+            None => None,
+        };
         Ok(Self {
             listen,
             priv_socket: o.priv_socket.unwrap_or(file.privileged.socket),
@@ -426,6 +442,7 @@ impl Config {
             watchdog_listen,
             watchdog_runtime_dir: o.watchdog_runtime_dir.unwrap_or(file.watchdog.runtime_dir),
             db_path: o.db_path.unwrap_or(file.store.db_path),
+            update_channel,
             log_level: o.log_level.unwrap_or(file.log.level),
             log_format: o.log_format.unwrap_or(file.log.format),
             loaded_from,
@@ -509,6 +526,17 @@ mod tests {
         assert_eq!(c.backup_cache_dir, Path::new("/var/cache/opsbox/restic"));
         assert_eq!(c.secure_cookies, SecureCookiesSetting::Auto);
         assert_eq!((c.argon2_memory_kib, c.argon2_iterations), (65536, 3));
+    }
+
+    #[test]
+    fn update_channel_comes_from_the_file() {
+        assert_eq!(
+            load_str("", Overrides::default()).unwrap().update_channel,
+            None
+        );
+        let c = load_str("[update]\nchannel = \"beta\"\n", Overrides::default()).unwrap();
+        assert_eq!(c.update_channel, Some(opsbox_update::Channel::Beta));
+        assert!(load_str("[update]\nchannel = \"nightly\"\n", Overrides::default()).is_err());
     }
 
     #[test]

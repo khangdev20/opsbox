@@ -100,6 +100,7 @@ async fn serve(config: Config) -> Result<()> {
         xfer_dir: config.xfer_dir.clone(),
         max_upload: config.max_upload_mb.saturating_mul(1 << 20),
     })
+    .with_update_channel(config.update_channel)
     .with_backup_dir(&config.backup_dir)
     .with_listen(config.listen)
     .with_tls(true)

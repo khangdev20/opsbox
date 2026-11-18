@@ -521,7 +521,7 @@ pub async fn handle_request(
                 &serde_json::json!({
                     "ok": true,
                     "service": "watchdog",
-                    "version": env!("CARGO_PKG_VERSION"),
+                    "version": opsbox_version::VERSION,
                     "failed": st.failed,
                     "degraded": st.degraded,
                 }),

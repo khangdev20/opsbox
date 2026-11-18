@@ -28,4 +28,4 @@ pub use ops::{base32_encode, cleanup, code_at, verify_at, web as web_ops};
 pub use server::{PrivServer, ServerError};
 
 /// Version reported by `Ping`, so `status` can notice a stale helper after an update.
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = opsbox_version::VERSION;

@@ -38,7 +38,9 @@ jobs:
       - name: Idle memory budget
         run: python3 tools/check-idle-memory.py --binary target/release/opsbox
       - name: Lint install.sh
-        run: shellcheck --shell=sh --severity=warning install.sh
+        run: shellcheck --shell=sh --severity=warning install.sh tools/stamp-version.sh tools/check-installer-channel.sh
+      - name: Installer keeps the update channel
+        run: sh tools/check-installer-channel.sh
 
       - name: Install cargo-deny and cargo-zigbuild
         run: |
@@ -73,3 +75,12 @@ jobs:
               echo "$t: $human ($bytes bytes)" >&2
             done
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Dry run of the release stamping with a made-up tag; the files are restored after.
+      - name: Version stamping (dry run)
+        run: |
+          sh tools/stamp-version.sh v9.9.9-alpha.1
+          OPSBOX_BUILD_VERSION=9.9.9-alpha.1 cargo build --locked -p opsbox
+          got="$(target/debug/opsbox --version)"
+          git checkout -- Cargo.toml Cargo.lock
+          [ "$got" = "opsbox 9.9.9-alpha.1" ] || { echo "opsbox --version printed '$got'" >&2; exit 1; }
