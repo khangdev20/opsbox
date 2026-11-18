@@ -30,6 +30,8 @@ struct State {
     latest: Option<Arc<Snapshot>>,
     facts: SystemFacts,
     facts_ok: bool,
+    facts_at: i64,
+    down_containers: Option<(i64, Vec<String>)>,
     containers: Vec<DockerContainerStat>,
     restarting_containers: Vec<String>,
     restarting_known: bool,
@@ -55,6 +57,8 @@ impl Metrics {
                 latest: None,
                 facts: SystemFacts::default(),
                 facts_ok: false,
+                facts_at: 0,
+                down_containers: None,
                 containers: Vec::new(),
                 restarting_containers: Vec::new(),
                 restarting_known: false,
@@ -111,6 +115,18 @@ impl Metrics {
             facts.restarting_containers = s.restarting_containers.clone();
         }
         attention::compute(&facts, disks)
+    }
+
+    /// Cached successful source groups for alerts. Expired samples are unknown.
+    pub fn alert_sources(&self, now: i64) -> (Option<SystemFacts>, Option<Vec<String>>) {
+        let s = self.lock();
+        let facts = (s.facts_ok && now.saturating_sub(s.facts_at) < 600).then(|| s.facts.clone());
+        let down = s
+            .down_containers
+            .as_ref()
+            .filter(|(at, _)| now.saturating_sub(*at) < 30)
+            .map(|(_, names)| names.clone());
+        (facts, down)
     }
 
     async fn run(self, priv_client: PrivClient, store: Arc<Store>) {
@@ -188,6 +204,7 @@ impl Metrics {
                     let mut s = self.lock();
                     s.facts = f;
                     s.facts_ok = true;
+                    s.facts_at = unix_now();
                 }
                 other => debug!(?other, "could not refresh system facts"),
             }
@@ -227,6 +244,15 @@ impl Metrics {
                         Some(Vec::new())
                     };
                     let mut s = self.lock();
+                    s.down_containers = Some((
+                        unix_now(),
+                        list.iter()
+                            .filter(|c| {
+                                matches!(c.state.as_str(), "exited" | "dead" | "restarting")
+                            })
+                            .map(|c| c.name.clone())
+                            .collect(),
+                    ));
                     s.restarting_containers = restarting;
                     s.restarting_known = true;
                     if let Some(st) = stats {

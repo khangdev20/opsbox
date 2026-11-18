@@ -7,7 +7,7 @@ use opsbox_proto::{PrivError, PrivErrorCode, PrivReply, Secret};
 
 use crate::secrets::{SecretError, Secrets};
 
-const ALLOWED_PREFIXES: &[&str] = &["proxy:", "deploy:", "backup:"];
+const ALLOWED_PREFIXES: &[&str] = &["proxy:", "deploy:", "backup:", "alerts:"];
 const MAX_PLAINTEXT_BYTES: usize = 64 * 1024;
 
 pub(crate) fn valid_context(context: &str) -> Result<(), PrivError> {
@@ -106,6 +106,9 @@ mod tests {
         assert!(valid_context("deploy:github_app:private_key").is_ok());
         assert!(valid_context("deploy:github_app:webhook_secret").is_ok());
         assert!(valid_context("deploy:deploy_key:01J9ABCDEFGHJKMNPQRSTVWXYZ").is_ok());
+        assert!(valid_context("alerts:channel:c4").is_ok());
+        assert!(valid_context("alerts:").is_err());
+        assert!(valid_context("alerts:../totp").is_err());
         assert!(valid_context("backup:dest:01J9ABCDEFGHJKMNPQRSTVWXYZ").is_ok());
         assert_eq!(
             valid_context("backup:").unwrap_err().code,
@@ -123,6 +126,26 @@ mod tests {
             valid_context("deploy:../totp").unwrap_err().code,
             PrivErrorCode::Refused
         );
+    }
+
+    #[test]
+    fn alert_secrets_are_context_bound_and_cannot_open_totp() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = Secrets::new(dir.path().join("master.key"));
+        for id in ["c1", "c2", "c3", "c4"] {
+            let context = format!("alerts:channel:{id}");
+            let PrivReply::Sealed { sealed } =
+                seal(&secrets, &context, &Secret::new("channel credential")).unwrap()
+            else {
+                panic!("expected sealed");
+            };
+            let PrivReply::Opened { plaintext } = open(&secrets, &context, &sealed).unwrap() else {
+                panic!("expected opened");
+            };
+            assert_eq!(plaintext.expose(), "channel credential");
+            assert!(open(&secrets, "alerts:channel:other", &sealed).is_err());
+            assert!(open(&secrets, "totp:user", &sealed).is_err());
+        }
     }
 
     #[test]

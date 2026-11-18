@@ -23,7 +23,7 @@ export async function view() {
   return {
     nav: 'overview', title: 'Overview',
     html: html`<main>${header('Overview', `${h.name} · ${h.os} · kernel ${h.kernel} · up ${h.upDays} days · ${h.cores} cores`, html`<a class="btn primary" href="#/apps/new">New service</a>`)}
-      ${section('Needs attention', att.length ? html`<div>${att.map((a) => html`<div class="list-row">${chk('warn', a.text)}<a class="btn link" href="${a.link[1]}">${a.link[0]}</a></div>`)}</div>` : chk('ok', 'Nothing needs attention.'))}
+      ${section('Needs attention', att.length ? html`<div>${att.map((a) => html`<div class="list-row">${chk('warn', a.text)}<a class="btn link" href="${a.alertId ? `#/alerts?id=${encodeURIComponent(a.alertId)}` : a.link[1]}">${a.link[0]}</a></div>`)}</div>` : chk('ok', 'Nothing needs attention.'))}
       <div id="live">${body(m)}</div></main>`,
     mount(root) {
       const f = async () => { const live = root.querySelector('#live'); if (!live) return; live.innerHTML = body(await api.getMetrics()).toString(); };

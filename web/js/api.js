@@ -34,6 +34,7 @@ function pickMode() {
 // this set get a "sample data" badge (main.js); the badge disappears by itself.
 const REAL = new Set([
   'getHost',
+  'getAlerts', 'setRule', 'testAlert', 'connectChannel', 'disconnectChannel', 'silenceAlert', 'setQuiet',
   'auth.session', 'auth.login', 'auth.logout', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
   'auth.enroll', 'auth.enrollConfirm', 'signOutAll',
   'getMetrics', 'getAttention',
@@ -73,7 +74,7 @@ function sample(name) { if (MODE === 'http' && !untracked && !REAL.has(name)) us
 export const PAGE_USES = {
   // (Keys opsbox uses to reach other servers arrive with the desktop app; the section is hidden until then.)
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
-  alerts: ['connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
+  alerts: ['disconnectChannel', 'connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
   apps: ['addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
   backupdest: ['getProviders', 'saveDestination', 'testDestination', 'downloadRecoveryKey'],
   backups: ['getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination', 'downloadRecoveryKey', 'testBackupRestore'],
@@ -1283,6 +1284,7 @@ export async function addDestination(d) { sample('addDestination');
 // ---------------------------------------------------------------- alerts
 const AL = {
   firing: true,
+  incidents: [{ id: 'disk:/', name: 'Disk space', msg: 'Disk / is at 82%. Free space or expand the disk.', state: 'firing', since: Math.floor(now() / 1000) - 300, silenceUntil: 0, link: '#/cleanup' }],
   channels: [
     { id: 'c1', name: 'Email', to: 'admin@acme.co', for: 'all alerts', on: true },
     { id: 'c2', name: 'Slack', to: '#ops-alerts', for: 'critical only', on: true },
@@ -1303,17 +1305,18 @@ const AL = {
   ],
   quiet: { from: '23:00', to: '07:00', tz: 'Asia/Ho_Chi_Minh' },
 };
-export async function getAlerts() { sample('getAlerts'); await lag(); return clone(AL); }
-export async function setRule(id, on) { sample('setRule'); await lag(150); const r = AL.rules.find((x) => x.id === id); if (!r) throw new Error('No such rule'); r.on = on; audit(`alert rule ${r.name} ${on ? 'on' : 'off'}`); }
-export async function testAlert(channel) { sample('testAlert'); await lag(600); const c = AL.channels.find((x) => x.id === channel); if (channel && (!c || !c.on)) throw new Error('Connect this channel first.'); audit(`test alert${c ? ' to ' + c.name : ''}`); return { ok: true }; }
-export async function connectChannel(id, to) { sample('connectChannel');
+export async function getAlerts() { if (real('getAlerts')) return http('/alerts'); sample('getAlerts'); await lag(); return clone(AL); }
+export async function setRule(id, on) { if (real('setRule')) return http(`/alerts/rules/${encodeURIComponent(id)}`, { method: 'PUT', body: { on } }); sample('setRule'); await lag(150); const r = AL.rules.find((x) => x.id === id); if (!r) throw new Error('No such rule'); r.on = on; audit(`alert rule ${r.name} ${on ? 'on' : 'off'}`); }
+export async function testAlert(channel) { if (real('testAlert')) return http('/alerts/test', { method: 'POST', body: { channel: channel || null } }); sample('testAlert'); await lag(600); const c = AL.channels.find((x) => x.id === channel); if (channel && (!c || !c.on)) throw new Error('Connect this channel first.'); audit(`test alert${c ? ' to ' + c.name : ''}`); return { ok: true }; }
+export async function connectChannel(id, config) { if (real('connectChannel')) return http(`/alerts/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: config }); const to = config.to || config.chat || config.url || 'Configured'; sample('connectChannel');
   await lag(400); const c = AL.channels.find((x) => x.id === id); if (!c) throw new Error('No such channel');
   if (id === 'c4' && !/^https:\/\//.test(to || '')) throw new Error('Webhook URL must start with https://');
   if (id === 'c3' && !/^-?\d{5,}$/.test(to || '')) throw new Error('Enter your Telegram chat id (digits only).');
   c.to = to; c.for = 'all alerts'; c.on = true; audit(`connect ${c.name}`);
 }
-export async function silenceAlert() { sample('silenceAlert'); await lag(150); AL.firing = false; AL.history[0].state = 'silenced'; audit('silence alert 1 h'); }
-export async function setQuiet(q) { sample('setQuiet'); await lag(150); AL.quiet = { ...AL.quiet, ...q }; audit('update quiet hours'); }
+export async function disconnectChannel(id) { if (real('disconnectChannel')) return http(`/alerts/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }); sample('disconnectChannel'); const c = AL.channels.find((c) => c.id === id); if (c) c.on = false; return { ok: true }; }
+export async function silenceAlert(id, seconds = 3600) { if (real('silenceAlert')) return http('/alerts/silence', { method: 'POST', body: { id, seconds } }); sample('silenceAlert'); await lag(150); AL.firing = false; const incident = AL.incidents.find((i) => i.id === id); if (incident) incident.silenceUntil = Math.floor(now() / 1000) + seconds; AL.history[0].state = 'silenced'; audit('silence alert 1 h'); }
+export async function setQuiet(q) { if (real('setQuiet')) return http('/alerts/quiet', { method: 'PUT', body: q }); sample('setQuiet'); await lag(150); AL.quiet = { ...AL.quiet, ...q }; audit('update quiet hours'); }
 
 // ---------------------------------------------------------------- templates
 export const TEMPLATES = {

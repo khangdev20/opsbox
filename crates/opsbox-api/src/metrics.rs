@@ -262,7 +262,7 @@ pub(crate) async fn get_attention(
         }
     }
     items.extend(crate::backups::collect_attention_items(&state, &who));
-    Json(json!(items))
+    Json(crate::alerts::attention_links(&state, &who, items).await)
 }
 
 /// `WS /api/v1/stream/metrics`: one text frame a second, `{ "type": "metrics", "ts", "data" }`

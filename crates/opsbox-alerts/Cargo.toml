@@ -7,5 +7,19 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[dependencies]
+opsbox-proto.workspace = true
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+hmac = "0.13"
+sha2 = "0.11"
+url = "2.5"
+
+[dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
 [lints]
 workspace = true

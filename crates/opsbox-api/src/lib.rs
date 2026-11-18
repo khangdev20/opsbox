@@ -5,6 +5,7 @@
 //! Listen on loopback or use a trusted HTTPS proxy; native TLS arrives later.
 
 mod access;
+mod alerts;
 mod allowlist;
 mod auth;
 pub mod backups;
@@ -102,6 +103,7 @@ pub struct AppState {
     pub deploy: DeploySettings,
     pub deploy_hub: DeployHub,
     pub backups: backups::BackupRunner,
+    pub alerts: alerts::Alerts,
 }
 
 impl AppState {
@@ -151,6 +153,7 @@ impl AppState {
             deploy: DeploySettings::default(),
             deploy_hub: DeployHub::default(),
             backups,
+            alerts: alerts::Alerts::default(),
         }
     }
 
@@ -248,6 +251,7 @@ impl AppState {
 /// Build the full application: API routes, the embedded UI as the fallback, and the
 /// middleware stack.
 pub fn router(state: AppState) -> Router {
+    state.alerts.spawn(state.clone());
     let allow_guard_state = state.allow.clone();
     let limits = state.limits.clone();
     let max_upload = usize::try_from(state.files.max_upload).unwrap_or(usize::MAX);
@@ -286,6 +290,15 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/system/timezone", put(system::set_timezone))
         .route("/api/v1/metrics", get(metrics::get_metrics))
         .route("/api/v1/attention", get(metrics::get_attention))
+        .route("/api/v1/alerts", get(alerts::get))
+        .route("/api/v1/alerts/rules/{id}", put(alerts::set_rule))
+        .route(
+            "/api/v1/alerts/channels/{id}",
+            put(alerts::connect).delete(alerts::disconnect),
+        )
+        .route("/api/v1/alerts/test", post(alerts::test))
+        .route("/api/v1/alerts/silence", post(alerts::silence))
+        .route("/api/v1/alerts/quiet", put(alerts::quiet))
         .route("/api/v1/stream/metrics", get(metrics::stream))
         .route("/api/v1/settings", get(tokens::get_settings))
         .route("/api/v1/panel", get(panel::status))

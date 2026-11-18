@@ -214,6 +214,17 @@ impl Store {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Alert security inputs, independent of unrelated audit traffic.
+    pub fn alert_security_events(&self, since: i64) -> Result<Vec<AuditEntry>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM audit WHERE action IN ('auth.login', 'system.ssh.emergency') AND unixepoch(ts) >= ?1 ORDER BY seq DESC"
+        ))?;
+        Ok(stmt
+            .query_map([since], row_to_entry)?
+            .collect::<Result<_, _>>()?)
+    }
+
     /// Walk the whole chain from the first entry and check every link and hash.
     pub fn verify_audit(&self) -> Result<AuditReport, AuditError> {
         let conn = self.lock();

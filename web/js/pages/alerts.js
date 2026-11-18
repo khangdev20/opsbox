@@ -1,39 +1,61 @@
 import { html, st, btn, table, section, header, sw, bindActions, askForm, toast } from '../ui.js';
 import * as api from '../api.js';
 
-export async function view() {
-  let d = await api.getAlerts(), root;
-  const body = () => html`
-    ${d.firing ? html`<div class="callout"><span class="tag">▲</span><span><b>Disk / is at 82%</b> since 03:12; the threshold is 75%. 14.6 GB can be reclaimed.</span><span class="row"><a class="btn primary" href="#/cleanup">Clean up</a>${btn('Silence 1 h', { act: 'silence' })}</span></div>` : ''}
+const fields = {
+  c1: [
+    { name: 'host', label: 'SMTP host', placeholder: 'smtp.example.com' },
+    { name: 'port', label: 'TLS port (465 or 587)', value: '587' },
+    { name: 'username', label: 'SMTP username' },
+    { name: 'password', label: 'SMTP password', type: 'password' },
+    { name: 'from', label: 'Sender email' }, { name: 'to', label: 'Recipient email' },
+  ],
+  c2: [{ name: 'url', label: 'Slack incoming webhook URL', type: 'password' }],
+  c3: [{ name: 'token', label: 'Telegram bot token', type: 'password' }, { name: 'chat', label: 'Telegram chat ID' }],
+  c4: [{ name: 'url', label: 'HTTPS webhook URL', type: 'password' }, { name: 'secret', label: 'Signing secret (at least 16 characters)', type: 'password' }],
+};
+const kinds = { c1: 'email', c2: 'slack', c3: 'telegram', c4: 'webhook' };
+const time = (ts) => new Date(ts * 1000).toLocaleString();
+const status = (state) => st(state === 'firing' ? 'fail' : state === 'pending' ? 'warn' : 'ok', state);
+
+export async function view({ query = {} } = {}) {
+  let d = await api.getAlerts(), root, timer;
+  const body = () => {
+    const incidents = (d.incidents || []).filter((i) => !query.id || i.id === query.id);
+    return html`
+    ${query.id ? html`<p class="muted">Showing the alert selected in Overview. <a href="#/alerts">Show all alerts</a></p>` : ''}
+    ${incidents.length ? incidents.map((i) => html`<div class="callout">${status(i.state)}<span><b>${i.name}</b><br>${i.msg}<br><span class="sm muted">Since ${time(i.since)}${i.silenceUntil > Date.now() / 1000 ? ` · silenced until ${time(i.silenceUntil)}` : ''}</span></span><span class="row"><a class="btn primary" href="${i.link}">Review</a>${i.state !== 'resolved' ? btn(i.silenceUntil > Date.now() / 1000 ? 'End silence' : 'Silence 1 h', { act: 'silence', data: { id: i.id, seconds: i.silenceUntil > Date.now() / 1000 ? 0 : 3600 } }) : ''}</span></div>`) : html`<p class="muted">${query.id ? 'This alert is no longer active or has expired.' : 'No active alerts.'}</p>`}
     <div class="cols"><div class="w3">
-      ${section('Channels', table('Notification channels', [['Channel'], ['Sends to'], ['For'], ['Status'], ['', 'r']], d.channels.map((c) => [c.name, html`<span class="mono">${c.to || '—'}</span>`, c.for || '—', c.on ? st('ok', 'verified') : st('off', 'off'), c.on ? btn('Send test', { act: 'test', data: { id: c.id }, kind: 'link' }) : btn('Connect', { act: 'connect', data: { id: c.id }, kind: 'link' })])))}
-      ${section('Rules', table('Alert rules', [['Rule'], ['When'], ['Level'], ['Notify'], ['On']], d.rules.map((r) => [r.name, html`<span class="mono sm">${r.cond}</span>`, r.level === 'critical' ? st('fail', 'critical') : st('warn', 'warning'), r.notify, sw(`Enable ${r.name}`, r.on, 'rule', { id: r.id })])))}
-      ${section('Recent alerts', table('Recent alerts', [['Time'], ['Alert'], ['State']], d.history.map((h) => [html`<span class="mono">${h.t}</span>`, html`<b>${h.name}</b><div class="sm muted">${h.msg}</div>`, h.state === 'firing' ? st('warn', 'firing') : st('ok', h.state)])))}
+      ${section('Channels', table('Notification channels', [['Channel'], ['For'], ['Status'], ['', 'r']], d.channels.map((c) => [c.name, c.for || 'all alerts', html`${c.error ? st('fail', c.error) : c.on ? st(c.verified ? 'ok' : 'warn', c.verified ? 'delivery working' : 'ready to test') : st('off', 'off')}`, html`<div class="row">${c.on ? btn('Send test', { act: 'test', data: { id: c.id }, kind: 'link' }) : ''}${btn(c.on ? 'Edit' : 'Connect', { act: 'connect', data: { id: c.id }, kind: 'link' })}${c.on ? btn('Disconnect', { act: 'disconnect', data: { id: c.id }, kind: 'link' }) : ''}</div>`])))}
+      ${section('Rules', table('Alert rules', [['Rule'], ['When'], ['Level'], ['Notify'], ['On']], d.rules.map((r) => [r.name, html`<span class="sm">${r.cond}</span>`, r.level === 'critical' ? st('fail', 'critical') : st('warn', 'warning'), r.notify, sw(`Enable ${r.name}`, r.on, 'rule', { id: r.id })])))}
+      ${section('Recent alerts', table('Recent alerts', [['Time'], ['Alert'], ['State']], d.history.map((h) => [html`<span class="mono">${h.ts ? time(h.ts) : h.t}</span>`, html`<b>${h.name}</b><div class="sm muted">${h.msg}</div>`, status(h.state)])))}
     </div><div>
-      ${section('Quiet hours', html`<p class="muted sm">Warnings wait until morning. Critical alerts always send.</p>
-        <div class="field"><label for="qf">From</label><select class="select" id="qf">${['22:00', '23:00', '00:00'].map((x) => html`<option${x === d.quiet.from ? ' selected' : ''}>${x}</option>`)}</select></div>
-        <div class="field"><label for="qt">To</label><select class="select" id="qt">${['06:00', '07:00', '08:00'].map((x) => html`<option${x === d.quiet.to ? ' selected' : ''}>${x}</option>`)}</select></div>
-        <div class="row">${btn('Save', { act: 'quiet' })}${btn('Send a test alert', { act: 'test', data: { id: '' } })}</div>`)}
-      ${section('What to expect', html`<p class="muted sm">Each alert says what happened and links to where to fix it. The same problem is sent once, then again only when it clears or gets worse.</p>`)}
+      ${section('Quiet hours (UTC)', html`<p class="muted sm">Warnings wait until quiet hours end. Critical alerts always send. Set equal times to turn quiet hours off.</p>
+        <div class="field"><label for="qf">From (UTC)</label><input class="input" type="time" id="qf" value="${d.quiet.from}"></div>
+        <div class="field"><label for="qt">To (UTC)</label><input class="input" type="time" id="qt" value="${d.quiet.to}"></div>
+        <div class="row">${btn('Save', { act: 'quiet' })}</div>`)}
+      ${section('What to expect', html`<p class="muted sm">Alerts are checked every 15 seconds. Notifications say what happened and where to fix it. Active problems repeat every four hours, and send again when they get worse or recover. A channel that fails will retry.</p>`)}
     </div></div>`;
+  };
   const paint = () => { root.querySelector('#b').innerHTML = body().toString(); };
-  const reload = async () => { d = await api.getAlerts(); paint(); };
+  const reload = async () => { d = await api.getAlerts(); if (root?.isConnected) paint(); };
   return {
     nav: 'alerts', title: 'Alerts',
     html: html`<main>${header('Alerts', 'Know when something needs you, without watching the panel', btn('Send a test alert', { act: 'test', data: { id: '' } }))}<div id="b"></div></main>`,
     mount(r) {
       root = r; paint();
+      timer = setInterval(() => reload().catch(() => {}), 15000);
       bindActions(root, {
-        silence: async () => { await api.silenceAlert(); toast('Silenced for 1 hour.'); await reload(); },
-        test: async (el) => { await api.testAlert(el.dataset.id); toast('Test alert sent.'); },
+        silence: async (el) => { await api.silenceAlert(el.dataset.id, Number(el.dataset.seconds)); toast(Number(el.dataset.seconds) ? 'Silenced for 1 hour.' : 'Silence ended.'); await reload(); },
+        test: async (el) => { try { await api.testAlert(el.dataset.id); toast('Test alert sent.'); } finally { await reload(); } },
         rule: async (el) => { await api.setRule(el.dataset.id, el.getAttribute('aria-checked') !== 'true'); await reload(); },
         quiet: async () => { await api.setQuiet({ from: root.querySelector('#qf').value, to: root.querySelector('#qt').value }); toast('Saved.'); },
+        disconnect: async (el) => { await api.disconnectChannel(el.dataset.id); toast('Channel disconnected.'); await reload(); },
         connect: async (el) => {
           const c = d.channels.find((x) => x.id === el.dataset.id);
-          const label = c.id === 'c4' ? 'Webhook URL' : c.id === 'c3' ? 'Telegram chat id' : 'Address';
-          if (await askForm({ title: `Connect ${c.name}`, fields: [{ name: 'to', label, placeholder: c.id === 'c4' ? 'https://…' : '' }], submit: 'Connect' }, (o) => api.connectChannel(c.id, o.to.trim()))) { toast(`${c.name} connected.`); await reload(); }
+          if (await askForm({ title: `${c.on ? 'Edit' : 'Connect'} ${c.name}`, fields: fields[c.id], submit: 'Save channel' }, (o) => api.connectChannel(c.id, { ...o, kind: kinds[c.id], ...(c.id === 'c1' ? { port: Number(o.port) } : {}) }))) { toast('Channel saved. Send a test to check delivery.'); await reload(); }
         },
       });
     },
+    unmount() { clearInterval(timer); root = null; },
   };
 }

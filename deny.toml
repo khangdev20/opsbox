@@ -9,6 +9,7 @@ ignore = []
 
 [licenses]
 allow = [
+    "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
@@ -27,6 +28,8 @@ allow = [
 confidence-threshold = 0.8
 
 [bans]
+# Keep all notification and HTTP transports on rustls for static musl builds.
+deny = [{ name = "native-tls" }, { name = "openssl" }, { name = "openssl-sys" }]
 multiple-versions = "allow"
 wildcards = "deny"
 

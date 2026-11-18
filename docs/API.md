@@ -47,6 +47,33 @@ Token buckets: each IP has burst 120, refill 2/sec; login/setup/invitation/enrol
 
 Streams revalidate their session/token, role and allowed address every five seconds and end on revocation/expiry. Merely receiving output does not extend session idle expiry. Authenticated mutations first persist a `request.accepted` audit entry; inability to write it prevents dispatch. Named handler entries record detailed outcomes. Secrets, request bodies and query strings are excluded from the acceptance record.
 
+## Alerts (Spec 7.13)
+
+Alert configuration and history require an administrator. Channel connect/disconnect and test also require an interactive session (full API tokens are refused). Other roles keep their existing scoped Overview links. Browser mutations use the normal Origin/CSRF and audit guards.
+
+| Method / path | Body / response |
+|---|---|
+| `GET /alerts` | `{channels,rules,incidents,history,quiet}`. Channel summaries contain no credentials, ciphertexts, webhook URLs or bot tokens. `on` means configured; `verified` means the latest delivery succeeded. |
+| `PUT /alerts/rules/{id}` | `{on:bool}`. IDs: `disk`, `cpu`, `memory`, `units`, `containers`, `deploy`, `backup`, `missed`, `tls`, `security`, `signins`, `ssh`, `health`. Disabling resolves an active incident on the next successful evaluation. |
+| `PUT /alerts/channels/{id}` | Full replacement configuration below. Sealed via `PrivOp::SecretSeal`, context `alerts:channel:<id>`. Saving does not claim a successful test. |
+| `DELETE /alerts/channels/{id}` | Removes configuration and stops subsequent deliveries. An already in-flight request may finish. |
+| `POST /alerts/test` | `{channel:"c1"|"c2"|"c3"|"c4"|null}`; null tests all configured channels concurrently. Explicitly bypasses silences/quiet hours. Returns `{ok:true}` only after delivery; `400` for no selected channel, `503` on delivery/helper failure. |
+| `POST /alerts/silence` | `{id:"disk:/",seconds:3600}`. Exact rule/target ID from `incidents`; 0 ends silence, maximum 604800 (7 days). State remains visible while notifications wait. |
+| `PUT /alerts/quiet` | `{from:"23:00",to:"07:00"}` in UTC. Equal times disable quiet hours. Invalid HH:MM returns `400`. |
+
+Channel bodies (secret fields are accepted on write only):
+
+- `c1`: `{kind:"email",host:"smtp.example.com",port:587,username:"user",password:"…",from:"opsbox@example.com",to:"admin@example.com"}`. Port 465 uses implicit TLS; 587 requires STARTTLS. Certificate verification is mandatory.
+- `c2`: `{kind:"slack",url:"https://hooks.slack.com/services/…"}` (also accepts `hooks.slack-gov.com`). The entire bearer URL is sealed.
+- `c3`: `{kind:"telegram",token:"12345:…",chat:"-100123456789"}`. Uses the fixed Telegram Bot API endpoint.
+- `c4`: `{kind:"webhook",url:"https://example.com/alerts",secret:"at-least-16-characters"}`. HTTPS only; embedded user information and fragments refused. All HTTP channels refuse redirects and time out after 10 seconds. SMTP uses the same 10-second transport timeout. Transport errors never return provider bodies or credential-bearing URLs.
+
+Generic webhooks send UTF-8 JSON `{id,name,rule,target,state,level,message,link,alertsLink}` with `Content-Type: application/json`, `X-Opsbox-Timestamp: <unix-seconds>` and `X-Opsbox-Signature: sha256=<lowercase-hex>`. Verify HMAC-SHA256 over ASCII timestamp + `.` + the **exact request body bytes**, compare in constant time, and reject old timestamps. `id` is stable for retries of a rule/target revision; consumers should deduplicate it. When a panel domain is configured, links are absolute HTTPS URLs.
+
+Evaluation runs every 15 seconds over cached metrics/facts and persisted deploy/backup/security events. Defaults: disk >75% for 60s (critical at 95%), CPU >90% for 300s (critical at 99%), memory >90% for 300s (critical at 95%), failed units/down containers for 30s, security updates pending for two days, missed backup after 15 minutes, certificates within 14 days, five failed sign-ins within 15 minutes, and open emergency SSH until its expiry. Deploy/backup/restore-test/checksum failures are critical; stale metrics or an unavailable configured proxy for 60s raise a health alert. Unknown source groups preserve firing incidents and restart pending durations rather than reporting a false recovery.
+
+Incidents persist `ok → pending → firing → resolved` independently per rule and target. Notifications fire on activation, warning-to-critical worsening, recovery and four-hour repeats. Warning delivery waits through quiet hours; critical bypasses quiet hours. Explicit silences suppress either level. Per-channel receipts survive restarts, failed deliveries retry after 60 seconds, and successful channels do not repeat for another channel's failure. Recovery is sent only to channels that received firing. Delivery is at least once across a crash between remote receipt and local acknowledgement. History retains 200 transitions; cleared targets expire after seven days. Overview returns `alertId` and `#/alerts?id=<encoded-id>` for active host alerts to administrators.
+
 ## Implemented routes
 
 <!-- GENERATED_ROUTES_START -->
@@ -56,6 +83,13 @@ Streams revalidate their session/token, role and allowed address every five seco
 | `POST` | `/api/v1/access/keys` | [access::add_key](../crates/opsbox-api/src/access.rs) |
 | `POST` | `/api/v1/access/keys/remove` | [access::remove_key](../crates/opsbox-api/src/access.rs) |
 | `POST` | `/api/v1/access/users/{name}/lock` | [access::lock_user](../crates/opsbox-api/src/access.rs) |
+| `GET` | `/api/v1/alerts` | [alerts::get](../crates/opsbox-api/src/alerts.rs) |
+| `DELETE` | `/api/v1/alerts/channels/{id}` | [alerts::disconnect](../crates/opsbox-api/src/alerts.rs) |
+| `PUT` | `/api/v1/alerts/channels/{id}` | [alerts::connect](../crates/opsbox-api/src/alerts.rs) |
+| `PUT` | `/api/v1/alerts/quiet` | [alerts::quiet](../crates/opsbox-api/src/alerts.rs) |
+| `PUT` | `/api/v1/alerts/rules/{id}` | [alerts::set_rule](../crates/opsbox-api/src/alerts.rs) |
+| `POST` | `/api/v1/alerts/silence` | [alerts::silence](../crates/opsbox-api/src/alerts.rs) |
+| `POST` | `/api/v1/alerts/test` | [alerts::test](../crates/opsbox-api/src/alerts.rs) |
 | `GET` | `/api/v1/attention` | [metrics::get_attention](../crates/opsbox-api/src/metrics.rs) |
 | `POST` | `/api/v1/auth/login` | [auth::login](../crates/opsbox-api/src/auth.rs) |
 | `POST` | `/api/v1/auth/logout` | [auth::logout](../crates/opsbox-api/src/auth.rs) |
@@ -202,4 +236,4 @@ Streams revalidate their session/token, role and allowed address every five seco
 
 ## Future phases (sample UI)
 
-Offsite backup destinations, recovery key download, and snapshot restore: Prompt 14. Alerts: Prompt 15. Database management console: Prompt 16. WireGuard, desktop device authentication and other-server terminals: Phase 6. Unimplemented UI actions remain clearly marked in `web/js/api.js` and retain sample-data labels.
+Database management console: Prompt 16. WireGuard, desktop device authentication and other-server terminals: Phase 6. Unimplemented UI actions remain clearly marked in `web/js/api.js` and retain sample-data labels.

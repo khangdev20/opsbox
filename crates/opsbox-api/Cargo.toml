@@ -8,6 +8,8 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+opsbox-alerts.workspace = true
+time = { version = "0.3", features = ["parsing", "formatting"] }
 opsbox-backup.workspace = true
 opsbox-proto.workspace = true
 opsbox-deploy.workspace = true

@@ -731,6 +731,17 @@ impl Store {
             .collect::<Result<_, _>>()?)
     }
 
+    /// Failed snapshots are an alert source, independent of the paged history UI.
+    pub fn list_failed_backup_snapshots(&self) -> Result<Vec<BackupSnapshotRecord>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {SNAP_COLS} FROM backup_snapshots WHERE check_state = 'checksum_failed' ORDER BY taken_at DESC"
+        ))?;
+        Ok(stmt
+            .query_map([], snap_from_row)?
+            .collect::<Result<_, _>>()?)
+    }
+
     pub fn get_backup_snapshot(
         &self,
         id: &str,
