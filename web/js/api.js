@@ -979,8 +979,14 @@ export async function getRecovery() {
     : [['opsbox.service', 'ok', 'active', 'running 3 days'], ['Health endpoint /healthz', 'ok', '200 OK', 'answered in 4 ms'], ['Disk /', 'warn', '82%', '22 GB free'], ['Docker', 'ok', 'running', '4 containers'], ['Network and DNS', 'ok', 'ok', '443 reachable from outside']],
     log: failed ? ['03:51:44 INFO  opsbox 0.1.4 starting', '03:51:46 ERROR sqlite: database or disk is full (code 13)', '03:51:47 FATAL cannot persist session store, exiting', '03:51:47 watchdog: exited with code 101, restart 1/3', '03:52:19 watchdog: restart 3/3 failed, entering safe mode'] : ['03:51:44 INFO  opsbox 0.1.0 starting', '03:51:45 INFO  listening on 127.0.0.1:8443'] };
 }
-export async function simulateFailure() { sample('simulateFailure'); S.recovery.failed = true; }
-export async function recoveryAction(a) { sample('recoveryAction');
+// Demo-only (?mode=mock). Real recovery actions run on the watchdog Safe Mode page (:8444).
+export async function simulateFailure() {
+  if (MODE === 'http') throw new Error('Simulate failure is only available in demo mode.');
+  sample('simulateFailure'); S.recovery.failed = true;
+}
+export async function recoveryAction(a) {
+  if (MODE === 'http') throw new Error('Recovery actions run in Safe Mode on :8444.');
+  sample('recoveryAction');
   await lag(900);
   if (a === 'free') { S.metrics.disk = 84; S.recovery.failed = false; return { msg: 'Freed 14.6 GB. opsbox restarted and is healthy.' }; }
   if (a === 'restart') { if (S.metrics.disk > 95) throw new Error('Restart failed again: disk is still full. Free disk space first.'); S.recovery.failed = false; return { msg: 'opsbox restarted and passed its health check.' }; }
@@ -1068,7 +1074,6 @@ export async function termExec(host, cwd, line) { sample('termExec');
 }
 
 // ---------------------------------------------------------------- small extras
-export async function getReclaimable() { sample('getReclaimable'); return { gb: S.cleanup.reduce((a, c) => a + c.gb, 0), parts: S.cleanup.map((c) => [c.id, c.gb, c.color]) }; }
 /** Friendly IP label: loopback → local, reverse-proxy hop → panel. */
 export function formatAuditIp(ip) {
   if (ip == null || ip === '' || ip === 'unknown') return '—';
@@ -1539,12 +1544,6 @@ export async function deleteDestination(id) { sample('deleteDestination');
   await lag(250);
   BK.dests = BK.dests.filter((d) => d.id !== id);
   return { ok: true };
-}
-export async function addDestination(d) { sample('addDestination');
-  await lag(500);
-  if (!(d.name || '').trim()) throw new Error('Give the destination a name.');
-  if (!/^s3:\/\/[a-z0-9.-]{3,}(\/.*)?$/.test(d.loc || '')) throw new Error('Location must look like s3://bucket/path');
-  BK.dests.push({ id: 'd' + Date.now(), name: d.name.trim(), type: 'S3-compatible', loc: d.loc, ok: true }); audit(`add backup destination ${d.name}`);
 }
 
 // ---------------------------------------------------------------- alerts

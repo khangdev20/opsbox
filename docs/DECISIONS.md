@@ -432,8 +432,6 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 
 **Validation and scope ambiguities.** Traefik has no offline config-validation subcommand, so `serde-saphyr` 2.2 (MIT/Apache-2.0, deserialize only) parses its static YAML; existing locked `toml` parses TOML. A structural comparison proves only entrypoint addresses changed, then live probes verify the reload. Existing locked X.509/PEM crates provide certificate names/expiry. Apache port-qualified `VirtualHost` blocks cannot follow a Listen-only rewrite; automatic moves currently refuse those layouts pending the user's choice about changing those socket declarations. HTTP servers that redirect all plaintext traffic back to HTTPS need to honor forwarded scheme before TLS termination; the action restores passthrough on a status-class regression.
 
-**Verification limitation inherited from 16b.** `capacity_http::queued_workloads_block_database_resize_pooler_and_memory_adding_extensions` also fails on unchanged commit `450e0bf`: the stopped PostgreSQL fixture causes “Start this database first” before the expected structured pooler capacity refusal. The conventions exclude unrelated fixes; a fixture correction was requested separately. All other workspace tests, including adoption, pass. VM verification covers real plain Docker, Compose, nginx.service, imported certificates, unknown/missing SNI, app precedence, refusal and Undo.
-
 ### Align the panel with the design (prompt 16d)
 
 **`gen.py` is the source; the canvas was not consulted.** Boards render statically through `design/preview.py` (own mini resolver for `dc-import`, `sc-if`, `{{theme}}`), so hover, the open menu and the collapsed sidebar come from `gen.py`. The owner's concurrent edits to `design/` were left untouched and uncommitted.
@@ -511,3 +509,9 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **Cgroup for top-N only, in metrics not priv.** Process CPU/RSS still comes from `MetricsSample` via `priv`. After the engine picks the top processes, `opsbox-metrics` reads `/proc/<pid>/cgroup` for those PIDs alone and caches the result until the PID leaves the list. That keeps the cost off the full process scan and avoids extending the privileged sample just for classification. Docker name/service come from the existing Docker list refresh (same cache lifetime).
 
 **Classification.** cgroup v2 `docker-<id>.scope` or `/docker/<id>` → `container`; `system.slice/<unit>.service` (and not a user slice) → `system` with `unit`; otherwise `user`. Classic cgroup v1 (no `0::` line) → `unknown`.
+
+## Prompt 16n (mock leftovers and capacity fixture)
+
+**Queued-workload capacity test.** Only the large app is marked Building (450 MB on a 1 GB fixture ≈ 104 MB database headroom). Marking Postgres Building raced with the template deploy task clearing that state, so pooler reached the handler and failed with “Start this database first” instead of a structured capacity refusal.
+
+**Mock API CI.** `tools/check-mock-api.mjs` fails when a page calls an `api.js` export that is not in `REAL`, unless allowlisted (demo-only recovery actions; Desktop-only outgoing keys / mock terminal hosts). Unused mock exports `getReclaimable` and `addDestination` were removed; `getAudit` stays (Security, already real).

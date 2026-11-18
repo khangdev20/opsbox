@@ -31,6 +31,8 @@ jobs:
         run: node tools/check-network-ui.mjs
       - name: Update status text
         run: node tools/check-update-status.mjs
+      - name: Mock-only API allowlist
+        run: node tools/check-mock-api.mjs
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test

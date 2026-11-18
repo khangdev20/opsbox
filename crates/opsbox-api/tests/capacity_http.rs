@@ -192,10 +192,15 @@ async fn missing_cgroup_and_memory_pressure_cannot_silently_start_a_workload() {
 
 #[tokio::test]
 async fn queued_workloads_block_database_resize_pooler_and_memory_adding_extensions() {
+    // Fixture profile: 1024 MB → ~554 MB allocatable after OS/opsbox/Docker reserves.
+    // A single Building app at 450 MB leaves ~104 MB database headroom, which is below
+    // pooler (128) and the extension bump (320). Only the app is marked Building: a
+    // Building Postgres was fragile because the template deploy task can clear that
+    // state and then pooler hits "Start this database first" instead of capacity.
     let h = Harness::with_capacity(small(1024));
     let mut b = h.signed_in("owner", Role::Admin);
     let mut payload = image("pending");
-    payload["memoryLimitMb"] = json!(400);
+    payload["memoryLimitMb"] = json!(450);
     assert_eq!(
         b.post("/api/v1/services", payload).await.status,
         StatusCode::CREATED
@@ -207,17 +212,6 @@ async fn queued_workloads_block_database_resize_pooler_and_memory_adding_extensi
         )
         .await;
     assert_eq!(db.status, StatusCode::CREATED, "{}", db.text());
-    let pg_svc = h.store.get_service("pg").unwrap().unwrap();
-    h.store
-        .create_deploy(
-            &pg_svc.id,
-            None,
-            "queued",
-            opsbox_store::DeployTrigger::Manual,
-            "owner",
-            0,
-        )
-        .unwrap();
     let svc = h.store.get_service("pending").unwrap().unwrap();
     h.store
         .create_deploy(
@@ -229,6 +223,10 @@ async fn queued_workloads_block_database_resize_pooler_and_memory_adding_extensi
             0,
         )
         .unwrap();
+    assert_eq!(
+        h.store.get_service("pending").unwrap().unwrap().state,
+        opsbox_store::ServiceState::Building
+    );
     for (method, path, body, expected) in [
         (
             Method::PATCH,
