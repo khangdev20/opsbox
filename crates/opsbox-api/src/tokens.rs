@@ -73,6 +73,7 @@ pub(crate) async fn get_settings(
         // Without the system's list, offer the current zone at least.
         "timezones": if s.timezones.is_empty() { vec![s.timezone.clone()] } else { s.timezones },
         "swapMb": s.swap_mb,
+        // Token secrets are shown once at creation and stored only as a hash.
         "tokens": tokens.iter().map(|k| token_json(k, t)).collect::<Vec<_>>(),
         "opsboxUpdate": state.updater.snapshot(),
         "panel": panel,

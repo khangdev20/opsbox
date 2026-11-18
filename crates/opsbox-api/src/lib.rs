@@ -30,6 +30,7 @@ mod network;
 pub mod panel;
 mod recovery;
 mod request_id;
+mod secrets;
 mod security;
 pub mod session;
 mod setup;
@@ -99,6 +100,8 @@ pub struct AppState {
     pub files: FilesSettings,
     pub terminal: TerminalSettings,
     pub(crate) limits: limits::RateLimits,
+    /// Recent password / 2FA confirmations for secret reveal (5-minute window).
+    pub(crate) reauth: secrets::ReauthGate,
     pub(crate) stream_slots: Arc<tokio::sync::Semaphore>,
     /// The panel's own address, for the Security checks.
     pub listen: std::net::SocketAddr,
@@ -157,6 +160,7 @@ impl AppState {
             files,
             terminal: TerminalSettings::default(),
             limits: limits::RateLimits::default(),
+            reauth: secrets::ReauthGate::default(),
             stream_slots: Arc::new(tokio::sync::Semaphore::new(64)),
             listen: std::net::SocketAddr::from(([127, 0, 0, 1], 8443)),
             allow,
@@ -355,6 +359,10 @@ pub fn router(state: AppState) -> Router {
             put(alerts::connect).delete(alerts::disconnect),
         )
         .route("/api/v1/alerts/test", post(alerts::test))
+        .route(
+            "/api/v1/alerts/channels/{id}/reveal",
+            post(alerts::reveal_channel),
+        )
         .route("/api/v1/alerts/silence", post(alerts::silence))
         .route("/api/v1/alerts/quiet", put(alerts::quiet))
         .route("/api/v1/stream/metrics", get(metrics::stream))
@@ -427,6 +435,10 @@ pub fn router(state: AppState) -> Router {
             post(github::sync_installation),
         )
         .route("/api/v1/github/webhook/sync", post(github::sync_webhook))
+        .route(
+            "/api/v1/github/webhook-secret/reveal",
+            post(github::reveal_webhook_secret),
+        )
         .route("/api/v1/github/webhook", post(github::webhook))
         .route("/api/v1/github/repos", get(github::list_repos))
         .route(
@@ -458,6 +470,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/services/{id}/vars/{key}",
             put(deploy::put_var).delete(deploy::delete_var),
+        )
+        .route(
+            "/api/v1/services/{id}/vars/{key}/reveal",
+            post(deploy::reveal_var),
         )
         .route(
             "/api/v1/services/{id}/databases",
@@ -552,6 +568,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/backups/destinations/{id}/default",
             post(backups::set_default_destination),
         )
+        .route(
+            "/api/v1/backups/destinations/{id}/reveal",
+            post(backups::reveal_destination),
+        )
         .route("/api/v1/backups/recovery-key", post(backups::recovery_key))
         .route("/api/v1/backups/snapshots", get(backups::list_snapshots))
         .route(
@@ -581,6 +601,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/session", get(auth::session))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/auth/reauth", post(secrets::reauth))
         .route("/api/v1/auth/sessions/revoke-all", post(auth::revoke_all))
         .route("/api/v1/auth/totp/enroll", post(auth::totp_enroll))
         .route("/api/v1/auth/totp/confirm", post(auth::totp_confirm))

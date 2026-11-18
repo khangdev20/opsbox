@@ -1,13 +1,13 @@
 //! Database management for PostgreSQL services (docs/BACKEND_SPEC.md 7.6, Databases part B):
 //! the Database page, one login per connected app, extensions, PgBouncer, major version
-//! upgrades with a snapshot first, and connection strings behind a fresh two-factor code.
+//! upgrades with a snapshot first, and connection strings behind recent re-authentication.
 //!
 //! `serve` only validates, keeps metadata in SQLite and relays sealed values; every SQL
 //! statement and container action runs in `opsbox-priv` (`PrivOp::Database*`).
 
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, header};
+use axum::http::HeaderMap;
 use opsbox_deploy::refs::{VarRef, canonical_ref_expr};
 use opsbox_deploy::templates::{get_template, is_postgres_template, template_volume_name};
 use opsbox_proto::{
@@ -24,6 +24,7 @@ use crate::deploy::{
     service_writable, var_seal_context,
 };
 use crate::json::ApiJson;
+use crate::secrets::{self, ReauthBody, begin_reveal, no_store_headers};
 use crate::session::{Client, Deployer, deny_token};
 use crate::tasks::Outcome;
 use crate::{AppState, HttpError, RequestId};
@@ -1112,17 +1113,20 @@ pub(crate) async fn upgrade(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RevealBody {
-    /// Current two-factor code.
-    code: String,
+    /// Optional two-factor code (also establishes the 5-minute re-auth window).
+    #[serde(default)]
+    code: Option<String>,
+    /// Optional account password (same window).
+    #[serde(default)]
+    password: Option<String>,
     /// App whose login to show; omit for the main administrator login.
     app: Option<String>,
     #[serde(default)]
     pooled: bool,
 }
 
-/// `POST /api/v1/databases/{id}/connection-string`: show a connection string after the
-/// user re-enters a fresh two-factor code. Every attempt is audited; the response is never
-/// cached.
+/// `POST /api/v1/databases/{id}/connection-string`: show a connection string after recent
+/// re-authentication (password or 2FA within 5 minutes). Rate-limited; `no-store`; audited.
 pub(crate) async fn reveal_connection_string(
     State(state): State<AppState>,
     Deployer(who): Deployer,
@@ -1137,16 +1141,13 @@ pub(crate) async fn reveal_connection_string(
         ));
     }
     let db = load_db(&state, &who, &id, true)?;
-    let accepted = state
-        .auth
-        .verify_user_totp(&rid, &who.user.id, &body.code, &client.ip)
-        .await?;
-    if !accepted {
+    let reauth = ReauthBody {
+        password: body.password.clone(),
+        code: body.code.clone(),
+    };
+    if let Err(e) = begin_reveal(&state, &who, &rid, &client.ip, &reauth).await {
         audit_user_denied(&state, &who, &client.ip, &db.name);
-        return Err(HttpError::new(
-            ErrorCode::Forbidden,
-            "That code was not accepted. Codes work once, so wait for the next one and try again.",
-        ));
+        return Err(e);
     }
 
     let (key, who_label) = match body.app.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
@@ -1193,19 +1194,17 @@ pub(crate) async fn reveal_connection_string(
             &var.value_enc,
         )
         .await?;
-    audit_user(
+    secrets::audit_reveal(
         &state,
-        &who.user.actor_label(),
-        false,
+        &who,
         Some(&client.ip),
         "database.connection_string.reveal",
         Some(&db.name),
+        &key,
         json!({ "login": who_label, "pooled": body.pooled }),
     );
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok((
-        headers,
+        no_store_headers(),
         Json(json!({
             "connectionString": secret.expose(),
             "login": who_label,

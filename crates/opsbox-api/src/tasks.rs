@@ -41,6 +41,8 @@ pub struct Task {
 #[derive(Clone, Default)]
 pub struct Tasks {
     inner: Arc<Mutex<HashMap<String, Task>>>,
+    /// Optional known secret values to scrub from a task's finished log.
+    scrub: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 fn now() -> i64 {
@@ -58,6 +60,25 @@ pub struct Outcome {
 impl Tasks {
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Task>> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Register plaintext secrets that must never appear in this task's log.
+    pub fn add_scrub_secrets(&self, task_id: &str, secrets: impl IntoIterator<Item = String>) {
+        let mut map = self.scrub.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = map.entry(task_id.to_owned()).or_default();
+        for s in secrets {
+            if s.len() >= 4 && !entry.iter().any(|e| e == &s) {
+                entry.push(s);
+            }
+        }
+    }
+
+    fn scrub_for(&self, task_id: &str) -> Vec<String> {
+        self.scrub
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(task_id)
+            .unwrap_or_default()
     }
 
     /// Start `work` unless a task of `kind` is already running. Returns the task id.
@@ -121,12 +142,16 @@ impl Tasks {
                 match outcome {
                     Ok(o) => {
                         task.status = Status::Ok;
-                        task.log = o
-                            .log
-                            .into_iter()
-                            .take(100)
-                            .map(|l| l.chars().take(8192).collect())
-                            .collect();
+                        // Defence in depth: scrub any secrets the worker registered.
+                        let scrub = me.scrub_for(&tid);
+                        let refs: Vec<&str> = scrub.iter().map(String::as_str).collect();
+                        task.log = crate::secrets::redact_lines(
+                            o.log
+                                .into_iter()
+                                .take(100)
+                                .map(|l| l.chars().take(8192).collect()),
+                            &refs,
+                        );
                         task.result = Some(o.result);
                     }
                     Err(e) => {
@@ -140,17 +165,27 @@ impl Tasks {
     }
 
     pub(crate) fn progress(&self, kind: &str, log: Vec<String>) {
-        if let Some(task) = self
-            .lock()
+        let mut tasks = self.lock();
+        let Some(task) = tasks
             .values_mut()
             .find(|t| t.kind == kind && t.status == Status::Running)
-        {
-            task.log = log
-                .into_iter()
+        else {
+            return;
+        };
+        let scrub = self
+            .scrub
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&task.id)
+            .cloned()
+            .unwrap_or_default();
+        let refs: Vec<&str> = scrub.iter().map(String::as_str).collect();
+        task.log = crate::secrets::redact_lines(
+            log.into_iter()
                 .take(100)
-                .map(|s| s.chars().take(8192).collect())
-                .collect();
-        }
+                .map(|s| s.chars().take(8192).collect()),
+            &refs,
+        );
     }
     pub(crate) fn is_running(&self, kind: &str) -> bool {
         self.lock()
@@ -200,6 +235,26 @@ mod tests {
             )
         );
         assert!(task.finished.is_some() && task.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn task_logs_scrub_registered_secrets() {
+        const MARKER: &str = "marker-SECRET-value-zz9Q";
+        let t = Tasks::default();
+        let id = t
+            .start("scrub", async {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                Ok(Outcome {
+                    log: vec![format!("echo {MARKER}")],
+                    result: serde_json::json!({}),
+                })
+            })
+            .unwrap();
+        t.add_scrub_secrets(&id, [MARKER.to_owned()]);
+        let task = finished(&t, &id).await;
+        assert_eq!(task.status, Status::Ok);
+        assert!(!task.log.join("\n").contains(MARKER), "{:?}", task.log);
+        assert!(task.log[0].contains("[REDACTED]"), "{:?}", task.log);
     }
 
     #[tokio::test]

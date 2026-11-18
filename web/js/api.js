@@ -38,7 +38,7 @@ const REAL = new Set([
   'getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts',
   'getHost',
   'getAlerts', 'setRule', 'testAlert', 'connectChannel', 'disconnectChannel', 'silenceAlert', 'setQuiet',
-  'auth.session', 'auth.login', 'auth.logout', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
+  'auth.session', 'auth.login', 'auth.logout', 'auth.reauth', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
   'auth.enroll', 'auth.enrollConfirm', 'signOutAll',
   'getMetrics', 'getAttention', 'markAttentionRead', 'markAllAttentionRead', 'snoozeAttention',
   'getUpdates', 'installUpdates', 'setAutoUpdates', 'reboot', 'cancelReboot', 'getUnits', 'unitAction', 'getJournal',
@@ -55,9 +55,10 @@ const REAL = new Set([
   'getRecovery',
   'getGithubStatus', 'startGithubManifest', 'completeGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook',
   'disconnectGithub', 'getRepos', 'inspectPublicRepo', 'listDeployKeys', 'createDeployKey', 'deleteDeployKey',
-  'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'buildLog', 'addVar', 'removeVar', 'removeService',
+  'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'buildLog', 'addVar', 'removeVar', 'revealVar', 'removeService',
   'connectDatabase', 'disconnectDatabase', 'rotateDatabase', 'setServiceExposure',
   'getDatabase', 'rotateAppLogin', 'removeAppLogin', 'setAppPooled', 'setExtension', 'setPooler', 'upgradeDatabase', 'revealConnectionString',
+  'revealAlertChannel', 'revealGithubWebhookSecret', 'revealBackupDestination',
   'getDomains', 'addDomain', 'checkDns', 'issueDomainCert', 'updateDomain', 'removeDomain', 'makePrimary',
   'getTemplates', 'addTemplate', 'deployCompose',
   'getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups',
@@ -78,11 +79,11 @@ function sample(name) { if (MODE === 'http' && !untracked && !REAL.has(name)) us
 export const PAGE_USES = {
   // (Keys opsbox uses to reach other servers arrive with the desktop app; the section is hidden until then.)
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
-  alerts: ['disconnectChannel', 'connectChannel', 'getAlerts', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
+  alerts: ['disconnectChannel', 'connectChannel', 'getAlerts', 'revealAlertChannel', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
   databases: ['addTemplate', 'getDatabase', 'getProject', 'removeAppLogin', 'revealConnectionString', 'rotateAppLogin', 'setAppPooled', 'setExtension', 'setPooler', 'upgradeDatabase'],
-  apps: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
+  apps: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'revealVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
   backupdest: ['getProviders', 'saveDestination', 'testDestination', 'downloadRecoveryKey'],
-  backups: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination', 'downloadRecoveryKey', 'testBackupRestore'],
+  backups: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination', 'downloadRecoveryKey', 'revealBackupDestination', 'testBackupRestore'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
   configure: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'createService'],
   containers: ['containerAction', 'containerLogs', 'dockerStatus', 'inspectContainer', 'installDocker', 'listContainers', 'listDocker'],
@@ -94,7 +95,7 @@ export const PAGE_USES = {
   overview: ['getCapacity', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'getAudit', 'exportAuditCsv', 'inviteUser', 'updateUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
-  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook', 'uninstallPlan', 'uninstallExec'],
+  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revealGithubWebhookSecret', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook', 'uninstallPlan', 'uninstallExec'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'listContainers', 'updateService', 'addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
@@ -445,6 +446,13 @@ export const auth = {
   async logout() {
     if (real('auth.logout')) return http('/auth/logout', { method: 'POST' });
     sample('auth.logout'); return { ok: true };
+  },
+  // POST /api/v1/auth/reauth — open the 5-minute secret-reveal window
+  async reauth({ password, code } = {}) {
+    if (real('auth.reauth')) return http('/auth/reauth', { method: 'POST', body: { password, code } });
+    sample('auth.reauth');
+    if (!(password || '').trim() && !(code || '').trim()) throw new Error('Enter your password or a two-factor code.');
+    return { ok: true, expiresIn: 300 };
   },
   // POST /api/v1/setup/claim
   async claim(token) {
@@ -1160,6 +1168,18 @@ export async function removeVar(svc, k) {
   if (real('removeVar')) return http(`/services/${encodeURIComponent(svc)}/vars/${encodeURIComponent(k)}`, { method: 'DELETE' });
   await lag(150); const s = S.project.services.find((x) => x.id === svc); s.vars = s.vars.filter((x) => x[0] !== k); audit(`remove variable ${k} on ${svc}`);
 }
+export async function revealVar(svc, key, opts = {}) {
+  sample('revealVar');
+  if (real('revealVar')) {
+    return http(`/services/${encodeURIComponent(svc)}/vars/${encodeURIComponent(key)}/reveal`, {
+      method: 'POST',
+      body: { password: opts.password, code: opts.code },
+    });
+  }
+  await lag(200);
+  audit(`reveal variable ${key} on ${svc}`);
+  return { key, value: 'demo-secret-value', isSecret: true };
+}
 export async function removeService(svc) {
   sample('removeService');
   if (real('removeService')) return http(`/services/${encodeURIComponent(svc)}`, { method: 'DELETE' });
@@ -1343,12 +1363,48 @@ export async function upgradeDatabase(dbId, opts = {}) {
 }
 export async function revealConnectionString(dbId, opts = {}) {
   sample('revealConnectionString');
-  if (real('revealConnectionString')) return http(`/databases/${encodeURIComponent(dbId)}/connection-string`, { method: 'POST', body: { code: opts.code, app: opts.app || undefined, pooled: !!opts.pooled } });
+  if (real('revealConnectionString')) {
+    return http(`/databases/${encodeURIComponent(dbId)}/connection-string`, {
+      method: 'POST',
+      body: {
+        code: opts.code || undefined,
+        password: opts.password || undefined,
+        app: opts.app || undefined,
+        pooled: !!opts.pooled,
+      },
+    });
+  }
   await lag(250);
-  if (String(opts.code).trim() !== '123456') throw new Error('That code was not accepted. Codes work once, so wait for the next one and try again.');
   audit(`reveal connection string of ${dbId}`);
   const who = opts.app ? `app_${opts.app.replace(/-/g, '_')}` : 'app';
   return { connectionString: `postgresql://${who}:s4mpleP4ssw0rd@${dbId}:5432/${who}`, login: opts.app || 'administrator', note: 'This name only works from other containers in the same project. Your database is not reachable from the internet.' };
+}
+export async function revealAlertChannel(id, opts = {}) {
+  sample('revealAlertChannel');
+  if (real('revealAlertChannel')) {
+    return http(`/alerts/channels/${encodeURIComponent(id)}/reveal`, { method: 'POST', body: { password: opts.password, code: opts.code } });
+  }
+  await lag(200);
+  return { id, settings: { kind: 'webhook', url: 'https://example.com/hook', secret: 'demo-secret' } };
+}
+export async function revealGithubWebhookSecret(opts = {}) {
+  sample('revealGithubWebhookSecret');
+  if (real('revealGithubWebhookSecret')) {
+    return http('/github/webhook-secret/reveal', { method: 'POST', body: { password: opts.password, code: opts.code } });
+  }
+  await lag(200);
+  return { webhookSecret: 'demo-github-webhook-secret' };
+}
+export async function revealBackupDestination(id, opts = {}) {
+  sample('revealBackupDestination');
+  if (real('revealBackupDestination')) {
+    return http(`/backups/destinations/${encodeURIComponent(id)}/reveal`, { method: 'POST', body: { password: opts.password, code: opts.code } });
+  }
+  await lag(200);
+  return { id, credentials: { accessKeyId: 'AKIADEMO', secretAccessKey: 'demo-secret' } };
+}
+export async function reauth(opts = {}) {
+  return auth.reauth(opts);
 }
 
 // ---------------------------------------------------------------- backups

@@ -33,6 +33,11 @@ const SESSION: Policy = Policy {
     burst: 120.0,
     per_second: 4.0,
 };
+/// Reveal endpoints: a handful in a burst, then about one every 30 seconds.
+const REVEAL: Policy = Policy {
+    burst: 10.0,
+    per_second: 1.0 / 30.0,
+};
 
 struct Bucket {
     tokens: f64,
@@ -72,6 +77,7 @@ struct Inner {
     ip: Buckets,
     auth: Buckets,
     session: Buckets,
+    reveal: Buckets,
 }
 
 #[derive(Clone, Default)]
@@ -93,6 +99,16 @@ impl RateLimits {
             .unwrap_or_else(|e| e.into_inner())
             .session
             .take(id, SESSION, Instant::now())
+            .map_err(limited)
+    }
+
+    /// Per-session budget for secret reveal endpoints.
+    pub(crate) fn reveal(&self, session_id: &str) -> Result<(), HttpError> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .reveal
+            .take(session_id, REVEAL, Instant::now())
             .map_err(limited)
     }
 }

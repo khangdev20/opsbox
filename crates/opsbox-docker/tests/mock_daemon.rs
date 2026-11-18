@@ -592,7 +592,7 @@ async fn client_performs_full_lifecycle_and_refuses_bad_refs() {
     assert!(
         insp.env
             .iter()
-            .any(|e| e.key == "API_SECRET" && e.masked && e.value == "••••")
+            .any(|e| e.key == "API_SECRET" && e.masked && e.value.starts_with("••••"))
     );
     assert!(matches!(
         client.inspect_container("missing").await,

@@ -3,6 +3,7 @@
 import { html, st, btn, table, section, header, bytes, bindActions, confirmDialog, formDialog, toast } from '../ui.js';
 import { withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
+import { ensureReauth, copyPlain, hideRevealed } from '../secrets.js';
 
 const DATA_TOOLS = [
   ['adminer', 'Adminer', 'Browse and edit any database on this server. You sign in to it with a login from this page.'],
@@ -72,7 +73,7 @@ export async function view({ path, query }) {
       ? table('Apps using this database', [['App'], ['Database'], ['Login'], ['Open connections'], ['Route'], ['', 'r']], rows)
       : html`<p class="muted">No app is using this database yet. Open an app's <b>Variables</b> tab and choose <b>Connect database</b>: it gets its own database and a login that can only open that database.</p>`}
       <div class="row mt12">${btn('Show administrator connection string', { act: 'reveal', data: { app: '' }, kind: '' })}</div>
-      <p class="sm muted mt6">Connection strings are shown after you enter a fresh two-factor code, and each time is recorded in the audit log.</p>`);
+      <p class="sm muted mt6">Connection strings are shown after you confirm your password or two-factor code (valid for 5 minutes). Each reveal is recorded in the audit log and hidden again after 30 seconds.</p>`);
   };
 
   const dbsSection = () => {
@@ -163,11 +164,6 @@ export async function view({ path, query }) {
 
   const paint = () => { if (root) root.querySelector('#dbbody').innerHTML = body().toString(); };
 
-  const code = async (title, bodyText) => {
-    const out = await formDialog({ title, body: bodyText, fields: [{ name: 'code', label: 'Two-factor code', placeholder: '123456' }], submit: 'Show' });
-    return out ? out.code.trim() : null;
-  };
-
   return {
     nav: 'apps',
     title: `Database ${id}`,
@@ -179,11 +175,25 @@ export async function view({ path, query }) {
         inspect: async (el) => { dbName = el.dataset.db; await reload(); },
         reveal: async (el) => {
           const app = el.dataset.app || '';
-          const c = await code(app ? `Connection string for ${app}` : 'Administrator connection string', 'Enter the current code from your authenticator app. Each code works once.');
-          if (!c) return;
+          hideRevealed();
           try {
-            const r2 = await api.revealConnectionString(id, { code: c, app, pooled: el.dataset.pooled === '1' });
-            await formDialog({ title: `Connection string (${r2.login})`, body: r2.note, fields: [{ name: 'url', label: 'Connection string', value: r2.connectionString }], submit: 'Done' });
+            let r2;
+            try {
+              r2 = await api.revealConnectionString(id, { app, pooled: el.dataset.pooled === '1' });
+            } catch (e) {
+              if (!await ensureReauth({ title: app ? `Connection string for ${app}` : 'Administrator connection string' })) return;
+              r2 = await api.revealConnectionString(id, { app, pooled: el.dataset.pooled === '1' });
+            }
+            const plain = r2.connectionString;
+            const shown = await formDialog({
+              title: `Connection string (${r2.login})`,
+              body: `${r2.note || ''} Shown for 30 seconds — use Copy so it need not stay on screen.`,
+              fields: [{ name: 'url', label: 'Connection string', value: plain }],
+              submit: 'Copy and close',
+              run: async () => { await copyPlain(plain); return true; },
+            });
+            if (!shown) hideRevealed();
+            setTimeout(hideRevealed, 30_000);
           } catch (e) { toast(e.message, 'err'); }
         },
         rotateapp: async (el) => {

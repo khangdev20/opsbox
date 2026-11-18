@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::Json;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use opsbox_auth::Principal;
@@ -36,6 +36,7 @@ use tokio::sync::broadcast;
 use tracing::warn;
 
 use crate::json::ApiJson;
+use crate::secrets::{self, MASKED_UNKNOWN, ReauthBody, begin_reveal, no_store_headers};
 use crate::session::{Client, Deployer, Viewer, deny_token, origin_matches_host};
 use crate::{AppState, HttpError, RequestId};
 
@@ -80,6 +81,8 @@ pub(crate) struct DeployStream {
     pub(crate) sender: broadcast::Sender<Value>,
     pub(crate) history: Mutex<Vec<Value>>,
     pub(crate) finished: Mutex<bool>,
+    /// Known secret values to scrub from lines written by serve-side log emitters.
+    pub(crate) scrub: Mutex<Vec<String>>,
 }
 
 pub(crate) struct ActiveDeployGuard {
@@ -146,9 +149,20 @@ impl DeployHub {
             sender,
             history: Mutex::new(Vec::new()),
             finished: Mutex::new(false),
+            scrub: Mutex::new(Vec::new()),
         });
         streams.insert(deploy_id.to_owned(), Arc::clone(&stream));
         stream
+    }
+
+    /// Register plaintext secrets that must never appear in deploy log lines.
+    pub(crate) fn add_scrub_secrets(stream: &DeployStream, secrets: impl IntoIterator<Item = String>) {
+        let mut scrub = stream.scrub.lock().unwrap();
+        for s in secrets {
+            if s.len() >= 4 && !scrub.iter().any(|e| e == &s) {
+                scrub.push(s);
+            }
+        }
     }
 
     fn subscribe(&self, deploy_id: &str) -> Option<(Vec<Value>, bool, broadcast::Receiver<Value>)> {
@@ -167,9 +181,13 @@ impl DeployHub {
         deploy_id: &str,
         line: &str,
     ) {
+        let scrub = stream.scrub.lock().unwrap();
+        let refs: Vec<&str> = scrub.iter().map(String::as_str).collect();
+        let clean = secrets::redact_line(line, &refs);
+        drop(scrub);
         let ts = now_secs();
-        let _ = store.append_deploy_log(deploy_id, line, ts);
-        let msg = json!({ "type": "log", "ts": ts, "line": line });
+        let _ = store.append_deploy_log(deploy_id, &clean, ts);
+        let msg = json!({ "type": "log", "ts": ts, "line": clean });
         {
             let mut h = stream.history.lock().unwrap();
             if h.len() < MAX_DEPLOY_LOG_HISTORY {
@@ -549,7 +567,8 @@ pub(crate) async fn resolve_service_view(
             continue;
         }
         let display_val = if v.is_secret {
-            "••••••••".to_owned()
+            // Sealed: never open for list/detail — placeholder means has_value.
+            MASKED_UNKNOWN.to_owned()
         } else {
             let ctx = var_seal_context(&svc.id, &v.key);
             match state
@@ -558,7 +577,7 @@ pub(crate) async fn resolve_service_view(
                 .await
             {
                 Ok(sec) => sec.expose().to_owned(),
-                Err(_) => "••••••••".to_owned(),
+                Err(_) => MASKED_UNKNOWN.to_owned(),
             }
         };
         rendered_vars.push(json!([v.key, display_val, v.is_secret]));
@@ -1763,9 +1782,97 @@ pub(crate) async fn put_var(
     Ok(Json(json!({
         "ok": true,
         "key": key,
-        "value": if is_secret { "••••••••" } else { &body.value },
+        "value": if is_secret { MASKED_UNKNOWN } else { body.value.as_str() },
         "isSecret": is_secret,
+        "hasValue": is_secret,
     })))
+}
+
+/// `POST /api/v1/services/{id}/vars/{key}/reveal`: return the plaintext of a sealed
+/// secret variable after recent re-authentication.
+pub(crate) async fn reveal_var(
+    State(state): State<AppState>,
+    Deployer(who): Deployer,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path((id, key)): Path<(String, String)>,
+    ApiJson(body): ApiJson<ReauthBody>,
+) -> Result<(HeaderMap, Json<Value>), HttpError> {
+    begin_reveal(&state, &who, &rid, &client.ip, &body).await.map_err(|e| {
+        secrets::audit_reveal_denied(
+            &state,
+            &who,
+            &client.ip,
+            "service.var.reveal.denied",
+            Some(&id),
+            "reauth",
+        );
+        e
+    })?;
+    let key = key.trim().to_owned();
+    let svc = state
+        .store
+        .get_service(&id)
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Service not found."))?;
+    if !service_writable(&who, &svc) {
+        return Err(forbidden("You cannot reveal variables for this service."));
+    }
+    let var = state
+        .store
+        .list_service_vars(&svc.id)
+        .map_err(|_| HttpError::internal())?
+        .into_iter()
+        .find(|v| v.key == key)
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Variable not found."))?;
+    if let Some(ref expr) = var.ref_expr {
+        return Ok((
+            no_store_headers(),
+            Json(json!({
+                "key": key,
+                "value": expr,
+                "isSecret": var.is_secret,
+                "isRef": true,
+            })),
+        ));
+    }
+    if !var.is_secret {
+        let ctx = var_seal_context(&svc.id, &key);
+        let opened = state
+            .priv_client
+            .secret_open(&rid, Some(&who.user.name), &ctx, &var.value_enc)
+            .await?;
+        return Ok((
+            no_store_headers(),
+            Json(json!({
+                "key": key,
+                "value": opened.expose(),
+                "isSecret": false,
+            })),
+        ));
+    }
+    let ctx = var_seal_context(&svc.id, &key);
+    let opened = state
+        .priv_client
+        .secret_open(&rid, Some(&who.user.name), &ctx, &var.value_enc)
+        .await?;
+    secrets::audit_reveal(
+        &state,
+        &who,
+        Some(&client.ip),
+        "service.var.reveal",
+        Some(&svc.name),
+        &key,
+        json!({}),
+    );
+    Ok((
+        no_store_headers(),
+        Json(json!({
+            "key": key,
+            "value": opened.expose(),
+            "isSecret": true,
+        })),
+    ))
 }
 
 #[derive(Deserialize)]

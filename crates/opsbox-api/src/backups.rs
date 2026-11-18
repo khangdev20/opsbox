@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
 use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode};
 use opsbox_auth::Principal;
 use opsbox_backup::BackupError;
 use opsbox_backup::cron::{
@@ -51,7 +51,8 @@ use tracing::warn;
 
 use crate::deploy::{next_graph_pos, seal_and_store_vars, var_seal_context};
 use crate::json::ApiJson;
-use crate::session::{Admin, Client, Viewer};
+use crate::secrets::{self, ReauthBody, begin_reveal, has_value_true, no_store_headers};
+use crate::session::{Admin, Client, Viewer, deny_token};
 use crate::system::audit;
 use crate::tasks::{Outcome, Tasks};
 use crate::{AppState, HttpError, RequestId};
@@ -966,6 +967,9 @@ fn dest_json(
         "isDefault": d.id == default_dest_id,
         "status": status,
         "verifiedAt": d.verified_at,
+        // Credentials stay sealed; list/detail only advertise that they exist.
+        "hasCredentials": d.secrets_enc.is_some(),
+        "credentials": if d.secrets_enc.is_some() { has_value_true() } else { Value::Null },
     })
 }
 
@@ -2691,21 +2695,15 @@ pub(crate) async fn delete_destination(
     Ok(Json(json!({ "ok": true })))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RecoveryKeyBody {
-    password: String,
-}
-
 /// `POST /api/v1/backups/recovery-key` — export the restic repo recovery password behind
-/// admin session check, `deny_token`, and password re-authentication (never returning HTTP 401
-/// on wrong password so interactive browser sessions are preserved).
+/// admin session check, `deny_token`, and recent re-authentication (password or 2FA within
+/// 5 minutes). Wrong credentials return `403` (never `401`) so the panel session stays.
 pub(crate) async fn recovery_key(
     State(state): State<AppState>,
     Admin(who): Admin,
     client: Client,
     Extension(RequestId(rid)): Extension<RequestId>,
-    ApiJson(body): ApiJson<RecoveryKeyBody>,
+    ApiJson(body): ApiJson<ReauthBody>,
 ) -> Result<(HeaderMap, Json<Value>), HttpError> {
     if who.via_token {
         return Err(HttpError::new(
@@ -2713,46 +2711,108 @@ pub(crate) async fn recovery_key(
             "Recovery key download requires an interactive admin session.",
         ));
     }
-    let ok = state
-        .auth
-        .verify_user_password(&who.user.id, &body.password)
-        .await
-        .map_err(|_| HttpError::internal())?;
-    if !ok {
-        audit(
+    if let Err(e) = begin_reveal(&state, &who, &rid, &client.ip, &body).await {
+        secrets::audit_reveal_denied(
             &state,
             &who,
             &client.ip,
             "backup.recovery_key.denied",
             None,
-            json!({ "reason": "wrong_password" }),
+            "reauth",
         );
-        return Err(HttpError::new(
-            ErrorCode::Forbidden,
-            "Incorrect account password.",
-        ));
+        return Err(e);
     }
 
     let key = state
         .priv_client
         .backup_recovery_key(&rid, Some(&who.user.name))
         .await?;
-    audit(
+    secrets::audit_reveal(
         &state,
         &who,
-        &client.ip,
+        Some(&client.ip),
         "backup.recovery_key.export",
         None,
+        "restic_recovery_password",
         json!({ "hostname": key.hostname }),
     );
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     Ok((
-        headers,
+        no_store_headers(),
         Json(json!({
             "password": key.recovery_key.expose(),
             "hostname": key.hostname,
             "instructions": "Keep this recovery password offline (for example in a password manager). restic needs it to decrypt backups on a fresh server.",
+        })),
+    ))
+}
+
+/// `POST /api/v1/backups/destinations/{id}/reveal` — show sealed S3 credentials (or note
+/// that an SFTP key exists) after recent re-authentication.
+pub(crate) async fn reveal_destination(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<ReauthBody>,
+) -> Result<(HeaderMap, Json<Value>), HttpError> {
+    deny_token(&who)?;
+    if let Err(e) = begin_reveal(&state, &who, &rid, &client.ip, &body).await {
+        secrets::audit_reveal_denied(
+            &state,
+            &who,
+            &client.ip,
+            "backup.destination.reveal.denied",
+            Some(&id),
+            "reauth",
+        );
+        return Err(e);
+    }
+    let dest = state
+        .store
+        .get_backup_destination(&id)
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "Destination not found."))?;
+    let Some(enc) = dest.secrets_enc.as_deref() else {
+        return Err(HttpError::new(
+            ErrorCode::NotFound,
+            "This destination has no stored credentials.",
+        ));
+    };
+    let ctx = format!("backup:dest:{}", dest.id);
+    let opened = state
+        .priv_client
+        .secret_open(&rid, Some(&who.user.name), &ctx, enc)
+        .await?;
+    let secret_name = if dest.provider == "sftp" {
+        "sftp_private_key"
+    } else {
+        "s3_credentials"
+    };
+    secrets::audit_reveal(
+        &state,
+        &who,
+        Some(&client.ip),
+        "backup.destination.reveal",
+        Some(&dest.name),
+        secret_name,
+        json!({ "provider": dest.provider }),
+    );
+    // SFTP stores a PEM; S3 stores JSON with accessKeyId / secretAccessKey.
+    let value = if dest.provider == "sftp" {
+        json!({ "privateKey": opened.expose() })
+    } else if let Ok(parsed) = serde_json::from_str::<Value>(opened.expose()) {
+        parsed
+    } else {
+        json!({ "raw": opened.expose() })
+    };
+    Ok((
+        no_store_headers(),
+        Json(json!({
+            "id": dest.id,
+            "name": dest.name,
+            "provider": dest.provider,
+            "credentials": value,
         })),
     ))
 }

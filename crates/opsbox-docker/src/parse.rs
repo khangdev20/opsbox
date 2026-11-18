@@ -120,6 +120,16 @@ fn is_sensitive_env_key(key: &str) -> bool {
     .any(|needle| upper.contains(needle))
 }
 
+/// Mask a known plaintext for Docker inspect: `••••` plus at most the last 4 characters.
+fn mask_env_value(v: &str) -> String {
+    let chars: Vec<char> = v.chars().collect();
+    if chars.len() <= 4 {
+        return "••••".to_owned();
+    }
+    let last: String = chars[chars.len() - 4..].iter().collect();
+    format!("••••{last}")
+}
+
 /// Parse `KEY=VALUE` environment entries, masking secret-looking values.
 pub fn mask_env(entries: &[String]) -> Vec<DockerEnvVar> {
     entries
@@ -130,7 +140,7 @@ pub fn mask_env(entries: &[String]) -> Vec<DockerEnvVar> {
                 DockerEnvVar {
                     key: k.to_owned(),
                     value: if masked {
-                        "••••".to_owned()
+                        mask_env_value(v)
                     } else {
                         v.to_owned()
                     },
@@ -369,8 +379,9 @@ mod tests {
             "PORT=3000".into(),
         ]);
         assert!(!vars[0].masked && vars[0].value == "production");
-        assert!(vars[1].masked && vars[1].value == "••••");
-        assert!(vars[2].masked && vars[2].value == "••••");
+        assert!(vars[1].masked && vars[1].value.starts_with("••••"));
+        assert!(!vars[1].value.contains("supersecret"), "{}", vars[1].value);
+        assert!(vars[2].masked && vars[2].value.starts_with("••••"));
         assert!(!vars[3].masked && vars[3].value == "3000");
     }
 

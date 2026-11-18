@@ -3,6 +3,7 @@ import { html, raw, ago, st, btn, tabs, table, section, header, sw, bindActions,
 import { editMemory, withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
 import { listeners } from '../store.js';
+import { withReveal, copyPlain, hideRevealed } from '../secrets.js';
 
 const KIND = { active: ['ok', 'running'], building: ['build', 'building'], failed: ['fail', 'failed'], idle: ['off', 'idle'] };
 const DST = { live: ['ok', 'live'], replaced: ['off', 'replaced'], failed: ['fail', 'failed'], building: ['build', 'building'] };
@@ -28,6 +29,8 @@ export async function view({ query }) {
   let logDeploy = query.log || null;
   let logLines = [];
   let logLoading = false;
+  /** @type {Record<string, string>} plaintext secrets shown until hide / timeout / nav */
+  let revealedVars = {};
   let closeLogWs = null;
   let root;
   let doms = null;
@@ -221,15 +224,24 @@ export async function view({ query }) {
       const ref = varRefTarget(v);
       const isRef = Boolean(isRefFlag || ref);
       const hasTarget = ref && proj.services.some((x) => x.id === ref.svc);
+      const secret = isSec === true || (isSec === undefined && /URL|SECRET|KEY|PASS/.test(k));
+      const shown = revealedVars[k];
       const valCell = isRef
         ? (hasTarget
           ? html`<button type="button" class="btn link mono" data-act="select" data-id="${ref.svc}" title="Open ${ref.svc}">${raw(LINK_ICON)}${v}</button>`
           : html`<span class="mono" style="color:var(--accent)">${raw(LINK_ICON)}${v}</span>`)
-        : html`<span class="mono muted">${isSec === true || (isSec === undefined && /URL|SECRET|KEY|PASS/.test(k)) ? '••••••••' : v}</span>`;
+        : shown
+          ? html`<span class="mono">${shown}</span>`
+          : html`<span class="mono muted">${secret ? (v && String(v).startsWith('••••') ? v : '••••••••') : v}</span>`;
+      const acts = isRef
+        ? btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' })
+        : secret
+          ? html`<span class="acts">${btn(shown ? 'Hide' : 'Reveal', { act: shown ? 'hidevar' : 'revealvar', data: { k }, kind: 'link' })}${shown ? btn('Copy', { act: 'copyvar', data: { k }, kind: 'link' }) : ''}${btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' })}</span>`
+          : btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' });
       return [
-        html`<span class="mono">${k}</span>${isSec && !isRef ? html` <span class="tag-sm">secret</span>` : ''}${isRef ? html` <span class="tag-sm">linked</span>` : ''}`,
+        html`<span class="mono">${k}</span>${secret && !isRef ? html` <span class="tag-sm">secret</span>` : ''}${isRef ? html` <span class="tag-sm">linked</span>` : ''}`,
         valCell,
-        btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' }),
+        acts,
       ];
     })) : html`<p class="muted">No variables yet.</p>`}<div class="row mt12">${btn('Add variable', { act: 'addvar' })}${!isDb && dbsInProj.length ? btn('Connect database', { act: 'conndb' }) : ''}</div>`;
     const settingsBody = () => html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
@@ -345,7 +357,7 @@ export async function view({ query }) {
       });
       bindActions(root, {
         memory: async () => { await editMemory(svc()); await reload(); },
-        select: (el) => { fresh = true; sel = el.dataset.id; tab = 0; stopWs(); logDeploy = null; logLines = []; doms = null; domBusy = ''; domErr = ''; lastDns = null; paint(); },
+        select: (el) => { fresh = true; sel = el.dataset.id; tab = 0; stopWs(); logDeploy = null; logLines = []; revealedVars = {}; hideRevealed(); doms = null; domBusy = ''; domErr = ''; lastDns = null; paint(); },
         tab: (el) => { fresh = true; tab = +el.dataset.i; paint(); },
         adoptedTls: async (el) => { try { await api.adoptedTls(el.dataset.domain); toast('opsbox now handles TLS.'); await refreshDomainsAndProj(); } catch (e) { toast(e.message, 'err'); } },
         gotodomains: () => { fresh = true; tab = 2; paint(); root.querySelector('#d').scrollIntoView({ behavior: 'smooth', block: 'start' }); },
@@ -581,7 +593,31 @@ export async function view({ query }) {
             await reload();
           }
         },
-        rmvar: async (el) => { await api.removeVar(sel, el.dataset.k); await reload(); },
+        rmvar: async (el) => { await api.removeVar(sel, el.dataset.k); delete revealedVars[el.dataset.k]; await reload(); },
+        revealvar: async (el) => {
+          const k = el.dataset.k;
+          try {
+            await withReveal(
+              () => api.revealVar(sel, k).then((r) => r.value),
+              (plain) => {
+                if (plain == null) delete revealedVars[k];
+                else revealedVars[k] = plain;
+                paint();
+              },
+            );
+          } catch (e) { toast(e.message || 'Could not reveal.', 'err'); }
+        },
+        hidevar: (el) => { delete revealedVars[el.dataset.k]; hideRevealed(); paint(); },
+        copyvar: async (el) => {
+          const plain = revealedVars[el.dataset.k];
+          if (plain) await copyPlain(plain);
+          else {
+            try {
+              const r = await withReveal(() => api.revealVar(sel, el.dataset.k).then((x) => x.value), () => {});
+              if (r) await copyPlain(r);
+            } catch (e) { toast(e.message || 'Could not copy.', 'err'); }
+          }
+        },
         toggleAuto: async () => {
           const s = svc();
           if (!s) return;

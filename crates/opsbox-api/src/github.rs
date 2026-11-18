@@ -31,7 +31,8 @@ use tokio::sync::RwLock;
 
 use crate::json::ApiJson;
 use crate::panel::active_panel_domain;
-use crate::session::{Admin, Client, Deployer};
+use crate::secrets::{self, ReauthBody, begin_reveal, no_store_headers};
+use crate::session::{Admin, Client, Deployer, deny_token};
 use crate::system::audit;
 use crate::{AppState, HttpError, RequestId};
 
@@ -257,6 +258,8 @@ fn status_json(
         "webhookActive": app.webhook_active,
         "webhookConfigured": webhook_matches_domain,
         "expectedWebhookUrl": expected_webhook_url,
+        "hasWebhookSecret": true,
+        "hasPrivateKey": true,
         "panelDomain": panel_domain,
         "panelDomainSet": panel_domain.is_some(),
         "lastWebhookAt": app.last_webhook_at,
@@ -791,6 +794,57 @@ pub(crate) async fn sync_installation(
 }
 
 /// `POST /api/v1/github/webhook/sync` — push the active panel domain webhook URL to GitHub.
+/// `POST /api/v1/github/webhook-secret/reveal` — show the GitHub App webhook secret
+/// after recent re-authentication. Private keys are never revealed over HTTP.
+pub(crate) async fn reveal_webhook_secret(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(body): ApiJson<ReauthBody>,
+) -> Result<(HeaderMap, Json<Value>), HttpError> {
+    deny_token(&who)?;
+    if let Err(e) = begin_reveal(&state, &who, &rid, &client.ip, &body).await {
+        secrets::audit_reveal_denied(
+            &state,
+            &who,
+            &client.ip,
+            "github.webhook_secret.reveal.denied",
+            None,
+            "reauth",
+        );
+        return Err(e);
+    }
+    let store = state.store.clone();
+    let app = tokio::task::spawn_blocking(move || store.get_github_app())
+        .await
+        .map_err(|_| HttpError::internal())?
+        .map_err(|_| HttpError::internal())?
+        .ok_or_else(|| HttpError::new(ErrorCode::NotFound, "GitHub is not connected."))?;
+    let secret = state
+        .priv_client
+        .secret_open(
+            &rid,
+            Some(&who.user.name),
+            CTX_WEBHOOK_SECRET,
+            &app.webhook_secret_enc,
+        )
+        .await?;
+    secrets::audit_reveal(
+        &state,
+        &who,
+        Some(&client.ip),
+        "github.webhook_secret.reveal",
+        Some(&app.slug),
+        "webhook_secret",
+        json!({}),
+    );
+    Ok((
+        no_store_headers(),
+        Json(json!({ "webhookSecret": secret.expose() })),
+    ))
+}
+
 pub(crate) async fn sync_webhook(
     State(state): State<AppState>,
     Admin(who): Admin,

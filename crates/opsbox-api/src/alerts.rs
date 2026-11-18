@@ -3,12 +3,14 @@
 use crate::{
     AppState, HttpError, RequestId,
     json::ApiJson,
+    secrets::{self, ReauthBody, begin_reveal, no_store_headers},
     session::{Admin, Client, deny_token},
     system::{audit, invalid},
 };
 use axum::{
     Json,
     extract::{Extension, Path, State},
+    http::HeaderMap,
 };
 use opsbox_alerts::{
     Channel, Engine, Incident, Observation, Quiet, State as AlertState,
@@ -461,9 +463,22 @@ pub(crate) async fn get(
 ) -> Result<Json<Value>, HttpError> {
     let _guard = s.alerts.lock.lock().await;
     let e = load(&s)?;
-    let channels:Vec<_>=[("c1","Email"),("c2","Slack"),("c3","Telegram"),("c4","Webhook")].into_iter().map(|(id,name)| {
-        let c=e.channels.get(id);json!({"id":id,"name":name,"on":c.is_some(),"verified":c.is_some_and(|c|c.verified),"error":c.and_then(|c|c.error.clone()),"to":if c.is_some(){"Configured"}else{""},"for":"all alerts"})
-    }).collect();
+    let channels: Vec<_> = [("c1", "Email"), ("c2", "Slack"), ("c3", "Telegram"), ("c4", "Webhook")]
+        .into_iter()
+        .map(|(id, name)| {
+            let c = e.channels.get(id);
+            json!({
+                "id": id,
+                "name": name,
+                "on": c.is_some(),
+                "verified": c.is_some_and(|c| c.verified),
+                "error": c.and_then(|c| c.error.clone()),
+                "to": if c.is_some() { "Configured" } else { "" },
+                "for": "all alerts",
+                "hasValue": c.is_some(),
+            })
+        })
+        .collect();
     let rules: Vec<_> = e
         .rules
         .iter()
@@ -581,6 +596,57 @@ pub(crate) async fn disconnect(
     );
     Ok(Json(json!({"ok":true})))
 }
+
+/// `POST /api/v1/alerts/channels/{id}/reveal`: open sealed channel settings after re-auth.
+pub(crate) async fn reveal_channel(
+    State(s): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Path(id): Path<String>,
+    ApiJson(body): ApiJson<ReauthBody>,
+) -> Result<(HeaderMap, Json<Value>), HttpError> {
+    deny_token(&who)?;
+    valid_id(&id)?;
+    if let Err(e) = begin_reveal(&s, &who, &rid, &client.ip, &body).await {
+        secrets::audit_reveal_denied(
+            &s,
+            &who,
+            &client.ip,
+            "alerts.channel.reveal.denied",
+            Some(&id),
+            "reauth",
+        );
+        return Err(e);
+    }
+    let e = load(&s)?;
+    let c = e.channels.get(&id).ok_or_else(|| {
+        HttpError::new(ErrorCode::NotFound, "Connect this channel before revealing it.")
+    })?;
+    let opened = s
+        .priv_client
+        .secret_open(&rid, Some(&who.user.name), &context(&id), &c.sealed)
+        .await?;
+    let settings: Settings = serde_json::from_str(opened.expose())
+        .map_err(|_| HttpError::internal())?;
+    // Re-serialize through serde so Secret fields become plaintext JSON for the reveal
+    // response only; list endpoints never open the seal.
+    let value = serde_json::to_value(&settings).map_err(|_| HttpError::internal())?;
+    secrets::audit_reveal(
+        &s,
+        &who,
+        Some(&client.ip),
+        "alerts.channel.reveal",
+        Some(&id),
+        &format!("channel:{id}"),
+        json!({}),
+    );
+    Ok((
+        no_store_headers(),
+        Json(json!({ "id": id, "settings": value })),
+    ))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TestBody {

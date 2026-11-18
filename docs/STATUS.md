@@ -1,19 +1,23 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/16n-mock-leftovers-and-fixture.md` (mock leftovers + capacity fixture). Not committed, not tagged (per session request). Prior: `16m` (process kind).
+Last completed prompt: `docs/prompts/archive/16o-secrets-in-responses.md` (secrets masked by default, reveal on demand). Not committed / not pushed (per session request). Prior: `16n`.
 
-## What works (16n)
-- **Mock cleanup**: Removed unused `getReclaimable` and `addDestination` from `web/js/api.js`. Kept `getAudit` (used by Security, already in `REAL`). `simulateFailure` / `recoveryAction` refuse in http mode; recovery page already shows only watchdog :8444 in real mode (demo buttons under `?mode=mock` only).
-- **CI**: `tools/check-mock-api.mjs` fails on page → mock-only `api.js` calls unless allowlisted (demo Safe Mode; Desktop outgoing keys / mock terminal hosts). Wired in `.github/workflows/ci.yml`.
-- **Capacity fixture**: `queued_workloads_block_database_resize_pooler_and_memory_adding_extensions` uses one Building app at 450 MB on a 1 GB profile so pooler/resize/extensions get structured capacity 409s; removed fragile Building-Postgres setup and the DECISIONS note.
+## What works (16o)
+- **Inventory** in `docs/THREAT_MODEL.md` (env vars, DB URLs, API tokens, backup/S3/SFTP, recovery key, alerts, GitHub webhook/private keys, TOTP, Docker env, proxy secret).
+- **Masking**: list/detail use `••••••••` / `hasValue` / `hasCredentials` / `hasWebhookSecret`; Docker env uses `••••` + last 4.
+- **Reveal**: `POST /auth/reauth`; `…/vars/{key}/reveal`, DB connection-string, backup destination/recovery-key, alerts channel, GitHub webhook secret — Admin/Deployer as appropriate, 5-minute re-auth, `no-store`, reveal rate limit, audited secret name/target.
+- **One-time**: API tokens remain hash-only after create; recovery key is re-derived (not stored).
+- **Log scrubbing**: `secrets::redact_line` on deploy emit + task logs; unit tests with marker value.
+- **UI**: `web/js/secrets.js` (re-auth modal, 30s / nav hide, clipboard copy); Apps Variables Reveal/Copy; Database connection-string flow updated.
+- **Tests**: `crates/opsbox-api/src/secrets.rs` unit tests; `tests/secrets_http.rs` (mask, re-auth, audit, rate-limit); task scrub test.
 
 ## Partial / Found, not fixed
-- **cargo fmt / clippy / test not run this session** (shell was unavailable for most of the session). Please run: `node tools/check-mock-api.mjs` and `PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo test -p opsbox-api --test capacity_http queued_workloads_block_database_resize_pooler_and_memory_adding_extensions` plus full workspace check before commit.
-- **Archive**: full text is in `docs/prompts/archive/16n-mock-leftovers-and-fixture.md`. The file at `docs/prompts/16n-mock-leftovers-and-fixture.md` is a stub (`git rm` / shell `git mv` unavailable this session); on commit run `git rm docs/prompts/16n-mock-leftovers-and-fixture.md && git add docs/prompts/archive/16n-mock-leftovers-and-fixture.md`.
+- **Shell unavailable this session** — could not run `cargo fmt` / `clippy` / `test`, `python3 tools/generate-api.py`, or `git mv`. Please run those before commit; if `generate-api.py --check` fails, re-run it to sync the route table.
+- Archive: full text is in `docs/prompts/archive/16o-secrets-in-responses.md`. The file at `docs/prompts/16o-secrets-in-responses.md` is a stub (`git mv` / shell unavailable); on commit run `git rm docs/prompts/16o-secrets-in-responses.md && git add docs/prompts/archive/16o-secrets-in-responses.md`.
 - **Not verified on `opsbox-vm`**. Not checked at 390 px.
-- Carried over: 16m / 16l / … pending commit/release; next prompt `16o`.
+- Carried over: 16n / … pending commit/release; next prompt `16p`.
 
 ## Next
-- Commit 16n (with the pending stack if intended), push `dev`, wait for CI, tag when appropriate.
-- Then `16o-secrets-in-responses.md`.
-- VM check for 16n: open panel in real mode — Recovery shows Open Safe Mode (:8444), no Simulate failure; no unexpected “sample data” badge. Must fail safely: `?mode=http` calling simulateFailure/recoveryAction returns an error (no demo mutation).
+- Run workspace checks, commit 16o (and pending stack if intended), push `dev`.
+- Then `16p-stable-live-lists.md`.
+- VM check for 16o: reveal a DB connection string — re-auth required, audit row with secret name, value gone after 30 s. Must fail safely: reveal without re-auth → `403`; API token → `403`.

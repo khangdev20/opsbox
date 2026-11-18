@@ -98,6 +98,7 @@ pub(crate) async fn logout(
     client: Client,
 ) -> Result<Response, HttpError> {
     crate::session::deny_token(&who)?;
+    state.reauth.clear(&who.session_id);
     state.auth.logout(&who, Some(&client.ip))?;
     Ok((
         clear_session_cookies(client.https),
