@@ -1,4 +1,4 @@
-import { html, raw } from '../ui.js';
+import { html, raw, setBusy } from '../ui.js';
 import * as api from '../api.js';
 import { session, server } from '../store.js';
 import { qrSvg, groupSecret } from '../qr.js';
@@ -16,7 +16,7 @@ const err = html`<p id="err" role="alert" style="color:var(--danger);font-size:1
 const stepClaim = () => html`<form class="r" id="f">
   <h2 style="font-size:22px">Claim this server</h2>
   <p class="muted">The installer printed a one-time token. Find it here:</p>
-  <div class="tabs" role="tablist">${Object.keys(CMD).map((k, i) => html`<button type="button" role="tab" aria-selected="${i === 0}" data-p="${k}">${k}</button>`)}</div>
+  <div class="tabs" role="tablist">${Object.keys(CMD).map((k, i) => html`<button type="button" role="tab" aria-selected="${String(i === 0)}" data-p="${k}">${k}</button>`)}</div>
   <p id="where" class="sm">${Object.values(CMD)[0]}</p>
   <div class="field"><label for="t">Setup token</label><input class="input lg mono" id="t" placeholder="XXXX-XXXX-XXXX" autocomplete="off" autocapitalize="characters"><span class="hint">Single use, valid for one hour.</span></div>
   ${err}<div class="row"><button class="btn primary" type="submit">Claim server</button></div></form>`;
@@ -46,8 +46,8 @@ export async function view() {
       const submit = (handler) => {
         const f = page.querySelector('#f');
         f.addEventListener('submit', async (e) => {
-          e.preventDefault(); const b = f.querySelector('button[type=submit]'); b.disabled = true;
-          try { await handler(f); } catch (ex) { page.querySelector('#err').textContent = ex.message; b.disabled = false; }
+          e.preventDefault(); const b = f.querySelector('button[type=submit]'); if (b.hasAttribute('data-busy')) return; setBusy(b, true);
+          try { await handler(f); } catch (ex) { page.querySelector('#err').textContent = ex.message; setBusy(b, false); }
         });
         f.querySelector('input')?.focus();
       };

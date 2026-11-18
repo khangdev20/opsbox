@@ -1,4 +1,4 @@
-import { html, header, toast } from '../ui.js';
+import { html, header, toast, setBusy } from '../ui.js';
 import { capacityFields, bindCapacity, capacityPayload } from '../capacity.js';
 import * as api from '../api.js';
 
@@ -55,7 +55,8 @@ export async function view({ query }) {
       f.addEventListener('submit', async (e) => {
         e.preventDefault();
         const b = f.querySelector('button[type="submit"]');
-        b.disabled = true; root.setAttribute('data-capacity-busy', '');
+        if (b.hasAttribute('data-busy')) return;
+        setBusy(b, true); root.setAttribute('data-capacity-busy', '');
         root.querySelector('#err').textContent = '';
         const vars = f.vars.value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
           const i = l.indexOf('=');
@@ -87,7 +88,7 @@ export async function view({ query }) {
           location.hash = `#/apps?${qs.toString()}`;
         } catch (err) {
           root.querySelector('#err').textContent = err.message;
-          root.removeAttribute('data-capacity-busy'); this._capacity?.refresh();
+          setBusy(b, false); root.removeAttribute('data-capacity-busy'); this._capacity?.refresh();
         }
       });
     },

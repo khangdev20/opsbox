@@ -32,4 +32,5 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 15 | Alerts (`15-alerts.md`) | 5 | ✓ |
 | 15b | Capacity guard: what this server can safely run (`15b-capacity-guard.md`) | 5 | ✓ |
 | 16 | Databases part B: management (`16-databases-manage.md`) | 5b | ✓ |
+| 16b | UI polish: live-data motion and styled controls (`16b-ui-polish.md`) | release prep | ✓ |
 | 17 | Alpha release (`17-alpha-release.md`) | release | |

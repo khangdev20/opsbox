@@ -1,4 +1,4 @@
-import { html, raw, bytes, header, sw, btn, bindActions, confirmDialog, toast } from '../ui.js';
+import { html, raw, bytes, header, sw, btn, bindActions, confirmDialog, toast, patch, num, segBar, sk, setSwitch, empty, refreshing } from '../ui.js';
 import * as api from '../api.js';
 
 const COL = { accent: 'var(--accent)', text: 'var(--text)', warn: 'var(--warn)', muted: 'var(--muted)', ls: 'var(--ls)' };
@@ -17,10 +17,11 @@ export async function view() {
   const by = (i) => i.bytes ?? (i.gb || 0) * 2 ** 30;
   const sum = () => (d ? d.items.filter((i) => !i.pending && picked.has(i.id)).reduce((a, i) => a + by(i), 0) : 0);
 
+  // Same shape as the real content, so nothing shifts when the scan result arrives.
   const skeleton = () => html`
-    <div class="seg" role="img" aria-label="Disk usage breakdown"><i style="flex:1;background:var(--line)"></i></div>
+    <span class="sk" style="height:10px;border-radius:5px"></span>
     <p class="sm muted mono" style="margin:8px 0 24px">Scanning disk…</p>
-    ${[1, 2, 3].map(() => html`<div class="item-row"><span><b>Loading…</b><span class="sm muted">Checking reclaimable files</span></span><span class="mono muted">—</span></div>`)}`;
+    ${[1, 2, 3].map(() => html`<div class="item-row"><span class="col gap6">${sk(16, '180px')}${sk(12, '280px')}</span>${sk(16, '60px')}</div>`)}`;
 
   const body = () => {
     if (!d) return skeleton();
@@ -34,22 +35,16 @@ export async function view() {
     const other = Math.max(0, used - parts.reduce((a, p) => a + p[0], 0));
     if (other > 0 || !parts.length) parts.push([other, 'var(--muted)', 'Apps and data']);
 
-    return html`<div class="seg" role="img" aria-label="Disk usage breakdown">${parts.map(([g, c]) => html`<i style="flex:${g};background:${c}"></i>`)}${free > 0 ? html`<i style="flex:${free};background:var(--line)"></i>` : ''}</div>
-      <p class="sm muted mono" style="margin:8px 0 24px">${Math.round(used)} of ${total} GB used · ${bytes(rec)} reclaimable · scanned ${ageLabel(d.scannedAt, d.scanned)} · ${btn('Rescan', { act: 'rescan', kind: 'link' })}${d.pending ? ' · scanning…' : ''}</p>
-      ${d.items.length ? d.items.map((i) => html`<div class="item-row"><label><input type="checkbox" data-act="pick" data-id="${i.id}" ${raw(picked.has(i.id) ? 'checked' : '')} ${raw(i.pending ? 'disabled' : '')}><span><b>${i.title}</b><span class="sm ${i.warn ? '' : 'muted'}" ${raw(i.warn ? 'style="color:var(--warn)"' : '')}>${i.desc}</span></span></label><span class="mono">${i.pending ? 'scanning…' : (i.id === 'docker-volumes' && !by(i) ? btn('Calculate size', { act: 'volSize', kind: 'link' }) : bytes(by(i)))}</span></div>`) : html`<p class="st ok">■ Nothing to clean.</p>`}
-      <div class="row" style="margin-top:20px">${btn(`Clean ${bytes(sum())}`, { act: 'run', kind: 'primary', disabled: !picked.size })}<span class="sm muted">${picked.size} selected</span></div>`;
+    return html`${segBar([...parts.map(([g, c]) => [g, c]), ...(free > 0 ? [[free, 'var(--line)']] : [])], 'Disk usage breakdown')}
+      <p class="sm muted mono" style="margin:8px 0 24px">${Math.round(used)} of ${total} GB used · ${num(rec, 'bytes')} reclaimable · scanned ${ageLabel(d.scannedAt, d.scanned)} · ${btn('Rescan', { act: 'rescan', kind: 'link' })}${d.pending ? ' · scanning…' : ''}</p>
+      ${d.items.length ? d.items.map((i) => html`<div class="item-row" data-key="${i.id}" data-sig="${i.pending}"><label><input type="checkbox" data-act="pick" data-id="${i.id}" ${raw(picked.has(i.id) ? 'checked' : '')} ${raw(i.pending ? 'disabled' : '')}><span><b>${i.title}</b><span class="sm ${i.warn ? '' : 'muted'}" ${raw(i.warn ? 'style="color:var(--warn)"' : '')}>${i.desc}</span></span></label><span class="mono">${i.pending ? 'scanning…' : (i.id === 'docker-volumes' && !by(i) ? btn('Calculate size', { act: 'volSize', kind: 'link' }) : num(by(i), 'bytes'))}</span></div>`) : empty('Nothing to clean. Your disk is tidy.')}
+      <div class="row" style="margin-top:20px">${btn(html`Clean ${num(sum(), 'bytes')}`, { act: 'run', kind: 'primary', disabled: !picked.size })}<span class="sm muted">${picked.size} selected</span></div>`;
   };
 
   const paint = () => {
     if (!root || dead) return;
-    root.querySelector('#b').innerHTML = body().toString();
-    if (d) {
-      const swEl = root.querySelector('[data-act="auto"]');
-      if (swEl) {
-        swEl.setAttribute('aria-checked', !!d.auto);
-        swEl.textContent = d.auto ? 'ON' : 'OFF';
-      }
-    }
+    patch(root.querySelector('#b'), body().toString());
+    if (d) setSwitch(root.querySelector('[data-act="auto"]'), !!d.auto);
   };
 
   const load = async (fresh = false) => {
@@ -84,7 +79,7 @@ export async function view() {
       load(false);
       bindActions(root, {
         pick: (el) => { el.checked ? picked.add(el.dataset.id) : picked.delete(el.dataset.id); paint(); },
-        rescan: () => load(true),
+        rescan: () => refreshing(root.querySelector('#b'), () => load(true)),
         volSize: async () => {
           try {
             const v = await api.getCleanupVolumes();
@@ -110,7 +105,7 @@ export async function view() {
           paint();
           load(true);
         },
-        auto: async (el) => { const on = el.getAttribute('aria-checked') !== 'true'; await api.setAutoCleanup(on); el.setAttribute('aria-checked', on); el.textContent = on ? 'ON' : 'OFF'; },
+        auto: async (el) => { const on = el.getAttribute('aria-checked') !== 'true'; await api.setAutoCleanup(on); setSwitch(el, on); },
       });
     },
     unmount() { dead = true; clearTimeout(timer); },

@@ -1,6 +1,6 @@
 // Two-factor enrolment for an account whose second factor was reset (see
 // `opsbox user reset-2fa`): the password was right, but a code app must be set up first.
-import { html, raw, esc } from '../ui.js';
+import { html, raw, esc, setBusy } from '../ui.js';
 import * as api from '../api.js';
 import { session, server } from '../store.js';
 import { qrSvg, groupSecret } from '../qr.js';
@@ -25,9 +25,9 @@ export async function view({ query = {} } = {}) {
     mount(root) {
       const f = root.querySelector('#f');
       f.addEventListener('submit', async (ev) => {
-        ev.preventDefault(); const b = f.querySelector('button'); b.disabled = true;
+        ev.preventDefault(); const b = f.querySelector('button'); if (b.hasAttribute('data-busy')) return; setBusy(b, true);
         try { const r = await api.auth.enrollConfirm(f.c.value); session.set(r.user); server.role = r.role || ''; location.hash = '#/'; }
-        catch (err) { root.querySelector('#err').textContent = err.message; b.disabled = false; }
+        catch (err) { root.querySelector('#err').textContent = err.message; setBusy(b, false); }
       });
       root.querySelector('#c').focus();
     },

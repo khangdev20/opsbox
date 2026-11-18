@@ -4,12 +4,13 @@
 //! on every request (rust-embed's default), so editing `web/` needs no rebuild.
 
 use axum::body::Body;
-use axum::extract::Request;
+use axum::extract::{FromRequestParts, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
-use crate::HttpError;
+use crate::session::Admin;
+use crate::{AppState, HttpError};
 
 #[derive(RustEmbed)]
 #[folder = "../../web/"]
@@ -36,28 +37,50 @@ pub(crate) fn check_embedded() -> Result<usize, String> {
     Ok(Assets::iter().count())
 }
 
+/// Developer-only pages: the UI kit (`web/kit.html`). Never linked from the navigation.
+fn is_dev_asset(asset_path: &str) -> bool {
+    matches!(asset_path, "kit.html" | "js/kit.js")
+}
+
+/// Who may see the dev-only pages: anyone on a debug build (the panel run from a checkout),
+/// otherwise only a signed-in Owner (Admin role, browser session).
+fn dev_asset_allowed(debug_build: bool, owner_session: bool) -> bool {
+    debug_build || owner_session
+}
+
 /// Serves the UI for everything the API routes did not match.
-pub(crate) async fn fallback(req: Request) -> Response {
-    let path = req.uri().path();
+pub(crate) async fn fallback(State(state): State<AppState>, req: Request) -> Response {
+    let (mut parts, _body) = req.into_parts();
+    let path = parts.uri.path().to_owned();
 
     // Unknown API paths are API errors, not the UI.
     if path == "/api" || path.starts_with("/api/") {
         return HttpError::not_found().into_response();
     }
-    if req.method() != Method::GET && req.method() != Method::HEAD {
+    if parts.method != Method::GET && parts.method != Method::HEAD {
         return crate::error::method_not_allowed().await.into_response();
     }
 
-    match lookup(path) {
-        Some(asset_path) => match Assets::get(&asset_path) {
-            Some(file) => respond(
-                &asset_path,
-                file,
-                req.headers(),
-                req.method() == Method::HEAD,
-            ),
-            None => HttpError::not_found().into_response(),
-        },
+    let Some(asset_path) = lookup(&path) else {
+        return HttpError::not_found().into_response();
+    };
+    if is_dev_asset(&asset_path) {
+        // A release build says "not found" to everyone else, so the page is not discoverable.
+        let owner = cfg!(not(debug_assertions))
+            && Admin::from_request_parts(&mut parts, &state)
+                .await
+                .is_ok_and(|a| !a.0.via_token);
+        if !dev_asset_allowed(cfg!(debug_assertions), owner) {
+            return HttpError::not_found().into_response();
+        }
+    }
+    match Assets::get(&asset_path) {
+        Some(file) => respond(
+            &asset_path,
+            file,
+            &parts.headers,
+            parts.method == Method::HEAD,
+        ),
         None => HttpError::not_found().into_response(),
     }
 }
@@ -66,6 +89,9 @@ pub(crate) async fn fallback(req: Request) -> Response {
 fn lookup(request_path: &str) -> Option<String> {
     // Exactly one leading slash: `//x` has an empty segment and is refused below.
     let trimmed = request_path.strip_prefix('/')?;
+    if trimmed == "kit" {
+        return Some("kit.html".to_owned());
+    }
     let candidate = if trimmed.is_empty() || trimmed.ends_with('/') {
         format!("{trimmed}index.html")
     } else {
@@ -165,6 +191,22 @@ mod tests {
         assert_eq!(lookup("/").as_deref(), Some("index.html"));
         assert_eq!(lookup("/js/main.js").as_deref(), Some("js/main.js"));
         assert_eq!(lookup("/js/").as_deref(), Some("js/index.html"));
+    }
+
+    #[test]
+    fn the_ui_kit_is_a_dev_page() {
+        assert_eq!(lookup("/kit").as_deref(), Some("kit.html"));
+        assert_eq!(lookup("/kit.html").as_deref(), Some("kit.html"));
+        for dev in ["kit.html", "js/kit.js"] {
+            assert!(is_dev_asset(dev), "{dev}");
+        }
+        for normal in ["index.html", "js/ui.js", "js/main.js", "css/app.css"] {
+            assert!(!is_dev_asset(normal), "{normal}");
+        }
+        // Debug builds serve it to anyone; release builds only to a signed-in Owner.
+        assert!(dev_asset_allowed(true, false));
+        assert!(dev_asset_allowed(false, true));
+        assert!(!dev_asset_allowed(false, false));
     }
 
     #[test]

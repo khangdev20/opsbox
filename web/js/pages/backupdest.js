@@ -18,7 +18,7 @@ export async function view() {
   const { providers, hostname } = await api.getProviders();
   let pid = (providers[0] && providers[0].id) || 'r2', vals = {}, test = null, root;
   const P = () => providers.find((x) => x.id === pid);
-  const tile = (p) => html`<button type="button" class="ptile ${p.id === pid ? 'on' : ''}" data-act="pick" data-id="${p.id}" aria-pressed="${p.id === pid}"><span class="plogo" data-logo-slot="${p.id}" title="Provider logo">${p.mono}</span><span><b>${p.name}</b><span class="sm muted">${p.sub}</span></span></button>`;
+  const tile = (p) => html`<button type="button" class="ptile ${p.id === pid ? 'on' : ''}" data-act="pick" data-id="${p.id}" aria-pressed="${String(p.id === pid)}"><span class="plogo" data-logo-slot="${p.id}" title="Provider logo">${p.mono}</span><span><b>${p.name}</b><span class="sm muted">${p.sub}</span></span></button>`;
   const field = (f) => {
     const k = f.key, label = f.label, hint = f.hint, secret = !!f.secret, optional = !!f.optional;
     return html`<div class="field"><label for="f_${k}">${label}${optional ? raw(' <span class="muted">(optional)</span>') : ''}</label>

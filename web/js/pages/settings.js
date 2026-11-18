@@ -207,10 +207,16 @@ export async function view({ query = {} } = {}) {
         if (e.target.id === 'gh-org') ghOrg = e.target.value;
       });
       root.addEventListener('change', async (e) => {
+        // A select that calls the API is locked while it runs, so a second change cannot overlap.
+        const t = e.target, locked = t.matches?.('#sw,#uch,#uwin');
+        if (locked) { if (t.hasAttribute('data-busy')) return; t.disabled = true; t.setAttribute('data-busy', '1'); }
+        try { await onChange(e); } finally { if (locked && t.isConnected) { t.disabled = false; t.removeAttribute('data-busy'); } }
+      });
+      const onChange = async (e) => {
         if (e.target.id === 'sw') { toast('Changing swap. This can take a minute.'); try { await api.setSwap(e.target.value); toast('Swap updated.'); } catch (err) { toast(err.message, 'err'); } await reload(); }
         if (e.target.id === 'uch') { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ channel: e.target.value }); toast(`Channel set to ${e.target.value}.`); } catch (err) { toast(err.message, 'err'); } paint(); }
         if (e.target.id === 'uwin') { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ window: Number(e.target.value) }); toast('Update window saved.'); } catch (err) { toast(err.message, 'err'); } paint(); }
-      });
+      };
       bindActions(root, {
         ...networkActions(refreshNetwork, (value) => { proxyBusy = value; const card = root?.querySelector('#network-card'); if (card) card.innerHTML = networkCard(proxyNetwork, proxyBusy).toString(); }),
         save: async () => { try { await api.saveSettings({ hostname: root.querySelector('#sh').value, tz: root.querySelector('#sz').value }); toast('Saved.'); await reload(); } catch (e) { root.querySelector('#err').textContent = e.message; } },

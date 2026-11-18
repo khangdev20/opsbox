@@ -81,7 +81,7 @@ export async function view() {
     nav: 'apps',
     title: 'Templates',
     html: html`<main>${header('New service', 'Databases, tools, or a Docker Compose stack', html`<a class="btn" href="#/apps">Cancel</a>`)}
-      <div class="tabs" role="tablist">${NEW_TABS.map(([label], i) => html`<button type="button" role="tab" aria-selected="${i === 4}" data-act="src" data-i="${i}">${label}</button>`)}</div>
+      <div class="tabs" role="tablist">${NEW_TABS.map(([label], i) => html`<button type="button" role="tab" aria-selected="${String(i === 4)}" data-act="src" data-i="${i}">${label}</button>`)}</div>
       <div class="cols"><div class="w3"><div id="db"></div><div id="tl" style="margin-top:32px"></div>
         ${section('Your own Compose file', html`
           <p class="muted sm">Paste a docker-compose.yml. Validated via <span class="mono">docker compose config</span> and attached to your project network.</p>

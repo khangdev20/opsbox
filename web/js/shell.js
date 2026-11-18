@@ -1,5 +1,5 @@
 // App shell: top bar, section nav, status bar, command palette.
-import { html, raw, esc, toast } from './ui.js';
+import { html, raw, esc, toast, num, patch, withBusy, reportPoll, liveState, onLive, clock } from './ui.js';
 import * as api from './api.js';
 import { theme, toggleTheme, session } from './store.js';
 
@@ -39,14 +39,14 @@ export function mountShell(app) {
     <aside class="side" aria-label="Main"><button type="button" class="side-toggle" id="side-toggle" aria-label="Collapse sidebar" title="Collapse sidebar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg></button><nav id="nav" aria-label="Sections"></nav><nav id="nav2" aria-label="More" class="nav2"></nav></aside>
     <div class="content">
       <div id="view" style="flex:1;display:flex;flex-direction:column"></div>
-      <footer class="statusbar"><div class="wrap" id="status"></div></footer>
+      <footer class="statusbar" aria-label="Server status"><div class="wrap" id="status"></div></footer>
     </div>
   </div>`;
   const label = () => { const b = document.getElementById('theme-btn'); const l = theme() === 'light'; b.innerHTML = l ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>' : '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>'; b.setAttribute('aria-label', l ? 'Switch to dark theme' : 'Switch to light theme'); b.title = b.getAttribute('aria-label'); };
   label(); loadHostName();
   document.getElementById('theme-btn').addEventListener('click', () => { toggleTheme(); label(); });
   document.getElementById('sign-out').textContent = `${session.user || 'admin'} · sign out`;
-  document.getElementById('sign-out').addEventListener('click', signOut);
+  document.getElementById('sign-out').addEventListener('click', (e) => withBusy(e.currentTarget, signOut));
   document.getElementById('open-pal').addEventListener('click', openPalette);
   const shell = app.querySelector('.shell'), tg = document.getElementById('side-toggle');
   const setC = (c) => { shell.classList.toggle('collapsed', c); const l = c ? 'Expand sidebar' : 'Collapse sidebar'; tg.setAttribute('aria-label', l); tg.title = l; try { localStorage.setItem('opsbox.side', c ? '1' : '0'); } catch {} };
@@ -63,10 +63,26 @@ export function setNav(active) {
   if (n2) n2.innerHTML = more.map(([l, h, id, ic]) => `<a href="${h}" title="${l}"${hash.startsWith(h) ? ' aria-current="page"' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ic}</svg><span class="lbl">${l}</span></a>`).join('');
 }
 
+// Steady dot while updates arrive, amber "reconnecting" after a failed poll; the last
+// successful update shows on hover. Updated in place so nothing in the status bar blinks.
+const liveText = () => (liveState().ok ? 'live' : 'reconnecting…');
+const liveTip = () => (liveState().at ? `Last updated ${clock(liveState().at)}` : 'Waiting for the first update');
+function paintLive() {
+  const el = document.getElementById('live-ind'); if (!el) return;
+  el.classList.toggle('bad', !liveState().ok);
+  el.dataset.tip = liveTip();
+  const t = el.querySelector('.lt'); if (t && t.textContent !== liveText()) t.textContent = liveText();
+}
+onLive(paintLive);
+
 export async function refreshStatus() {
   const el = document.getElementById('status'); if (!el) return;
-  const m = await api.quiet(() => api.getMetrics()); const d = m.disk / m.diskTotal * 100;
-  el.innerHTML = `<span style="color:var(--ok)">■ ${esc(hostName)}</span><span>cpu <b>${Math.round(m.cpuNow)}%</b></span><span>mem <b>${m.memUsed.toFixed(1)}/${m.memTotal.toFixed(1)} GB</b></span><span>disk / <b style="color:${d > 75 ? 'var(--warn)' : 'var(--text)'}">${Math.round(d)}%</b></span><span>net <b>↓${m.netIn.toFixed(1)} ↑${m.netOut.toFixed(1)} MB/s</b></span><span class="grow"></span><span>${api.MODE === 'http' && !api.isReal('getMetrics') ? 'sample metrics' : api.MODE === 'http' ? 'live' : 'mock data'}</span><span>opsbox 0.1.0</span>`;
+  let m;
+  try { m = await api.quiet(() => api.getMetrics()); } catch { reportPoll(false); return; }
+  reportPoll(true);
+  const d = m.disk / m.diskTotal * 100;
+  const source = api.MODE === 'http' ? (api.isReal('getMetrics') ? '' : '<span>sample metrics</span>') : '<span>mock data</span>';
+  patch(el, `<span class="${liveState().ok ? 'ok' : 'bad'}">■ ${esc(hostName)}</span><span>cpu <b>${num(m.cpuNow, 'pct')}</b></span><span>mem <b>${num(m.memUsed, 'dec1')}/${m.memTotal.toFixed(1)} GB</b></span><span>disk / <b class="${d > 75 ? 'w' : ''}">${num(d, 'pct')}</b></span><span>net <b>↓${num(m.netIn, 'dec1')} ↑${num(m.netOut, 'dec1')} MB/s</b></span><span class="grow"></span>${source}<span id="live-ind" class="live tip${liveState().ok ? '' : ' bad'}" data-tip="${esc(liveTip())}"><i class="ld"></i><span class="lt">${liveText()}</span></span><span>opsbox 0.1.0</span>`);
 }
 
 // ---------------- command palette ----------------

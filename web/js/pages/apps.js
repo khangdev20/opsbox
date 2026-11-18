@@ -1,4 +1,4 @@
-import { html, raw, ago, st, btn, tabs, table, section, header, sw, bindActions, confirmDialog, askForm, toast } from '../ui.js';
+import { html, raw, ago, st, btn, tabs, table, section, header, sw, bindActions, confirmDialog, askForm, toast, patch, empty, announce } from '../ui.js';
 import { editMemory, withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
 import { listeners } from '../store.js';
@@ -94,7 +94,7 @@ export async function view({ query }) {
 
   const graph = () => {
     if (!proj.services.length) {
-      return section('Services', html`<div class="col gap12"><p class="muted">No services deployed yet.</p><div><a class="btn primary" href="#/apps/new">Deploy your first service</a></div></div>`);
+      return section('Services', html`${empty('No services deployed yet.', html`<a class="btn primary" href="#/apps/new">Deploy your first service</a>`)}`);
     }
     const rawEdges = Array.isArray(proj.edges)
       ? proj.edges
@@ -280,14 +280,14 @@ export async function view({ query }) {
         const shortCommit = d.commit ? d.commit.slice(0, 7) : d.id.slice(0, 7);
         const trig = d.trigger ? html` <span class="tag-sm">${d.trigger}</span>` : '';
         const errHint = d.status === 'failed' && d.error ? html`<div class="sm" style="color:var(--danger)">${d.error}</div>` : '';
-        return [
+        return Object.assign([
           html`<span class="mono">${shortCommit}</span>`,
           html`${d.msg}${trig}${errHint}`,
           st(k, l),
           ago(d.at),
           html`<span class="row" style="justify-content:flex-end">${btn(logDeploy === d.id ? 'Hide log' : 'Log', { act: 'log', data: { id: d.id }, kind: 'link' })}${d.status === 'replaced' ? btn('Roll back', { act: 'rollback', data: { id: d.id }, kind: 'link' }) : ''}</span>`,
-        ];
-      })) : html`<p class="muted">No deploys yet.</p>`}
+        ], { meta: { key: `d-${d.id}`, sig: d.status } });
+      })) : empty('No deploys yet.')}
       ${logDeploy ? html`<div style="margin-top:14px"><pre class="code" id="build-log" aria-label="Build log">${logLoading ? 'Loading build log…' : (logLines.join('\n') || '(no log lines yet)')}</pre></div>` : ''}`;
     else if (t === 1) body = varsBody();
     else if (t === 2) body = s.internalOnly
@@ -316,11 +316,14 @@ export async function view({ query }) {
     if (d.service === sel) doms = d;
     paint();
   };
+  // Switching service or tab is a different view (nothing enters or flashes); refreshes animate in place.
+  let fresh = false;
   const paint = () => {
     if (!root) return;
-    root.querySelector('#g').innerHTML = graph().toString();
+    const opts = fresh ? { animate: false } : undefined; fresh = false;
+    patch(root.querySelector('#g'), graph().toString(), opts);
     entered = true;
-    root.querySelector('#d').innerHTML = detail().toString();
+    patch(root.querySelector('#d'), detail().toString(), opts);
     if (tab === 2 && sel && (!doms || doms.service !== sel) && domLoadingFor !== sel) loadDomains(sel);
   };
   const reload = async () => { proj = await api.getProject(); sel = svc()?.id || ''; if (tab === 2 && sel) doms = await api.getDomains(sel); paint(); };
@@ -340,9 +343,9 @@ export async function view({ query }) {
       });
       bindActions(root, {
         memory: async () => { await editMemory(svc()); await reload(); },
-        select: (el) => { sel = el.dataset.id; tab = 0; stopWs(); logDeploy = null; logLines = []; doms = null; domBusy = ''; domErr = ''; lastDns = null; paint(); },
-        tab: (el) => { tab = +el.dataset.i; paint(); },
-        gotodomains: () => { tab = 2; paint(); root.querySelector('#d').scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+        select: (el) => { fresh = true; sel = el.dataset.id; tab = 0; stopWs(); logDeploy = null; logLines = []; doms = null; domBusy = ''; domErr = ''; lastDns = null; paint(); },
+        tab: (el) => { fresh = true; tab = +el.dataset.i; paint(); },
+        gotodomains: () => { fresh = true; tab = 2; paint(); root.querySelector('#d').scrollIntoView({ behavior: 'smooth', block: 'start' }); },
         adddom: async () => {
           domErr = '';
           const e = root.querySelector('#derr');
@@ -600,6 +603,12 @@ export async function view({ query }) {
       });
       this._t = () => {
         api.getProject().then((p) => {
+          // A finished deploy is worth saying out loud; a changing metric is not.
+          p.services.forEach((s) => {
+            const was = proj.services.find((x) => x.id === s.id)?.deploys?.[0];
+            const now = s.deploys?.[0];
+            if (was && now && was.id === now.id && was.status === 'building' && now.status !== 'building') announce(now.status === 'failed' ? `Deploy of ${s.id} failed.` : `${s.id} deployed.`);
+          });
           const changed = p.services.length !== proj.services.length
             || p.services.some((s, i) => s.state !== proj.services[i]?.state || s.deploys?.[0]?.status !== proj.services[i]?.deploys?.[0]?.status || JSON.stringify(s.connectedApps || []) !== JSON.stringify(proj.services[i]?.connectedApps || []));
           if (changed) { proj = p; paint(); }

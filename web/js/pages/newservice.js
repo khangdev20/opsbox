@@ -152,7 +152,7 @@ export async function view({ query = {} } = {}) {
   return {
     nav: 'apps', title: 'New service',
     html: html`<main class="narrow">${header('New service', 'Pick a repository or fallback source. opsbox detects how to build it.')}
-      <div class="tabs" role="tablist">${['GitHub', 'Deploy key', 'Public repo URL', 'Docker image', 'Templates'].map((t, i) => html`<button type="button" role="tab" aria-selected="${i === tab}" data-t="${i}">${t}</button>`)}</div>
+      <div class="tabs" role="tablist">${['GitHub', 'Deploy key', 'Public repo URL', 'Docker image', 'Templates'].map((t, i) => html`<button type="button" role="tab" aria-selected="${String(i === tab)}" data-t="${i}">${t}</button>`)}</div>
       <div id="body"></div></main>`,
     mount(r) {
       root = r;

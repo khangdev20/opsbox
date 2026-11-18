@@ -1,4 +1,4 @@
-import { html, bindActions, toast } from '../ui.js';
+import { html, bindActions, toast, setBusy } from '../ui.js';
 import * as api from '../api.js';
 import { session, server } from '../store.js';
 
@@ -21,13 +21,13 @@ export async function view() {
     mount(root) {
       const f = root.querySelector('#f');
       f.addEventListener('submit', async (e) => {
-        e.preventDefault(); const b = f.querySelector('button'); b.disabled = true;
+        e.preventDefault(); const b = f.querySelector('button'); if (b.hasAttribute('data-busy')) return; setBusy(b, true);
         try {
           const r = await api.auth.login(f.u.value, f.p.value, f.c.value);
           if (r.enrollRequired) { location.hash = '#/enroll'; return; }
           session.set(r.user); server.role = r.role || ''; let next = '#/'; try { next = sessionStorage.getItem('opsbox.next') || '#/'; sessionStorage.removeItem('opsbox.next'); } catch {}
           location.hash = /^#\/(login|setup|enroll)/.test(next) ? '#/' : next;
-        } catch (err) { root.querySelector('#err').textContent = err.message; b.disabled = false; f.c.value = ''; f.c.focus(); }
+        } catch (err) { root.querySelector('#err').textContent = err.message; setBusy(b, false); f.c.value = ''; f.c.focus(); }
       });
       root.querySelector(demo ? '#c' : '#u').focus();
     },

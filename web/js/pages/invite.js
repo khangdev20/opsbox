@@ -1,6 +1,6 @@
 // Someone invited to the panel opens their one-time link: they choose a password, then set
 // up two-factor sign-in on the next page.
-import { html, esc } from '../ui.js';
+import { html, esc, setBusy } from '../ui.js';
 import * as api from '../api.js';
 
 const ROLE = { admin: 'an administrator', deployer: 'a deployer (apps and logs, no terminal)', viewer: 'a viewer (read only)' };
@@ -25,11 +25,11 @@ export async function view({ query }) {
     mount(root) {
       const f = root.querySelector('#f'); if (!f) return;
       f.addEventListener('submit', async (ev) => {
-        ev.preventDefault(); const b = f.querySelector('button'); b.disabled = true;
+        ev.preventDefault(); const b = f.querySelector('button'); if (b.hasAttribute('data-busy')) return; setBusy(b, true);
         try {
           if (f.p.value !== f.p2.value) throw new Error('The two passwords do not match.');
           await api.auth.claimInvite(token, f.p.value); location.hash = '#/enroll?new=1';
-        } catch (err) { root.querySelector('#err').textContent = err.message; b.disabled = false; }
+        } catch (err) { root.querySelector('#err').textContent = err.message; setBusy(b, false); }
       });
       root.querySelector('#p').focus();
     },

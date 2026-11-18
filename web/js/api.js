@@ -158,14 +158,22 @@ async function http(path, { method = 'GET', body } = {}) {
 const hooks = { confirm: null, prompt: null, revert: null };
 export function setUiHooks(h) { Object.assign(hooks, h); }
 
-// A background task on the server (installs, swap): poll until it ends.
+// A background task on the server (installs, swap): poll until it ends. Progress is announced
+// as `opsbox:task` events so the UI can show a progress row (ui.js trackTask).
 async function waitTask(id, { every = 1500, max = 45 * 60 * 1000 } = {}) {
   const t0 = Date.now();
+  const emit = (t) => { try { dispatchEvent(new CustomEvent('opsbox:task', { detail: { ...t, id } })); } catch { /* no window (tests) */ } };
   for (;;) {
-    const t = await http('/tasks/' + id);
+    let t;
+    try { t = await http('/tasks/' + id); } catch (e) { emit({ status: 'failed', error: e.message }); throw e; }
+    emit({ ...t, status: t.status === 'ok' || t.status === 'failed' ? t.status : 'running' });
     if (t.status === 'ok') return t;
     if (t.status === 'failed') throw new Error(t.error || 'The operation failed.');
-    if (Date.now() - t0 > max) throw new Error('This is taking very long. Check the System page again later.');
+    if (Date.now() - t0 > max) {
+      const msg = 'This is taking very long. Check the System page again later.';
+      emit({ status: 'failed', error: msg });
+      throw new Error(msg);
+    }
     await sleep(every);
   }
 }
@@ -466,6 +474,7 @@ export function startMetricsStream(onFrame) {
     ws.onclose = async () => {
       if (stopped) return;
       streamFrame = null;
+      try { dispatchEvent(new CustomEvent('opsbox:stream', { detail: { up: false } })); } catch { /* no window */ }
       try { const s = await fetch('/api/v1/session').then((r) => r.json()); if (s && s.authenticated === false) { dispatchEvent(new Event('opsbox:unauthorized')); return; } } catch { /* server down: keep trying */ }
       timer = setTimeout(open, delay); delay = Math.min(delay * 2, 15000);
     };

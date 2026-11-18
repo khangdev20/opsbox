@@ -1,4 +1,4 @@
-import { html, esc, ago, st, btn, tabs, table, section, header, bindActions, confirmDialog, toast, gb } from '../ui.js';
+import { html, esc, ago, st, btn, tabs, table, section, header, bindActions, confirmDialog, toast, gb, num, patch, empty, refreshing, announce, openModal } from '../ui.js';
 import * as api from '../api.js';
 import { listeners } from '../store.js';
 
@@ -48,10 +48,9 @@ function showInspectDialog(info) {
       ${row('Labels', labels)}
     </tbody></table></div>
     <div><h3 class="sm" style="margin:8px 0">Environment</h3><div class="tw"><table><tbody>${env}</tbody></table></div></div>
-  </div><div class="d-f"><button class="btn primary" value="close">Close</button></div></form>`;
-  document.body.append(d);
+  </div><div class="d-f"><button class="btn primary" value="close" autofocus>Close</button></div></form>`;
   d.addEventListener('close', () => d.remove());
-  d.showModal();
+  openModal(d);
 }
 
 function renderStateBadge(c) {
@@ -75,6 +74,9 @@ export async function view() {
   let logError = '';
   let stopStream = null;
   let root;
+  let noAnim = false; // a tab switch is a different view: nothing enters or flashes
+  const seen = new Map(data.map((c) => [c.id, c.state]));
+  const put = (el, h) => patch(el, h.toString(), noAnim ? { animate: false } : undefined);
 
   const stopLogs = () => {
     if (stopStream) {
@@ -111,37 +113,37 @@ export async function view() {
     if (!el) return;
     paintHeader();
     if (!status.installed) {
-      el.innerHTML = section(
+      put(el, section(
         'Docker is not installed',
         html`<p class="muted">Install Docker Engine from ${status.installMethod ? `signed ${status.installMethod} packages` : 'signed system repositories'} to view and manage containers, images, volumes, and networks.</p>
           <div class="row">${btn('Install Docker', { act: 'install', kind: 'primary', disabled: !status.canInstall })}</div>
           ${!status.canInstall ? html`<p class="sm muted">Automatic Docker installation is not supported on this OS distribution; install Docker Engine manually.</p>` : ''}`,
-      ).toString();
+      ));
       return;
     }
     if (!status.running) {
-      el.innerHTML = section(
+      put(el, section(
         'Docker daemon is not running',
         html`<p class="muted">${status.error || 'Start the Docker service to manage containers.'}</p>
           <div class="row">${btn('Start Docker', { act: 'startdaemon', kind: 'primary' })}<a class="btn" href="#/system">Open System services</a></div>`,
-      ).toString();
+      ));
       return;
     }
 
     if (tab === 0) {
       if (!data.length) {
-        el.innerHTML = section('Containers', html`<p class="empty">No containers on this server yet.</p>`).toString();
+        put(el, section('Containers', empty('No containers on this server yet.', html`<a class="btn primary" href="#/apps/new">Deploy a service</a>`)));
         return;
       }
-      el.innerHTML = table(
+      put(el, table(
         'Containers',
         [['Name'], ['Image'], ['State'], ['CPU', 'r'], ['Mem', 'r'], ['Ports'], ['', 'r']],
-        data.map((c) => [
+        data.map((c) => Object.assign([
           html`<span class="mono">${c.name}</span>${c.managed ? (c.service ? html`<div class="sm muted">opsbox · ${c.service}</div>` : html`<div class="sm muted">opsbox</div>`) : html`<div class="sm muted">unmanaged</div>`}`,
           html`<span class="mono muted">${c.image}</span>`,
           renderStateBadge(c),
-          c.state === 'running' ? `${(c.cpu ?? 0).toFixed(1)}%` : '–',
-          c.state === 'running' ? `${Math.round(c.mem ?? 0)} MB` : '–',
+          c.state === 'running' ? num(c.cpu ?? 0, 'pct1') : '–',
+          c.state === 'running' ? num(c.mem ?? 0, 'mb') : '–',
           c.ports || '–',
           html`<span class="row" style="justify-content:flex-end">
             ${btn('Logs', { act: 'logs', data: { id: c.id, name: c.name }, kind: 'link' })}
@@ -150,45 +152,45 @@ export async function view() {
               ? html`${btn('Restart', { act: 'do', data: { id: c.id, name: c.name, a: 'restart' }, kind: 'link' })}${btn('Stop', { act: 'do', data: { id: c.id, name: c.name, a: 'stop' }, kind: 'link' })}`
               : html`${btn('Start', { act: 'do', data: { id: c.id, name: c.name, a: 'start' }, kind: 'link' })}${btn('Delete', { act: 'del', data: { id: c.id, name: c.name }, kind: 'link' })}`}
           </span>`,
-        ]),
-      ).toString();
+        ], { meta: { key: c.id, sig: c.state } })),
+      ));
       return;
     }
     if (tab === 1) {
-      if (!data.length) { el.innerHTML = section('Images', html`<p class="empty">No images present.</p>`).toString(); return; }
-      el.innerHTML = table('Images', [['Image'], ['Tag'], ['Size', 'r'], ['Used by']], data.map((i) => [
+      if (!data.length) { put(el, section('Images', empty('No images present.'))); return; }
+      put(el, table('Images', [['Image'], ['Tag'], ['Size', 'r'], ['Used by']], data.map((i) => [
         html`<span class="mono">${i.name}</span>`,
         i.tag,
         i.size != null ? gb(i.size, 2) : '–',
         i.used ? st('ok', 'in use') : st('warn', 'unused'),
-      ])).toString();
+      ])));
       return;
     }
     if (tab === 2) {
-      if (!data.length) { el.innerHTML = section('Volumes', html`<p class="empty">No volumes present.</p>`).toString(); return; }
-      el.innerHTML = table('Volumes', [['Volume'], ['Size', 'r'], ['Attached']], data.map((v) => [
+      if (!data.length) { put(el, section('Volumes', empty('No volumes present.'))); return; }
+      put(el, table('Volumes', [['Volume'], ['Size', 'r'], ['Attached']], data.map((v) => [
         html`<span class="mono">${v.name}</span>`,
         v.size != null ? gb(v.size, 2) : '–',
         v.used ? st('ok', 'attached') : st('warn', 'not attached'),
-      ])).toString();
+      ])));
       return;
     }
-    if (!data.length) { el.innerHTML = section('Networks', html`<p class="empty">No networks present.</p>`).toString(); return; }
-    el.innerHTML = table('Networks', [['Network'], ['Driver']], data.map((n) => [
+    if (!data.length) { put(el, section('Networks', empty('No networks present.'))); return; }
+    put(el, table('Networks', [['Network'], ['Driver']], data.map((n) => [
       html`<span class="mono">${n.name}</span>`,
       n.driver,
-    ])).toString();
+    ])));
   };
 
   const paintLogs = () => {
     const el = root.querySelector('#logpanel');
     if (!el) return;
     if (!logTarget || tab !== 0 || !status.running) {
-      el.innerHTML = '';
+      put(el, '');
       return;
     }
     const statusText = logError ? `Error: ${logError}` : logEnded ? 'Stream ended' : logFollow ? 'Following live' : 'Paused';
-    el.innerHTML = `<div style="margin-top:20px">${section(
+    put(el, `<div style="margin-top:20px">${section(
       `Logs: ${logTarget.name}`,
       html`${logError ? html`<p class="sm" style="color:var(--danger)">${logError}</p>` : ''}
         <pre class="code" id="logpre" aria-label="Container logs">${renderLogLines(logLines)}</pre>`,
@@ -197,7 +199,7 @@ export async function view() {
         ${btn(logFollow ? 'Pause follow' : 'Follow', { act: 'togglefollow', kind: 'link' })}
         ${btn('Close logs', { act: 'closelogs', kind: 'link' })}
       </div>`,
-    ).toString()}</div>`;
+    )}</div>`);
     const pre = el.querySelector('#logpre');
     if (pre && logFollow) pre.scrollTop = pre.scrollHeight;
   };
@@ -237,7 +239,7 @@ export async function view() {
 
   const paintAll = () => {
     const tEl = root.querySelector('#t');
-    if (tEl) tEl.innerHTML = status.running ? tabs(['Containers', 'Images', 'Volumes', 'Networks'], tab).toString() : '';
+    if (tEl) patch(tEl, status.running ? tabs(['Containers', 'Images', 'Volumes', 'Networks'], tab).toString() : '');
     paintTable();
     paintLogs();
   };
@@ -264,8 +266,9 @@ export async function view() {
           tab = +el.dataset.i;
           stopLogs();
           logTarget = null;
-          await load();
-          paintAll();
+          await refreshing(root.querySelector('#b'), () => load());
+          noAnim = true;
+          try { paintAll(); } finally { noAnim = false; }
         },
         install: async (el) => {
           if (!await confirmDialog({
@@ -273,7 +276,6 @@ export async function view() {
             body: 'Docker Engine will be installed from signed official repositories and started on this server.',
             confirm: 'Install Docker',
           })) return;
-          el.textContent = 'Installing…';
           toast('Installing Docker Engine… this may take a few minutes.');
           await api.installDocker();
           toast('Docker Engine installed.');
@@ -323,8 +325,8 @@ export async function view() {
             if (!ok) return;
           }
           await api.containerAction(el.dataset.id, a);
-          toast(`${a} done.`);
-          await load();
+          toast(`${name}: ${a} done.`);
+          await refreshing(root.querySelector('#tbl'), () => load());
           paintTable();
         },
         del: async (el) => {
@@ -342,7 +344,7 @@ export async function view() {
               paintLogs();
             }
             toast('Container deleted.');
-            await load();
+            await refreshing(root.querySelector('#tbl'), () => load());
             paintTable();
           }
         },
@@ -360,6 +362,11 @@ export async function view() {
         if (tab === 0) {
           try {
             data = await api.listContainers();
+            for (const c of data) {
+              const was = seen.get(c.id);
+              if (was && was !== c.state) announce(c.state === 'running' ? `${c.name} is running.` : `${c.name} is ${c.state}.`);
+              seen.set(c.id, c.state);
+            }
             paintTable();
           } catch { /* ignore transient poll failure */ }
         }

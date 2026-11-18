@@ -1,12 +1,12 @@
-import { html, section, confirmDialog, formDialog, toast } from './ui.js';
+import { html, section, confirmDialog, formDialog, toast, numberField, segBar } from './ui.js';
 import * as api from './api.js';
 import { server } from './store.js';
 
 export const CAPACITY_CONFIRMATION = 'I understand this server may run out of memory';
 export function capacityFields(memory = 128) {
-  return html`<div class="field"><label>Memory limit (MB)<input class="input" type="number" min="64" max="1048576" value="${memory}" data-capacity-memory></label></div>
+  return html`<div class="field"><label for="cap-mem">Memory limit (MB)</label>${numberField({ id: 'cap-mem', name: 'memoryLimitMb', value: memory, min: 64, max: 1048576, step: 64, label: 'memory limit', attrs: 'data-capacity-memory' })}</div>
     <p data-capacity-result role="status" aria-live="polite">Checking server capacity…</p>
-    ${server.role === 'admin' ? html`<div class="field"><label><input type="checkbox" data-capacity-override> Override capacity (Owner only)</label><label>To override, type “${CAPACITY_CONFIRMATION}”<input class="input" data-capacity-confirmation autocomplete="off"></label></div>` : ''}`;
+    ${server.role === 'admin' ? html`<div class="field"><label class="opt"><input type="checkbox" data-capacity-override> Override capacity (Owner only)</label></div><div class="field"><label for="cap-confirm">To override, type “${CAPACITY_CONFIRMATION}”</label><input class="input" id="cap-confirm" data-capacity-confirmation autocomplete="off"></div>` : ''}`;
 }
 export function capacityPayload(root) {
   return {
@@ -63,7 +63,7 @@ export function capacityCard(c) {
   const segments = [['OS', b.os_mb, 'var(--muted)'], ['opsbox', b.opsbox_mb, 'var(--accent)'], ['Docker', b.docker_mb, 'var(--warn)'], ...c.reservations.map((r) => [r.name, r.memory_mb, 'var(--accent)']), ['Free', b.allocatable_mb, 'var(--ls)']];
   const total = Math.max(1, p.memory_mb + b.swap_credit_mb);
   return section('Capacity', html`<p>${p.memory_mb} MB RAM · ${p.swap_mb} MB swap · ${p.cpu_millis / 1000} CPU cores available${p.below_minimum ? ' · Installed below minimum' : ''}</p>
-    <div class="row" style="gap:0;height:18px;overflow:hidden" role="img" aria-label="Memory reservations">${segments.filter(([, n]) => n > 0).map(([label, n, color]) => html`<span title="${label}: ${n} MB" style="display:block;height:100%;width:${Math.min(100, n / total * 100)}%;background:${color}"></span>`)}</div>
+    ${segBar([...segments.filter(([, n]) => n > 0).map(([, n, color]) => [n, color]), [Math.max(0, total - segments.reduce((a, [, n]) => a + n, 0)), 'var(--line)']], 'Memory reservations')}
     <p class="sm muted">${segments.map(([label, n]) => `${label}: ${n} MB`).join(' · ')}</p><p>${b.allocatable_mb} MB allocatable · databases: ${b.database_allocatable_mb} MB · memory pressure ${c.pressure ? 'high — wait before adding workloads' : 'normal'}</p>
     ${c.features.map((f) => html`<span class="tag" title="${(f.fit.reasons || []).join(' ')}">${f.feature}: ${f.fit.status}</span>`)}
     ${c.swap_offer_mb && server.role === 'admin' ? html`<p><button class="btn" data-act="capacity-swap" data-mb="${c.swap_offer_mb}">Add a ${c.swap_offer_mb / 1024} GB swap file</button></p>` : ''}`);
