@@ -27,8 +27,9 @@ pub use audit::{
 pub use deploy::{
     ActiveServiceRoute, BackupJobRecord, ComposeStackRecord, DeployLogRow, DeployRecord,
     DeployStatus, DeployTrigger, EnvironmentRecord, NewService, NewServiceDomain, ProjectRecord,
-    ServiceDomainRecord, ServiceKind, ServiceRecord, ServiceState, ServiceVarRecord, SourceKind,
-    UpdateService, UpdateServiceDomain, UpsertComposeStack,
+    ReferencingServiceInfo, ServiceDomainRecord, ServiceKind, ServiceRecord, ServiceState,
+    ServiceVarRecord, ServiceVarRefRecord, SourceKind, UpdateService, UpdateServiceDomain,
+    UpsertComposeStack,
 };
 pub use github::{
     DeployKeyInfo, DeployKeyRecord, GithubAppRecord, NewDeployKey, NewGithubApp,

@@ -8,6 +8,7 @@ pub mod jwt;
 pub mod manifest;
 pub mod pipeline;
 pub mod public_repo;
+pub mod refs;
 pub mod templates;
 pub mod webhook;
 

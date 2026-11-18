@@ -24,9 +24,10 @@ pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
 pub use cleanup::{CleanupFreed, CleanupItem, CleanupScan};
 pub use deploy::{
     ComposeDeployRequest, ComposeDeployResult, ComposeDeployedService, ComposeServiceInfo,
-    ComposeValidateRequest, ComposeValidationResult, DeployBuildFrame, DeployBuildRequest,
-    DeployBuildResult, DeployEnvSpec, DeployGitSource, DeployPullRequest, DeployStartRequest,
-    DeployStartResult, TemplateStartRequest, valid_commit_sha, valid_compose_service_name,
+    ComposeValidateRequest, ComposeValidationResult, DatabaseRotateRequest, DatabaseRotateResult,
+    DeployBuildFrame, DeployBuildRequest, DeployBuildResult, DeployEnvSpec, DeployGitSource,
+    DeployPullRequest, DeployRefSource, DeployStartRequest, DeployStartResult,
+    TemplateStartRequest, valid_commit_sha, valid_compose_service_name, valid_db_identifier,
     valid_docker_image_ref, valid_domain_name, valid_env_key, valid_git_branch, valid_health_path,
     valid_rel_repo_path, valid_service_name,
 };

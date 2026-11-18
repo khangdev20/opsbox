@@ -340,6 +340,9 @@ pub enum PrivOp {
     /// Pull image, create named volume(s), start a template service on the project network,
     /// and verify its health check.
     TemplateStart(crate::deploy::TemplateStartRequest),
+    /// Rotate credentials inside a running database container via `docker exec` and return
+    /// newly sealed variables.
+    DatabaseRotate(crate::deploy::DatabaseRotateRequest),
     /// Validate a Compose YAML file with `docker compose config` and safety policies.
     ComposeValidate(crate::deploy::ComposeValidateRequest),
     /// Validate, write `compose.yml`, and run `docker compose -p opsbox-<stack> up -d`.
@@ -438,6 +441,7 @@ impl PrivOp {
             Self::DeployPruneImages { .. } => "deploy_prune_images",
             Self::DeployDeleteService { .. } => "deploy_delete_service",
             Self::TemplateStart(_) => "template_start",
+            Self::DatabaseRotate(_) => "database_rotate",
             Self::ComposeValidate(_) => "compose_validate",
             Self::ComposeDeploy(_) => "compose_deploy",
             Self::ComposeDown { .. } => "compose_down",
@@ -595,6 +599,8 @@ pub enum PrivReply {
     ComposeValidated(crate::deploy::ComposeValidationResult),
     /// Answer to [`PrivOp::ComposeDeploy`].
     ComposeDeployed(crate::deploy::ComposeDeployResult),
+    /// Answer to [`PrivOp::DatabaseRotate`].
+    DatabaseRotated(crate::deploy::DatabaseRotateResult),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

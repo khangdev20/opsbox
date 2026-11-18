@@ -481,10 +481,69 @@ fn split_short_volume_spec(raw: &str) -> Option<&str> {
     Some(source)
 }
 
+fn looks_like_public_db_port(val: &Value) -> Option<u16> {
+    const DB_PORTS: &[u16] = &[5432, 3306, 6379, 27017];
+    let is_loopback_ip = |ip: &str| {
+        let clean = ip.trim();
+        clean == "127.0.0.1" || clean == "::1" || clean == "[::1]"
+    };
+    match val {
+        Value::Number(n) => {
+            let p = n.as_u64().and_then(|u| u16::try_from(u).ok())?;
+            DB_PORTS.contains(&p).then_some(p)
+        }
+        Value::String(s) => {
+            let clean = s.split('/').next().unwrap_or(s).trim();
+            // Formats: "5432", "5432:5432", "0.0.0.0:5432:5432", "127.0.0.1:5432:5432"
+            let parts: Vec<&str> = clean.split(':').collect();
+            let target = parts
+                .last()?
+                .trim()
+                .split('-')
+                .next()?
+                .trim()
+                .parse::<u16>()
+                .ok()?;
+            if !DB_PORTS.contains(&target) {
+                return None;
+            }
+            if parts.len() >= 3 {
+                let host_ip = parts[..parts.len() - 2].join(":");
+                if is_loopback_ip(&host_ip) {
+                    return None;
+                }
+            }
+            Some(target)
+        }
+        Value::Object(obj) => {
+            let target = obj.get("target").and_then(|v| match v {
+                Value::Number(n) => n.as_u64().and_then(|u| u16::try_from(u).ok()),
+                Value::String(s) => s.trim().parse::<u16>().ok(),
+                _ => None,
+            })?;
+            if !DB_PORTS.contains(&target) {
+                return None;
+            }
+            let published_any = obj.get("published").is_some();
+            if !published_any {
+                return None;
+            }
+            if let Some(hip) = obj.get("host_ip").and_then(Value::as_str)
+                && is_loopback_ip(hip)
+            {
+                return None;
+            }
+            Some(target)
+        }
+        _ => None,
+    }
+}
+
 /// Inspect a Compose YAML/JSON document for elevated privileges or host access:
 /// - `privileged: true`
 /// - `network_mode: host` (or top-level network `driver: host`)
 /// - bind mounts outside `service_dir`
+/// - public (non-loopback) database port publishing (`5432`, `3306`, `6379`, `27017`)
 pub fn inspect_compose_risks(doc: &Value, service_dir: &Path) -> ComposeRiskReport {
     let mut reasons = BTreeSet::new();
 
@@ -533,6 +592,15 @@ pub fn inspect_compose_risks(doc: &Value, service_dir: &Path) -> ComposeRiskRepo
                 .is_some_and(|m| m.trim().eq_ignore_ascii_case("host"))
             {
                 reasons.insert(format!("service '{svc_name}' uses host networking"));
+            }
+            if let Some(ports) = obj.get("ports").and_then(Value::as_array) {
+                for p in ports {
+                    if let Some(db_port) = looks_like_public_db_port(p) {
+                        reasons.insert(format!(
+                            "service '{svc_name}' publishes database port {db_port} to all interfaces (0.0.0.0)"
+                        ));
+                    }
+                }
             }
             if let Some(vols) = obj.get("volumes").and_then(Value::as_array) {
                 for v in vols {
@@ -659,5 +727,25 @@ services:
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn flags_public_database_ports_unless_loopback_bound() {
+        let svc_dir = Path::new("/var/lib/opsbox/apps/dbstack");
+        let public_db = precheck_compose_yaml(
+            "services:\n  pg:\n    image: postgres:16.4\n    ports: [\"5432:5432\"]\n",
+            svc_dir,
+        )
+        .unwrap();
+        let report = inspect_compose_risks(&public_db.doc, svc_dir);
+        assert!(!report.is_safe());
+        assert!(report.summary_message().contains("5432"));
+
+        let loopback_db = precheck_compose_yaml(
+            "services:\n  pg:\n    image: postgres:16.4\n    ports: [\"127.0.0.1:5432:5432\", \"[::1]:6379:6379\"]\n",
+            svc_dir,
+        )
+        .unwrap();
+        assert!(inspect_compose_risks(&loopback_db.doc, svc_dir).is_safe());
     }
 }

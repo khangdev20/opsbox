@@ -200,6 +200,8 @@ pub struct ServiceRecord {
     pub compose_stack_id: Option<String>,
     pub template_id: Option<String>,
     pub internal_only: bool,
+    pub public_port: bool,
+    pub credentials_rotated_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -256,8 +258,29 @@ pub struct ServiceVarRecord {
     pub key: String,
     pub value_enc: String,
     pub is_secret: bool,
+    pub ref_expr: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceVarRefRecord {
+    pub id: String,
+    pub service_id: String,
+    pub var_key: String,
+    pub target_service_id: String,
+    pub target_key: String,
+    pub stale: bool,
+    pub ref_seq: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferencingServiceInfo {
+    pub service: ServiceRecord,
+    pub var_keys: Vec<String>,
+    pub needs_redeploy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,7 +405,8 @@ const SERVICE_COLS: &str = "\
     build_method, dockerfile_path, start_cmd, port, health_path, domain, image_ref, \
     deploy_key_id, auto_deploy, memory_limit_mb, cpu_limit_millis, state, \
     active_deploy_id, active_container, active_host_port, graph_x, graph_y, note, \
-    compose_stack_id, template_id, internal_only, created_at, updated_at";
+    compose_stack_id, template_id, internal_only, public_port, credentials_rotated_at, \
+    created_at, updated_at";
 
 const DEPLOY_COLS: &str = "\
     id, service_id, commit_sha, message, trigger_kind, triggered_by, status, \
@@ -407,6 +431,7 @@ fn service_row_at(r: &Row<'_>, off: usize) -> rusqlite::Result<ServiceRecord> {
     let state_s: String = r.get(off + 20)?;
     let host_port_i: Option<i64> = r.get(off + 23)?;
     let internal_i: i64 = r.get(off + 29)?;
+    let public_port_i: i64 = r.get(off + 30)?;
 
     Ok(ServiceRecord {
         id: r.get(off)?,
@@ -444,8 +469,10 @@ fn service_row_at(r: &Row<'_>, off: usize) -> rusqlite::Result<ServiceRecord> {
         compose_stack_id: r.get(off + 27)?,
         template_id: r.get(off + 28)?,
         internal_only: internal_i != 0,
-        created_at: r.get(off + 30)?,
-        updated_at: r.get(off + 31)?,
+        public_port: public_port_i != 0,
+        credentials_rotated_at: r.get(off + 31)?,
+        created_at: r.get(off + 32)?,
+        updated_at: r.get(off + 33)?,
     })
 }
 
@@ -501,8 +528,24 @@ fn var_from_row(r: &Row<'_>) -> rusqlite::Result<ServiceVarRecord> {
         key: r.get(2)?,
         value_enc: r.get(3)?,
         is_secret: is_sec != 0,
-        created_at: r.get(5)?,
-        updated_at: r.get(6)?,
+        ref_expr: r.get(5)?,
+        created_at: r.get(6)?,
+        updated_at: r.get(7)?,
+    })
+}
+
+fn var_ref_from_row(r: &Row<'_>) -> rusqlite::Result<ServiceVarRefRecord> {
+    let stale_i: i64 = r.get(5)?;
+    Ok(ServiceVarRefRecord {
+        id: r.get(0)?,
+        service_id: r.get(1)?,
+        var_key: r.get(2)?,
+        target_service_id: r.get(3)?,
+        target_key: r.get(4)?,
+        stale: stale_i != 0,
+        ref_seq: r.get(6)?,
+        created_at: r.get(7)?,
+        updated_at: r.get(8)?,
     })
 }
 
@@ -708,7 +751,7 @@ impl Store {
     }
 
     pub fn create_service(&self, new: NewService<'_>) -> Result<ServiceRecord, StoreError> {
-        self.create_service_with_meta(new, None, None, false)
+        self.create_service_with_exposure(new, None, None, false, false)
     }
 
     pub fn create_service_with_meta(
@@ -717,6 +760,17 @@ impl Store {
         compose_stack_id: Option<&str>,
         template_id: Option<&str>,
         internal_only: bool,
+    ) -> Result<ServiceRecord, StoreError> {
+        self.create_service_with_exposure(new, compose_stack_id, template_id, internal_only, false)
+    }
+
+    pub fn create_service_with_exposure(
+        &self,
+        new: NewService<'_>,
+        compose_stack_id: Option<&str>,
+        template_id: Option<&str>,
+        internal_only: bool,
+        public_port: bool,
     ) -> Result<ServiceRecord, StoreError> {
         let id = ulid::Ulid::generate().to_string();
         let norm_domain = new
@@ -731,12 +785,12 @@ impl Store {
                 id, project_id, env_id, name, kind, owner_id, source_kind, repo, branch,
                 build_method, dockerfile_path, start_cmd, port, health_path, domain, image_ref,
                 deploy_key_id, auto_deploy, memory_limit_mb, cpu_limit_millis, state,
-                graph_x, graph_y, note, compose_stack_id, template_id, internal_only, created_at, updated_at
+                graph_x, graph_y, note, compose_stack_id, template_id, internal_only, public_port, created_at, updated_at
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
                 ?10, ?11, ?12, ?13, ?14, ?15, ?16,
                 ?17, ?18, ?19, ?20, 'idle',
-                ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?27
+                ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?28
             )",
             params![
                 id,
@@ -765,6 +819,7 @@ impl Store {
                 compose_stack_id,
                 template_id,
                 i64::from(internal_only),
+                i64::from(public_port),
                 new.now,
             ],
         )?;
@@ -1007,12 +1062,51 @@ impl Store {
         Ok(())
     }
 
+    pub fn set_service_exposure(
+        &self,
+        service_id: &str,
+        internal_only: bool,
+        public_port: bool,
+        now: i64,
+    ) -> Result<Option<ServiceRecord>, StoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE services SET internal_only = ?2, public_port = ?3, updated_at = ?4 WHERE id = ?1",
+            params![service_id, i64::from(internal_only), i64::from(public_port), now],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        let rec = tx.query_row(
+            &format!("SELECT {SERVICE_COLS} FROM services WHERE id = ?1"),
+            params![service_id],
+            service_from_row,
+        )?;
+        tx.commit()?;
+        Ok(Some(rec))
+    }
+
     pub fn upsert_service_var(
         &self,
         service_id: &str,
         key: &str,
         value_enc: &str,
         is_secret: bool,
+        now: i64,
+    ) -> Result<ServiceVarRecord, StoreError> {
+        self.upsert_service_var_with_refs(service_id, key, value_enc, is_secret, None, &[], now)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_service_var_with_refs(
+        &self,
+        service_id: &str,
+        key: &str,
+        value_enc: &str,
+        is_secret: bool,
+        ref_expr: Option<&str>,
+        targets: &[(String, String)],
         now: i64,
     ) -> Result<ServiceVarRecord, StoreError> {
         let mut conn = self.lock();
@@ -1026,16 +1120,69 @@ impl Store {
             .optional()?;
         let id = existing_id.unwrap_or_else(|| ulid::Ulid::generate().to_string());
         tx.execute(
-            "INSERT INTO service_vars (id, service_id, key, value_enc, is_secret, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+            "INSERT INTO service_vars (id, service_id, key, value_enc, is_secret, ref_expr, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
              ON CONFLICT(service_id, key) DO UPDATE SET
                  value_enc = excluded.value_enc,
                  is_secret = excluded.is_secret,
+                 ref_expr = excluded.ref_expr,
                  updated_at = excluded.updated_at",
-            params![id, service_id, key, value_enc, i64::from(is_secret), now],
+            params![
+                id,
+                service_id,
+                key,
+                value_enc,
+                i64::from(is_secret),
+                ref_expr,
+                now,
+            ],
         )?;
+        tx.execute(
+            "DELETE FROM service_var_refs WHERE service_id = ?1 AND var_key = ?2",
+            params![service_id, key],
+        )?;
+        if !targets.is_empty() {
+            let has_deployed: bool = tx
+                .query_row(
+                    "SELECT (active_deploy_id IS NOT NULL OR active_container IS NOT NULL)
+                     FROM services WHERE id = ?1",
+                    params![service_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some_and(|v| v != 0);
+            let next_seq: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(ref_seq), 0) + 1 FROM service_var_refs WHERE service_id = ?1",
+                params![service_id],
+                |r| r.get(0),
+            )?;
+            let stale_i = i64::from(has_deployed);
+            for (target_service_id, target_key) in targets {
+                let ref_id = ulid::Ulid::generate().to_string();
+                tx.execute(
+                    "INSERT INTO service_var_refs (
+                        id, service_id, var_key, target_service_id, target_key,
+                        stale, ref_seq, created_at, updated_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                    ON CONFLICT(service_id, var_key, target_service_id, target_key) DO UPDATE SET
+                        stale = excluded.stale,
+                        ref_seq = excluded.ref_seq,
+                        updated_at = excluded.updated_at",
+                    params![
+                        ref_id,
+                        service_id,
+                        key,
+                        target_service_id,
+                        target_key,
+                        stale_i,
+                        next_seq,
+                        now,
+                    ],
+                )?;
+            }
+        }
         let rec = tx.query_row(
-            "SELECT id, service_id, key, value_enc, is_secret, created_at, updated_at
+            "SELECT id, service_id, key, value_enc, is_secret, ref_expr, created_at, updated_at
              FROM service_vars WHERE service_id = ?1 AND key = ?2",
             params![service_id, key],
             var_from_row,
@@ -1047,7 +1194,7 @@ impl Store {
     pub fn list_service_vars(&self, service_id: &str) -> Result<Vec<ServiceVarRecord>, StoreError> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, service_id, key, value_enc, is_secret, created_at, updated_at
+            "SELECT id, service_id, key, value_enc, is_secret, ref_expr, created_at, updated_at
              FROM service_vars WHERE service_id = ?1 ORDER BY key ASC",
         )?;
         let rows = stmt
@@ -1057,11 +1204,185 @@ impl Store {
     }
 
     pub fn delete_service_var(&self, service_id: &str, key: &str) -> Result<bool, StoreError> {
-        let changed = self.lock().execute(
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM service_var_refs WHERE service_id = ?1 AND var_key = ?2",
+            params![service_id, key],
+        )?;
+        let changed = tx.execute(
             "DELETE FROM service_vars WHERE service_id = ?1 AND key = ?2",
             params![service_id, key],
         )?;
+        tx.commit()?;
         Ok(changed > 0)
+    }
+
+    pub fn delete_service_vars_referencing(
+        &self,
+        service_id: &str,
+        target_service_id: &str,
+    ) -> Result<Vec<String>, StoreError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let keys: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT DISTINCT var_key FROM service_var_refs
+                 WHERE service_id = ?1 AND target_service_id = ?2
+                 ORDER BY var_key ASC",
+            )?;
+            let rows = stmt.query_map(params![service_id, target_service_id], |r| r.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for key in &keys {
+            tx.execute(
+                "DELETE FROM service_vars WHERE service_id = ?1 AND key = ?2",
+                params![service_id, key],
+            )?;
+            tx.execute(
+                "DELETE FROM service_var_refs WHERE service_id = ?1 AND var_key = ?2",
+                params![service_id, key],
+            )?;
+        }
+        tx.execute(
+            "DELETE FROM service_var_refs WHERE service_id = ?1 AND target_service_id = ?2",
+            params![service_id, target_service_id],
+        )?;
+        tx.commit()?;
+        Ok(keys)
+    }
+
+    pub fn list_service_var_refs(
+        &self,
+        service_id: &str,
+    ) -> Result<Vec<ServiceVarRefRecord>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, service_id, var_key, target_service_id, target_key, stale, ref_seq, created_at, updated_at
+             FROM service_var_refs WHERE service_id = ?1 ORDER BY var_key ASC, target_key ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![service_id], var_ref_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn list_referencing_services(
+        &self,
+        target_service_id: &str,
+    ) -> Result<Vec<ReferencingServiceInfo>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT r.var_key, r.stale, {}
+             FROM service_var_refs r
+             JOIN services s ON s.id = r.service_id
+             WHERE r.target_service_id = ?1
+             ORDER BY s.name ASC, r.var_key ASC",
+            SERVICE_COLS
+                .split(',')
+                .map(|c| format!("s.{}", c.trim()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))?;
+        let mut grouped: Vec<ReferencingServiceInfo> = Vec::new();
+        let mut rows = stmt.query(params![target_service_id])?;
+        while let Some(r) = rows.next()? {
+            let var_key: String = r.get(0)?;
+            let stale: i64 = r.get(1)?;
+            let svc = service_row_at(r, 2)?;
+            if let Some(last) = grouped.last_mut().filter(|g| g.service.id == svc.id) {
+                if !last.var_keys.contains(&var_key) {
+                    last.var_keys.push(var_key);
+                }
+                if stale != 0 {
+                    last.needs_redeploy = true;
+                }
+            } else {
+                grouped.push(ReferencingServiceInfo {
+                    service: svc,
+                    var_keys: vec![var_key],
+                    needs_redeploy: stale != 0,
+                });
+            }
+        }
+        Ok(grouped)
+    }
+
+    pub fn list_project_var_ref_edges(
+        &self,
+        project_id: &str,
+        env_id: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT s.name, t.name
+             FROM service_var_refs r
+             JOIN services s ON s.id = r.service_id
+             JOIN services t ON t.id = r.target_service_id
+             WHERE s.project_id = ?1 AND s.env_id = ?2
+             ORDER BY s.name ASC, t.name ASC",
+        )?;
+        let rows = stmt
+            .query_map(params![project_id, env_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn capture_service_ref_seq(&self, service_id: &str) -> Result<i64, StoreError> {
+        let seq: i64 = self.lock().query_row(
+            "SELECT COALESCE(MAX(ref_seq), 0) FROM service_var_refs WHERE service_id = ?1",
+            params![service_id],
+            |r| r.get(0),
+        )?;
+        Ok(seq)
+    }
+
+    pub fn mark_credentials_rotated(
+        &self,
+        target_service_id: &str,
+        rotated_keys: &[&str],
+        now: i64,
+    ) -> Result<Vec<ReferencingServiceInfo>, StoreError> {
+        {
+            let mut conn = self.lock();
+            let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute(
+                "UPDATE services SET credentials_rotated_at = ?2, updated_at = ?2 WHERE id = ?1",
+                params![target_service_id, now],
+            )?;
+            let mut candidates: Vec<(String, String, String)> = Vec::new();
+            {
+                let mut stmt = tx.prepare(
+                    "SELECT r.id, r.service_id, r.target_key
+                     FROM service_var_refs r
+                     JOIN services s ON s.id = r.service_id
+                     WHERE r.target_service_id = ?1
+                       AND (s.active_deploy_id IS NOT NULL OR s.active_container IS NOT NULL)",
+                )?;
+                let mut rows = stmt.query(params![target_service_id])?;
+                while let Some(row) = rows.next()? {
+                    let id: String = row.get(0)?;
+                    let svc_id: String = row.get(1)?;
+                    let tkey: String = row.get(2)?;
+                    if rotated_keys.iter().any(|k| *k == tkey) {
+                        candidates.push((id, svc_id, tkey));
+                    }
+                }
+            }
+            for (ref_id, svc_id, _) in candidates {
+                let next_seq: i64 = tx.query_row(
+                    "SELECT COALESCE(MAX(ref_seq), 0) + 1 FROM service_var_refs WHERE service_id = ?1",
+                    params![svc_id],
+                    |r| r.get(0),
+                )?;
+                tx.execute(
+                    "UPDATE service_var_refs SET stale = 1, ref_seq = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![ref_id, next_seq, now],
+                )?;
+            }
+            tx.commit()?;
+        }
+        self.list_referencing_services(target_service_id)
     }
 
     pub fn create_deploy(
@@ -1162,6 +1483,30 @@ impl Store {
         detected_build_method: Option<&str>,
         now: i64,
     ) -> Result<Option<String>, StoreError> {
+        self.complete_deploy_switch_with_refs(
+            service_id,
+            deploy_id,
+            image_ref,
+            container_id,
+            host_port,
+            detected_build_method,
+            None,
+            now,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn complete_deploy_switch_with_refs(
+        &self,
+        service_id: &str,
+        deploy_id: &str,
+        image_ref: &str,
+        container_id: &str,
+        host_port: u16,
+        detected_build_method: Option<&str>,
+        max_ref_seq: Option<i64>,
+        now: i64,
+    ) -> Result<Option<String>, StoreError> {
         let mut conn = self.lock();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let prev_container: Option<String> = tx
@@ -1200,6 +1545,12 @@ impl Store {
                 now,
             ],
         )?;
+        if let Some(seq) = max_ref_seq {
+            tx.execute(
+                "UPDATE service_var_refs SET stale = 0, updated_at = ?3 WHERE service_id = ?1 AND ref_seq <= ?2",
+                params![service_id, seq, now],
+            )?;
+        }
         tx.commit()?;
         Ok(prev_container)
     }
@@ -1396,7 +1747,8 @@ impl Store {
                     s.build_method, s.dockerfile_path, s.start_cmd, s.port, s.health_path, s.domain, s.image_ref,
                     s.deploy_key_id, s.auto_deploy, s.memory_limit_mb, s.cpu_limit_millis, s.state,
                     s.active_deploy_id, s.active_container, s.active_host_port, s.graph_x, s.graph_y, s.note,
-                    s.compose_stack_id, s.template_id, s.internal_only, s.created_at, s.updated_at
+                    s.compose_stack_id, s.template_id, s.internal_only, s.public_port, s.credentials_rotated_at,
+                    s.created_at, s.updated_at
              FROM service_domains sd
              JOIN services s ON s.id = sd.service_id
              ORDER BY s.name ASC, sd.is_primary DESC, sd.created_at ASC",

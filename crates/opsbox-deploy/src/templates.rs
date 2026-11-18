@@ -284,6 +284,71 @@ pub fn template_volume_name(instance_name: &str, suffix: &str) -> String {
     format!("opsbox-{instance_name}-{suffix}")
 }
 
+/// Primary secret environment key rotated on a database template (`postgres`, `mysql`,
+/// `mariadb`, `redis`, `mongo`). Returns `None` for non-database templates.
+pub fn rotated_secret_key(template_id: &str) -> Option<&'static str> {
+    match template_id {
+        "postgres" => Some("POSTGRES_PASSWORD"),
+        "mysql" => Some("MYSQL_PASSWORD"),
+        "mariadb" => Some("MARIADB_PASSWORD"),
+        "redis" => Some("REDIS_PASSWORD"),
+        "mongo" => Some("MONGO_INITDB_ROOT_PASSWORD"),
+        _ => None,
+    }
+}
+
+/// Compute the updated `(key, value, is_secret)` entries when rotating a database template's
+/// primary secret to `new_password`.
+pub fn compute_rotated_vars(
+    tmpl: &TemplateSpec,
+    service_name: &str,
+    current_vars: &[(String, String, bool)],
+    new_password: &str,
+) -> Result<Vec<(String, String, bool)>, DeployError> {
+    let rotated_key = rotated_secret_key(&tmpl.id).ok_or_else(|| DeployError::Validation {
+        field: Some("service"),
+        message: format!(
+            "Credential rotation is not supported for template '{}'.",
+            tmpl.name
+        ),
+    })?;
+
+    let mut resolved: HashMap<String, String> = HashMap::new();
+    resolved.insert("service".to_owned(), service_name.to_owned());
+    for spec in &tmpl.env {
+        let existing = current_vars
+            .iter()
+            .find(|(k, _, _)| k == &spec.key)
+            .map(|(_, v, _)| v.clone())
+            .unwrap_or_else(|| expand_placeholders(&spec.value, &resolved));
+        resolved.insert(spec.key.clone(), existing);
+    }
+    for (k, v, _) in current_vars {
+        resolved.entry(k.clone()).or_insert_with(|| v.clone());
+    }
+    resolved.insert(rotated_key.to_owned(), new_password.to_owned());
+
+    let mut updated = Vec::new();
+    let rotated_spec = tmpl.env.iter().find(|e| e.key == rotated_key);
+    updated.push((
+        rotated_key.to_owned(),
+        new_password.to_owned(),
+        rotated_spec.is_none_or(|s| s.secret),
+    ));
+
+    let placeholder = format!("{{{{{rotated_key}}}}}");
+    for conn in &tmpl.connection.vars {
+        if conn.value.contains(&placeholder) || conn.key == rotated_key {
+            let val = expand_placeholders(&conn.value, &resolved);
+            if !updated.iter().any(|(k, _, _)| k == &conn.key) {
+                updated.push((conn.key.clone(), val, conn.secret));
+            }
+        }
+    }
+
+    Ok(updated)
+}
+
 /// Parse disk choice label (`"1 GB"`, `"5 GB"`, `"20 GB"`) into gigabytes.
 pub fn parse_disk_gb(raw: Option<&str>) -> Result<u64, DeployError> {
     let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -357,5 +422,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn computes_rotated_database_credentials_for_all_db_templates() {
+        for id in ["postgres", "mysql", "mariadb", "redis", "mongo"] {
+            let tmpl = get_template(id).unwrap();
+            let generated = generate_instance_env(tmpl, "db-main", &[]).unwrap();
+            let cur: Vec<(String, String, bool)> = generated
+                .vars
+                .iter()
+                .map(|v| (v.key.clone(), v.value.clone(), v.is_secret))
+                .collect();
+            let rot = compute_rotated_vars(tmpl, "db-main", &cur, "NewRotatedPass123").unwrap();
+            let secret_key = rotated_secret_key(id).unwrap();
+            assert!(
+                rot.iter()
+                    .any(|(k, v, sec)| k == secret_key && v == "NewRotatedPass123" && *sec)
+            );
+            let primary = tmpl.connection.primary_var.as_deref().unwrap();
+            let (_, url, url_sec) = rot.iter().find(|(k, _, _)| k == primary).unwrap();
+            assert!(*url_sec);
+            assert!(url.contains("NewRotatedPass123"), "{id}: {url}");
+            assert!(url.contains("db-main"), "{id}: {url}");
+        }
+        let grafana = get_template("grafana").unwrap();
+        assert!(compute_rotated_vars(grafana, "graf", &[], "pw").is_err());
     }
 }

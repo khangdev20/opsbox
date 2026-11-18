@@ -46,6 +46,7 @@ fn migrates_an_empty_database() {
             "projects",
             "schema_migrations",
             "service_domains",
+            "service_var_refs",
             "service_vars",
             "services",
             "sessions",
@@ -1077,4 +1078,216 @@ fn compose_stacks_and_backup_jobs_round_trip() {
     store.delete_compose_stack(&stack.id).unwrap();
     assert!(store.get_compose_stack(&stack.id).unwrap().is_none());
     assert!(store.get_service(&web.id).unwrap().is_none());
+}
+
+#[test]
+fn var_ref_tracking_rotation_staleness_and_exposure_round_trip() {
+    use opsbox_store::{DeployTrigger, NewService, ServiceKind, SourceKind};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("refs.db")).unwrap();
+
+    let (proj, env) = store.ensure_default_project(10).unwrap();
+
+    let db = store
+        .create_service_with_exposure(
+            NewService {
+                project_id: &proj.id,
+                env_id: &env.id,
+                name: "pg-main",
+                kind: ServiceKind::Db,
+                owner_id: None,
+                source_kind: SourceKind::DockerImage,
+                repo: "template · postgres",
+                branch: "16",
+                build_method: "postgres template",
+                dockerfile_path: None,
+                start_cmd: None,
+                port: 5432,
+                health_path: "/",
+                domain: None,
+                image_ref: Some("postgres:16"),
+                deploy_key_id: None,
+                auto_deploy: false,
+                memory_limit_mb: None,
+                cpu_limit_millis: None,
+                graph_x: 0,
+                graph_y: 0,
+                note: None,
+                now: 20,
+            },
+            None,
+            Some("postgres"),
+            true,
+            false,
+        )
+        .unwrap();
+    assert!(db.internal_only);
+    assert!(!db.public_port);
+    assert!(db.credentials_rotated_at.is_none());
+
+    let updated_db = store
+        .set_service_exposure(&db.id, false, true, 25)
+        .unwrap()
+        .unwrap();
+    assert!(!updated_db.internal_only);
+    assert!(updated_db.public_port);
+
+    let app = store
+        .create_service(NewService {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "api",
+            kind: ServiceKind::App,
+            owner_id: None,
+            source_kind: SourceKind::GitUrl,
+            repo: "https://example.com/api.git",
+            branch: "main",
+            build_method: "dockerfile",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 3000,
+            health_path: "/healthz",
+            domain: None,
+            image_ref: None,
+            deploy_key_id: None,
+            auto_deploy: true,
+            memory_limit_mb: None,
+            cpu_limit_millis: None,
+            graph_x: 290,
+            graph_y: 0,
+            note: None,
+            now: 30,
+        })
+        .unwrap();
+
+    let v = store
+        .upsert_service_var_with_refs(
+            &app.id,
+            "DATABASE_URL",
+            "sealed-ref",
+            true,
+            Some("${{ pg-main.DATABASE_URL }}"),
+            &[(db.id.clone(), "DATABASE_URL".into())],
+            35,
+        )
+        .unwrap();
+    assert_eq!(v.ref_expr.as_deref(), Some("${{ pg-main.DATABASE_URL }}"));
+
+    assert_eq!(
+        store.list_project_var_ref_edges(&proj.id, &env.id).unwrap(),
+        vec![("api".to_owned(), "pg-main".to_owned())]
+    );
+
+    // Not yet deployed -> rotation keeps needs_redeploy = false.
+    let refs_before_deploy = store
+        .mark_credentials_rotated(&db.id, &["DATABASE_URL", "PGPASSWORD"], 40)
+        .unwrap();
+    assert_eq!(refs_before_deploy.len(), 1);
+    assert!(!refs_before_deploy[0].needs_redeploy);
+
+    // Deploy app -> completes cleanly.
+    let dep1 = store
+        .create_deploy(&app.id, None, "deploy", DeployTrigger::Manual, "admin", 50)
+        .unwrap();
+    let seq1 = store.capture_service_ref_seq(&app.id).unwrap();
+    store
+        .complete_deploy_switch_with_refs(
+            &app.id,
+            &dep1.id,
+            "opsbox/api:1",
+            "cid-1",
+            3001,
+            None,
+            Some(seq1),
+            55,
+        )
+        .unwrap();
+
+    // Rotate while app is live -> app becomes stale (`needs_redeploy = true`).
+    let refs_after_rot = store
+        .mark_credentials_rotated(&db.id, &["DATABASE_URL", "PGPASSWORD"], 60)
+        .unwrap();
+    assert_eq!(refs_after_rot.len(), 1);
+    assert!(refs_after_rot[0].needs_redeploy);
+    assert_eq!(refs_after_rot[0].var_keys, vec!["DATABASE_URL"]);
+    assert_eq!(
+        store
+            .get_service(&db.id)
+            .unwrap()
+            .unwrap()
+            .credentials_rotated_at,
+        Some(60)
+    );
+
+    // Simulate a mid-deploy rotation race: snapshot seq BEFORE second rotation, then complete deploy.
+    let seq_mid = store.capture_service_ref_seq(&app.id).unwrap();
+    let dep2 = store
+        .create_deploy(
+            &app.id,
+            None,
+            "redeploy",
+            DeployTrigger::Manual,
+            "admin",
+            65,
+        )
+        .unwrap();
+    store
+        .mark_credentials_rotated(&db.id, &["DATABASE_URL"], 66)
+        .unwrap();
+    store
+        .complete_deploy_switch_with_refs(
+            &app.id,
+            &dep2.id,
+            "opsbox/api:2",
+            "cid-2",
+            3002,
+            None,
+            Some(seq_mid),
+            67,
+        )
+        .unwrap();
+    assert!(
+        store.list_referencing_services(&db.id).unwrap()[0].needs_redeploy,
+        "mid-deploy rotation must stay stale"
+    );
+
+    // Final redeploy clears staleness.
+    let seq_final = store.capture_service_ref_seq(&app.id).unwrap();
+    let dep3 = store
+        .create_deploy(
+            &app.id,
+            None,
+            "redeploy 2",
+            DeployTrigger::Manual,
+            "admin",
+            70,
+        )
+        .unwrap();
+    store
+        .complete_deploy_switch_with_refs(
+            &app.id,
+            &dep3.id,
+            "opsbox/api:3",
+            "cid-3",
+            3003,
+            None,
+            Some(seq_final),
+            71,
+        )
+        .unwrap();
+    assert!(!store.list_referencing_services(&db.id).unwrap()[0].needs_redeploy);
+
+    // Disconnect removes only vars pointing to `db`.
+    let removed = store
+        .delete_service_vars_referencing(&app.id, &db.id)
+        .unwrap();
+    assert_eq!(removed, vec!["DATABASE_URL"]);
+    assert!(store.list_service_vars(&app.id).unwrap().is_empty());
+    assert!(store.list_referencing_services(&db.id).unwrap().is_empty());
+    assert!(
+        store
+            .list_project_var_ref_edges(&proj.id, &env.id)
+            .unwrap()
+            .is_empty()
+    );
 }

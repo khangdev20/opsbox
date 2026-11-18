@@ -22,6 +22,13 @@ pub struct DeployEnvSpec {
     pub is_secret: bool,
 }
 
+/// Sealed environment variables belonging to a referenced service (`${{ service.KEY }}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployRefSource {
+    pub service: String,
+    pub vars: Vec<DeployEnvSpec>,
+}
+
 /// Privileged source fetch + image build request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeployBuildRequest {
@@ -40,6 +47,8 @@ pub struct DeployBuildRequest {
     pub image_tag: String,
     pub cache_from: Option<String>,
     pub vars: Vec<DeployEnvSpec>,
+    #[serde(default)]
+    pub ref_sources: Vec<DeployRefSource>,
     pub timeout_secs: u64,
     pub memory_limit_mb: Option<i64>,
 }
@@ -81,6 +90,8 @@ pub struct DeployStartRequest {
     pub health_path: String,
     pub health_retries: u8,
     pub vars: Vec<DeployEnvSpec>,
+    #[serde(default)]
+    pub ref_sources: Vec<DeployRefSource>,
     pub memory_limit_mb: Option<i64>,
     pub cpu_limit_millis: Option<i64>,
 }
@@ -102,9 +113,31 @@ pub struct TemplateStartRequest {
     pub version: String,
     pub image_ref: String,
     pub internal_only: bool,
+    #[serde(default)]
+    pub public_port: bool,
+    #[serde(default)]
+    pub confirm_public_port: bool,
     pub vars: Vec<DeployEnvSpec>,
+    #[serde(default)]
+    pub ref_sources: Vec<DeployRefSource>,
     pub memory_limit_mb: Option<i64>,
     pub cpu_limit_millis: Option<i64>,
+}
+
+/// Privileged credential rotation request inside a running managed database container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseRotateRequest {
+    pub service_id: String,
+    pub service_name: String,
+    pub template_id: String,
+    pub container_id: String,
+    pub vars: Vec<DeployEnvSpec>,
+}
+
+/// Newly sealed variables produced by [`DatabaseRotateRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseRotateResult {
+    pub vars: Vec<DeployEnvSpec>,
 }
 
 /// Privileged `docker compose config` validation and safety check request.
@@ -142,6 +175,8 @@ pub struct ComposeDeployRequest {
     pub yaml: String,
     pub confirm: bool,
     pub vars: Vec<DeployEnvSpec>,
+    #[serde(default)]
+    pub ref_sources: Vec<DeployRefSource>,
 }
 
 /// Runtime state of one deployed Compose service container.
@@ -215,6 +250,16 @@ pub fn valid_env_key(s: &str) -> bool {
         && b.len() <= 64
         && (b[0].is_ascii_alphabetic() || b[0] == b'_')
         && b.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
+}
+
+/// Validate a SQL/database user or database identifier (`[A-Za-z0-9_-]{1,63}`).
+pub fn valid_db_identifier(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 63
+        && b[0].is_ascii_alphanumeric()
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'-')
 }
 
 /// Validate a Docker image reference (tag or digest).
@@ -304,5 +349,11 @@ mod tests {
         assert!(!valid_health_path("healthz"));
         assert!(valid_domain_name("app.example.com"));
         assert!(!valid_domain_name("localhost"));
+
+        assert!(valid_db_identifier("app"));
+        assert!(valid_db_identifier("my_db_1-test"));
+        assert!(!valid_db_identifier(""));
+        assert!(!valid_db_identifier("app;DROP"));
+        assert!(!valid_db_identifier("-bad"));
     }
 }

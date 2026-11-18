@@ -1273,7 +1273,11 @@ impl DockerClient {
             binds: Vec::new(),
             labels,
             port: spec.port,
-            expose_loopback: spec.port > 0,
+            port_bind: if spec.port > 0 {
+                PortBindMode::Loopback
+            } else {
+                PortBindMode::InternalOnly
+            },
             memory_limit_mb: spec.memory_limit_mb,
             cpu_limit_millis: spec.cpu_limit_millis,
         };
@@ -1282,7 +1286,7 @@ impl DockerClient {
     }
 
     /// Create and start a managed template container (database or tool) with optional named
-    /// volume binds and optional loopback port exposure (`expose_loopback = false` keeps it
+    /// volume binds and explicit port binding mode (`PortBindMode::InternalOnly` keeps it
     /// reachable only over `opsbox-<project>`). Returns `(container_id, host_port, container_ip)`.
     pub async fn create_and_start_template_container(
         &self,
@@ -1315,7 +1319,11 @@ impl DockerClient {
             binds,
             labels,
             port: spec.container_port,
-            expose_loopback: spec.expose_loopback && spec.container_port > 0,
+            port_bind: if spec.container_port > 0 {
+                spec.port_bind
+            } else {
+                PortBindMode::InternalOnly
+            },
             memory_limit_mb: spec.memory_limit_mb,
             cpu_limit_millis: spec.cpu_limit_millis,
         };
@@ -1330,13 +1338,20 @@ impl DockerClient {
         let docker = self.connect().await?;
 
         let exposed_ports = (spec.port > 0).then(|| vec![format!("{}/tcp", spec.port)]);
-        let port_bindings = if spec.expose_loopback && spec.port > 0 {
+        let host_bind_ip = match spec.port_bind {
+            PortBindMode::InternalOnly => None,
+            PortBindMode::Loopback => Some("127.0.0.1"),
+            PortBindMode::Public => Some("0.0.0.0"),
+        };
+        let port_bindings = if let Some(bind_ip) = host_bind_ip
+            && spec.port > 0
+        {
             let key = format!("{}/tcp", spec.port);
             let mut pb = HashMap::new();
             pb.insert(
                 key,
                 Some(vec![PortBinding {
-                    host_ip: Some("127.0.0.1".into()),
+                    host_ip: Some(bind_ip.into()),
                     host_port: Some("0".into()),
                 }]),
             );
@@ -1401,7 +1416,7 @@ impl DockerClient {
         {
             Ok(info) => info,
             Err(e) => {
-                if spec.expose_loopback && spec.port > 0 {
+                if spec.port_bind != PortBindMode::InternalOnly && spec.port > 0 {
                     let _ = self.force_stop_and_remove_container(&created.id).await;
                     return Err(DockerError::from_bollard(e, "inspect new container"));
                 }
@@ -1424,7 +1439,7 @@ impl DockerClient {
             })
             .map(ToOwned::to_owned);
 
-        if !(spec.expose_loopback && spec.port > 0) {
+        if spec.port_bind == PortBindMode::InternalOnly || spec.port == 0 {
             return Ok((created.id, 0, container_ip));
         }
 
@@ -1588,6 +1603,18 @@ pub struct ServiceContainerSpec<'a> {
     pub cpu_limit_millis: Option<i64>,
 }
 
+/// Host port binding policy for a managed container.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PortBindMode {
+    /// Attach only to the private `opsbox-<project>` network with zero host port bindings.
+    #[default]
+    InternalOnly,
+    /// Bind an ephemeral host port on `127.0.0.1` only.
+    Loopback,
+    /// Bind an ephemeral host port on `0.0.0.0` (requires explicit user confirmation).
+    Public,
+}
+
 /// Parameters required to create and start a managed template container.
 #[derive(Debug, Clone)]
 pub struct TemplateContainerSpec<'a> {
@@ -1602,7 +1629,7 @@ pub struct TemplateContainerSpec<'a> {
     pub cmd: &'a [String],
     pub volume_binds: &'a [(String, String)],
     pub container_port: u16,
-    pub expose_loopback: bool,
+    pub port_bind: PortBindMode,
     pub memory_limit_mb: Option<i64>,
     pub cpu_limit_millis: Option<i64>,
 }
@@ -1627,7 +1654,7 @@ struct ManagedContainerCreate<'a> {
     binds: Vec<String>,
     labels: HashMap<String, String>,
     port: u16,
-    expose_loopback: bool,
+    port_bind: PortBindMode,
     memory_limit_mb: Option<i64>,
     cpu_limit_millis: Option<i64>,
 }
