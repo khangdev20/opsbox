@@ -515,3 +515,13 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **Queued-workload capacity test.** Only the large app is marked Building (450 MB on a 1 GB fixture ≈ 104 MB database headroom). Marking Postgres Building raced with the template deploy task clearing that state, so pooler reached the handler and failed with “Start this database first” instead of a structured capacity refusal.
 
 **Mock API CI.** `tools/check-mock-api.mjs` fails when a page calls an `api.js` export that is not in `REAL`, unless allowlisted (demo-only recovery actions; Desktop-only outgoing keys / mock terminal hosts). Unused mock exports `getReclaimable` and `addDestination` were removed; `getAudit` stays (Security, already real).
+
+## Prompt 16q (import configuration)
+
+**Two POSTs, not one with `dry_run`.** Preview (`/config/import/preview`) and apply (`/config/import/apply`) are separate so the UI can show the plan, ask for the account password again, and only then start the task. The document travels in the JSON body (same reason export is a POST: password and passphrase must not appear in a URL).
+
+**Never overwrite; skip by name/id.** Services and compose projects match by name; backup destinations by id or name; alert rules and channels by id; firewall rules by port/proto/source. `create_compose_stack_if_absent` in the store refuses to update an existing stack (unlike `upsert_compose_stack`).
+
+**No auto-deploy on import.** Services are created with secrets sealed when the passphrase opened them; if any secret var is still missing they are marked and left undeployed. Deploy keys and GitHub are never imported — listed under `needsInput` for the person to reconnect.
+
+**Users, panel domain and update settings are not applied.** Passwords and two-factor cannot move with the file; changing the panel domain or listen mode from an import is too easy to lock yourself out. Those stay under `needsInput` / manual settings.

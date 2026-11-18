@@ -330,7 +330,11 @@ Preview environments per pull request are a later phase; the data model already 
 
 Secrets stay out by default. Each one is named under `secrets.needsReentry`. Only when a passphrase is given, the secrets `priv` can open again (secret variables under `deploy:var:<service>:<key>`, destination credentials under `backup:dest:<id>`, alert channel settings under `alerts:channel:<id>`) are opened one at a time, collected, and sealed as one block with a key derived by Argon2id (32 MiB, 3 passes, 1 lane, 16-byte salt) and XChaCha20-Poly1305 (24-byte nonce, associated data `opsbox-config/1:secrets`). The cost parameters are in the file; a reader refuses values above 1 GiB, 16 passes or 16 lanes. The master key never leaves `priv`, and the passphrase lives only for the request.
 
-Every `ServiceRecord` field is either exported or listed in `SERVICE_EXCLUDED` with a reason (also written into the file as `notExported`); a test reads the struct and fails when a column is in neither list. Each export is audited as `config.export` with the file name, whether secrets were included and the counts, and a wrong password is audited as denied. The file name is `opsbox-config-<host>-<date>.json`. Import is a separate prompt (16q).
+Every `ServiceRecord` field is either exported or listed in `SERVICE_EXCLUDED` with a reason (also written into the file as `notExported`); a test reads the struct and fails when a column is in neither list. Each export is audited as `config.export` with the file name, whether secrets were included and the counts, and a wrong password is audited as denied. The file name is `opsbox-config-<host>-<date>.json`.
+
+#### 7.8.3 Configuration import
+
+`POST /config/import/preview` and `POST /config/import/apply` (interactive admin, password again) take an `opsbox-config/1` document and optional passphrase. Preview returns what will be created, what needs input (secrets, GitHub, DNS, deploy keys) and what is skipped because it already exists; it never writes. Apply runs as task `config.import` and creates only missing objects: services (not auto-deployed when secrets are missing), templates, compose projects, databases, backup destinations and jobs, alert rules/channels, firewall rules. Existing objects are never overwritten. A wrong passphrase or unknown `format` fails before any write.
 
 ### 7.9 Terminal
 

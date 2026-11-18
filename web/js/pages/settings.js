@@ -1,4 +1,4 @@
-import { html, st, btn, table, section, header, sw, bindActions, confirmDialog, askForm, toast, download, bytes } from '../ui.js';
+import { html, st, btn, table, section, header, sw, bindActions, confirmDialog, askForm, toast, download, bytes, dropzone, esc } from '../ui.js';
 import * as api from '../api.js';
 import { networkCard, networkActions } from '../network.js';
 import { noOfferText, checkedLine, checkToast } from '../update-status.js';
@@ -10,6 +10,7 @@ const normDom = (s) => String(s || '').trim().toLowerCase().replace(/^https:\/\/
 export async function view({ query = {} } = {}) {
   let ghErr = '', ghOrg = '';
   let uninstallBusy = false, uninstallGone = false;
+  let importDoc = null, importName = '', importPass = '', importPreview = null, importBusy = false, importErr = '';
   const clearHashQuery = () => {
     try { history.replaceState(null, '', '#/settings'); } catch { /* ignore */ }
   };
@@ -185,7 +186,45 @@ export async function view({ query = {} } = {}) {
       ${diskBlock()}</div>`)}
     ${section('GitHub', renderGithubSection(pi))}
     ${section('opsbox updates', html`<div class="list-row"><span>${statusText}<br><span class="sm muted" id="ucheck">${checkedLine(u)}</span></span><div class="row">${btn('Check now', { act: 'check' })}${u.updateAvailable ? btn('Update now', { act: 'updateNow', kind: 'primary' }) : ''}${u.previousVersion ? btn(`Roll back to ${u.previousVersion}`, { act: 'rollback' }) : ''}</div></div>${u.lastOutcome ? html`<p class="sm muted">${u.lastOutcome.message}</p>` : ''}<div class="list-row"><span>Release channel${chanSource ? html` <span class="sm muted">(${chanSource})</span>` : ''}</span><select class="select" id="uch" style="width:auto"><option value="stable"${u.channel === 'stable' ? ' selected' : ''}>stable</option><option value="beta"${u.channel === 'beta' ? ' selected' : ''}>beta</option></select></div><div class="list-row"><span>Update opsbox automatically</span><div class="row">${sw('Update opsbox automatically', u.auto, 'autoup')}<select class="select" id="uwin" aria-label="Daily update window" style="width:auto">${hours.map((h) => html`<option value="${h}"${h === (u.window ?? 3) ? ' selected' : ''}>${String(h).padStart(2, '0')}:00 UTC</option>`)}</select></div></div><p class="muted sm">If a new version fails its health check after 2 minutes, opsbox rolls back to the previous one by itself.</p>`)}
-    ${section('Export and uninstall', html`<p class="muted sm" style="max-width:620px">Export saves your services, domains, databases (not their data), backups, alerts, firewall rules and people as a file you can import on a new server. Passwords, keys and tokens stay out of the file unless you protect them with a passphrase.</p><div class="row">${btn('Export configuration', { act: 'export' })}</div><p class="muted sm" style="max-width:620px">Uninstall removes opsbox but leaves your apps and data running. Containers keep their restart policy so they survive reboots without opsbox.</p>${uninstallGone ? html`<div class="col gap12" style="max-width:620px;border:1px solid var(--ls);padding:16px;border-radius:8px" role="status"><b>opsbox is being removed</b><p class="muted sm">Services are stopping. This page will stop responding in a moment. Your apps keep running on their ports.</p></div>` : html`<div class="row">${btn('Uninstall opsbox…', { act: 'uninstall', kind: 'danger', disabled: !!uninstallBusy })}</div>`}`)}`;
+    ${section('Export, import and uninstall', html`
+      <p class="muted sm" style="max-width:620px">Export saves your services, domains, databases (not their data), backups, alerts, firewall rules and people as a file you can import on a new server. Passwords, keys and tokens stay out of the file unless you protect them with a passphrase.</p>
+      <div class="row">${btn('Export configuration', { act: 'export' })}</div>
+      <div class="col gap12" style="max-width:620px;margin-top:20px">
+        <p class="muted sm">Import recreates configuration on this server. Existing services and other objects are never overwritten. Services that still need secrets are created but not deployed until you enter those secrets.</p>
+        ${dropzone({ id: 'imp-file', accept: 'application/json,.json', label: 'Drop an opsbox-config file here or', browse: 'browse' })}
+        ${importName ? html`<p class="sm muted">Chosen: <span class="mono">${esc(importName)}</span></p>` : ''}
+        <div class="field"><label for="imp-pass">Passphrase for sealed secrets</label><input class="input" type="password" id="imp-pass" value="${esc(importPass)}" autocomplete="off" placeholder="Leave empty if the file has no secrets"><p class="hint">Required only when the export was sealed with a passphrase.</p></div>
+        ${importErr ? html`<p class="sm" style="color:var(--danger)" role="alert">${esc(importErr)}</p>` : ''}
+        <div class="row">${btn('Preview import', { act: 'importPreview', disabled: !importDoc || importBusy })}${btn('Apply import', { act: 'importApply', kind: 'primary', disabled: !importPreview || importBusy })}</div>
+        ${importPreview ? importPreviewBlock(importPreview) : ''}
+      </div>
+      <p class="muted sm" style="max-width:620px;margin-top:20px">Uninstall removes opsbox but leaves your apps and data running. Containers keep their restart policy so they survive reboots without opsbox.</p>
+      ${uninstallGone ? html`<div class="col gap12" style="max-width:620px;border:1px solid var(--ls);padding:16px;border-radius:8px" role="status"><b>opsbox is being removed</b><p class="muted sm">Services are stopping. This page will stop responding in a moment. Your apps keep running on their ports.</p></div>` : html`<div class="row">${btn('Uninstall opsbox…', { act: 'uninstall', kind: 'danger', disabled: !!uninstallBusy })}</div>`}`)}`;
+  };
+  const importPreviewBlock = (p) => {
+    const list = (title, items) => {
+      const flat = [];
+      if (Array.isArray(items)) items.forEach((x) => flat.push(typeof x === 'string' ? x : (x.name || x.domain || x.key || x.id || JSON.stringify(x))));
+      else if (items && typeof items === 'object') Object.entries(items).forEach(([k, v]) => (Array.isArray(v) ? v : []).forEach((n) => flat.push(`${k}: ${n}`)));
+      if (!flat.length) return '';
+      return html`<div><b class="sm">${title}</b><ul class="sm" style="margin:6px 0 0;padding-left:1.2em">${flat.slice(0, 40).map((t) => html`<li>${esc(t)}</li>`)}${flat.length > 40 ? html`<li class="muted">…and ${flat.length - 40} more</li>` : ''}</ul></div>`;
+    };
+    const needs = (p.needsInput || []).map((e) => {
+      if (e.kind === 'serviceVar') return `${e.service}.${e.key} (secret)`;
+      if (e.kind === 'dns') return `DNS: ${e.domain}`;
+      if (e.kind === 'github') return 'Connect GitHub';
+      if (e.kind === 'deployKey') return `Deploy key for ${e.service || e.repo || 'a repository'}`;
+      if (e.kind === 'backupDestination') return `Backup destination ${e.name || e.id}`;
+      if (e.kind === 'alertChannel') return `Alert channel ${e.id}`;
+      return e.reason || e.kind;
+    });
+    const skipped = (p.skipped || []).map((e) => `${e.kind}: ${e.name}${e.reason ? ` — ${e.reason}` : ''}`);
+    return html`<div id="imp-plan" class="col gap12" style="border:1px solid var(--ls);padding:14px;border-radius:8px" role="status">
+      ${list('Will create', p.willCreate)}
+      ${list('Needs input', needs)}
+      ${list('Skipped (already exists)', skipped)}
+      ${p.secretsDecrypted ? html`<p class="sm muted">Sealed secrets were opened with your passphrase.</p>` : ''}
+    </div>`;
   };
   // One block per filesystem opsbox watches (GET /system/disk). Grow shows only when there is space to take.
   const diskBlock = () => {
@@ -221,6 +260,15 @@ export async function view({ query = {} } = {}) {
           if (b) b.disabled = !canIssueFor(d.panel);
         }
         if (e.target.id === 'gh-org') ghOrg = e.target.value;
+        if (e.target.id === 'imp-pass') {
+          importPass = e.target.value;
+          if (importPreview) {
+            importPreview = null;
+            const applyBtn = root.querySelector('[data-act="importApply"]');
+            if (applyBtn) applyBtn.disabled = true;
+            root.querySelector('#imp-plan')?.remove();
+          }
+        }
       });
       root.addEventListener('change', async (e) => {
         // A select that calls the API is locked while it runs, so a second change cannot overlap.
@@ -228,10 +276,25 @@ export async function view({ query = {} } = {}) {
         if (locked) { if (t.hasAttribute('data-busy')) return; t.disabled = true; t.setAttribute('data-busy', '1'); }
         try { await onChange(e); } finally { if (locked && t.isConnected) { t.disabled = false; t.removeAttribute('data-busy'); } }
       });
+      const readImportFile = async (file) => {
+        importErr = ''; importPreview = null; importDoc = null; importName = '';
+        if (!file) { paint(); return; }
+        importName = file.name || 'opsbox-config.json';
+        try {
+          const text = await file.text();
+          const doc = JSON.parse(text);
+          if (!doc || typeof doc !== 'object') throw new Error('The file is not a JSON object.');
+          importDoc = doc;
+        } catch (err) {
+          importErr = err.message || 'Could not read that file as JSON.';
+        }
+        paint();
+      };
       const onChange = async (e) => {
         if (e.target.id === 'sw') { toast('Changing swap. This can take a minute.'); try { await api.setSwap(e.target.value); toast('Swap updated.'); } catch (err) { toast(err.message, 'err'); } await reload(); }
         if (e.target.id === 'uch') { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ channel: e.target.value }); toast(`Channel set to ${e.target.value}.`); } catch (err) { toast(err.message, 'err'); } paint(); }
         if (e.target.id === 'uwin') { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ window: Number(e.target.value) }); toast('Update window saved.'); } catch (err) { toast(err.message, 'err'); } paint(); }
+        if (e.target.id === 'imp-file') await readImportFile(e.target.files?.[0]);
       };
       bindActions(root, {
         ...networkActions(refreshNetwork, (value) => { proxyBusy = value; const card = root?.querySelector('#network-card'); if (card) card.innerHTML = networkCard(proxyNetwork, proxyBusy).toString(); }),
@@ -419,6 +482,46 @@ export async function view({ query = {} } = {}) {
           download(file.filename, file.text, 'application/json');
           const n = file.needsReentry.length;
           toast(file.secretsIncluded ? `Exported with secrets sealed by your passphrase. ${n} item${n === 1 ? '' : 's'} still need${n === 1 ? 's' : ''} re-entry.` : `Exported without secrets. ${n} item${n === 1 ? '' : 's'} will need re-entry on a new server.`);
+        },
+        importPreview: async () => {
+          if (!importDoc || importBusy) return;
+          importErr = ''; importBusy = true; paint();
+          try {
+            const out = await askForm({
+              title: 'Preview import',
+              body: 'Enter your account password to preview what this file will create on this server. Nothing is changed yet.',
+              fields: [{ name: 'password', label: 'Account password', type: 'password' }],
+              submit: 'Preview',
+            }, async (o) => {
+              importPreview = await api.importPreview({ password: o.password, passphrase: importPass, document: importDoc });
+            });
+            if (!out) { importBusy = false; paint(); return; }
+          } catch (e) { importErr = e.message; importPreview = null; }
+          importBusy = false; paint();
+        },
+        importApply: async () => {
+          if (!importDoc || !importPreview || importBusy) return;
+          importErr = '';
+          let done;
+          const out = await askForm({
+            title: 'Apply import?',
+            body: 'This creates missing services, templates, compose projects, databases, backup destinations, alert rules and firewall rules from the file. Existing objects are left alone. Services that still need secrets are created but not deployed.',
+            fields: [{ name: 'password', label: 'Account password', type: 'password' }],
+            submit: 'Apply',
+          }, async (o) => {
+            importBusy = true; paint();
+            done = await api.importConfig({ password: o.password, passphrase: importPass, document: importDoc });
+          });
+          importBusy = false;
+          if (!out || !done) { paint(); return; }
+          const created = done.result?.created || {};
+          const n = Object.values(created).reduce((a, v) => a + (Array.isArray(v) ? v.length : 0), 0);
+          const need = done.result?.needsSecret || [];
+          toast(need.length
+            ? `Imported ${n} item${n === 1 ? '' : 's'}. Enter secrets for: ${need.join(', ')}, then deploy.`
+            : `Imported ${n} item${n === 1 ? '' : 's'}. Review services and deploy when ready.`);
+          importPreview = null;
+          paint();
         },
         uninstall: async () => {
           if (uninstallBusy || uninstallGone) return;

@@ -49,7 +49,7 @@ const REAL = new Set([
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'getAudit', 'exportAuditCsv', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'updateUser', 'auth.inviteInfo', 'auth.claimInvite',
   'dockerStatus', 'installDocker', 'listContainers', 'listDocker', 'inspectContainer', 'containerAction', 'containerLogs',
-  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs', 'exportConfig', 'uninstallPlan', 'uninstallExec',
+  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs', 'exportConfig', 'importPreview', 'importConfig', 'uninstallPlan', 'uninstallExec',
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
   'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
   'getRecovery',
@@ -95,7 +95,7 @@ export const PAGE_USES = {
   overview: ['getCapacity', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'getAudit', 'exportAuditCsv', 'inviteUser', 'updateUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
-  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revealGithubWebhookSecret', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook', 'uninstallPlan', 'uninstallExec'],
+  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'importPreview', 'importConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revealGithubWebhookSecret', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook', 'uninstallPlan', 'uninstallExec'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'listContainers', 'updateService', 'addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
@@ -1927,6 +1927,28 @@ export async function exportConfig({ password = '', passphrase = '' } = {}) { sa
   await lag(400); audit('export configuration');
   const text = JSON.stringify({ format: 'opsbox-config/1', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel }, secrets: { included: false, needsReentry: [] } }, null, 2);
   return { filename: `opsbox-config-${S.host.name}-${new Date().toISOString().slice(0, 10)}.json`, text, secretsIncluded: false, needsReentry: [] }; }
+
+// Dry-run of an opsbox-config/1 file: what will be created, what needs input, what is skipped.
+export async function importPreview({ password = '', passphrase = '', document } = {}) { sample('importPreview');
+  if (real('importPreview')) return http('/config/import/preview', { method: 'POST', body: { password, passphrase: passphrase || undefined, document } });
+  await lag(300);
+  const services = (document?.services || []).map((s) => s.name).filter(Boolean);
+  return {
+    willCreate: { services, composeProjects: (document?.composeProjects || []).map((c) => c.name).filter(Boolean) },
+    needsInput: document?.secrets?.needsReentry || [],
+    skipped: [],
+    secretsDecrypted: !!document?.secrets?.included && !!passphrase,
+  };
+}
+
+// Apply an opsbox-config/1 file as a background task. Never overwrites existing objects.
+export async function importConfig({ password = '', passphrase = '', document } = {}) { sample('importConfig');
+  if (real('importConfig')) {
+    const { task } = await http('/config/import/apply', { method: 'POST', body: { password, passphrase: passphrase || undefined, document } });
+    return waitTask(task, { every: 800, max: 10 * 60 * 1000 });
+  }
+  await lag(500); audit('import configuration');
+  return { status: 'ok', result: { created: { services: (document?.services || []).map((s) => s.name) }, skipped: [], needsSecret: [] }, log: ['Import finished (sample).'] }; }
 
 function uninstallPlanMock(purge = false) {
   return {

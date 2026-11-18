@@ -153,11 +153,13 @@ A signed-in Owner (`admin` role) may add `override:true` and `capacityConfirmati
 | `GET /system/disk` | Any signed-in role. `{volumes:[{mount,device,fs,layout,partition,disk,fs_bytes,partition_bytes,disk_bytes,growable_bytes,growable,steps,refusal}],growpart_installed,growpart_installable}`. `layout` is `partition`, `disk`, `lvm` or `other`; `steps` is an ordered list of `install_growpart`, `grow_partition`, `resize_pv`, `resize_fs`. Volumes: `/`, plus the data and Docker directories when they are on other filesystems. `refusal` says why a volume cannot be grown (unsupported filesystem, RAID, encryption, several disks, ...); `growable:false` with no `refusal` means the disk simply has no unused space. |
 | `POST /system/disk/grow {mount,confirm:"grow",password,install_tools?}` | Interactive admin only (no tokens). Wrong password is `403` and audits `system.disk.grow` as denied; wrong `confirm` is `422` (field `confirm`); an unknown `mount` is `422`; a refused or nothing-to-grow volume is `409` with the reason; a missing `growpart` without `install_tools:true` is `422` (field `install_tools`). Otherwise `202 {task}` for kind `system.disk_grow`; the task log lists the steps as they run and `result` is `{mount,before,after}` with `fs_bytes`, `partition_bytes`, `disk_bytes`, `growable_bytes`. Audit `system.disk.grow` records the steps and the before and after sizes (failures record the failing step). |
 
-## Configuration export (prompt 16i, Spec 7.8.2)
+## Configuration export and import (prompts 16i / 16q, Spec 7.8.2)
 
 | Request | Response / behaviour |
 |---|---|
 | `POST /config/export {password, passphrase?}` | Interactive admin only (no tokens), account password asked again. Returns the document (`Content-Type: application/json`, `Cache-Control: no-store`, `Content-Disposition: attachment; filename="opsbox-config-<host>-<YYYY-MM-DD>.json"`). Wrong password is `403` and audits `config.export` as denied; a `passphrase` shorter than 8 characters is `400` (field `passphrase`); an empty `passphrase` means "no secrets". It is a `POST` on purpose: the password and passphrase never go into a URL or an access log (the original plan said `GET`). |
+| `POST /config/import/preview {password, passphrase?, document}` | Interactive admin only. Parses `opsbox-config/1`, validates shape, opens sealed secrets when a passphrase is given. Returns `{willCreate, needsInput, skipped, secretsDecrypted}` without writing anything. Unknown `format` is `400` (field `format`); wrong passphrase is `403` with a clear message and no partial write; wrong password is `403` and audits `config.import.preview` as denied. |
+| `POST /config/import/apply {password, passphrase?, document}` | Interactive admin only. Same checks as preview, then `202 {task}` for kind `config.import`. Creates missing services (not deployed when secrets are missing), templates, compose projects, databases, backup destinations, alert rules/channels and firewall rules. Existing objects are never overwritten (skipped). Task `result` is `{created, skipped, needsSecret}`. Audit `config.import`. |
 | `GET /system/uninstall/plan?purge=` | Interactive admin. Preview: `{purge,removed,kept,domains,adopted?,containers,warnings}`. Domains are panel + app hosts that stop on 80/443; `adopted` names a 16c web server that will be restored first. |
 | `POST /system/uninstall {password,confirm:"uninstall",purge?}` | Interactive admin only (no tokens). Wrong password is `403` and audits `system.uninstall` as denied; wrong `confirm` is `400` (field `confirm`). Schedules `opsbox uninstall --yes [--purge]` via a detached `systemd-run` unit and returns `{ok,message,plan}`. The panel shows a final “opsbox is being removed” screen; apps keep running (`unless-stopped`). |
 
@@ -241,6 +243,8 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `POST` | `/api/v1/compose` | [templates::deploy_compose](../crates/opsbox-api/src/templates.rs) |
 | `DELETE` | `/api/v1/compose/{stack}` | [templates::delete_compose_stack](../crates/opsbox-api/src/templates.rs) |
 | `POST` | `/api/v1/config/export` | [export::export](../crates/opsbox-api/src/export.rs) |
+| `POST` | `/api/v1/config/import/apply` | [import::apply](../crates/opsbox-api/src/import.rs) |
+| `POST` | `/api/v1/config/import/preview` | [import::preview](../crates/opsbox-api/src/import.rs) |
 | `GET` | `/api/v1/databases/{id}` | [databases::overview](../crates/opsbox-api/src/databases.rs) |
 | `PUT` | `/api/v1/databases/{id}/apps/{app}/pooled` | [databases::set_app_pooled](../crates/opsbox-api/src/databases.rs) |
 | `POST` | `/api/v1/databases/{id}/apps/{app}/remove` | [databases::remove_app](../crates/opsbox-api/src/databases.rs) |

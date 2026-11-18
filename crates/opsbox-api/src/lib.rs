@@ -18,6 +18,7 @@ mod docker;
 mod domains;
 mod error;
 pub mod export;
+mod import;
 mod files;
 mod github;
 mod hardening;
@@ -598,6 +599,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/terminal/users", get(terminal::users))
         .route("/api/v1/stream/terminal", get(terminal::stream))
         .route("/api/v1/config/export", post(export::export))
+        .route("/api/v1/config/import/preview", post(import::preview))
+        .route("/api/v1/config/import/apply", post(import::apply))
         .route("/api/v1/session", get(auth::session))
         .route("/api/v1/auth/login", post(auth::login))
         .route("/api/v1/auth/logout", post(auth::logout))

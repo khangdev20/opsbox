@@ -2082,6 +2082,54 @@ impl Store {
         Ok(rec)
     }
 
+    /// Insert a compose stack only when the name is free. Returns `None` when one already
+    /// exists (config import must never overwrite).
+    pub fn create_compose_stack_if_absent(
+        &self,
+        stack: UpsertComposeStack<'_>,
+    ) -> Result<Option<ComposeStackRecord>, StoreError> {
+        if self.get_compose_stack(stack.name)?.is_some() {
+            return Ok(None);
+        }
+        let names_json = serde_json::to_string(stack.service_names)?;
+        let edges_json = serde_json::to_string(stack.depends_edges)?;
+        let id = ulid::Ulid::generate().to_string();
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO compose_stacks (
+                id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                service_names, depends_edges, confirmed, created_at, updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+            params![
+                id,
+                stack.project_id,
+                stack.env_id,
+                stack.name,
+                stack.owner_id,
+                stack.compose_yaml,
+                stack.project_name,
+                names_json,
+                edges_json,
+                i64::from(stack.confirmed),
+                stack.now,
+            ],
+        )?;
+        if inserted == 0 {
+            tx.rollback()?;
+            return Ok(None);
+        }
+        let rec = tx.query_row(
+            "SELECT id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                    service_names, depends_edges, confirmed, created_at, updated_at
+             FROM compose_stacks WHERE id = ?1",
+            params![id],
+            compose_stack_from_row,
+        )?;
+        tx.commit()?;
+        Ok(Some(rec))
+    }
+
     pub fn get_compose_stack(
         &self,
         id_or_name: &str,
