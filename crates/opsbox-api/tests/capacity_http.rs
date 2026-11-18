@@ -207,6 +207,17 @@ async fn queued_workloads_block_database_resize_pooler_and_memory_adding_extensi
         )
         .await;
     assert_eq!(db.status, StatusCode::CREATED, "{}", db.text());
+    let pg_svc = h.store.get_service("pg").unwrap().unwrap();
+    h.store
+        .create_deploy(
+            &pg_svc.id,
+            None,
+            "queued",
+            opsbox_store::DeployTrigger::Manual,
+            "owner",
+            0,
+        )
+        .unwrap();
     let svc = h.store.get_service("pending").unwrap().unwrap();
     h.store
         .create_deploy(
