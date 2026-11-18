@@ -86,6 +86,8 @@ pub struct ProxyStatus {
     pub routes_count: usize,
     pub certs: Vec<CertInfo>,
     pub acme_staging: bool,
+    #[serde(default)]
+    pub network: Box<opsbox_proto::ProxyNetwork>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,9 +102,18 @@ pub struct ProxyRequest {
 pub enum ProxyOp {
     Ping,
     Status,
-    SetRoutes { routes: Vec<Route> },
-    IssueCert { domain: String },
-    RemoveCert { domain: String },
+    Listeners {
+        action: opsbox_proto::ListenerAction,
+    },
+    SetRoutes {
+        routes: Vec<Route>,
+    },
+    IssueCert {
+        domain: String,
+    },
+    RemoveCert {
+        domain: String,
+    },
 }
 
 impl ProxyOp {
@@ -110,6 +121,7 @@ impl ProxyOp {
         match self {
             Self::Ping => "ping",
             Self::Status => "status",
+            Self::Listeners { .. } => "listeners",
             Self::SetRoutes { .. } => "set_routes",
             Self::IssueCert { .. } => "issue_cert",
             Self::RemoveCert { .. } => "remove_cert",

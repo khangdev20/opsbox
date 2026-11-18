@@ -112,7 +112,25 @@ fn text_response(status: StatusCode, body: &'static str) -> Response<ProxyBody> 
         .unwrap_or_else(|_| Response::new(empty_body()))
 }
 
-fn redirect_https_response(target_host: &str, pq: &str, hsts: bool) -> Response<ProxyBody> {
+#[derive(Clone, Copy)]
+pub struct ListenerPorts {
+    pub http: u16,
+    pub https: u16,
+}
+fn host_with_port(host: &str, port: u16, standard: u16) -> String {
+    if port == standard {
+        host.to_owned()
+    } else {
+        format!("{host}:{port}")
+    }
+}
+fn redirect_https_response(
+    target_host: &str,
+    pq: &str,
+    hsts: bool,
+    port: u16,
+) -> Response<ProxyBody> {
+    let target_host = host_with_port(target_host, port, 443);
     let location = format!("https://{target_host}{pq}");
     let mut builder = Response::builder()
         .status(StatusCode::PERMANENT_REDIRECT)
@@ -165,6 +183,29 @@ pub async fn handle_http(
     certs: Arc<DynamicCertResolver>,
     default_max_body: u64,
 ) -> Result<Response<ProxyBody>, Infallible> {
+    handle_http_on_ports(
+        req,
+        peer,
+        routes,
+        challenges,
+        certs,
+        default_max_body,
+        ListenerPorts {
+            http: 80,
+            https: 443,
+        },
+    )
+    .await
+}
+async fn handle_http_on_ports(
+    req: Request<Incoming>,
+    peer: SocketAddr,
+    routes: RouteTable,
+    challenges: ChallengeMap,
+    certs: Arc<DynamicCertResolver>,
+    default_max_body: u64,
+    ports: ListenerPorts,
+) -> Result<Response<ProxyBody>, Infallible> {
     let path = req.uri().path();
     if let Some(token) = path.strip_prefix(CHALLENGE_PREFIX) {
         if valid_acme_token(token)
@@ -194,8 +235,9 @@ pub async fn handle_http(
     let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
     if let Some(ref target) = route.redirect_to {
         if route.redirect_https && (certs.has(&route.host) || certs.has(target)) {
-            return Ok(redirect_https_response(target, pq, false));
+            return Ok(redirect_https_response(target, pq, false, ports.https));
         }
+        let target = host_with_port(target, ports.http, 80);
         let location = format!("http://{target}{pq}");
         return Ok(Response::builder()
             .status(StatusCode::MOVED_PERMANENTLY)
@@ -204,10 +246,14 @@ pub async fn handle_http(
             .unwrap_or_else(|_| Response::new(empty_body())));
     }
     if route.redirect_https && certs.has(&route.host) {
-        return Ok(redirect_https_response(&route.host, pq, false));
+        return Ok(redirect_https_response(&route.host, pq, false, ports.https));
     }
     if is_www {
-        let location = format!("http://{}{}", route.host, pq);
+        let location = format!(
+            "http://{}{}",
+            host_with_port(&route.host, ports.http, 80),
+            pq
+        );
         return Ok(Response::builder()
             .status(StatusCode::MOVED_PERMANENTLY)
             .header(LOCATION, location)
@@ -423,6 +469,15 @@ pub async fn handle_https(
     routes: RouteTable,
     default_max_body: u64,
 ) -> Result<Response<ProxyBody>, Infallible> {
+    handle_https_on_port(req, peer, routes, default_max_body, 443).await
+}
+async fn handle_https_on_port(
+    req: Request<Incoming>,
+    peer: SocketAddr,
+    routes: RouteTable,
+    default_max_body: u64,
+    https_port: u16,
+) -> Result<Response<ProxyBody>, Infallible> {
     let Some(host) = extract_host(&req) else {
         return Ok(text_response(
             StatusCode::BAD_REQUEST,
@@ -434,11 +489,16 @@ pub async fn handle_https(
     };
     if let Some(ref target) = route.redirect_to {
         let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
-        return Ok(redirect_https_response(target, pq, route.hsts));
+        return Ok(redirect_https_response(target, pq, route.hsts, https_port));
     }
     if is_www {
         let pq = req.uri().path_and_query().map_or("/", PathAndQuery::as_str);
-        return Ok(redirect_https_response(&route.host, pq, route.hsts));
+        return Ok(redirect_https_response(
+            &route.host,
+            pq,
+            route.hsts,
+            https_port,
+        ));
     }
     forward_request(req, peer, &route, "https", default_max_body).await
 }
@@ -650,16 +710,18 @@ pub async fn serve_http_connection(
     challenges: ChallengeMap,
     certs: Arc<DynamicCertResolver>,
     default_max_body: u64,
+    ports: ListenerPorts,
 ) {
     let io = TokioIo::new(stream);
     let svc = hyper::service::service_fn(move |req| {
-        handle_http(
+        handle_http_on_ports(
             req,
             peer,
             routes.clone(),
             challenges.clone(),
             Arc::clone(&certs),
             default_max_body,
+            ports,
         )
     });
     let _ = ConnBuilder::new(TokioExecutor::new())
@@ -673,15 +735,37 @@ pub async fn serve_https_connection(
     acceptor: TlsAcceptor,
     routes: RouteTable,
     default_max_body: u64,
+    https_port: u16,
 ) {
     let Ok(tls_stream) = acceptor.accept(stream).await else {
         return;
     };
     let io = TokioIo::new(tls_stream);
     let svc = hyper::service::service_fn(move |req| {
-        handle_https(req, peer, routes.clone(), default_max_body)
+        handle_https_on_port(req, peer, routes.clone(), default_max_body, https_port)
     });
     let _ = ConnBuilder::new(TokioExecutor::new())
         .serve_connection_with_upgrades(io, svc)
         .await;
+}
+
+#[cfg(test)]
+mod listener_port_tests {
+    use super::*;
+    #[test]
+    fn redirects_use_serving_ports() {
+        let response = redirect_https_response("app.example.com", "/test?a=1", false, 8445);
+        assert_eq!(
+            response.headers()[LOCATION],
+            "https://app.example.com:8445/test?a=1"
+        );
+        assert_eq!(
+            host_with_port("app.example.com", 8081, 80),
+            "app.example.com:8081"
+        );
+        assert_eq!(
+            host_with_port("app.example.com", 443, 443),
+            "app.example.com"
+        );
+    }
 }

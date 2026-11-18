@@ -126,6 +126,12 @@ fn service_check(name: &str, health: &ServiceHealth) -> WatchdogCheck {
                 format!("v{version} · {millis} ms")
             },
         },
+        ServiceHealth::PortConflict { .. } => WatchdogCheck {
+            name: name.to_owned(),
+            status: "warn".into(),
+            state: "port_conflict".into(),
+            note: "Proxy running on other ports. Open Settings > Network.".into(),
+        },
         ServiceHealth::Down(err) => WatchdogCheck {
             name: name.to_owned(),
             status: "fail".into(),
@@ -216,6 +222,7 @@ fn build_status(p: SnapshotParams<'_>) -> WatchdogStatus {
 
     let failed = p.serve.is_failing() || p.priv_h.is_failing() || p.proxy.is_failing();
     let degraded = failed
+        || matches!(p.proxy, ServiceHealth::PortConflict { .. })
         || p.policy.safe_mode_active
         || p.disk_root.warn
         || p.disk_data.is_some_and(|(_, d)| d.warn)
@@ -489,6 +496,7 @@ pub async fn run_with_listener(
             serve_ok: serve_h.is_ok(),
             priv_ok: priv_h.is_ok(),
             proxy_ok: proxy_h.is_ok(),
+            proxy_port_conflict: matches!(proxy_h, ServiceHealth::PortConflict { .. }),
             disk_critical,
             update_state,
             previous_slot_available: prev_slot,

@@ -29,13 +29,17 @@ const WARN_AVAIL_BYTES: u64 = 512 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceHealth {
     Ok { version: String, millis: u128 },
+    PortConflict { version: String, millis: u128 },
     Down(String),
     Off,
 }
 
 impl ServiceHealth {
     pub fn is_ok(&self) -> bool {
-        matches!(self, Self::Ok { .. } | Self::Off)
+        matches!(
+            self,
+            Self::Ok { .. } | Self::PortConflict { .. } | Self::Off
+        )
     }
 
     pub fn is_failing(&self) -> bool {
@@ -249,7 +253,7 @@ pub async fn probe_proxy(socket: &Path, expected: bool) -> ServiceHealth {
         let mut stream = UnixStream::connect(socket).await?;
         let req = serde_json::json!({
             "id": "watchdog",
-            "op": { "type": "ping" }
+            "op": { "type": "status" }
         });
         let bytes = frame::encode(&req).map_err(io::Error::other)?;
         stream.write_all(&bytes).await?;
@@ -257,13 +261,18 @@ pub async fn probe_proxy(socket: &Path, expected: bool) -> ServiceHealth {
         let body = read_unix_body(&mut stream).await?;
         let resp: serde_json::Value = frame::decode(&body).map_err(io::Error::other)?;
         if resp["result"]["status"].as_str() == Some("ok")
-            && resp["result"]["reply"]["type"].as_str() == Some("pong")
+            && resp["result"]["reply"]["type"].as_str() == Some("status")
         {
             let ver = resp["result"]["reply"]["data"]["version"]
                 .as_str()
                 .unwrap_or("?")
                 .to_owned();
-            Ok(ver)
+            Ok((
+                ver,
+                resp["result"]["reply"]["data"]["network"]["port_conflict"]
+                    .as_bool()
+                    .unwrap_or(false),
+            ))
         } else {
             let msg = resp["result"]["error"]["message"]
                 .as_str()
@@ -275,7 +284,11 @@ pub async fn probe_proxy(socket: &Path, expected: bool) -> ServiceHealth {
     .await;
 
     match res {
-        Ok(Ok(version)) => ServiceHealth::Ok {
+        Ok(Ok((version, true))) => ServiceHealth::PortConflict {
+            version,
+            millis: started.elapsed().as_millis(),
+        },
+        Ok(Ok((version, false))) => ServiceHealth::Ok {
             version,
             millis: started.elapsed().as_millis(),
         },

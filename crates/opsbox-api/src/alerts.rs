@@ -369,6 +369,9 @@ async fn collect(s: &AppState, at: i64) -> (Vec<Observation>, BTreeSet<String>) 
             .await
         {
             Ok(status) => {
+                if status.network.port_conflict {
+                    out.push(Observation::new("health", "proxy-ports", "The proxy is running on other ports because its usual ports are busy. Open Settings > Network.".into(), "#/settings?section=network", false));
+                }
                 // Keep certificate state unknown if its domain ownership cannot be read.
                 if let Ok(domains) = s.store.list_all_service_domains_with_services() {
                     known.insert("tls".into());

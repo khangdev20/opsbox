@@ -52,6 +52,7 @@ pub struct TickInput {
     pub serve_ok: bool,
     pub priv_ok: bool,
     pub proxy_ok: bool,
+    pub proxy_port_conflict: bool,
     pub disk_critical: bool,
     pub update_state: UpdateState,
     pub previous_slot_available: Option<String>,
@@ -103,6 +104,7 @@ impl UnitTracker {
 
 #[derive(Debug, Default)]
 pub struct WatchdogPolicy {
+    proxy_conflict_active: bool,
     priv_unit: UnitTracker,
     proxy_unit: UnitTracker,
     serve_unit: UnitTracker,
@@ -133,7 +135,17 @@ impl WatchdogPolicy {
 
     pub fn evaluate(&mut self, input: &TickInput) -> Vec<PolicyAction> {
         let now = input.now;
-        let all_ok = input.serve_ok && input.priv_ok && input.proxy_ok;
+        let proxy_ok = input.proxy_ok || input.proxy_port_conflict;
+        if input.proxy_port_conflict {
+            self.proxy_unit.clear();
+        }
+        if input.proxy_port_conflict && !self.proxy_conflict_active {
+            self.push_event(
+                "Proxy port conflict: serving on other ports. Open Settings > Network.",
+            );
+        }
+        self.proxy_conflict_active = input.proxy_port_conflict;
+        let all_ok = input.serve_ok && input.priv_ok && proxy_ok;
 
         if let Some(ref outcome) = input.update_state.last_outcome
             && outcome.status == "pending"
@@ -174,7 +186,7 @@ impl WatchdogPolicy {
         // Check in dependency order: priv -> proxy -> serve.
         let checks = [
             (UnitId::Priv, input.priv_ok),
-            (UnitId::Proxy, input.proxy_ok),
+            (UnitId::Proxy, proxy_ok),
             (UnitId::Serve, input.serve_ok),
         ];
 
@@ -282,6 +294,7 @@ mod tests {
             serve_ok: true,
             priv_ok: true,
             proxy_ok: true,
+            proxy_port_conflict: false,
             disk_critical: false,
             update_state: UpdateState::default(),
             previous_slot_available: None,
@@ -450,5 +463,50 @@ mod tests {
                 from_version: "0.1.3".into()
             }]
         );
+    }
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+    #[test]
+    fn conflict_is_healthy_even_during_update_verification() {
+        let mut policy = WatchdogPolicy::default();
+        let mut input = TickInput {
+            now: 1,
+            serve_ok: true,
+            priv_ok: true,
+            proxy_ok: false,
+            proxy_port_conflict: true,
+            disk_critical: false,
+            update_state: UpdateState::default(),
+            previous_slot_available: Some("old".into()),
+        };
+        for at in 1..1000 {
+            input.now = at;
+            assert!(policy.evaluate(&input).is_empty());
+            assert!(policy.proxy_unit.failures.is_empty());
+            assert!(!policy.safe_mode_active);
+        }
+        assert_eq!(policy.events_vec().len(), 1);
+        input.update_state.last_outcome = Some(crate::slots::UpdateOutcome {
+            status: "pending".into(),
+            from_version: "old".into(),
+            to_version: "new".into(),
+            message: String::new(),
+            at: 0,
+            audited: false,
+        });
+        assert!(matches!(
+            policy.evaluate(&input).as_slice(),
+            [PolicyAction::MarkUpdateVerified { .. }]
+        ));
+        input.update_state = UpdateState::default();
+        input.proxy_port_conflict = false;
+        for at in [1000, 1011, 1022] {
+            input.now = at;
+            policy.evaluate(&input);
+        }
+        assert!(policy.safe_mode_active);
     }
 }

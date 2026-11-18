@@ -37,6 +37,8 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[backup] dir` | `/var/backups/opsbox` | | | serve, priv, CLI |
 | `[backup] cache_dir` | `/var/cache/opsbox/restic` | | | priv |
 | `[proxy] listen_http` | `0.0.0.0:80` | `--http ADDR` | `OPSBOX_PROXY_HTTP` | proxy |
+| `[proxy] fallback_http` | `8080` | | | proxy |
+| `[proxy] fallback_https` | `8445` | | | proxy |
 | `[proxy] listen_https` | `0.0.0.0:443` | `--https ADDR` | `OPSBOX_PROXY_HTTPS` | proxy |
 | `[proxy] socket` | `/run/opsbox-proxy/proxy.sock` | `--proxy-socket PATH` | `OPSBOX_PROXY_SOCKET` | proxy, serve, status |
 | `[proxy] state_dir` | `/var/lib/opsbox/proxy` | `--state-dir PATH` | `OPSBOX_PROXY_STATE_DIR` | proxy |
@@ -159,3 +161,13 @@ Ordinary API requests: 1 MiB body, 30 seconds; editor: 12 MiB JSON body/5 MiB te
 API responses are `no-store`; responses include request IDs, MIME-sniffing/frame protection and a same-origin referrer policy. CSP limits framing, base URLs and embedded objects while allowing the existing self-hosted Monaco/xterm runtime. Command output captured in priv is capped at 8 MiB per pipe; command timeouts kill the process group. Accepted authenticated mutations must be recorded in the audit chain before dispatch.
 
 In Settings, host name/time zone/swap, API tokens, self-update settings, and the panel domain (DNS check, ACME certificate, and local-only `:8443` toggle) are real. Tokens use `read`, `deploy`, or `full` scopes and are hashed at rest; copy the secret at creation. They have no expiry setting in Phase 1; revoke them explicitly. See [API.md](API.md) for exact capabilities. Host name/time zone changes use hostnamectl/timedatectl through priv and persist in the operating system; they are not duplicated in config.toml. Disk growth, GitHub, and export/uninstall remain labelled samples.
+
+### Busy proxy ports
+
+An occupied or inaccessible configured proxy port uses `fallback_http` / `fallback_https` on the same bind IP. If the preferred port is busy, HTTP searches 8080–8099 and HTTPS 8445–8464. Zero is invalid for fallback settings. If the entire fallback range is unavailable, startup fails with the bind error; inspect `journalctl -u opsbox-proxy -n 50`.
+
+The proxy remains running, reports `port_conflict` and retries each primary port every 30 seconds. It promotes without restarting or interrupting accepted requests. The installer, CLI status, update verifier and watchdog treat this as healthy with a warning. Overview and Settings > Network show the ports actually serving traffic and the current holder. App routing still uses its configured Host/domain, including on fallback ports; HTTPS redirects include the actual HTTPS port.
+
+Settings > Network can stop a confirmed Docker holder and set its restart policy to `no`, or stop/disable a confirmed systemd service. Undo restores its original policy/enablement and starts it after yielding opsbox's primary listeners. Root-only receipts next to `config.toml` survive restarts; the audit records the old policy and outcome. Unknown/ambiguous holders have no takeover action, and opsbox/Docker/containerd units cannot be stopped here. Containers and volumes are never removed.
+
+“Keep it and use other ports” saves the current HTTP/HTTPS addresses as `listen_http` / `listen_https`, applies them live and ends primary retries. Automatic Let's Encrypt HTTP-01 for domains needs 80/443. File configuration should be authoritative when using this action: CLI/environment listener overrides still take precedence at the next proxy restart.

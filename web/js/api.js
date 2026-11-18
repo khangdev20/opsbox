@@ -33,6 +33,7 @@ function pickMode() {
 // top of the function, then add its name here. Pages that still call functions not in
 // this set get a "sample data" badge (main.js); the badge disappears by itself.
 const REAL = new Set([
+  'getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts',
   'getHost',
   'getAlerts', 'setRule', 'testAlert', 'connectChannel', 'disconnectChannel', 'silenceAlert', 'setQuiet',
   'auth.session', 'auth.login', 'auth.logout', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
@@ -88,10 +89,10 @@ export const PAGE_USES = {
   invite: ['auth.inviteInfo', 'auth.claimInvite'],
   enroll: ['auth.enroll', 'auth.enrollConfirm'],
   newservice: ['createDeployKey', 'deleteDeployKey', 'getGithubStatus', 'getRepos', 'inspectPublicRepo', 'listDeployKeys'],
-  overview: ['getAttention', 'getHost', 'getMetrics'],
+  overview: ['getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
-  settings: ['checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
+  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
@@ -1795,4 +1796,22 @@ export async function saveDestination(pid, v, name) { sample('saveDestination');
   BK.jobs.forEach((j) => { if (j.dest === 'Local disk') { j.dest = rec.name; j.state = 'ok'; j.last = 'next run 02:40'; } });
   audit(`add backup destination ${p.name}`);
   return { destination: rec, ...(p.sftp ? { publicKey: rec.publicKey } : {}) };
+}
+
+// ---------------------------------------------------------------- proxy network
+export async function getProxyNetwork() {
+  if (real('getProxyNetwork')) return http('/network/proxy'); // GET /api/v1/network/proxy
+  sample('getProxyNetwork'); return { network: null, undo: [] };
+}
+export async function takeProxyPort(port, target, confirm = false) {
+  if (real('takeProxyPort')) return http('/network/proxy/takeover', { method: 'POST', body: { port, target, confirm } }); // POST /api/v1/network/proxy/takeover
+  sample('takeProxyPort'); throw new Error('Port changes require a connected server.');
+}
+export async function undoProxyTakeover(id, confirm = false) {
+  if (real('undoProxyTakeover')) return http('/network/proxy/undo', { method: 'POST', body: { id, confirm } }); // POST /api/v1/network/proxy/undo
+  sample('undoProxyTakeover'); throw new Error('Port changes require a connected server.');
+}
+export async function keepProxyPorts(confirm = false) {
+  if (real('keepProxyPorts')) return http('/network/proxy/keep', { method: 'POST', body: { confirm } }); // POST /api/v1/network/proxy/keep
+  sample('keepProxyPorts'); throw new Error('Port changes require a connected server.');
 }

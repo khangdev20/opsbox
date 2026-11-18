@@ -29,6 +29,8 @@ pub fn run(config: Config) -> Result<()> {
     let mut proxy_cfg = ProxyConfig::new(&config.priv_socket);
     proxy_cfg.listen_http = config.proxy_listen_http;
     proxy_cfg.listen_https = config.proxy_listen_https;
+    proxy_cfg.fallback_http = config.proxy_fallback_http;
+    proxy_cfg.fallback_https = config.proxy_fallback_https;
     proxy_cfg.socket_path = config.proxy_socket;
     proxy_cfg.state_dir = config.proxy_state_dir;
     proxy_cfg.allowed_uids = uids;

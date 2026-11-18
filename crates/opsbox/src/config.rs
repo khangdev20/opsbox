@@ -173,6 +173,8 @@ impl Default for BackupSection {
 struct ProxySection {
     listen_http: SocketAddr,
     listen_https: SocketAddr,
+    fallback_http: u16,
+    fallback_https: u16,
     socket: PathBuf,
     state_dir: PathBuf,
     acme_staging: bool,
@@ -190,6 +192,8 @@ impl Default for ProxySection {
             listen_https: opsbox_proxy::DEFAULT_HTTPS_ADDR
                 .parse()
                 .expect("valid default"),
+            fallback_http: 8080,
+            fallback_https: 8445,
             socket: opsbox_proxy::DEFAULT_SOCKET_PATH.into(),
             state_dir: opsbox_proxy::DEFAULT_STATE_DIR.into(),
             acme_staging: false,
@@ -269,6 +273,8 @@ pub struct Config {
     pub backup_cache_dir: PathBuf,
     pub proxy_listen_http: SocketAddr,
     pub proxy_listen_https: SocketAddr,
+    pub proxy_fallback_http: u16,
+    pub proxy_fallback_https: u16,
     pub proxy_socket: PathBuf,
     pub proxy_state_dir: PathBuf,
     pub acme_staging: bool,
@@ -381,6 +387,9 @@ impl Config {
                 "files.xfer_dir is fixed at /var/lib/opsbox/xfer; set files.allow_external_xfer_dir = true explicitly for an alternate staging directory"
             );
         }
+        if file.proxy.fallback_http == 0 || file.proxy.fallback_https == 0 {
+            bail!("proxy fallback ports must be between 1 and 65535");
+        }
         let listen = o.listen.unwrap_or(file.api.listen);
         let watchdog_listen = o
             .watchdog_listen
@@ -406,6 +415,8 @@ impl Config {
             backup_cache_dir: file.backup.cache_dir,
             proxy_listen_http: o.proxy_listen_http.unwrap_or(file.proxy.listen_http),
             proxy_listen_https: o.proxy_listen_https.unwrap_or(file.proxy.listen_https),
+            proxy_fallback_http: file.proxy.fallback_http,
+            proxy_fallback_https: file.proxy.fallback_https,
             proxy_socket: o.proxy_socket.unwrap_or(file.proxy.socket),
             proxy_state_dir: o.proxy_state_dir.unwrap_or(file.proxy.state_dir),
             acme_staging: o.acme_staging || file.proxy.acme_staging,

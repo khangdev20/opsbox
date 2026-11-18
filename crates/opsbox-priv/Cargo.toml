@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+toml = { version = "1.2", default-features = false, features = ["parse", "serde"] }
 opsbox-backup.workspace = true
 opsbox-deploy = { path = "../opsbox-deploy" }
 opsbox-docker.workspace = true

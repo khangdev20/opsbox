@@ -102,6 +102,8 @@ impl PrivServer {
             docker: opsbox_docker::DockerClient::new(&self.config.docker_socket),
             docker_bin: self.config.docker_bin.clone(),
             allow_test_git: self.config.allow_test_git,
+            network_proc_root: self.config.network_proc_root.clone(),
+            network_systemctl: self.config.network_systemctl.clone(),
         });
         let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         info!(

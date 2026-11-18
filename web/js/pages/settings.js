@@ -1,5 +1,6 @@
 import { html, st, btn, table, section, header, sw, bindActions, confirmDialog, askForm, toast, download } from '../ui.js';
 import * as api from '../api.js';
+import { networkCard, networkActions } from '../network.js';
 
 const TZ = ['Asia/Ho_Chi_Minh', 'UTC', 'Australia/Brisbane'];
 const SWAP = ['None', '1 GB', '2 GB', '4 GB'];
@@ -28,6 +29,7 @@ export async function view({ query = {} } = {}) {
     clearHashQuery();
   }
   let d = await api.getSettings(), root;
+  let proxyNetwork = await api.getProxyNetwork().catch((e) => ({ error: e.message })), proxyBusy = false;
   let dns = null, busy = '', panelErr = '', ghBusy = false;
   const upd = () => d.opsboxUpdate || { current: '0.1.0', channel: d.channel || 'stable', auto: !!d.autoUpdate, window: 3, updateAvailable: false, latest: null, previousVersion: null, lastOutcome: null };
   const panelInfo = () => d.panelInfo || { domain: d.panel || null, activeDomain: null, certStatus: 'none', proxyReachable: true, rawPortOpen: true, listen: '0.0.0.0:8443' };
@@ -146,6 +148,7 @@ export async function view({ query = {} } = {}) {
       <div class="field"><label for="sh">Hostname</label><input class="input" id="sh" value="${d.hostname}"></div>
       <div class="field"><label for="sz">Time zone</label><select class="select" id="sz">${(d.timezones || TZ).map((z) => html`<option${z === d.tz ? ' selected' : ''}>${z}</option>`)}</select><span class="hint">Used for cron jobs, backups and alert quiet hours.</span></div>
       <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p><div>${btn('Save', { act: 'save', kind: 'primary' })}</div></div>`)}
+    <div id="network-card">${networkCard(proxyNetwork, proxyBusy)}</div>
     ${section('Panel address', html`<div class="col gap16">
       <div class="field"><label for="sp">Panel domain</label>
         <div class="row">
@@ -181,12 +184,20 @@ export async function view({ query = {} } = {}) {
     ${section('Export and uninstall', html`${sampleBadge()}<p class="muted sm" style="max-width:620px">Export saves services and settings as a file you can import on a new server. Uninstall removes opsbox but leaves your apps and data running.</p><div class="row">${btn('Export configuration', { act: 'export', disabled: LIVE })}${btn('Uninstall opsbox', { act: 'uninstall', kind: 'danger', disabled: LIVE })}</div>`)}`;
   };
   const paint = () => { root.querySelector('#b').innerHTML = body().toString(); };
-  const reload = async () => { d = await api.getSettings(); paint(); };
+  const refreshNetwork = async () => {
+    proxyNetwork = await api.getProxyNetwork().catch((e) => ({ error: e.message }));
+    const card = root?.querySelector('#network-card');
+    if (card) card.innerHTML = networkCard(proxyNetwork, proxyBusy).toString();
+  };
+  const reload = async () => { d = await api.getSettings(); await refreshNetwork(); paint(); };
   return {
+    unmount() { clearInterval(this._networkTimer); root = null; },
     nav: null, title: 'Settings',
     html: html`<main class="narrow">${header('Settings', `${d.hostname} · opsbox 0.1.0`)}<div id="b"></div></main>`,
     mount(r) {
       root = r; paint();
+      if (query.section === 'network') root.querySelector('#network')?.scrollIntoView();
+      this._networkTimer = setInterval(() => { if (!proxyBusy) refreshNetwork(); }, 5000);
       root.addEventListener('input', (e) => {
         if (e.target.id === 'sp') {
           d.panel = e.target.value;
@@ -201,6 +212,7 @@ export async function view({ query = {} } = {}) {
         if (e.target.id === 'uwin') { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ window: Number(e.target.value) }); toast('Update window saved.'); } catch (err) { toast(err.message, 'err'); } paint(); }
       });
       bindActions(root, {
+        ...networkActions(refreshNetwork, (value) => { proxyBusy = value; const card = root?.querySelector('#network-card'); if (card) card.innerHTML = networkCard(proxyNetwork, proxyBusy).toString(); }),
         save: async () => { try { await api.saveSettings({ hostname: root.querySelector('#sh').value, tz: root.querySelector('#sz').value }); toast('Saved.'); await reload(); } catch (e) { root.querySelector('#err').textContent = e.message; } },
         checkDns: async () => {
           const val = root.querySelector('#sp')?.value ?? '';

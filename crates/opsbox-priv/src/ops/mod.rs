@@ -19,6 +19,7 @@ mod hostset;
 mod jobs;
 mod journal;
 mod metrics;
+mod network;
 mod ping;
 mod pkg;
 mod sealed;
@@ -53,6 +54,8 @@ pub(crate) struct Env {
     pub docker: opsbox_docker::DockerClient,
     pub docker_bin: Option<std::path::PathBuf>,
     pub allow_test_git: bool,
+    pub network_proc_root: std::path::PathBuf,
+    pub network_systemctl: Option<std::path::PathBuf>,
 }
 
 /// Blocking; the server runs it on a blocking thread.
@@ -88,6 +91,11 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
                 })?;
             Ok(PrivReply::Done)
         }
+        PrivOp::PortHolders { .. }
+        | PrivOp::ProxyNetwork
+        | PrivOp::ProxyTakeover { .. }
+        | PrivOp::ProxyUndo { .. }
+        | PrivOp::ProxyKeepPorts { .. } => network::dispatch(op, env),
         PrivOp::Ping => Ok(ping::run()),
         PrivOp::HostInfo => host_info::run().map(PrivReply::HostInfo),
         PrivOp::Doctor => Ok(PrivReply::Doctor(doctor::collect_with(

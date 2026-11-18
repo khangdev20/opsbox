@@ -13,8 +13,9 @@ use std::time::Duration;
 use nix::unistd::geteuid;
 use opsbox_priv::PrivClient;
 use opsbox_proto::frame::{self, FrameError};
+use opsbox_proto::{ListenerAction, PrivOp, PrivReply, ProxyNetwork};
 use tokio::net::{TcpListener, UnixListener, UnixStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore, mpsc, oneshot};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::rustls::crypto::ring;
@@ -30,7 +31,8 @@ use crate::proto::{
     ProxyOp, ProxyReply, ProxyRequest, ProxyResponse, ProxyStatus, Route, read_body, write_frame,
 };
 use crate::proxy::{
-    DEFAULT_MAX_BODY_BYTES, RouteTable, serve_http_connection, serve_https_connection,
+    DEFAULT_MAX_BODY_BYTES, ListenerPorts, RouteTable, serve_http_connection,
+    serve_https_connection,
 };
 
 const MAX_CTRL_CONNS: usize = 16;
@@ -41,6 +43,9 @@ const RENEW_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 pub struct ProxyConfig {
     pub listen_http: SocketAddr,
     pub listen_https: SocketAddr,
+    pub fallback_http: u16,
+    pub fallback_https: u16,
+    pub retry_interval: Duration,
     pub socket_path: PathBuf,
     pub state_dir: PathBuf,
     pub priv_socket: PathBuf,
@@ -73,6 +78,9 @@ impl ProxyConfig {
         Self {
             listen_http: DEFAULT_HTTP_ADDR.parse().expect("valid default"),
             listen_https: DEFAULT_HTTPS_ADDR.parse().expect("valid default"),
+            fallback_http: 8080,
+            fallback_https: 8445,
+            retry_interval: Duration::from_secs(30),
             socket_path: PathBuf::from(DEFAULT_SOCKET_PATH),
             state_dir: PathBuf::from(DEFAULT_STATE_DIR),
             priv_socket: priv_socket.into(),
@@ -105,6 +113,7 @@ pub struct ProxyServer {
     ctrl_listener: UnixListener,
     http_addr: SocketAddr,
     https_addr: SocketAddr,
+    network: Arc<RwLock<ProxyNetwork>>,
     config: ProxyConfig,
     routes: RouteTable,
     challenges: ChallengeMap,
@@ -117,19 +126,10 @@ impl ProxyServer {
         let _ = ring::default_provider().install_default();
 
         let ctrl_listener = bind_control_socket(&config.socket_path)?;
-        let http_listener = TcpListener::bind(config.listen_http)
-            .await
-            .map_err(|source| ProxyServerError::Bind {
-                addr: config.listen_http,
-                source,
-            })?;
-        let https_listener = TcpListener::bind(config.listen_https)
-            .await
-            .map_err(|source| ProxyServerError::Bind {
-                addr: config.listen_https,
-                source,
-            })?;
-
+        let (http_listener, http_conflict) =
+            bind_or_fallback(config.listen_http, config.fallback_http, 8080..=8099).await?;
+        let (https_listener, https_conflict) =
+            bind_or_fallback(config.listen_https, config.fallback_https, 8445..=8464).await?;
         let http_addr = http_listener
             .local_addr()
             .map_err(|source| ProxyServerError::Bind {
@@ -171,6 +171,22 @@ impl ProxyServer {
             ctrl_listener,
             http_addr,
             https_addr,
+            network: Arc::new(RwLock::new(ProxyNetwork {
+                running: true,
+                port_conflict: http_conflict || https_conflict,
+                listen_http: Some(http_addr),
+                listen_https: Some(https_addr),
+                primary_http: Some(config.listen_http),
+                primary_https: Some(config.listen_https),
+                conflict_ports: [
+                    (http_conflict, config.listen_http.port()),
+                    (https_conflict, config.listen_https.port()),
+                ]
+                .into_iter()
+                .filter_map(|(conflict, port)| conflict.then_some(port))
+                .collect(),
+                holders: Vec::new(),
+            })),
             config,
             routes,
             challenges,
@@ -199,7 +215,53 @@ impl ProxyServer {
         self.routes.clone()
     }
 
-    pub async fn run(self, shutdown: impl Future<Output = ()>) -> Result<(), ProxyServerError> {
+    async fn change_listeners(&mut self, action: ListenerAction) -> Result<(), ProxyServerError> {
+        let mut network = self.network.write().await;
+        if action == ListenerAction::KeepFallback {
+            self.config.listen_http =
+                self.http_listener
+                    .local_addr()
+                    .map_err(|source| ProxyServerError::Bind {
+                        addr: self.config.listen_http,
+                        source,
+                    })?;
+            self.config.listen_https =
+                self.https_listener
+                    .local_addr()
+                    .map_err(|source| ProxyServerError::Bind {
+                        addr: self.config.listen_https,
+                        source,
+                    })?;
+        } else {
+            // Bind both replacements before releasing either primary port.
+            let http = bind_fallback(
+                self.config.listen_http,
+                self.config.fallback_http,
+                8080..=8099,
+                network.listen_http,
+            )
+            .await?;
+            let https = bind_fallback(
+                self.config.listen_https,
+                self.config.fallback_https,
+                8445..=8464,
+                network.listen_https,
+            )
+            .await?;
+            if let Some(new) = http {
+                network.listen_http = new.local_addr().ok();
+                self.http_listener = new;
+            }
+            if let Some(new) = https {
+                network.listen_https = new.local_addr().ok();
+                self.https_listener = new;
+            }
+        }
+        refresh_conflicts(&mut network, &self.config);
+        Ok(())
+    }
+
+    pub async fn run(mut self, shutdown: impl Future<Output = ()>) -> Result<(), ProxyServerError> {
         let _ = fs::create_dir_all(&self.config.state_dir);
         let _ = fs::set_permissions(&self.config.state_dir, fs::Permissions::from_mode(0o700));
 
@@ -238,10 +300,37 @@ impl ProxyServer {
         allowed_uids.dedup();
         let allowed_uids: Arc<[u32]> = allowed_uids.into();
 
+        let (commands, mut command_rx) = mpsc::channel::<ListenerCommand>(4);
+        let mut retry = tokio::time::interval(self.config.retry_interval);
+        retry.tick().await;
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
+                _ = retry.tick() => {
+                    // Replacing only the accept sockets lets already accepted requests drain.
+                    let mut network = self.network.write().await;
+                    for https in [false, true] {
+                        let (listener, primary, actual) = if https {
+                            (&mut self.https_listener, &mut self.config.listen_https, &mut network.listen_https)
+                        } else {
+                            (&mut self.http_listener, &mut self.config.listen_http, &mut network.listen_http)
+                        };
+                        if actual.is_some_and(|a| a != *primary && primary.port() != 0) {
+                            match TcpListener::bind(*primary).await {
+                                Ok(new) => { *actual = new.local_addr().ok(); *listener = new; }
+                                Err(e) if is_port_conflict(&e) => {},
+                                Err(source) => return Err(ProxyServerError::Bind {addr: *primary, source}),
+                            }
+                        }
+                    }
+                    refresh_conflicts(&mut network, &self.config);
+                }
+                Some(command) = command_rx.recv() => {
+                    let result = self.change_listeners(command.action).await;
+                    retry.reset();
+                    let _ = command.reply.send(result.map_err(|e| e.to_string()));
+                }
                 accepted = self.http_listener.accept() => {
                     match accepted {
                         Ok((stream, peer)) => {
@@ -251,6 +340,7 @@ impl ProxyServer {
                             let max_body = self.config.max_body_bytes;
                             tokio::spawn(serve_http_connection(
                                 stream, peer, routes, challenges, certs, max_body,
+                                ListenerPorts { http: if self.config.listen_http.port() == 0 {80} else {self.http_listener.local_addr().map_or(80, |a| a.port())}, https: if self.config.listen_https.port() == 0 {443} else {self.https_listener.local_addr().map_or(443, |a| a.port())} },
                             ));
                         }
                         Err(e) => {
@@ -265,7 +355,7 @@ impl ProxyServer {
                             let acceptor = acceptor.clone();
                             let routes = self.routes.clone();
                             let max_body = self.config.max_body_bytes;
-                            tokio::spawn(serve_https_connection(stream, peer, acceptor, routes, max_body));
+                            tokio::spawn(serve_https_connection(stream, peer, acceptor, routes, max_body, if self.config.listen_https.port() == 0 {443} else {self.https_listener.local_addr().map_or(443, |a| a.port())}));
                         }
                         Err(e) => {
                             warn!(error = %e, "HTTPS accept failed");
@@ -282,9 +372,12 @@ impl ProxyServer {
                             let acme = Arc::clone(&self.acme);
                             let state_dir = self.config.state_dir.clone();
                             let staging = self.config.acme_directory.is_staging();
+                            let network = self.network.clone();
+                            let commands = commands.clone();
+                            let priv_client = PrivClient::new(&self.config.priv_socket).with_timeout(Duration::from_millis(500));
                             tokio::spawn(async move {
                                 let Ok(_permit) = permits.acquire_owned().await else { return };
-                                handle_ctrl_conn(stream, &allowed, routes, acme, &state_dir, staging).await;
+                                handle_ctrl_conn(stream, &allowed, routes, acme, &state_dir, staging, ListenerControl { network, commands, priv_client }).await;
                             });
                         }
                         Err(e) => {
@@ -335,7 +428,13 @@ async fn handle_ctrl_conn(
     acme: Arc<AcmeManager>,
     state_dir: &Path,
     staging: bool,
+    control: ListenerControl,
 ) {
+    let ListenerControl {
+        network,
+        commands,
+        priv_client,
+    } = control;
     let Ok(cred) = stream.peer_cred() else {
         let _ = write_frame(
             &mut stream,
@@ -383,7 +482,50 @@ async fn handle_ctrl_conn(
             }
         };
 
-        let resp = dispatch_ctrl(req, &routes, &acme, state_dir, staging).await;
+        let resp = if let ProxyOp::Listeners { action } = req.op {
+            // System changes are root-only; the ordinary control allow-list cannot take over ports.
+            if cred.uid() != 0 {
+                ProxyResponse::failure(
+                    req.id,
+                    ProxyErrorCode::Forbidden,
+                    "Listener changes require the privileged helper.",
+                )
+            } else {
+                let (reply, answer) = oneshot::channel();
+                if commands
+                    .send(ListenerCommand { action, reply })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                match answer.await {
+                    Ok(Ok(())) => ProxyResponse::success(req.id, ProxyReply::Ok),
+                    _ => ProxyResponse::failure(
+                        req.id,
+                        ProxyErrorCode::Internal,
+                        "Cannot change proxy listeners.",
+                    ),
+                }
+            }
+        } else {
+            let mut snapshot = network.read().await.clone();
+            if matches!(req.op, ProxyOp::Status)
+                && !snapshot.conflict_ports.is_empty()
+                && let Ok(PrivReply::PortHolders(holders)) = priv_client
+                    .call(
+                        &req.id,
+                        None,
+                        PrivOp::PortHolders {
+                            ports: snapshot.conflict_ports.clone(),
+                        },
+                    )
+                    .await
+            {
+                snapshot.holders = holders;
+            }
+            dispatch_ctrl(req, &routes, &acme, state_dir, staging, snapshot).await
+        };
         if write_frame(&mut stream, &resp).await.is_err() {
             return;
         }
@@ -418,9 +560,11 @@ async fn dispatch_ctrl(
     acme: &Arc<AcmeManager>,
     state_dir: &Path,
     staging: bool,
+    network: ProxyNetwork,
 ) -> ProxyResponse {
     let id = req.id.clone();
     match req.op {
+        ProxyOp::Listeners { .. } => unreachable!("handled by root-only control dispatcher"),
         ProxyOp::Ping => ProxyResponse::success(
             id,
             ProxyReply::Pong {
@@ -434,6 +578,7 @@ async fn dispatch_ctrl(
                 routes_count: routes.count(),
                 certs: acme.list_certs(),
                 acme_staging: staging,
+                network: Box::new(network),
             }),
         ),
         ProxyOp::SetRoutes { routes: new_routes } => {
@@ -505,4 +650,80 @@ fn save_routes(state_dir: &Path, routes: &[Route]) -> io::Result<()> {
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
     fs::rename(&tmp, path)?;
     Ok(())
+}
+
+struct ListenerCommand {
+    action: ListenerAction,
+    reply: oneshot::Sender<Result<(), String>>,
+}
+fn is_port_conflict(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::AddrInUse | io::ErrorKind::PermissionDenied
+    )
+}
+fn refresh_conflicts(network: &mut ProxyNetwork, config: &ProxyConfig) {
+    network.primary_http = Some(config.listen_http);
+    network.primary_https = Some(config.listen_https);
+    network.conflict_ports = [
+        (network.listen_http, config.listen_http),
+        (network.listen_https, config.listen_https),
+    ]
+    .into_iter()
+    .filter_map(|(actual, primary)| {
+        (primary.port() != 0 && actual != Some(primary)).then_some(primary.port())
+    })
+    .collect();
+    network.port_conflict = !network.conflict_ports.is_empty();
+}
+async fn bind_or_fallback(
+    primary: SocketAddr,
+    preferred: u16,
+    range: std::ops::RangeInclusive<u16>,
+) -> Result<(TcpListener, bool), ProxyServerError> {
+    match TcpListener::bind(primary).await {
+        Ok(listener) => Ok((listener, false)),
+        Err(e) if is_port_conflict(&e) => Ok((
+            bind_fallback(primary, preferred, range, None)
+                .await?
+                .expect("no current listener"),
+            true,
+        )),
+        Err(source) => Err(ProxyServerError::Bind {
+            addr: primary,
+            source,
+        }),
+    }
+}
+async fn bind_fallback(
+    primary: SocketAddr,
+    preferred: u16,
+    range: std::ops::RangeInclusive<u16>,
+    current: Option<SocketAddr>,
+) -> Result<Option<TcpListener>, ProxyServerError> {
+    if current.is_some_and(|addr| addr != primary && addr.port() != 0) {
+        return Ok(None);
+    }
+    let mut last = io::Error::new(io::ErrorKind::AddrInUse, "All fallback ports are busy");
+    for port in std::iter::once(preferred).chain(range.filter(|p| *p != preferred)) {
+        if port == 0 || port == primary.port() {
+            continue;
+        }
+        let addr = SocketAddr::new(primary.ip(), port);
+        match TcpListener::bind(addr).await {
+            Ok(listener) => return Ok(Some(listener)),
+            Err(e) if is_port_conflict(&e) => last = e,
+            Err(source) => return Err(ProxyServerError::Bind { addr, source }),
+        }
+    }
+    Err(ProxyServerError::Bind {
+        addr: SocketAddr::new(primary.ip(), preferred),
+        source: last,
+    })
+}
+
+struct ListenerControl {
+    network: Arc<RwLock<ProxyNetwork>>,
+    commands: mpsc::Sender<ListenerCommand>,
+    priv_client: PrivClient,
 }

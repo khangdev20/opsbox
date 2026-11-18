@@ -43,6 +43,7 @@ pub enum PrivState {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProxyState {
+    Conflict(opsbox_proto::ProxyNetwork),
     Ok {
         version: String,
         routes: usize,
@@ -120,6 +121,54 @@ impl Report {
         let _ = writeln!(out, "priv     {tag} {}  {text}", self.priv_socket.display());
 
         let (tag, text) = match &self.proxy {
+            ProxyState::Conflict(network) => {
+                let holders = network
+                    .conflict_ports
+                    .iter()
+                    .map(|port| {
+                        let names = network
+                            .holders
+                            .iter()
+                            .filter(|h| h.port == *port)
+                            .map(|h| {
+                                format!(
+                                    "{}{}",
+                                    h.process,
+                                    h.container.as_ref().map_or_else(
+                                        || h.unit
+                                            .as_ref()
+                                            .map_or_else(String::new, |u| format!(" ({u})")),
+                                        |c| format!(" ({})", c.name)
+                                    )
+                                )
+                            })
+                            .collect::<std::collections::BTreeSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        format!(
+                            ":{port} used by {}",
+                            if names.is_empty() {
+                                "another process or access restricted".into()
+                            } else {
+                                names.join(", ")
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                (
+                    "conflict",
+                    format!(
+                        "{holders}, serving on {} / {}. Fix in panel > Settings > Network",
+                        network
+                            .listen_http
+                            .map_or_else(|| "?".into(), |a| a.to_string()),
+                        network
+                            .listen_https
+                            .map_or_else(|| "?".into(), |a| a.to_string())
+                    ),
+                )
+            }
             ProxyState::Ok {
                 version,
                 routes,
@@ -146,8 +195,16 @@ impl Report {
                 failed,
                 degraded,
             } => {
-                if *failed || *degraded {
-                    ("degraded", format!("v{version}, safe mode alert active"))
+                if *failed {
+                    (
+                        "degraded",
+                        format!("v{version}, service failure; see panel > Recovery"),
+                    )
+                } else if *degraded {
+                    (
+                        "warning ",
+                        format!("v{version}, warnings reported; see panel > Recovery"),
+                    )
                 } else {
                     ("ok      ", format!("v{version}, monitoring"))
                 }
@@ -159,6 +216,21 @@ impl Report {
             WatchdogState::Down(why) => ("DOWN    ", why.clone()),
         };
         let _ = writeln!(out, "watchdog {tag} https://{}  {text}", self.watchdog_addr);
+        if matches!(
+            self.serve,
+            ServeState::Down(_) | ServeState::Degraded { .. }
+        ) {
+            let _ = writeln!(out, "Logs: journalctl -u opsbox -n 50");
+        }
+        if matches!(self.privileged, PrivState::Down(_) | PrivState::Denied(_)) {
+            let _ = writeln!(out, "Logs: journalctl -u opsbox-priv -n 50");
+        }
+        if matches!(self.proxy, ProxyState::Down(_)) {
+            let _ = writeln!(out, "Logs: journalctl -u opsbox-proxy -n 50");
+        }
+        if matches!(self.watchdog, WatchdogState::Down(_)) {
+            let _ = writeln!(out, "Logs: journalctl -u opsbox-watchdog -n 50");
+        }
         out
     }
 }
@@ -258,6 +330,7 @@ async fn probe_watchdog(listen: SocketAddr, expected: bool) -> WatchdogState {
 async fn probe_proxy(socket: &Path, expected: bool) -> ProxyState {
     let client = ProxyClient::new(socket).with_timeout(PROBE_TIMEOUT);
     match client.status("status").await {
+        Ok(st) if st.network.port_conflict => ProxyState::Conflict(*st.network),
         Ok(st) => ProxyState::Ok {
             version: st.version,
             routes: st.routes_count,
@@ -573,6 +646,46 @@ mod tests {
             report.render()
         );
         assert!(!report.healthy());
+    }
+
+    #[test]
+    fn conflict_is_healthy_with_warning_and_does_not_claim_safe_mode() {
+        let report = Report {
+            config_file: None,
+            serve_addr: "127.0.0.1:8443".parse().unwrap(),
+            serve: ServeState::Ready {
+                version: VERSION.into(),
+            },
+            priv_socket: "/run/opsbox/priv.sock".into(),
+            privileged: PrivState::Ok {
+                version: VERSION.into(),
+                millis: 1,
+            },
+            proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
+            proxy: ProxyState::Conflict(opsbox_proto::ProxyNetwork {
+                running: true,
+                port_conflict: true,
+                conflict_ports: vec![80],
+                listen_http: Some("0.0.0.0:8080".parse().unwrap()),
+                listen_https: Some("0.0.0.0:443".parse().unwrap()),
+                ..Default::default()
+            }),
+            watchdog_addr: "127.0.0.1:8444".parse().unwrap(),
+            watchdog: WatchdogState::Ok {
+                version: VERSION.into(),
+                failed: false,
+                degraded: true,
+            },
+        };
+        assert!(report.healthy());
+        let text = report.render();
+        assert!(
+            text.contains("conflict")
+                && text.contains(":8080")
+                && text.contains("Settings > Network")
+        );
+        assert!(text.contains("warning") && !text.contains("safe mode"));
+        assert!(!text.contains("journalctl"));
     }
 
     #[test]

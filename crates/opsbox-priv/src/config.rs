@@ -46,6 +46,9 @@ pub struct PrivConfig {
     pub docker_bin: Option<PathBuf>,
     /// Allow `file://` git clones inside integration tests (never enabled in production).
     pub allow_test_git: bool,
+    /// Override only in fixture tests; production uses Linux procfs.
+    pub network_proc_root: PathBuf,
+    pub network_systemctl: Option<PathBuf>,
 }
 
 impl PrivConfig {
@@ -67,6 +70,8 @@ impl PrivConfig {
             docker_socket: opsbox_docker::DEFAULT_SOCKET_PATH.into(),
             docker_bin: None,
             allow_test_git: false,
+            network_proc_root: "/proc".into(),
+            network_systemctl: None,
         }
     }
 }

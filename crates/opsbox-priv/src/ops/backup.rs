@@ -3575,6 +3575,8 @@ esac
             backup_cache_dir: cache_dir,
             restic_bin,
             allow_test_git: false,
+            network_proc_root: "/proc".into(),
+            network_systemctl: None,
         }
     }
 

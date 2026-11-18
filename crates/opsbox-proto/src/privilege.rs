@@ -46,6 +46,22 @@ pub struct PrivRequest {
 pub enum PrivOp {
     /// Liveness check. Answered with [`PrivReply::Pong`].
     Ping,
+    PortHolders {
+        ports: Vec<u16>,
+    },
+    ProxyNetwork,
+    ProxyTakeover {
+        port: u16,
+        target: crate::PortTarget,
+        confirm: bool,
+    },
+    ProxyUndo {
+        id: String,
+        confirm: bool,
+    },
+    ProxyKeepPorts {
+        confirm: bool,
+    },
     /// Facts about the machine. Answered with [`PrivReply::HostInfo`].
     HostInfo,
     /// Bounded setup notice written by the privileged helper only.
@@ -395,6 +411,11 @@ impl PrivOp {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Ping => "ping",
+            Self::PortHolders { .. } => "port_holders",
+            Self::ProxyNetwork => "proxy_network",
+            Self::ProxyTakeover { .. } => "proxy_takeover",
+            Self::ProxyUndo { .. } => "proxy_undo",
+            Self::ProxyKeepPorts { .. } => "proxy_keep_ports",
             Self::HostInfo => "host_info",
             Self::ConsoleNotice { .. } => "console_notice",
             Self::Doctor => "doctor",
@@ -536,6 +557,12 @@ impl PrivResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum PrivReply {
+    PortHolders(Vec<crate::PortHolder>),
+    ProxyNetwork {
+        network: Box<crate::ProxyNetwork>,
+        undo: Vec<crate::PortTakeover>,
+    },
+    PortTakeover(crate::PortTakeover),
     Pong {
         /// Version of the `priv` process, so `status` can spot a stale helper.
         version: String,

@@ -86,6 +86,31 @@ Development:
 EOF
 }
 
+# BEGIN proxy-port-preflight
+# Read-only: busy ports never block an install. `ss` includes process names as root.
+check_proxy_ports() {
+  for port in 80 443; do
+    if [ "$port" -eq 80 ]; then fallback=8080; else fallback=8445; fi
+    holder=""
+    if command -v ss >/dev/null 2>&1; then
+      holder=$(ss -ltnpH "sport = :$port" 2>/dev/null || true)
+    elif [ -r /proc/net/tcp ]; then
+      if [ "$port" -eq 80 ]; then hex=0050; else hex=01BB; fi
+      holder=$(awk -v port="$hex" '$4 == "0A" && toupper($2) ~ ":" port "$" { print "another process"; exit }' /proc/net/tcp /proc/net/tcp6 2>/dev/null || true)
+    fi
+    [ -n "$holder" ] || continue
+    process=$(printf '%s\n' "$holder" | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -n 1)
+    [ -n "$process" ] || process="another process"
+    container=""
+    if [ "$process" = "docker-proxy" ] && command -v docker >/dev/null 2>&1; then
+      container=$(docker ps --filter "publish=$port" --format 'container "{{.Names}}", image {{.Image}}' 2>/dev/null | head -n 1 || true)
+    fi
+    if [ -n "$container" ]; then process="$process ($container)"; fi
+    warn "port $port is used by $process; the opsbox proxy will use :$fallback (or the next free port) until it is free. Fix in panel > Settings > Network."
+  done
+}
+# END proxy-port-preflight
+
 # ------------------------------------------------------------------ arguments
 
 while [ $# -gt 0 ]; do
@@ -371,6 +396,8 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 # [proxy]
 # listen_http = "0.0.0.0:80"
 # listen_https = "0.0.0.0:443"
+# fallback_http = 8080
+# fallback_https = 8445
 # socket = "/run/opsbox-proxy/proxy.sock"
 # state_dir = "/var/lib/opsbox/proxy"
 
@@ -402,12 +429,14 @@ run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-priv.service" "$UNIT_DIR/
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox-proxy.service" "$UNIT_DIR/opsbox-proxy.service"
 run install -m 0644 -o root -g root "$UNITS_DIR/opsbox.service" "$UNIT_DIR/opsbox.service"
 run systemctl daemon-reload
+check_proxy_ports
 run systemctl enable opsbox-watchdog.service opsbox-priv.service opsbox-proxy.service opsbox.service
 # restart (not start) so that re-running the installer upgrades a running install.
-run systemctl restart opsbox-watchdog.service
-run systemctl restart opsbox-priv.service
-run systemctl restart opsbox-proxy.service
-run systemctl restart opsbox.service
+for unit in opsbox-priv opsbox-proxy opsbox opsbox-watchdog; do
+  if ! run systemctl restart "$unit.service"; then
+    die "$unit.service could not restart. See: journalctl -u $unit -n 50"
+  fi
+done
 
 # Flags that `opsbox install` will act on in a later phase. Accepted so cloud-init
 # scripts written today keep working; nothing consumes them yet.
@@ -423,7 +452,15 @@ if [ "$DRY_RUN" -ne 1 ]; then
     tries=$((tries + 1))
     if [ "$tries" -ge 20 ]; then
       "$PREFIX_BIN" status || true
-      die "opsbox did not become healthy. See: journalctl -u opsbox -u opsbox-priv -n 50"
+      failed=0
+      for unit in opsbox opsbox-priv opsbox-proxy opsbox-watchdog; do
+        if ! systemctl is-active --quiet "$unit.service"; then
+          warn "$unit.service failed or inactive. See: journalctl -u $unit -n 50"
+          failed=1
+        fi
+      done
+      [ "$failed" -eq 1 ] || warn "Units are active but a health probe failed; see the status output above for the affected units."
+      die "opsbox did not become healthy"
     fi
     sleep 1
   done

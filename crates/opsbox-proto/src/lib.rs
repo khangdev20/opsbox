@@ -74,3 +74,8 @@ pub use system::{
     PkgSelect, PkgState, PkgUpdate, UnitActionKind, UnitInfo,
 };
 pub use watchdog::{WatchdogCheck, WatchdogStatus};
+
+pub mod network;
+pub use network::{
+    ListenerAction, PortContainer, PortHolder, PortTakeover, PortTarget, ProxyNetwork,
+};

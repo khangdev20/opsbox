@@ -23,6 +23,7 @@ mod host;
 mod json;
 mod limits;
 mod metrics;
+mod network;
 pub mod panel;
 mod recovery;
 mod request_id;
@@ -381,6 +382,7 @@ pub fn router(state: AppState) -> Router {
             delete(github::delete_deploy_key),
         )
         .route("/api/v1/projects/{id}", get(deploy::get_project))
+        .route("/api/v1/network/proxy", get(network::get_network))
         .route("/api/v1/services", post(deploy::create_service))
         .route(
             "/api/v1/services/{id}",
@@ -535,6 +537,16 @@ pub fn router(state: AppState) -> Router {
             REQUEST_TIMEOUT,
         ));
 
+    let network_changes = Router::new()
+        .route("/api/v1/network/proxy/takeover", post(network::takeover))
+        .route("/api/v1/network/proxy/undo", post(network::undo))
+        .route("/api/v1/network/proxy/keep", post(network::keep))
+        .layer(RequestBodyLimitLayer::new(BODY_LIMIT))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(120),
+        ));
+
     // The editor sends a whole file (up to 5 MB, more once JSON-escaped).
     let editor = Router::new()
         .route("/api/v1/files/content", get(files::read).put(files::write))
@@ -583,6 +595,7 @@ pub fn router(state: AppState) -> Router {
     let setup_guard_state = state.auth.clone();
     Router::new()
         .merge(ordinary)
+        .merge(network_changes)
         .merge(tools)
         .merge(editor)
         .merge(transfers)

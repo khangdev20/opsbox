@@ -95,6 +95,21 @@ Per-app variables (`OPSBOX_APP_*`) and the pooler login (`OPSBOX_POOLER_PASSWORD
 
 ## Implemented routes
 
+## Proxy network conflicts (prompt 03c)
+
+Paths below are relative to `/api/v1`. All require admin access; mutations also require an interactive web session (tokens refused), CSRF and matching Origin. Unknown body fields are refused. Missing/false `confirm` returns `409 confirmation_required` in the privileged helper before changing anything.
+
+| Request | Body / result |
+|---|---|
+| `GET /network/proxy` | `{network,undo}`. `network` includes `running`, `port_conflict`, `primary_http`, `primary_https`, `listen_http`, `listen_https`, `conflict_ports`, `holders:[{port,pid,process,unit?,container?:{id,name,image}}]`. `undo` holds durable `{id,target,previous_policy,was_running}` receipts. |
+| `POST /network/proxy/takeover` | `{port,target:{kind:"container"\|"unit",id},confirm:true}` → `{ok:true,receipt}`. Root rechecks that the exact target currently holds the conflicted primary port. Docker: save policy, set `restart=no`, stop. Systemd: save enablement, disable, stop. Unknown/ambiguous owners and protected units fail safely. |
+| `POST /network/proxy/undo` | `{id:<receipt-id>,confirm:true}` → `{ok:true,receipt}`. Yield proxy ports, restore original policy/enablement and start the previous holder. Successful receipts are consumed; retrying a consumed ID fails safely. |
+| `POST /network/proxy/keep` | `{confirm:true}` → `{ok:true}`. Atomically save actual listener addresses as configured ports and apply them live, ending retries. Automatic domain HTTPS still needs 80/443. |
+
+Mutations audit `network.proxy_takeover`, `network.proxy_undo`, `network.proxy_keep_ports`, including failed attempts. Successful takeover/Undo entries include the original restart policy/enablement; no secrets are involved. A partial host-command failure leaves a root-owned Undo receipt visible on the next read. No operation removes containers or volumes. Commands are typed `PrivOp::{PortHolders,ProxyNetwork,ProxyTakeover,ProxyUndo,ProxyKeepPorts}` with fixed argv, never shell strings. Control-socket listener changes are root-only.
+
+A conflict leaves `/readyz` healthy and watchdog update verification successful. The proxy control `Status` returns its existing certificate/route fields plus `network`; `Ping` stays live. The 30-second retry promotes each listener without terminating accepted connections. Host ownership is best effort: a holder lookup failure does not turn a running conflict into a crash. A `health/proxy-ports` warning feeds the persistent alerts engine and Overview links to Network settings.
+
 <!-- GENERATED_ROUTES_START -->
 | Method | Path | Handler / request types |
 |---|---|---|
@@ -197,6 +212,10 @@ Per-app variables (`OPSBOX_APP_*`) and the pooler login (`OPSBOX_POOLER_PASSWORD
 | `DELETE` | `/api/v1/jobs/{id}` | [system::remove_job](../crates/opsbox-api/src/system.rs) |
 | `POST` | `/api/v1/jobs/{id}/run` | [system::run_job](../crates/opsbox-api/src/system.rs) |
 | `GET` | `/api/v1/metrics` | [metrics::get_metrics](../crates/opsbox-api/src/metrics.rs) |
+| `GET` | `/api/v1/network/proxy` | [network::get_network](../crates/opsbox-api/src/network.rs) |
+| `POST` | `/api/v1/network/proxy/keep` | [network::keep](../crates/opsbox-api/src/network.rs) |
+| `POST` | `/api/v1/network/proxy/takeover` | [network::takeover](../crates/opsbox-api/src/network.rs) |
+| `POST` | `/api/v1/network/proxy/undo` | [network::undo](../crates/opsbox-api/src/network.rs) |
 | `GET` | `/api/v1/panel` | [panel::status](../crates/opsbox-api/src/panel.rs) |
 | `POST` | `/api/v1/panel/certificate` | [panel::issue_cert](../crates/opsbox-api/src/panel.rs) |
 | `POST` | `/api/v1/panel/dns-check` | [panel::check_dns](../crates/opsbox-api/src/panel.rs) |
