@@ -166,6 +166,47 @@ pub fn validate_read_data_subset(raw: &str) -> Result<String, BackupError> {
     ))
 }
 
+/// Build the default copy-restore path `<path>.restored-<suffix>` for a directory/file snapshot.
+pub fn default_restored_path(original_path: &str, suffix: &str) -> Result<String, BackupError> {
+    let clean = validate_abs_path(original_path)?;
+    let trimmed = clean.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err(BackupError::Validation(
+            "Cannot derive copy restore target for root path.".into(),
+        ));
+    }
+    let candidate = format!("{trimmed}.restored-{suffix}");
+    validate_abs_path(&candidate)
+}
+
+/// Build the default copy-restore volume `<vol>-restored-<suffix>` for a Docker volume snapshot.
+pub fn default_restored_volume(original_vol: &str, suffix: &str) -> Result<String, BackupError> {
+    let clean = original_vol.trim();
+    if !valid_docker_ref(clean) {
+        return Err(BackupError::Validation(format!(
+            "\"{clean}\" is not a valid Docker volume name."
+        )));
+    }
+    let candidate = format!("{clean}-restored-{suffix}");
+    if !valid_docker_ref(&candidate) {
+        return Err(BackupError::Validation(format!(
+            "Derived volume name \"{candidate}\" is not valid."
+        )));
+    }
+    Ok(candidate)
+}
+
+/// Validate a path restore destination. `replace = true` also forbids overwriting `/var/lib/opsbox`.
+pub fn validate_restore_path(raw: &str, replace: bool) -> Result<String, BackupError> {
+    let clean = validate_abs_path(raw)?;
+    if replace && (clean == "/var/lib/opsbox" || clean.starts_with("/var/lib/opsbox/")) {
+        return Err(BackupError::Validation(
+            "Replacing the live opsbox data directory in place is not allowed; restore to a copy instead.".into(),
+        ));
+    }
+    Ok(clean)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +235,17 @@ mod tests {
         assert!(validate_read_data_subset("101%").is_err());
         assert!(validate_read_data_subset("3/2").is_err());
         assert!(validate_read_data_subset("; rm -rf /").is_err());
+
+        assert_eq!(
+            default_restored_path("/var/www/app/", "2026-11-18").unwrap(),
+            "/var/www/app.restored-2026-11-18"
+        );
+        assert_eq!(
+            default_restored_volume("pgdata", "2026-11-18").unwrap(),
+            "pgdata-restored-2026-11-18"
+        );
+        assert!(validate_restore_path("/var/lib/opsbox/opsbox.db", false).is_ok());
+        assert!(validate_restore_path("/var/lib/opsbox/opsbox.db", true).is_err());
+        assert!(validate_restore_path("/var/lib/opsbox", true).is_err());
     }
 }

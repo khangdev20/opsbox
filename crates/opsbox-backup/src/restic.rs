@@ -68,28 +68,40 @@ pub fn parse_job_tags(
     (job_id, kind, what)
 }
 
-fn base_args(repo: &Path, password_file: &Path) -> Vec<String> {
-    vec![
+fn base_args(repo: &str, password_file: &Path, extra_opts: &[String]) -> Vec<String> {
+    let mut a = vec![
         "-r".to_owned(),
-        repo.to_string_lossy().into_owned(),
+        repo.to_owned(),
         "--password-file".to_owned(),
         password_file.to_string_lossy().into_owned(),
-    ]
+    ];
+    for opt in extra_opts {
+        a.push("-o".to_owned());
+        a.push(opt.clone());
+    }
+    a
 }
 
-pub fn init_args(repo: &Path, password_file: &Path) -> Vec<String> {
-    let mut a = base_args(repo, password_file);
+pub fn init_args(repo: &str, password_file: &Path, extra_opts: &[String]) -> Vec<String> {
+    let mut a = base_args(repo, password_file, extra_opts);
     a.extend(["init".to_owned(), "--json".to_owned()]);
     a
 }
 
+pub fn cat_config_args(repo: &str, password_file: &Path, extra_opts: &[String]) -> Vec<String> {
+    let mut a = base_args(repo, password_file, extra_opts);
+    a.extend(["cat".to_owned(), "config".to_owned()]);
+    a
+}
+
 pub fn backup_stdin_args(
-    repo: &Path,
+    repo: &str,
     password_file: &Path,
+    extra_opts: &[String],
     stdin_filename: &str,
     tags: &[String],
 ) -> Vec<String> {
-    let mut a = base_args(repo, password_file);
+    let mut a = base_args(repo, password_file, extra_opts);
     a.extend([
         "backup".to_owned(),
         "--stdin".to_owned(),
@@ -105,13 +117,14 @@ pub fn backup_stdin_args(
 }
 
 pub fn backup_paths_args(
-    repo: &Path,
+    repo: &str,
     password_file: &Path,
+    extra_opts: &[String],
     paths: &[String],
     excludes: &[String],
     tags: &[String],
 ) -> Vec<String> {
-    let mut a = base_args(repo, password_file);
+    let mut a = base_args(repo, password_file, extra_opts);
     a.extend(["backup".to_owned(), "--json".to_owned()]);
     for ex in excludes {
         a.push("--exclude".to_owned());
@@ -125,20 +138,21 @@ pub fn backup_paths_args(
     a
 }
 
-pub fn snapshots_args(repo: &Path, password_file: &Path) -> Vec<String> {
-    let mut a = base_args(repo, password_file);
+pub fn snapshots_args(repo: &str, password_file: &Path, extra_opts: &[String]) -> Vec<String> {
+    let mut a = base_args(repo, password_file, extra_opts);
     a.extend(["snapshots".to_owned(), "--json".to_owned()]);
     a
 }
 
 pub fn forget_args(
-    repo: &Path,
+    repo: &str,
     password_file: &Path,
+    extra_opts: &[String],
     job_id: Option<&str>,
     retain_daily: u32,
     retain_weekly: u32,
 ) -> Vec<String> {
-    let mut a = base_args(repo, password_file);
+    let mut a = base_args(repo, password_file, extra_opts);
     a.extend([
         "forget".to_owned(),
         "--group-by".to_owned(),
@@ -162,11 +176,12 @@ pub fn forget_args(
 }
 
 pub fn forget_single_snapshot_args(
-    repo: &Path,
+    repo: &str,
     password_file: &Path,
+    extra_opts: &[String],
     snapshot_id: &str,
 ) -> Vec<String> {
-    let mut a = base_args(repo, password_file);
+    let mut a = base_args(repo, password_file, extra_opts);
     a.extend([
         "forget".to_owned(),
         "--prune".to_owned(),
@@ -176,15 +191,49 @@ pub fn forget_single_snapshot_args(
 }
 
 pub fn check_args(
-    repo: &Path,
+    repo: &str,
     password_file: &Path,
+    extra_opts: &[String],
     read_data_subset: Option<&str>,
 ) -> Vec<String> {
-    let mut a = base_args(repo, password_file);
+    let mut a = base_args(repo, password_file, extra_opts);
     a.extend(["check".to_owned(), "--json".to_owned()]);
     if let Some(sub) = read_data_subset {
         a.push(format!("--read-data-subset={sub}"));
     }
+    a
+}
+
+pub fn dump_args(
+    repo: &str,
+    password_file: &Path,
+    extra_opts: &[String],
+    snapshot_id: &str,
+    path_in_snapshot: &str,
+) -> Vec<String> {
+    let mut a = base_args(repo, password_file, extra_opts);
+    a.extend([
+        "dump".to_owned(),
+        snapshot_id.to_owned(),
+        path_in_snapshot.to_owned(),
+    ]);
+    a
+}
+
+pub fn restore_args(
+    repo: &str,
+    password_file: &Path,
+    extra_opts: &[String],
+    snapshot_id: &str,
+    target_dir: &Path,
+) -> Vec<String> {
+    let mut a = base_args(repo, password_file, extra_opts);
+    a.extend([
+        "restore".to_owned(),
+        snapshot_id.to_owned(),
+        "--target".to_owned(),
+        target_dir.to_string_lossy().into_owned(),
+    ]);
     a
 }
 
@@ -266,6 +315,19 @@ fn parse_rfc3339_unix(s: &str, fallback: i64) -> i64 {
     OffsetDateTime::parse(s.trim(), &Rfc3339)
         .map(|dt| dt.unix_timestamp())
         .unwrap_or(fallback)
+}
+
+/// Format a UTC unix timestamp as `YYYY-MM-DD-HHMM` for copy-restore target names.
+pub fn date_suffix_utc(ts: i64) -> String {
+    let dt = OffsetDateTime::from_unix_timestamp(ts).unwrap_or(OffsetDateTime::UNIX_EPOCH);
+    format!(
+        "{:04}-{:02}-{:02}-{:02}{:02}",
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day(),
+        dt.hour(),
+        dt.minute()
+    )
 }
 
 /// Parse `restic snapshots --json` output.
@@ -468,5 +530,61 @@ mod tests {
         let chk = parse_check_output(chk_out).unwrap();
         assert_eq!(chk.num_errors, 0);
         assert!(chk.broken_packs.is_empty());
+    }
+
+    #[test]
+    fn builds_restore_dump_and_extra_opt_args() {
+        let pw = Path::new("/run/opsbox/pw");
+        let opts = vec!["sftp.command=ssh -i /run/key".to_owned()];
+
+        let cat = cat_config_args("sftp:u@host:/repo", pw, &opts);
+        assert_eq!(
+            cat,
+            [
+                "-r",
+                "sftp:u@host:/repo",
+                "--password-file",
+                "/run/opsbox/pw",
+                "-o",
+                "sftp.command=ssh -i /run/key",
+                "cat",
+                "config",
+            ]
+        );
+
+        let dmp = dump_args("s3:https://r2/b", pw, &[], "43deae25", "/pg.fc");
+        assert_eq!(
+            dmp,
+            [
+                "-r",
+                "s3:https://r2/b",
+                "--password-file",
+                "/run/opsbox/pw",
+                "dump",
+                "43deae25",
+                "/pg.fc",
+            ]
+        );
+
+        let rst = restore_args(
+            "/var/lib/opsbox/backups",
+            pw,
+            &[],
+            "43deae25",
+            Path::new("/tmp/out"),
+        );
+        assert_eq!(
+            rst,
+            [
+                "-r",
+                "/var/lib/opsbox/backups",
+                "--password-file",
+                "/run/opsbox/pw",
+                "restore",
+                "43deae25",
+                "--target",
+                "/tmp/out",
+            ]
+        );
     }
 }

@@ -236,6 +236,21 @@ impl Auth {
             .unwrap_or(false)
     }
 
+    /// Re-verify an already authenticated user's password against the database
+    /// (for sensitive confirmations such as recovery key download).
+    pub async fn verify_user_password(
+        &self,
+        user_id: &str,
+        password: &str,
+    ) -> Result<bool, AuthError> {
+        let user = self.inner.store.user_by_id(user_id)?;
+        let stored = user
+            .as_ref()
+            .map_or(self.inner.dummy_hash.as_str(), |u| u.password_hash.as_str());
+        let ok = self.verify_password(password, stored).await;
+        Ok(user.is_some() && !password.is_empty() && ok)
+    }
+
     /// Hash a password on a blocking thread. Callers validate it first.
     pub async fn hash_password(&self, password: &str) -> Result<String, AuthError> {
         let _permit = self

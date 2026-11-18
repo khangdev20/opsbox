@@ -1443,4 +1443,82 @@ fn backup_jobs_snapshots_and_online_hot_backup() {
         let mode = std::fs::metadata(&bak_path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
+
+    // Offsite destination CRUD, job reassignment, delete cascade, and single-snapshot state updates.
+    let dest = store
+        .create_backup_destination(
+            "dest-r2",
+            "r2",
+            "Cloudflare R2",
+            &json!({"endpoint":"https://acct.r2.cloudflarestorage.com","bucket":"ops"}),
+            Some("enc:v1:s3"),
+            Some(500),
+            500,
+        )
+        .unwrap();
+    assert_eq!(dest.provider, "r2");
+    assert_eq!(dest.verified_at, Some(500));
+
+    let moved = store
+        .reassign_backup_jobs_destination(LOCAL_DESTINATION_ID, "dest-r2", 501)
+        .unwrap();
+    assert!(moved >= 1);
+    assert_eq!(
+        store
+            .get_backup_job(&path_job.id)
+            .unwrap()
+            .unwrap()
+            .destination_id,
+        "dest-r2"
+    );
+
+    let single = store
+        .upsert_single_backup_snapshot(
+            "dest-r2",
+            &SyncBackupSnapshot {
+                job_id: Some(&path_job.id),
+                restic_id: "3333333333333333",
+                short_id: "33333333",
+                what: "app-files",
+                kind: BackupTargetKind::Path,
+                taken_at: 505,
+                size_bytes: 1024,
+                tags: &tags,
+                paths: &paths,
+            },
+            Some((BackupCheckState::Unverified, 505)),
+            505,
+        )
+        .unwrap();
+    assert!(
+        store
+            .set_backup_snapshot_check_state(&single.id, BackupCheckState::RestoreTested, 510)
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .get_backup_snapshot_by_any_id("33333333")
+            .unwrap()
+            .unwrap()
+            .check_state,
+        BackupCheckState::RestoreTested
+    );
+
+    // Built-in local destination cannot be deleted.
+    assert!(
+        !store
+            .delete_backup_destination(LOCAL_DESTINATION_ID, 520)
+            .unwrap()
+    );
+    // Deleting remote destination moves its jobs back to 'local' and removes its snapshot cache.
+    assert!(store.delete_backup_destination("dest-r2", 520).unwrap());
+    assert_eq!(
+        store
+            .get_backup_job(&path_job.id)
+            .unwrap()
+            .unwrap()
+            .destination_id,
+        LOCAL_DESTINATION_ID
+    );
+    assert!(store.get_backup_snapshot(&single.id).unwrap().is_none());
 }

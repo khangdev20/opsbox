@@ -245,6 +245,87 @@ impl Store {
             .optional()?)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_backup_destination(
+        &self,
+        id: &str,
+        provider: &str,
+        name: &str,
+        config: &Value,
+        secrets_enc: Option<&str>,
+        verified_at: Option<i64>,
+        now: i64,
+    ) -> Result<BackupDestinationRecord, StoreError> {
+        let cfg_raw = serde_json::to_string(config)?;
+        self.lock().execute(
+            "INSERT INTO backup_destinations (
+                id, provider, name, config_json, secrets_enc, verified_at, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![id, provider, name, cfg_raw, secrets_enc, verified_at, now],
+        )?;
+        Ok(self
+            .get_backup_destination(id)?
+            .expect("inserted backup destination must exist"))
+    }
+
+    pub fn update_backup_destination_verification(
+        &self,
+        id: &str,
+        verified_at: Option<i64>,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        let n = self.lock().execute(
+            "UPDATE backup_destinations SET verified_at = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, verified_at, now],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn delete_backup_destination(&self, id: &str, now: i64) -> Result<bool, StoreError> {
+        if id == LOCAL_DESTINATION_ID {
+            return Ok(false);
+        }
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "UPDATE backup_jobs SET destination_id = ?2, updated_at = ?3 WHERE destination_id = ?1",
+            params![id, LOCAL_DESTINATION_ID, now],
+        )?;
+        tx.execute(
+            "DELETE FROM backup_snapshots WHERE destination_id = ?1",
+            params![id],
+        )?;
+        let n = tx.execute("DELETE FROM backup_destinations WHERE id = ?1", params![id])?;
+        tx.commit()?;
+        Ok(n > 0)
+    }
+
+    pub fn reassign_backup_jobs_destination(
+        &self,
+        from_destination_id: &str,
+        to_destination_id: &str,
+        now: i64,
+    ) -> Result<usize, StoreError> {
+        let n = self.lock().execute(
+            "UPDATE backup_jobs SET destination_id = ?2, updated_at = ?3 WHERE destination_id = ?1",
+            params![from_destination_id, to_destination_id, now],
+        )?;
+        Ok(n)
+    }
+
+    pub fn set_backup_job_destination(
+        &self,
+        job_id: &str,
+        destination_id: &str,
+        now: i64,
+    ) -> Result<bool, StoreError> {
+        let n = self.lock().execute(
+            "UPDATE backup_jobs SET destination_id = ?2, updated_at = ?3 WHERE id = ?1",
+            params![job_id, destination_id, now],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Create or update the default backup schedule for a template service (used by Prompt 11).
     pub fn upsert_backup_job(
         &self,
@@ -648,5 +729,125 @@ impl Store {
         Ok(stmt
             .query_map(params![lim], snap_from_row)?
             .collect::<Result<_, _>>()?)
+    }
+
+    pub fn get_backup_snapshot(
+        &self,
+        id: &str,
+    ) -> Result<Option<BackupSnapshotRecord>, StoreError> {
+        Ok(self
+            .lock()
+            .query_row(
+                &format!("SELECT {SNAP_COLS} FROM backup_snapshots WHERE id = ?1 LIMIT 1"),
+                params![id],
+                snap_from_row,
+            )
+            .optional()?)
+    }
+
+    pub fn get_backup_snapshot_by_any_id(
+        &self,
+        id_or_restic: &str,
+    ) -> Result<Option<BackupSnapshotRecord>, StoreError> {
+        Ok(self
+            .lock()
+            .query_row(
+                &format!(
+                    "SELECT {SNAP_COLS} FROM backup_snapshots
+                     WHERE id = ?1 OR restic_id = ?1 OR short_id = ?1
+                     ORDER BY CASE WHEN id = ?1 THEN 0 WHEN restic_id = ?1 THEN 1 ELSE 2 END, taken_at DESC
+                     LIMIT 1"
+                ),
+                params![id_or_restic],
+                snap_from_row,
+            )
+            .optional()?)
+    }
+
+    pub fn set_backup_snapshot_check_state(
+        &self,
+        id: &str,
+        state: BackupCheckState,
+        checked_at: i64,
+    ) -> Result<bool, StoreError> {
+        let n = self.lock().execute(
+            "UPDATE backup_snapshots SET check_state = ?2, checked_at = ?3, updated_at = ?3 WHERE id = ?1",
+            params![id, state.as_str(), checked_at],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn upsert_single_backup_snapshot(
+        &self,
+        destination_id: &str,
+        snap: &SyncBackupSnapshot<'_>,
+        check_state: Option<(BackupCheckState, i64)>,
+        now: i64,
+    ) -> Result<BackupSnapshotRecord, StoreError> {
+        let id = ulid::Ulid::generate().to_string();
+        let tags_json = serde_json::to_string(snap.tags)?;
+        let paths_json = serde_json::to_string(snap.paths)?;
+        let (state, chk_at_opt) = match check_state {
+            Some((s, ts)) => (s, Some(ts)),
+            None => (BackupCheckState::Unverified, None),
+        };
+        {
+            let conn = self.lock();
+            let valid_job = snap.job_id.filter(|jid| {
+                conn.query_row(
+                    "SELECT 1 FROM backup_jobs WHERE id = ?1",
+                    params![jid],
+                    |_| Ok(()),
+                )
+                .optional()
+                .ok()
+                .flatten()
+                .is_some()
+            });
+            conn.execute(
+                "INSERT INTO backup_snapshots (
+                    id, job_id, destination_id, restic_id, short_id, what, kind, taken_at,
+                    size_bytes, check_state, checked_at, tags_json, paths_json, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)
+                ON CONFLICT(destination_id, restic_id) DO UPDATE SET
+                    job_id = COALESCE(excluded.job_id, backup_snapshots.job_id),
+                    short_id = excluded.short_id,
+                    what = excluded.what,
+                    kind = excluded.kind,
+                    taken_at = excluded.taken_at,
+                    size_bytes = CASE
+                        WHEN excluded.size_bytes > 0 THEN excluded.size_bytes
+                        ELSE backup_snapshots.size_bytes
+                    END,
+                    tags_json = excluded.tags_json,
+                    paths_json = excluded.paths_json,
+                    updated_at = excluded.updated_at",
+                params![
+                    id,
+                    valid_job,
+                    destination_id,
+                    snap.restic_id,
+                    snap.short_id,
+                    snap.what,
+                    snap.kind.as_str(),
+                    snap.taken_at,
+                    snap.size_bytes,
+                    state.as_str(),
+                    chk_at_opt,
+                    tags_json,
+                    paths_json,
+                    now,
+                ],
+            )?;
+        }
+        Ok(self
+            .lock()
+            .query_row(
+                &format!(
+                    "SELECT {SNAP_COLS} FROM backup_snapshots WHERE destination_id = ?1 AND restic_id = ?2 LIMIT 1"
+                ),
+                params![destination_id, snap.restic_id],
+                snap_from_row,
+            )?)
     }
 }

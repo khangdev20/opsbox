@@ -23,9 +23,16 @@ pub mod watchdog;
 pub use access::{AccessState, AccessUser, AuthorizedKey, SshStatus};
 pub use api::{ApiError, ApiErrorBody, ErrorCode, HostView};
 pub use backup::{
-    BackupCheckRequest, BackupCheckResult, BackupCheckState, BackupDbKind, BackupForgetRequest,
-    BackupForgetResult, BackupLocalInfo, BackupRunResult, BackupRunSpec, BackupRunTarget,
-    BackupSnapshotsRequest, BackupTargetKind, ResticSnapshotInfo, valid_backup_id,
+    BackupCheckRequest, BackupCheckResult, BackupCheckState, BackupDbKind,
+    BackupDestinationTestRequest, BackupDestinationTestResult, BackupDestinationTestTarget,
+    BackupForgetRequest, BackupForgetResult, BackupGenerateSftpKeyRequest, BackupLocalInfo,
+    BackupProviderField, BackupProviderId, BackupProviderPreset, BackupRecoveryKeyResult,
+    BackupRepoTarget, BackupRestoreMode, BackupRestoreRequest, BackupRestoreResult,
+    BackupRestoreTarget, BackupRestoreTestRequest, BackupRestoreTestResult,
+    BackupRestoreTestTarget, BackupRunResult, BackupRunSpec, BackupRunTarget, BackupS3Credentials,
+    BackupSftpKeyResult, BackupSnapshotsRequest, BackupTargetKind, BackupTestStep,
+    BackupTestStepStatus, ResticSnapshotInfo, backup_provider_presets, valid_backup_id,
+    valid_restic_snapshot_id,
 };
 pub use cleanup::{CleanupFreed, CleanupItem, CleanupScan};
 pub use deploy::{

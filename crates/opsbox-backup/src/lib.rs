@@ -2,6 +2,7 @@
 //! (docs/BACKEND_SPEC.md 7.12).
 
 pub mod cron;
+pub mod destinations;
 pub mod dumps;
 pub mod restic;
 pub mod validation;

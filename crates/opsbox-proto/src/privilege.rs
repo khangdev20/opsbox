@@ -369,6 +369,16 @@ pub enum PrivOp {
     BackupForget(crate::backup::BackupForgetRequest),
     /// Run `restic check` to verify repository integrity and pack checksums.
     BackupCheck(crate::backup::BackupCheckRequest),
+    /// Test connectivity, repo init, write/read probe, and delete permission for an offsite destination.
+    BackupTestDestination(crate::backup::BackupDestinationTestRequest),
+    /// Generate an Ed25519 SSH keypair inside `priv` and return it sealed for SFTP backups.
+    BackupGenerateSftpKey(crate::backup::BackupGenerateSftpKeyRequest),
+    /// Derive and return the deterministic restic repository recovery password.
+    BackupRecoveryKey,
+    /// Restore a snapshot (`copy` by default, or `replace` with typed confirmation + safety snapshot first).
+    BackupRestore(crate::backup::BackupRestoreRequest),
+    /// Verify a snapshot by restoring it into an ephemeral temporary container or directory.
+    BackupRestoreTest(crate::backup::BackupRestoreTestRequest),
 }
 
 impl PrivOp {
@@ -463,6 +473,11 @@ impl PrivOp {
             Self::BackupSnapshots(_) => "backup_snapshots",
             Self::BackupForget(_) => "backup_forget",
             Self::BackupCheck(_) => "backup_check",
+            Self::BackupTestDestination(_) => "backup_test_destination",
+            Self::BackupGenerateSftpKey(_) => "backup_generate_sftp_key",
+            Self::BackupRecoveryKey => "backup_recovery_key",
+            Self::BackupRestore(_) => "backup_restore",
+            Self::BackupRestoreTest(_) => "backup_restore_test",
         }
     }
 }
@@ -628,6 +643,16 @@ pub enum PrivReply {
     BackupForget(Box<crate::backup::BackupForgetResult>),
     /// Answer to [`PrivOp::BackupCheck`].
     BackupCheck(Box<crate::backup::BackupCheckResult>),
+    /// Answer to [`PrivOp::BackupTestDestination`].
+    BackupTestDestination(crate::backup::BackupDestinationTestResult),
+    /// Answer to [`PrivOp::BackupGenerateSftpKey`].
+    BackupSftpKey(crate::backup::BackupSftpKeyResult),
+    /// Answer to [`PrivOp::BackupRecoveryKey`].
+    BackupRecoveryKey(crate::backup::BackupRecoveryKeyResult),
+    /// Answer to [`PrivOp::BackupRestore`].
+    BackupRestore(Box<crate::backup::BackupRestoreResult>),
+    /// Answer to [`PrivOp::BackupRestoreTest`].
+    BackupRestoreTest(Box<crate::backup::BackupRestoreTestResult>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

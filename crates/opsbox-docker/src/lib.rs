@@ -24,8 +24,8 @@ use bollard::query_parameters::{
     ListNetworksOptionsBuilder, ListVolumesOptions, ListVolumesOptionsBuilder, LogsOptionsBuilder,
     PruneBuildOptionsBuilder, PruneContainersOptionsBuilder, PruneImagesOptionsBuilder,
     PruneVolumesOptionsBuilder, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
-    RestartContainerOptionsBuilder, StartContainerOptions, StatsOptionsBuilder,
-    StopContainerOptionsBuilder, TagImageOptionsBuilder,
+    RemoveVolumeOptions, RestartContainerOptionsBuilder, StartContainerOptions,
+    StatsOptionsBuilder, StopContainerOptionsBuilder, TagImageOptionsBuilder,
 };
 use bollard::{API_DEFAULT_VERSION, ClientVersion, Docker};
 use futures_util::future::join_all;
@@ -746,14 +746,7 @@ impl DockerClient {
         })
     }
 
-    /// Execute a command inside a running container and stream its stdout directly into `sink`
-    /// without buffering stdout in memory (used to pipe logical database dumps into `restic --stdin`).
-    pub async fn exec_to_writer<W: tokio::io::AsyncWrite + Unpin + Send>(
-        &self,
-        req: DockerExecRequest,
-        mut sink: W,
-        timeout: Duration,
-    ) -> Result<DockerExecStreamStatus, DockerError> {
+    fn validate_exec_request(req: &DockerExecRequest) -> Result<(), DockerError> {
         if !valid_docker_ref(&req.id) {
             return Err(DockerError::Invalid(
                 "That is not a valid container name or ID.".into(),
@@ -782,6 +775,18 @@ impl DockerClient {
                 "Invalid user or working directory for container exec.".into(),
             ));
         }
+        Ok(())
+    }
+
+    /// Execute a command inside a running container and stream its stdout directly into `sink`
+    /// without buffering stdout in memory (used to pipe logical database dumps into `restic --stdin`).
+    pub async fn exec_to_writer<W: tokio::io::AsyncWrite + Unpin + Send>(
+        &self,
+        req: DockerExecRequest,
+        mut sink: W,
+        timeout: Duration,
+    ) -> Result<DockerExecStreamStatus, DockerError> {
+        Self::validate_exec_request(&req)?;
 
         let docker = self.connect().await?;
         let has_stdin = req.stdin.is_some();
@@ -877,6 +882,120 @@ impl DockerClient {
             bytes_written,
             stderr: String::from_utf8_lossy(&stderr).into_owned(),
             truncated_stderr,
+        })
+    }
+
+    /// Execute a command inside a running container, streaming `source` into stdin and
+    /// capturing bounded stdout/stderr (used to stream `restic dump` into DB restore commands).
+    pub async fn exec_from_reader<R: tokio::io::AsyncRead + Unpin + Send>(
+        &self,
+        req: DockerExecRequest,
+        mut source: R,
+        timeout: Duration,
+    ) -> Result<DockerExecOutput, DockerError> {
+        Self::validate_exec_request(&req)?;
+
+        let docker = self.connect().await?;
+        let created = docker
+            .create_exec(
+                &req.id,
+                CreateExecOptions {
+                    attach_stdin: Some(true),
+                    attach_stdout: Some(true),
+                    attach_stderr: Some(true),
+                    tty: Some(false),
+                    cmd: Some(req.cmd),
+                    env: (!req.env.is_empty()).then_some(req.env),
+                    user: req.user,
+                    working_dir: req.working_dir,
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "create exec"))?;
+
+        let start = docker
+            .start_exec(
+                &created.id,
+                Some(StartExecOptions {
+                    detach: false,
+                    tty: false,
+                    ..Default::default()
+                }),
+            )
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "start exec"))?;
+
+        let mut stdout_buf = Vec::new();
+        let mut stderr_buf = Vec::new();
+        let mut truncated = false;
+
+        if let StartExecResults::Attached {
+            mut output,
+            mut input,
+        } = start
+        {
+            let write_fut = async {
+                match tokio::io::copy(&mut source, &mut input).await {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+                    Err(e) => {
+                        return Err(DockerError::Internal(format!(
+                            "Restore stdin pipe failed: {e}"
+                        )));
+                    }
+                }
+                if let Err(e) = input.shutdown().await
+                    && e.kind() != std::io::ErrorKind::BrokenPipe
+                {
+                    return Err(DockerError::Internal(format!(
+                        "Restore stdin close failed: {e}"
+                    )));
+                }
+                Ok::<(), DockerError>(())
+            };
+            let read_fut = async {
+                while let Some(item) = output.next().await {
+                    match item {
+                        Ok(LogOutput::StdOut { message } | LogOutput::Console { message }) => {
+                            let keep = message
+                                .len()
+                                .min(MAX_EXEC_STDOUT.saturating_sub(stdout_buf.len()));
+                            stdout_buf.extend_from_slice(&message[..keep]);
+                            truncated |= keep < message.len();
+                        }
+                        Ok(LogOutput::StdErr { message }) => {
+                            let keep = message
+                                .len()
+                                .min(MAX_EXEC_STDERR.saturating_sub(stderr_buf.len()));
+                            stderr_buf.extend_from_slice(&message[..keep]);
+                            truncated |= keep < message.len();
+                        }
+                        Ok(LogOutput::StdIn { .. }) => {}
+                        Err(e) => return Err(DockerError::from_bollard(e, "exec output")),
+                    }
+                }
+                Ok::<(), DockerError>(())
+            };
+
+            let (w_res, r_res) =
+                tokio::time::timeout(timeout, async { tokio::join!(write_fut, read_fut) })
+                    .await
+                    .map_err(|_| DockerError::Timeout)?;
+            w_res?;
+            r_res?;
+        }
+
+        let inspected = docker
+            .inspect_exec(&created.id)
+            .await
+            .map_err(|e| DockerError::from_bollard(e, "inspect exec"))?;
+
+        Ok(DockerExecOutput {
+            exit_code: inspected.exit_code.unwrap_or(0),
+            stdout: stdout_buf,
+            stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+            truncated,
         })
     }
 
@@ -1734,6 +1853,26 @@ impl DockerClient {
             .await
             .map_err(|e| DockerError::from_bollard(e, "inspect volume"))?;
         Ok(vol.mountpoint)
+    }
+
+    /// Remove a named Docker volume (used to clean up ephemeral restore-test volumes).
+    pub async fn remove_volume(&self, name: &str) -> Result<(), DockerError> {
+        if !valid_docker_ref(name) {
+            return Err(DockerError::Invalid(
+                "That is not a valid Docker volume name.".into(),
+            ));
+        }
+        let docker = self.connect().await?;
+        match docker
+            .remove_volume(name, None::<RemoveVolumeOptions>)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(e) => Err(DockerError::from_bollard(e, "remove volume")),
+        }
     }
 
     /// Return IDs of running containers that mount any of `volume_names`.
