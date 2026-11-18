@@ -505,3 +505,9 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 ## Prompt 16l (audit IP, filters, CSV)
 
 **List and export share one filter.** `AuditFilter` in the store drives both `GET /audit` (newest-first, `before_seq` cursor, default page 50) and `GET /audit/export.csv` (oldest-first walk, no collect). CSV cells use RFC 4180 quoting and prefix `'` when a value starts with `= + - @`. Trailing `# chain:` comments carry the range verify (first/last hash or broken seq). A trusted proxy with no forwarded client address is stored/shown as `panel`; loopback without the proxy is `local` in the UI.
+
+## Prompt 16m (process kind)
+
+**Cgroup for top-N only, in metrics not priv.** Process CPU/RSS still comes from `MetricsSample` via `priv`. After the engine picks the top processes, `opsbox-metrics` reads `/proc/<pid>/cgroup` for those PIDs alone and caches the result until the PID leaves the list. That keeps the cost off the full process scan and avoids extending the privileged sample just for classification. Docker name/service come from the existing Docker list refresh (same cache lifetime).
+
+**Classification.** cgroup v2 `docker-<id>.scope` or `/docker/<id>` → `container`; `system.slice/<unit>.service` (and not a user slice) → `system` with `unit`; otherwise `user`. Classic cgroup v1 (no `0::` line) → `unknown`.

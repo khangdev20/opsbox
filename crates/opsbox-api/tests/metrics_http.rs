@@ -79,14 +79,23 @@ async fn processes_are_real_and_include_this_one() {
         .as_array()
         .expect("a process list within 6 s");
     for p in procs {
+        let kind = p["kind"].as_str().unwrap_or("");
         assert!(
             p["name"].as_str().is_some_and(|n| !n.is_empty())
                 && p["pid"].is_u64()
                 && p["cpu"].is_number()
                 && p["mem"].is_number()
-                && p["self"].is_boolean(),
+                && p["self"].is_boolean()
+                && matches!(kind, "container" | "system" | "user" | "unknown"),
             "{p}"
         );
+        if kind == "container" {
+            assert!(p["container"]["id"].as_str().is_some_and(|s| !s.is_empty()), "{p}");
+            assert!(p["container"]["name"].as_str().is_some_and(|s| !s.is_empty()), "{p}");
+        }
+        if kind == "system" {
+            assert!(p["unit"].as_str().is_some_and(|s| s.ends_with(".service")), "{p}");
+        }
     }
     assert!(procs.len() <= 8);
     let cpus: Vec<f64> = procs.iter().map(|p| p["cpu"].as_f64().unwrap()).collect();

@@ -1,20 +1,20 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/16l-audit-ip-and-csv.md` (audit IP column, filters, CSV export). Not committed, not tagged (per session request). Prior: `16k` (display names + 2FA).
+Last completed prompt: `docs/prompts/archive/16m-process-kind.md` (top process kind from cgroup). Not committed, not tagged (per session request). Prior: `16l` (audit IP/filters/CSV).
 
-## What works (16l)
-- **Store**: `AuditFilter` / `list_audit` (newest-first, cursor via `before_seq`, default page 50) and `for_each_audit` (oldest-first walk, no collect). `verify_audit_range`, `csv_cell` / `audit_csv_row` (RFC 4180 + `'` formula neutralise).
-- **API**: `GET /api/v1/audit` (Admin) returns `ip` + filters (`actor`, `action` prefix, `result`, `from`/`to`, `cursor`). `GET /api/v1/audit/export.csv` streams CSV (`no-store`, `Content-Disposition: opsbox-audit-<host>-<date>.csv`), trailing `# chain:` verify. `GET /security` audit rows include `ip`. Trusted proxy without XFF is labelled `panel` in `Transport::client_ip_text`.
-- **UI**: Security audit table has IP (local / panel / address), filter row, Export CSV using active filters (`getAudit`, `exportAuditCsv` in REAL).
-- **Docs / tests**: `docs/API.md`, `docs/DECISIONS.md`; store unit tests for CSV/filters/paging; `security_http` integration for filters, pagination, large export, admin-only.
+## What works (16m)
+- **Metrics**: After top-N sort, `opsbox-metrics` reads `/proc/<pid>/cgroup` (cgroup v2), classifies `container` / `system` / `user` / `unknown`, maps Docker ids via the refreshed container list (`name`, `service?`), and caches by PID until exit. `ProcView` carries `kind`, `container`, `unit`.
+- **API**: `GET /metrics` and `/stream/metrics` process entries include `kind` plus optional `container` / `unit` (`docs/API.md`).
+- **UI**: Overview `procRow` subline `container <name> · pid …` / `system <unit> · pid …`; row links to `#/apps?s=…` when `service` is set, else `#/containers`.
+- **Tests / docs**: Unit fixtures in `proc_kind` (Docker systemd + cgroupfs, system, user, v1 unknown, cache); API view unit tests; metrics HTTP asserts `kind`. `docs/DECISIONS.md` 16m entry.
 
 ## Partial / Found, not fixed
-- **cargo fmt / clippy / test not run** (shell unavailable this session). Please run: `PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`.
-- **Archive move**: content is in `docs/prompts/archive/16l-audit-ip-and-csv.md`; if `docs/prompts/16l-audit-ip-and-csv.md` still appears in git, `git rm` it and `git add` the archive path (shell `git mv` was unavailable).
+- **cargo fmt / clippy / test not run this session** (shell unavailable). Please run: `PATH=/opt/homebrew/opt/rustup/bin:$PATH cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`.
+- **Archive**: full text is in `docs/prompts/archive/16m-process-kind.md`. The file at `docs/prompts/16m-process-kind.md` is a stub (shell/`git mv` unavailable); on commit run `git rm docs/prompts/16m-process-kind.md && git add docs/prompts/archive/16m-process-kind.md`.
 - **Not verified on `opsbox-vm`**. Not checked at 390 px.
-- Carried over: 16k / 16j / 03f / 16e / 03e / 03d pending commit/release; import is 16q.
+- Carried over: 16l / 16k / 16j / … pending commit/release; next prompt `16n`.
 
 ## Next
-- Commit 16l (with the pending stack if intended), push `dev`, wait for CI, tag when appropriate.
-- Then `16m-process-kind.md`.
-- VM check for 16l: sign in from host (tunnel → local) and VM (real IP or panel), filter by actor, Export CSV, open in a spreadsheet; `# chain: ok` at the end. Must fail safely: a viewer `GET /api/v1/audit/export.csv` returns 403.
+- Commit 16m (with the pending stack if intended), push `dev`, wait for CI, tag when appropriate.
+- Then `16n-mock-leftovers-and-fixture.md`.
+- VM check for 16m: Overview top processes show greenglish container names; `dockerd` shows `system docker.service`. Must fail safely: a process with unreadable/missing cgroup still appears with `kind: unknown` (or `user`) and no crash.

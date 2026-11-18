@@ -28,16 +28,36 @@ const TOP = 5;
 // A bar that animates with a transform (data-bar), like every other meter; never changes colour with its level.
 const pbar = (ratio, cls) => { const r = Math.min(1, Math.max(0, Number.isFinite(ratio) ? ratio : 0)); return html`<span class="bar sm ${cls}" aria-hidden="true"><i data-bar="${r.toFixed(4)}" data-th="off" style="transform:scaleX(${r.toFixed(4)})"></i></span>`; };
 
-// One row of "Top processes": rank, coloured initial tile, name with PID, CPU and memory with bars.
+function procSubline(p) {
+  if (p.kind === 'container') {
+    const label = p.container?.name || p.container?.id;
+    return label ? `container ${label} · pid ${p.pid}` : `container · pid ${p.pid}`;
+  }
+  if (p.kind === 'system' && p.unit) return `system ${p.unit} · pid ${p.pid}`;
+  if (p.kind === 'system') return `system · pid ${p.pid}`;
+  if (p.kind === 'user') return `user · pid ${p.pid}`;
+  if (p.kind === 'unknown') return `pid ${p.pid}`;
+  return `pid ${p.pid}`;
+}
+
+function procHref(p) {
+  if (p.kind === 'container' && p.container?.service) return `#/apps?s=${encodeURIComponent(p.container.service)}`;
+  if (p.kind === 'container' && (p.container?.id || p.container?.name)) return '#/containers';
+  return '';
+}
+
+// One row of "Top processes": rank, coloured initial tile, name with kind + PID, CPU and memory with bars.
 // Keyed by PID so rows move and update in place when the sort or the numbers change.
 export function procRow(p, i, maxCpu, memTotalMb) {
   const tile = p.self ? 'self' : hue(p.name);
-  return html`<div class="pr" role="row" data-key="p${p.pid}" data-sig="-">
-    <span class="pr-rank">${String(i + 1).padStart(2, '0')}</span>
+  const href = procHref(p);
+  const body = html`<span class="pr-rank">${String(i + 1).padStart(2, '0')}</span>
     <span class="pr-id"><span class="pr-tile t${tile}" aria-hidden="true">${String(p.name || '?')[0].toUpperCase()}</span>
-      <span class="pr-txt"><span class="pr-name">${p.name}${p.self ? html`<span class="pr-this">this</span>` : ''}</span><span class="pr-sub">${p.kind ? `${p.kind} · ` : ''}pid ${p.pid}</span></span></span>
+      <span class="pr-txt"><span class="pr-name">${p.name}${p.self ? html`<span class="pr-this">this</span>` : ''}</span><span class="pr-sub">${procSubline(p)}</span></span></span>
     <span class="pr-v"><span class="mono">${num(p.cpu, 'pct1')}</span>${pbar(p.cpu / maxCpu, 'cpu')}</span>
-    <span class="pr-v"><span class="mono">${num(p.mem, 'mb')}</span>${pbar(p.mem / memTotalMb, 'mem')}</span></div>`;
+    <span class="pr-v"><span class="mono">${num(p.mem, 'mb')}</span>${pbar(p.mem / memTotalMb, 'mem')}</span>`;
+  if (href) return html`<a class="pr pr-link" role="row" href="${href}" data-key="p${p.pid}" data-sig="-">${body}</a>`;
+  return html`<div class="pr" role="row" data-key="p${p.pid}" data-sig="-">${body}</div>`;
 }
 
 function topProcesses(m, sortBy) {

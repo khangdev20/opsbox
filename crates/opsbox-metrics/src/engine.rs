@@ -5,6 +5,8 @@ use std::collections::{HashMap, VecDeque};
 use opsbox_proto::{CpuTimes, DockerContainerStat, RawSample};
 use serde::Serialize;
 
+use crate::proc_kind::{ProcContainer, ProcKind};
+
 /// One second of the machine's state.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Point {
@@ -66,6 +68,14 @@ pub struct ProcView {
     pub rss: u64,
     /// One of opsbox's own processes.
     pub is_self: bool,
+    /// From `/proc/<pid>/cgroup`: container, system, user, or unknown.
+    pub kind: ProcKind,
+    /// Set when `kind` is `container`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<ProcContainer>,
+    /// Systemd unit when `kind` is `system` (e.g. `docker.service`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -249,6 +259,9 @@ impl Engine {
                             cpu: (delta(before, p.ticks) as f64 / (per_sec * dt) * 100.0) as f32,
                             rss: p.rss_bytes,
                             is_self: p.name.starts_with("opsbox"),
+                            kind: ProcKind::Unknown,
+                            container: None,
+                            unit: None,
                         }
                     })
                     .collect();

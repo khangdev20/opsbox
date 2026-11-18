@@ -288,9 +288,11 @@ const S = {
     disk: 98, netIn: 4.2, netOut: 0.8, conns: 142, load: [0.62, 0.48, 0.41], memUsed: 3.1, cache: 2.4,
   },
   procs: [
-    { name: 'postgres', pid: 1204, cpu: 8.1, mem: 612 }, { name: 'node', pid: 2231, cpu: 6.4, mem: 388 },
-    { name: 'dockerd', pid: 887, cpu: 3.0, mem: 142 }, { name: 'nginx', pid: 1102, cpu: 1.2, mem: 38 },
-    { name: 'opsbox', pid: 412, cpu: 0.1, mem: 14, self: true },
+    { name: 'postgres', pid: 1204, cpu: 8.1, mem: 612, kind: 'container', container: { id: 'c2', name: 'postgres-15', service: 'postgres' } },
+    { name: 'node', pid: 2231, cpu: 6.4, mem: 388, kind: 'container', container: { id: 'c1', name: 'web-app', service: 'web' } },
+    { name: 'dockerd', pid: 887, cpu: 3.0, mem: 142, kind: 'system', unit: 'docker.service' },
+    { name: 'nginx', pid: 1102, cpu: 1.2, mem: 38, kind: 'system', unit: 'nginx.service' },
+    { name: 'opsbox', pid: 412, cpu: 0.1, mem: 14, self: true, kind: 'system', unit: 'opsbox.service' },
   ],
   containers: [
     { id: 'c1', name: 'web-app', image: 'node:22-alpine', state: 'running', since: now() - 3 * DAY, cpu: 2.1, mem: 210, ports: '3000→3000' },

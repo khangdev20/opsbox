@@ -84,6 +84,28 @@ fn round1(v: f64) -> f64 {
     (v * 10.0).round() / 10.0
 }
 
+fn proc_json(q: &opsbox_metrics::ProcView) -> Value {
+    let mut v = json!({
+        "name": q.name,
+        "pid": q.pid,
+        "cpu": round1(f64::from(q.cpu)),
+        "mem": (q.rss as f64 / MB).round(),
+        "self": q.is_self,
+        "kind": q.kind,
+    });
+    if let Some(c) = &q.container {
+        let mut cjson = json!({ "id": c.id, "name": c.name });
+        if let Some(svc) = &c.service {
+            cjson["service"] = json!(svc);
+        }
+        v["container"] = cjson;
+    }
+    if let Some(unit) = &q.unit {
+        v["unit"] = json!(unit);
+    }
+    v
+}
+
 /// The full metrics object for the last `window_secs` seconds.
 pub fn view(snap: &Snapshot, history: &[Point], window_secs: usize) -> Value {
     let step = (window_secs / MAX_POINTS).max(MIN_STEP_SECS);
@@ -95,11 +117,7 @@ pub fn view(snap: &Snapshot, history: &[Point], window_secs: usize) -> Value {
         .iter()
         .find(|d| d.mount == "/")
         .or(snap.disks.first());
-    let procs: Vec<Value> = snap
-        .procs
-        .iter()
-        .map(|q| json!({ "name": q.name, "pid": q.pid, "cpu": round1(f64::from(q.cpu)), "mem": (q.rss as f64 / MB).round(), "self": q.is_self }))
-        .collect();
+    let procs: Vec<Value> = snap.procs.iter().map(proc_json).collect();
     let containers: Vec<Value> = snap
         .containers
         .iter()
@@ -723,13 +741,60 @@ mod tests {
                 cpu: 0.123,
                 rss: 14 << 20,
                 is_self: true,
+                kind: opsbox_metrics::ProcKind::System,
+                container: None,
+                unit: Some("opsbox.service".into()),
             }],
             containers: vec![],
         };
         let v = view(&snap, std::slice::from_ref(&snap.point), 48);
         assert_eq!(
             v["procs"][0],
-            json!({ "name": "opsbox", "pid": 7, "cpu": 0.1, "mem": 14.0, "self": true })
+            json!({
+                "name": "opsbox",
+                "pid": 7,
+                "cpu": 0.1,
+                "mem": 14.0,
+                "self": true,
+                "kind": "system",
+                "unit": "opsbox.service",
+            })
+        );
+    }
+
+    #[test]
+    fn process_container_kind_includes_name_and_service() {
+        let snap = Snapshot {
+            point: p(1, 1.0),
+            disks: vec![],
+            procs: vec![opsbox_metrics::ProcView {
+                pid: 1204,
+                name: "postgres".into(),
+                cpu: 8.1,
+                rss: 612 << 20,
+                is_self: false,
+                kind: opsbox_metrics::ProcKind::Container,
+                container: Some(opsbox_metrics::ProcContainer {
+                    id: "abc123def456".into(),
+                    name: "web-app".into(),
+                    service: Some("web".into()),
+                }),
+                unit: None,
+            }],
+            containers: vec![],
+        };
+        let v = view(&snap, std::slice::from_ref(&snap.point), 48);
+        assert_eq!(
+            v["procs"][0],
+            json!({
+                "name": "postgres",
+                "pid": 1204,
+                "cpu": 8.1,
+                "mem": 612.0,
+                "self": false,
+                "kind": "container",
+                "container": { "id": "abc123def456", "name": "web-app", "service": "web" },
+            })
         );
     }
 

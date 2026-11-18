@@ -13,6 +13,7 @@ use tracing::{debug, warn};
 
 use crate::attention::{self, Attention};
 use crate::engine::{Engine, Point, Snapshot};
+use crate::proc_kind::{DockerIndexEntry, ProcKindCache};
 use crate::rollup::Rollup;
 
 /// How often `SystemFacts` is refreshed (it can run `apt-check`, which is slow).
@@ -34,6 +35,9 @@ struct State {
     facts_at: i64,
     down_containers: Option<(i64, Vec<String>)>,
     containers: Vec<DockerContainerStat>,
+    /// Id → name/service from the Docker list, refreshed with it.
+    docker_index: Vec<DockerIndexEntry>,
+    proc_kinds: ProcKindCache,
     restarting_containers: Vec<String>,
     restarting_known: bool,
     attention_since: HashMap<String, i64>,
@@ -62,6 +66,8 @@ impl Metrics {
                 facts_at: 0,
                 down_containers: None,
                 containers: Vec::new(),
+                docker_index: Vec::new(),
+                proc_kinds: ProcKindCache::new(),
                 restarting_containers: Vec::new(),
                 restarting_known: false,
                 attention_since: HashMap::new(),
@@ -161,6 +167,8 @@ impl Metrics {
                 let Some(mut snap) = s.engine.ingest(raw, now) else {
                     continue;
                 };
+                let docker_index = s.docker_index.clone();
+                enrich_top_procs(&mut snap, &mut s.proc_kinds, &docker_index);
                 snap.containers = s.containers.clone();
                 let rows = s.rollup.push(&snap.point, &snap.disks);
                 let snap = Arc::new(snap);
@@ -240,6 +248,15 @@ impl Metrics {
                     } else {
                         Some(Vec::new())
                     };
+                    let index: Vec<DockerIndexEntry> = list
+                        .iter()
+                        .map(|c| DockerIndexEntry {
+                            id: c.id.clone(),
+                            full_id: c.full_id.clone(),
+                            name: c.name.clone(),
+                            service: c.service.clone(),
+                        })
+                        .collect();
                     let mut s = self.lock();
                     s.down_containers = Some((
                         unix_now(),
@@ -252,6 +269,7 @@ impl Metrics {
                     ));
                     s.restarting_containers = restarting;
                     s.restarting_known = true;
+                    s.docker_index = index;
                     if let Some(st) = stats {
                         s.containers = st;
                     }
@@ -261,6 +279,7 @@ impl Metrics {
                 Ok(Err(ClientError::Remote(_))) => {
                     let mut s = self.lock();
                     s.containers.clear();
+                    s.docker_index.clear();
                     s.restarting_containers.clear();
                     s.restarting_known = true;
                     reconcile_attention_since(&mut s, unix_now());
@@ -276,6 +295,22 @@ impl Metrics {
                 () = self.docker_wake.notified() => {}
             }
         }
+    }
+}
+
+/// Read `/proc/<pid>/cgroup` only for the top-N list; cache by PID until exit.
+fn enrich_top_procs(
+    snap: &mut Snapshot,
+    cache: &mut ProcKindCache,
+    docker: &[DockerIndexEntry],
+) {
+    let live: Vec<u32> = snap.procs.iter().map(|p| p.pid).collect();
+    cache.retain(&live);
+    for p in &mut snap.procs {
+        let resolved = cache.resolve(p.pid, docker);
+        p.kind = resolved.kind;
+        p.container = resolved.container;
+        p.unit = resolved.unit;
     }
 }
 

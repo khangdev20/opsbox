@@ -47,7 +47,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 16j | Uninstall opsbox (keep apps and data) (`16j-uninstall.md`) | release prep | ✓ |
 | 16k | User display names and real 2FA state (`16k-user-display-names.md`) | release prep | ✓ |
 | 16l | Audit log IP, filters and CSV export (`16l-audit-ip-and-csv.md`) | release prep | ✓ |
-| 16m | Top processes: container or system (`16m-process-kind.md`) | release prep | |
+| 16m | Top processes: container or system (`16m-process-kind.md`) | release prep | ✓ |
 | 16n | Mock leftovers and capacity test fixture (`16n-mock-leftovers-and-fixture.md`) | release prep | |
 | 16o | Secrets in responses: masked, reveal on demand (`16o-secrets-in-responses.md`) | release prep | |
 | 16p | Stable live lists (FLIP) everywhere (`16p-stable-live-lists.md`) | release prep | |
