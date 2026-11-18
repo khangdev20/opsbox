@@ -91,12 +91,87 @@ pub struct AuditReport {
     pub head: String,
 }
 
+/// Filters for listing or exporting the audit log. Empty fields mean "no filter".
+#[derive(Debug, Clone, Default)]
+pub struct AuditFilter {
+    /// Exact actor string (e.g. `admin` or `Ada (admin)`).
+    pub actor: Option<String>,
+    /// `action` must start with this prefix (e.g. `auth.`).
+    pub action_prefix: Option<String>,
+    /// Exact result: `ok`, `denied`, or `failed`.
+    pub result: Option<String>,
+    /// Inclusive lower bound on `ts` (RFC 3339).
+    pub from: Option<String>,
+    /// Inclusive upper bound on `ts` (RFC 3339).
+    pub to: Option<String>,
+    /// When set (list only): return rows with `seq` strictly less than this (newer-first cursor).
+    pub before_seq: Option<i64>,
+    /// Page size for [`Store::list_audit`]. Ignored by the export walk.
+    pub limit: u32,
+}
+
+/// One page of audit rows, newest first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditPage {
+    pub entries: Vec<AuditEntry>,
+    /// Pass as `before_seq` for the next page. `None` when this was the last page.
+    pub next_cursor: Option<i64>,
+}
+
+/// Result of verifying every link in a contiguous `seq` range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuditRangeReport {
+    pub first_hash: String,
+    pub last_hash: String,
+    pub entries: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AuditError {
     #[error("audit chain broken at entry {seq}: {reason}")]
     Broken { seq: i64, reason: &'static str },
     #[error(transparent)]
     Store(#[from] StoreError),
+}
+
+/// Default page size for `GET /api/v1/audit` (and the Security page preview keeps 12).
+pub const DEFAULT_AUDIT_PAGE: u32 = 50;
+/// Hard cap so a caller cannot ask for an unbounded page.
+pub const MAX_AUDIT_PAGE: u32 = 200;
+
+/// CSV column header for the audit export (prompt 16l).
+pub const AUDIT_CSV_HEADER: &str =
+    "seq,ts,actor,actor_kind,ip,action,target,result,detail,hash";
+
+/// RFC 4180 cell escaping, with spreadsheet formula injection neutralised by
+/// prefixing a leading `'` when the value starts with `=`, `+`, `-`, or `@`.
+pub fn csv_cell(raw: &str) -> String {
+    let neutralized = match raw.chars().next() {
+        Some('=' | '+' | '-' | '@') => format!("'{raw}"),
+        _ => raw.to_owned(),
+    };
+    if neutralized.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", neutralized.replace('"', "\"\""))
+    } else {
+        neutralized
+    }
+}
+
+/// One CSV data row for an audit entry (no trailing newline).
+pub fn audit_csv_row(e: &AuditEntry) -> String {
+    [
+        csv_cell(&e.seq.to_string()),
+        csv_cell(&e.ts),
+        csv_cell(&e.actor),
+        csv_cell(&e.actor_kind),
+        csv_cell(e.ip.as_deref().unwrap_or("")),
+        csv_cell(&e.action),
+        csv_cell(e.target.as_deref().unwrap_or("")),
+        csv_cell(&e.result),
+        csv_cell(&e.detail),
+        csv_cell(&e.hash),
+    ]
+    .join(",")
 }
 
 impl From<rusqlite::Error> for AuditError {
@@ -206,12 +281,62 @@ impl Store {
 
     /// The newest `limit` entries, newest first.
     pub fn recent_audit(&self, limit: u32) -> Result<Vec<AuditEntry>, StoreError> {
+        self.list_audit(&AuditFilter {
+            limit,
+            ..AuditFilter::default()
+        })
+        .map(|p| p.entries)
+    }
+
+    /// Newest-first page with optional filters and a `before_seq` cursor.
+    pub fn list_audit(&self, filter: &AuditFilter) -> Result<AuditPage, StoreError> {
+        let limit = filter.limit.clamp(1, MAX_AUDIT_PAGE);
         let conn = self.lock();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {COLUMNS} FROM audit ORDER BY seq DESC LIMIT ?1"
-        ))?;
-        let rows = stmt.query_map([limit], row_to_entry)?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let (sql, params) = filter_sql(filter, Order::Desc, Some(limit.saturating_add(1)));
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), row_to_entry)?;
+        let mut entries: Vec<AuditEntry> = rows.collect::<Result<_, _>>()?;
+        let next_cursor = if entries.len() > limit as usize {
+            entries.truncate(limit as usize);
+            entries.last().map(|e| e.seq)
+        } else {
+            None
+        };
+        Ok(AuditPage {
+            entries,
+            next_cursor,
+        })
+    }
+
+    /// Walk matching rows oldest-first in small batches, without collecting the whole
+    /// range. Used by the CSV export so a large export never sits in memory and the
+    /// store lock is not held across slow I/O.
+    pub fn for_each_audit<F>(&self, filter: &AuditFilter, mut f: F) -> Result<(), StoreError>
+    where
+        F: FnMut(&AuditEntry) -> Result<(), StoreError>,
+    {
+        const BATCH: u32 = 100;
+        let mut after_seq: Option<i64> = None;
+        loop {
+            let batch = {
+                let conn = self.lock();
+                let (sql, params) = filter_sql_after(filter, after_seq, BATCH);
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(rusqlite::params_from_iter(params), row_to_entry)?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            if batch.is_empty() {
+                break;
+            }
+            for e in &batch {
+                f(e)?;
+                after_seq = Some(e.seq);
+            }
+            if batch.len() < BATCH as usize {
+                break;
+            }
+        }
+        Ok(())
     }
 
     /// Alert security inputs, independent of unrelated audit traffic.
@@ -253,6 +378,149 @@ impl Store {
             entries,
             head: expected_prev,
         })
+    }
+
+    /// Verify every entry with `from_seq <= seq <= to_seq` (inclusive), chaining from
+    /// the hash of the row just before `from_seq` (or genesis when `from_seq` is first).
+    pub fn verify_audit_range(
+        &self,
+        from_seq: i64,
+        to_seq: i64,
+    ) -> Result<AuditRangeReport, AuditError> {
+        if to_seq < from_seq {
+            return Ok(AuditRangeReport {
+                first_hash: GENESIS_HASH.to_owned(),
+                last_hash: GENESIS_HASH.to_owned(),
+                entries: 0,
+            });
+        }
+        let conn = self.lock();
+        let expected_prev: String = conn
+            .query_row(
+                "SELECT hash FROM audit WHERE seq < ?1 ORDER BY seq DESC LIMIT 1",
+                [from_seq],
+                |row| row.get(0),
+            )
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(GENESIS_HASH.to_owned()),
+                other => Err(other),
+            })?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {COLUMNS} FROM audit WHERE seq >= ?1 AND seq <= ?2 ORDER BY seq ASC"
+        ))?;
+        let mut rows = stmt.query((from_seq, to_seq))?;
+        let mut expected_prev = expected_prev;
+        let mut entries = 0u64;
+        let mut first_hash = None;
+        let mut last_hash = expected_prev.clone();
+        while let Some(row) = rows.next()? {
+            let e = row_to_entry(row)?;
+            if e.prev_hash != expected_prev {
+                return Err(AuditError::Broken {
+                    seq: e.seq,
+                    reason: "previous hash does not match the preceding entry (entry removed or reordered)",
+                });
+            }
+            if compute_hash(&e.prev_hash, &e) != e.hash {
+                return Err(AuditError::Broken {
+                    seq: e.seq,
+                    reason: "entry contents do not match its hash (entry modified)",
+                });
+            }
+            if first_hash.is_none() {
+                first_hash = Some(e.hash.clone());
+            }
+            expected_prev = e.hash.clone();
+            last_hash = e.hash;
+            entries += 1;
+        }
+        Ok(AuditRangeReport {
+            first_hash: first_hash.unwrap_or_else(|| GENESIS_HASH.to_owned()),
+            last_hash,
+            entries,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Order {
+    Asc,
+    Desc,
+}
+
+/// Build `SELECT … FROM audit WHERE … ORDER BY … [LIMIT …]` and the bound parameters.
+fn filter_sql(
+    filter: &AuditFilter,
+    order: Order,
+    limit: Option<u32>,
+) -> (String, Vec<rusqlite::types::Value>) {
+    let mut sql = format!("SELECT {COLUMNS} FROM audit WHERE 1=1");
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    push_filter_preds(filter, &mut sql, &mut params);
+    if matches!(order, Order::Desc)
+        && let Some(before) = filter.before_seq
+    {
+        params.push(before.into());
+        sql.push_str(&format!(" AND seq < ?{}", params.len()));
+    }
+    sql.push_str(match order {
+        Order::Asc => " ORDER BY seq ASC",
+        Order::Desc => " ORDER BY seq DESC",
+    });
+    if let Some(n) = limit {
+        params.push((n as i64).into());
+        sql.push_str(&format!(" LIMIT ?{}", params.len()));
+    }
+    (sql, params)
+}
+
+/// Oldest-first page for the export walk: same filters, plus `seq > after`.
+fn filter_sql_after(
+    filter: &AuditFilter,
+    after_seq: Option<i64>,
+    limit: u32,
+) -> (String, Vec<rusqlite::types::Value>) {
+    let mut sql = format!("SELECT {COLUMNS} FROM audit WHERE 1=1");
+    let mut params: Vec<rusqlite::types::Value> = Vec::new();
+    push_filter_preds(filter, &mut sql, &mut params);
+    if let Some(after) = after_seq {
+        params.push(after.into());
+        sql.push_str(&format!(" AND seq > ?{}", params.len()));
+    }
+    params.push((limit as i64).into());
+    sql.push_str(&format!(" ORDER BY seq ASC LIMIT ?{}", params.len()));
+    (sql, params)
+}
+
+fn push_filter_preds(
+    filter: &AuditFilter,
+    sql: &mut String,
+    params: &mut Vec<rusqlite::types::Value>,
+) {
+    if let Some(actor) = filter.actor.as_ref().filter(|s| !s.is_empty()) {
+        params.push(actor.clone().into());
+        sql.push_str(&format!(" AND actor = ?{}", params.len()));
+    }
+    if let Some(prefix) = filter.action_prefix.as_ref().filter(|s| !s.is_empty()) {
+        // Escape LIKE metacharacters so a literal prefix cannot widen the match.
+        let escaped = prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        params.push(format!("{escaped}%").into());
+        sql.push_str(&format!(" AND action LIKE ?{} ESCAPE '\\'", params.len()));
+    }
+    if let Some(result) = filter.result.as_ref().filter(|s| !s.is_empty()) {
+        params.push(result.clone().into());
+        sql.push_str(&format!(" AND result = ?{}", params.len()));
+    }
+    if let Some(from) = filter.from.as_ref().filter(|s| !s.is_empty()) {
+        params.push(from.clone().into());
+        sql.push_str(&format!(" AND ts >= ?{}", params.len()));
+    }
+    if let Some(to) = filter.to.as_ref().filter(|s| !s.is_empty()) {
+        params.push(to.clone().into());
+        sql.push_str(&format!(" AND ts <= ?{}", params.len()));
     }
 }
 
@@ -373,5 +641,110 @@ mod tests {
             store.verify_audit(),
             Err(AuditError::Broken { seq: 1, .. })
         ));
+    }
+
+    #[test]
+    fn csv_cells_escape_and_neutralise_formulas() {
+        assert_eq!(csv_cell("plain"), "plain");
+        assert_eq!(csv_cell("a,b"), "\"a,b\"");
+        assert_eq!(csv_cell("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_cell("=1+1"), "'=1+1");
+        assert_eq!(csv_cell("+cmd"), "'+cmd");
+        assert_eq!(csv_cell("-2"), "'-2");
+        assert_eq!(csv_cell("@sum"), "'@sum");
+        assert_eq!(csv_cell("=a,b"), "\"'=a,b\"");
+        let e = AuditEntry {
+            seq: 1,
+            id: "id".into(),
+            ts: "2026-01-01T00:00:00Z".into(),
+            actor: "admin".into(),
+            actor_kind: "user".into(),
+            ip: Some("=1+1".into()),
+            action: "auth.login".into(),
+            target: None,
+            result: "ok".into(),
+            detail: r#"{"n":"x"}"#.into(),
+            prev_hash: GENESIS_HASH.into(),
+            hash: "abc".into(),
+        };
+        let row = audit_csv_row(&e);
+        assert!(row.contains("'=1+1"), "{row}");
+        assert!(row.starts_with("1,2026-01-01T00:00:00Z,admin,user,"), "{row}");
+    }
+
+    #[test]
+    fn filters_and_cursor_paging() {
+        let store = Store::open_in_memory().unwrap();
+        for i in 0..5 {
+            store
+                .append_audit(NewAudit {
+                    actor: if i % 2 == 0 { "admin" } else { "other" }.into(),
+                    actor_kind: ActorKind::User,
+                    ip: Some("203.0.113.5".into()),
+                    action: format!("auth.step{i}"),
+                    target: None,
+                    result: if i == 3 {
+                        AuditResult::Denied
+                    } else {
+                        AuditResult::Ok
+                    },
+                    detail: json!({}),
+                })
+                .unwrap();
+        }
+        let page = store
+            .list_audit(&AuditFilter {
+                actor: Some("admin".into()),
+                limit: 10,
+                ..AuditFilter::default()
+            })
+            .unwrap();
+        assert_eq!(page.entries.len(), 3);
+        assert!(page.entries.iter().all(|e| e.actor == "admin"));
+
+        let denied = store
+            .list_audit(&AuditFilter {
+                result: Some("denied".into()),
+                limit: 10,
+                ..AuditFilter::default()
+            })
+            .unwrap();
+        assert_eq!(denied.entries.len(), 1);
+        assert_eq!(denied.entries[0].action, "auth.step3");
+
+        let prefix = store
+            .list_audit(&AuditFilter {
+                action_prefix: Some("auth.step".into()),
+                limit: 2,
+                ..AuditFilter::default()
+            })
+            .unwrap();
+        assert_eq!(prefix.entries.len(), 2);
+        assert!(prefix.next_cursor.is_some());
+        let next = store
+            .list_audit(&AuditFilter {
+                action_prefix: Some("auth.step".into()),
+                before_seq: prefix.next_cursor,
+                limit: 10,
+                ..AuditFilter::default()
+            })
+            .unwrap();
+        assert_eq!(next.entries.len(), 3);
+        assert!(next.next_cursor.is_none());
+
+        let mut walked = 0u32;
+        store
+            .for_each_audit(&AuditFilter::default(), |_| {
+                walked += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(walked, 5);
+
+        let first = store.recent_audit(5).unwrap().last().unwrap().seq;
+        let last = store.recent_audit(1).unwrap()[0].seq;
+        let range = store.verify_audit_range(first, last).unwrap();
+        assert_eq!(range.entries, 5);
+        assert_eq!(range.last_hash, store.verify_audit().unwrap().head);
     }
 }

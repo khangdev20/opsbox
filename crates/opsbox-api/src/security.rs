@@ -1,20 +1,29 @@
-//! `GET /security`, `PUT /security/allow-ips`, `POST /security/checks/{id}/fix`
-//! (docs/BACKEND_SPEC.md 7.14).
+//! `GET /security`, `PUT /security/allow-ips`, `POST /security/checks/{id}/fix`,
+//! `GET /audit`, `GET /audit/export.csv` (docs/BACKEND_SPEC.md 7.14).
 //!
 //! The checks are cheap and read-only. A check with a safe automatic fix says so; fixes that
 //! could cut the administrator off are guarded in the privileged helper.
 
+use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr};
 
 use axum::Json;
-use axum::extract::{Extension, Path, State};
+use axum::body::{Body, Bytes};
+use axum::extract::{Extension, Path, Query, State};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use futures_util::stream::unfold;
 use opsbox_proto::{ErrorCode, Role, SecurityScan, SshStatus};
-use opsbox_store::{Store, User};
+use opsbox_store::{
+    AUDIT_CSV_HEADER, AuditEntry, AuditError, AuditFilter, DEFAULT_AUDIT_PAGE, MAX_AUDIT_PAGE,
+    Store, User, audit_csv_row,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use time::OffsetDateTime;
 
 use crate::allowlist::{self, Cidr};
+use crate::export::filename_host;
 use crate::session::{Admin, Client, Viewer};
 use crate::system::{audit, patient};
 use crate::{AppState, HttpError, RequestId};
@@ -374,7 +383,7 @@ pub(crate) async fn get(
             .recent_audit(12)
             .map_err(|_| HttpError::internal())?
             .into_iter()
-            .map(|e| json!({ "t": rfc3339_ms(&e.ts), "user": e.actor, "action": e.action, "warn": e.result != "ok" }))
+            .map(audit_json)
             .collect()
     } else {
         Vec::new()
@@ -396,6 +405,202 @@ fn user_json(state: &AppState, u: &User, me: &User) -> Value {
         "role": if pending { format!("{} · invitation not used yet", role_text(u.role)) } else { role_text(u.role).to_owned() },
         "roleKey": u.role, "tfa": u.totp_enabled, "pending": pending, "you": u.id == me.id,
     })
+}
+
+fn audit_json(e: AuditEntry) -> Value {
+    json!({
+        "t": rfc3339_ms(&e.ts),
+        "user": e.actor,
+        "action": e.action,
+        "ip": e.ip,
+        "result": e.result,
+        "warn": e.result != "ok",
+        "seq": e.seq,
+    })
+}
+
+// ------------------------------------------------------------------ audit list + CSV export
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub(crate) struct AuditQuery {
+    actor: Option<String>,
+    /// Action prefix filter (`auth.` matches `auth.login`).
+    action: Option<String>,
+    result: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+    /// Opaque cursor: the `seq` of the oldest row on the previous page.
+    cursor: Option<i64>,
+    limit: Option<u32>,
+}
+
+fn audit_filter(q: &AuditQuery, for_list: bool) -> Result<AuditFilter, HttpError> {
+    let result = match q.result.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => None,
+        Some("ok" | "denied" | "failed") => Some(q.result.as_ref().unwrap().trim().to_owned()),
+        Some(_) => {
+            return Err(HttpError::new(
+                ErrorCode::Validation,
+                "result must be ok, denied, or failed.",
+            ));
+        }
+    };
+    for (label, v) in [("from", &q.from), ("to", &q.to)] {
+        if let Some(s) = v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && !looks_like_rfc3339(s)
+        {
+            return Err(HttpError::new(
+                ErrorCode::Validation,
+                format!("{label} must be an RFC 3339 timestamp."),
+            ));
+        }
+    }
+    let limit = if for_list {
+        q.limit
+            .unwrap_or(DEFAULT_AUDIT_PAGE)
+            .clamp(1, MAX_AUDIT_PAGE)
+    } else {
+        0
+    };
+    Ok(AuditFilter {
+        actor: q.actor.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
+        action_prefix: q
+            .action
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        result,
+        from: q.from.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
+        to: q.to.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
+        before_seq: if for_list { q.cursor } else { None },
+        limit,
+    })
+}
+
+fn looks_like_rfc3339(s: &str) -> bool {
+    // Enough to reject obvious junk; SQLite compares the stored text lexicographically.
+    s.len() >= 10 && s.as_bytes().get(4) == Some(&b'-') && s.as_bytes().get(7) == Some(&b'-')
+}
+
+/// `GET /api/v1/audit` — Owner/Admin only. Newest first, cursor paging.
+pub(crate) async fn list_audit(
+    State(state): State<AppState>,
+    Admin(_): Admin,
+    Query(q): Query<AuditQuery>,
+) -> Result<Json<Value>, HttpError> {
+    let filter = audit_filter(&q, true)?;
+    let page = state
+        .store
+        .list_audit(&filter)
+        .map_err(|_| HttpError::internal())?;
+    Ok(Json(json!({
+        "entries": page.entries.into_iter().map(audit_json).collect::<Vec<_>>(),
+        "nextCursor": page.next_cursor,
+        "limit": filter.limit,
+    })))
+}
+
+fn audit_csv_filename(host: &str, now: OffsetDateTime) -> String {
+    format!(
+        "opsbox-audit-{}-{:04}-{:02}-{:02}.csv",
+        filename_host(host),
+        now.year(),
+        u8::from(now.month()),
+        now.day()
+    )
+}
+
+/// `GET /api/v1/audit/export.csv` — Owner/Admin only. Same filters, streamed, chain verified.
+pub(crate) async fn export_audit_csv(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    Query(q): Query<AuditQuery>,
+) -> Result<Response, HttpError> {
+    let filter = audit_filter(&q, false)?;
+    let now = OffsetDateTime::now_utc();
+    let host = state
+        .priv_client
+        .host_info(&rid, Some(&who.user.name))
+        .await
+        .map_or_else(|_| "opsbox".to_owned(), |h| h.hostname);
+    let file = audit_csv_filename(&host, now);
+
+    let store = state.store.clone();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(8);
+    let filter_for_worker = filter.clone();
+    tokio::task::spawn_blocking(move || {
+        let send = |s: String| {
+            let _ = tx.blocking_send(Ok(Bytes::from(s)));
+        };
+        send(format!("{AUDIT_CSV_HEADER}\n"));
+        let mut first_seq: Option<i64> = None;
+        let mut last_seq: Option<i64> = None;
+        let mut count = 0u64;
+        let walk = store.for_each_audit(&filter_for_worker, |e| {
+            if first_seq.is_none() {
+                first_seq = Some(e.seq);
+            }
+            last_seq = Some(e.seq);
+            count += 1;
+            send(format!("{}\n", audit_csv_row(e)));
+            Ok(())
+        });
+        if let Err(e) = walk {
+            tracing::error!(error = %e, "audit CSV export failed while reading rows");
+            send("# chain: failed\n".into());
+            return;
+        }
+        let verify_line = match (first_seq, last_seq) {
+            (Some(from), Some(to)) => match store.verify_audit_range(from, to) {
+                Ok(r) => format!(
+                    "# chain: ok\n# entries: {count}\n# first_hash: {}\n# last_hash: {}\n",
+                    r.first_hash, r.last_hash
+                ),
+                Err(AuditError::Broken { seq, reason }) => {
+                    format!("# chain: broken;seq={seq}\n# reason: {reason}\n# entries: {count}\n")
+                }
+                Err(AuditError::Store(e)) => {
+                    tracing::error!(error = %e, "audit CSV chain verify failed");
+                    format!("# chain: failed\n# entries: {count}\n")
+                }
+            },
+            _ => format!("# chain: ok\n# entries: 0\n# first_hash: \n# last_hash: \n"),
+        };
+        send(verify_line);
+    });
+
+    audit(
+        &state,
+        &who,
+        &client.ip,
+        "audit.export",
+        None,
+        json!({ "file": file }),
+    );
+
+    let stream = unfold(rx, |mut rx| async move {
+        match rx.recv().await {
+            Some(item) => Some((item, rx)),
+            None => None,
+        }
+    });
+    let mut resp = Response::new(Body::from_stream(stream));
+    *resp.status_mut() = StatusCode::OK;
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{file}\"")) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    Ok(resp)
 }
 
 #[derive(Deserialize)]

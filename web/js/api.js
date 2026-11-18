@@ -47,7 +47,7 @@ const REAL = new Set([
   'getTerminalUsers', 'openTerminal',
   'scanCleanup', 'runCleanup', 'setAutoCleanup', 'getCleanupVolumes',
   'getAccess', 'addKey', 'removeKey', 'lockUser',
-  'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'updateUser', 'auth.inviteInfo', 'auth.claimInvite',
+  'getSecurity', 'getAudit', 'exportAuditCsv', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'updateUser', 'auth.inviteInfo', 'auth.claimInvite',
   'dockerStatus', 'installDocker', 'listContainers', 'listDocker', 'inspectContainer', 'containerAction', 'containerLogs',
   'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs', 'exportConfig', 'uninstallPlan', 'uninstallExec',
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
@@ -93,7 +93,7 @@ export const PAGE_USES = {
   newservice: ['createDeployKey', 'deleteDeployKey', 'getGithubStatus', 'getRepos', 'inspectPublicRepo', 'listDeployKeys'],
   overview: ['getCapacity', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
-  security: ['getSecurity', 'inviteUser', 'updateUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
+  security: ['getSecurity', 'getAudit', 'exportAuditCsv', 'inviteUser', 'updateUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
   settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook', 'uninstallPlan', 'uninstallExec'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'listContainers', 'updateService', 'addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
@@ -365,7 +365,8 @@ const S = {
   audit: [
     { t: now() - 15 * MIN, user: 'minh.dev', action: 'deploy web a3f9c21', ip: '203.0.113.21' },
     { t: now() - 30 * MIN, user: 'admin', action: 'restart web-app', ip: '203.0.113.5' },
-    { t: now() - 50 * MIN, user: 'admin', action: 'open terminal srv-sgn-01', ip: '203.0.113.5' },
+    { t: now() - 50 * MIN, user: 'admin', action: 'open terminal srv-sgn-01', ip: '127.0.0.1' },
+    { t: now() - 55 * MIN, user: 'admin', action: 'save allow-list', ip: 'panel' },
     { t: now() - 65 * MIN, user: 'unknown', action: 'failed sign-in ×5, IP locked 15 min', ip: '203.0.113.9', warn: true },
   ],
   checks: [
@@ -1066,7 +1067,79 @@ export async function termExec(host, cwd, line) { sample('termExec');
 
 // ---------------------------------------------------------------- small extras
 export async function getReclaimable() { sample('getReclaimable'); return { gb: S.cleanup.reduce((a, c) => a + c.gb, 0), parts: S.cleanup.map((c) => [c.id, c.gb, c.color]) }; }
-export async function getAudit(n = 5) { sample('getAudit'); return clone(S.audit).slice(0, n); }
+/** Friendly IP label: loopback → local, reverse-proxy hop → panel. */
+export function formatAuditIp(ip) {
+  if (ip == null || ip === '' || ip === 'unknown') return '—';
+  const v = String(ip).trim().toLowerCase();
+  if (v === '127.0.0.1' || v === '::1' || v === 'localhost' || v === '::ffff:127.0.0.1' || /^127\.\d+\.\d+\.\d+$/.test(v)) return 'local';
+  if (v === 'panel' || v === 'proxy' || v === 'opsbox-proxy') return 'panel';
+  return String(ip);
+}
+
+function auditQuery(opts = {}) {
+  const q = new URLSearchParams();
+  if (opts.actor) q.set('actor', opts.actor);
+  if (opts.action) q.set('action', opts.action);
+  if (opts.result) q.set('result', opts.result);
+  if (opts.from) q.set('from', opts.from);
+  if (opts.to) q.set('to', opts.to);
+  if (opts.cursor != null && opts.cursor !== '') q.set('cursor', String(opts.cursor));
+  if (opts.limit) q.set('limit', String(opts.limit));
+  const s = q.toString();
+  return s ? `?${s}` : '';
+}
+
+export async function getAudit(opts = {}) {
+  sample('getAudit');
+  if (real('getAudit')) {
+    // Legacy: getAudit(5) still works for callers that pass a bare count.
+    if (typeof opts === 'number') return http(`/audit?limit=${opts}`);
+    return http(`/audit${auditQuery(opts)}`);
+  }
+  await lag(120);
+  let rows = clone(S.audit);
+  if (typeof opts === 'number') return rows.slice(0, opts);
+  if (opts.actor) rows = rows.filter((a) => a.user === opts.actor);
+  if (opts.action) rows = rows.filter((a) => String(a.action).startsWith(opts.action));
+  if (opts.result === 'ok') rows = rows.filter((a) => !a.warn);
+  if (opts.result && opts.result !== 'ok') rows = rows.filter((a) => a.warn);
+  return { entries: rows.slice(0, opts.limit || 50), nextCursor: null, limit: opts.limit || 50 };
+}
+
+export async function exportAuditCsv(opts = {}) {
+  sample('exportAuditCsv');
+  if (real('exportAuditCsv')) {
+    let disposition = '';
+    let res;
+    try {
+      res = await fetch(`/api/v1/audit/export.csv${auditQuery(opts)}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: { Accept: 'text/csv' },
+      });
+    } catch {
+      throw new Error('Cannot reach the opsbox server. Check that it is running.');
+    }
+    disposition = res.headers.get('Content-Disposition') || '';
+    const text = await res.text();
+    if (!res.ok) {
+      let msg = `The server answered with an error (HTTP ${res.status}).`;
+      try { msg = JSON.parse(text)?.error?.message || msg; } catch { /* not JSON */ }
+      const err = new Error(msg); err.status = res.status; throw err;
+    }
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1]
+      || `opsbox-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+    return { filename, text };
+  }
+  await lag(200);
+  const { entries } = await getAudit({ ...opts, limit: 500 });
+  const header = 'seq,ts,actor,actor_kind,ip,action,target,result,detail,hash';
+  const lines = entries.map((a, i) => [i + 1, new Date(a.t).toISOString(), a.user, 'user', a.ip || '', a.action, '', a.warn ? 'denied' : 'ok', '', ''].map((c) => {
+    const s = String(c); const n = /^[=+\-@]/.test(s) ? `'${s}` : s;
+    return /[",\n\r]/.test(n) ? `"${n.replace(/"/g, '""')}"` : n;
+  }).join(','));
+  return { filename: `opsbox-audit-demo-${new Date().toISOString().slice(0, 10)}.csv`, text: [header, ...lines, '# chain: ok'].join('\n') };
+}
 export async function addVar(svc, k, v, isSecret) {
   sample('addVar');
   if (real('addVar')) return http(`/services/${encodeURIComponent(svc)}/vars/${encodeURIComponent(k)}`, { method: 'PUT', body: { value: v, isSecret } });

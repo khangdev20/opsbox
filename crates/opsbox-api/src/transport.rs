@@ -65,8 +65,12 @@ pub struct Transport {
 
 impl Transport {
     pub fn client_ip_text(&self) -> String {
-        self.client_ip
-            .map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
+        match self.client_ip {
+            // Trusted proxy on loopback with no usable forwarded client: label it for the audit UI.
+            Some(ip) if self.via_proxy && ip.to_canonical().is_loopback() => "panel".to_owned(),
+            Some(ip) => ip.to_string(),
+            None => "unknown".to_owned(),
+        }
     }
 }
 
@@ -242,6 +246,14 @@ mod tests {
         ]);
         let t = policy(false, SecureCookies::Auto).resolve(peer("127.0.0.1:5000"), &mut h);
         assert!(!t.https && t.via_proxy);
+    }
+
+    #[test]
+    fn a_trusted_proxy_without_a_client_address_is_labelled_panel() {
+        let mut h = headers(&[(PROXY_SECRET_HEADER, SECRET)]);
+        let t = policy(false, SecureCookies::Auto).resolve(peer("127.0.0.1:5000"), &mut h);
+        assert!(t.via_proxy);
+        assert_eq!(t.client_ip_text(), "panel");
     }
 
     #[test]

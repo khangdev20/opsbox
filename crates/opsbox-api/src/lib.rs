@@ -375,6 +375,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/security", get(security::get))
         .route("/api/v1/security/allow-ips", put(security::set_allow_ips))
         .route("/api/v1/security/checks/{id}/fix", post(security::fix))
+        .route("/api/v1/audit", get(security::list_audit))
+        .route("/api/v1/audit/export.csv", get(security::export_audit_csv))
         .route("/api/v1/users/invites", post(users::invite))
         .route(
             "/api/v1/users/{name}",

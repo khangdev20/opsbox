@@ -579,3 +579,120 @@ async fn display_name_updates_session_and_audit_actor() {
     assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.text());
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn audit_list_returns_ip_filters_and_pages_and_export_is_admin_only() {
+    use opsbox_store::{ActorKind, AuditResult, NewAudit};
+    use serde_json::json;
+
+    let h = Harness::new(true);
+    for i in 0..5 {
+        h.store
+            .append_audit(NewAudit {
+                actor: if i < 3 { "boss" } else { "other" }.into(),
+                actor_kind: ActorKind::User,
+                ip: Some(if i == 0 {
+                    "127.0.0.1".into()
+                } else if i == 1 {
+                    "panel".into()
+                } else if i == 2 {
+                    "=1+1".into()
+                } else {
+                    format!("203.0.113.{i}")
+                }),
+                action: format!("auth.probe{i}"),
+                target: None,
+                result: if i == 2 {
+                    AuditResult::Denied
+                } else {
+                    AuditResult::Ok
+                },
+                detail: json!({ "n": i }),
+            })
+            .unwrap();
+    }
+
+    let mut viewer = h.signed_in("watcher", Role::Viewer);
+    assert_eq!(
+        viewer.get("/api/v1/audit").await.status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        viewer.get("/api/v1/audit/export.csv").await.status,
+        StatusCode::FORBIDDEN
+    );
+
+    let mut admin = h.signed_in("boss", Role::Admin);
+    let list = admin.get("/api/v1/audit?actor=boss&limit=2").await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text());
+    let body = list.json();
+    let entries = body["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(entries.iter().all(|e| e["user"] == "boss"));
+    assert!(entries[0]["ip"].is_string() || entries[0]["ip"].is_null());
+    assert!(body["nextCursor"].as_i64().is_some());
+
+    let page2 = admin
+        .get(&format!(
+            "/api/v1/audit?actor=boss&limit=10&cursor={}",
+            body["nextCursor"]
+        ))
+        .await;
+    assert_eq!(page2.status, StatusCode::OK, "{}", page2.text());
+    assert_eq!(page2.json()["entries"].as_array().unwrap().len(), 1);
+
+    let denied = admin.get("/api/v1/audit?result=denied").await;
+    assert_eq!(denied.status, StatusCode::OK);
+    assert_eq!(denied.json()["entries"].as_array().unwrap().len(), 1);
+
+    let prefix = admin.get("/api/v1/audit?action=auth.probe").await;
+    assert_eq!(prefix.status, StatusCode::OK);
+    assert!(prefix.json()["entries"].as_array().unwrap().len() >= 5);
+
+    // Seed enough rows that a naive collect-all would be obvious; export must still succeed.
+    for i in 0..120 {
+        h.store
+            .append_audit(NewAudit {
+                actor: "bulk".into(),
+                actor_kind: ActorKind::User,
+                ip: Some("198.51.100.9".into()),
+                action: format!("bulk.{i}"),
+                target: None,
+                result: AuditResult::Ok,
+                detail: json!({}),
+            })
+            .unwrap();
+    }
+    let csv = admin.get("/api/v1/audit/export.csv?actor=bulk").await;
+    assert_eq!(csv.status, StatusCode::OK, "{}", csv.text());
+    assert!(csv.header("content-type").starts_with("text/csv"));
+    assert_eq!(csv.header("cache-control"), "no-store");
+    assert!(
+        csv.header("content-disposition")
+            .contains("attachment; filename=\"opsbox-audit-"),
+        "{}",
+        csv.header("content-disposition")
+    );
+    let text = csv.text();
+    assert!(text.starts_with(
+        "seq,ts,actor,actor_kind,ip,action,target,result,detail,hash\n"
+    ));
+    assert!(text.contains("# chain: ok"), "{text}");
+    assert!(text.matches("\n").count() >= 120);
+    // Formula-looking detail from earlier rows must be neutralised when exported unfiltered.
+    let all = admin.get("/api/v1/audit/export.csv?action=auth.probe").await;
+    assert_eq!(all.status, StatusCode::OK, "{}", all.text());
+    let all_text = all.text();
+    assert!(
+        all_text.contains("'=1+1") || all_text.contains("\"'=1+1"),
+        "formula cells must be neutralised: {all_text}"
+    );
+
+    let sec = admin.get("/api/v1/security").await;
+    assert_eq!(sec.status, StatusCode::OK);
+    let sec_json = sec.json();
+    let preview = sec_json["audit"].as_array().unwrap();
+    assert!(preview.iter().any(|e| e.get("ip").is_some()), "{preview:?}");
+
+    h.shutdown().await;
+}

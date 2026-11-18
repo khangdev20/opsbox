@@ -501,3 +501,7 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 ## Prompt 16k (user display names)
 
 **Optional `display_name` on `users`, validated in auth.** Trimmed, at most 64 characters, no control characters; empty clears to `NULL`. Setup, invite and claim accept it; `PATCH /users/{name}` lets the person change their own and an owner change anyone's. The session payload adds `displayName` and `totp: {enabled, method}` (`"app"` when on). Audit actors use `Display (username)` via `User::actor_label()`. Profile editing lives on Access (`#/security/access`), matching the account-menu "Profile and security" link; invite UI is on both Security and Access.
+
+## Prompt 16l (audit IP, filters, CSV)
+
+**List and export share one filter.** `AuditFilter` in the store drives both `GET /audit` (newest-first, `before_seq` cursor, default page 50) and `GET /audit/export.csv` (oldest-first walk, no collect). CSV cells use RFC 4180 quoting and prefix `'` when a value starts with `= + - @`. Trailing `# chain:` comments carry the range verify (first/last hash or broken seq). A trusted proxy with no forwarded client address is stored/shown as `panel`; loopback without the proxy is `local` in the UI.
