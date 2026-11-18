@@ -158,7 +158,7 @@ async fn readyz_checks_proxy_when_panel_domain_is_active() {
     let state = opsbox_api::AppState::new(
         store.clone(),
         opsbox_priv::PrivClient::new(&priv_sock).with_timeout(Duration::from_secs(5)),
-        "9.9.9-test",
+        opsbox_priv::VERSION,
         opsbox_api::SecureCookies::Auto,
         opsbox_auth::AuthConfig::default(),
     )

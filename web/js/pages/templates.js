@@ -1,4 +1,4 @@
-import { html, btn, table, section, header, bindActions, confirmDialog, formDialog, toast } from '../ui.js';
+import { html, btn, table, section, header, bindActions, confirmDialog, formDialog, toast, showFormError } from '../ui.js';
 import { capacityFields, bindCapacity, capacityPayload, withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
 
@@ -64,17 +64,30 @@ export async function view() {
       ${isDataTool ? html`<p class="sm muted">${pick.name} is never published on its own address. You open it from the database page or at <span class="mono">/tools/${pick.id}-main/</span>, and only while you are signed in to opsbox.</p>` : ''}
       <p class="sm muted">Credentials are generated, encrypted at rest, and shown once upon creation.</p>
       ${capacityFields(pick.min_memory_mb || (isDb ? 256 : 128))}
-      <p id="err" class="form-err" role="alert"></p>
-      <div>${btn(busy === 'tpl' ? `Starting ${pick.name}…` : `Add ${pick.name}`, { act: 'add', kind: 'primary', disabled: busy === 'tpl' })}</div>`);
+      <p id="err" class="form-err" role="alert" tabindex="-1"></p>
+      <div>${btn(`Add ${pick.name}`, { act: 'add', kind: 'primary' })}</div>`);
   };
 
+  // The form is rebuilt only when a different template is picked. Working, failing or
+  // retrying changes the buttons and the error line, never what the person typed.
   const paint = () => {
     if (!root) return;
     root.querySelector('#db').innerHTML = rows('Databases', databases).toString();
     root.querySelector('#tl').innerHTML = rows('Tools', tools).toString();
     root.querySelector('#fm').innerHTML = form().toString();
-    root.querySelector('#fm').toggleAttribute('data-capacity-busy', !!busy);
     capacityControl?.refresh();
+  };
+  const paintBusy = () => {
+    if (!root) return;
+    const add = root.querySelector('[data-act="add"]');
+    if (add) {
+      add.textContent = busy === 'tpl' ? `Starting ${pick.name}…` : `Add ${pick.name}`;
+      add.toggleAttribute('aria-busy', busy === 'tpl');
+    }
+    const cmp = root.querySelector('[data-act="compose"]');
+    if (cmp) cmp.textContent = busy === 'cmp' ? 'Deploying Compose stack…' : 'Deploy compose file';
+    root.querySelector('#fm').toggleAttribute('data-capacity-busy', !!busy);
+    capacityControl?.repaint();
   };
 
   return {
@@ -87,8 +100,8 @@ export async function view() {
           <p class="muted sm">Paste a docker-compose.yml. Validated via <span class="mono">docker compose config</span> and attached to your project network.</p>
           <div class="field"><label for="cn">Stack name <span class="muted">(optional)</span></label><input class="input" id="cn" placeholder="shop" autocomplete="off"></div>
           <div class="editor" style="border-radius:8px"><textarea id="yml" spellcheck="false" aria-label="Compose file" style="min-height:190px">${YML}</textarea></div>
-          <p id="cerr" class="form-err" role="alert"></p>
-          <div>${btn(busy === 'cmp' ? 'Deploying Compose stack…' : 'Deploy compose file', { act: 'compose', kind: 'primary', disabled: busy === 'cmp' })}</div>`)}
+          <p id="cerr" class="form-err" role="alert" tabindex="-1"></p>
+          <div>${btn('Deploy compose file', { act: 'compose', kind: 'primary' })}</div>`)}
       </div><div id="fm"></div></div></main>`,
     mount(r) {
       root = r;
@@ -106,7 +119,9 @@ export async function view() {
           if (i !== 4 && NEW_TABS[i]) location.hash = NEW_TABS[i][1];
         },
         pick: (el) => {
-          pick = all.find((t) => t.id === el.dataset.id) || pick;
+          const next = all.find((t) => t.id === el.dataset.id);
+          if (!next || next.id === pick.id || busy) return;
+          pick = next;
           paint();
         },
         add: async () => {
@@ -136,7 +151,7 @@ export async function view() {
             databaseUrl: root.querySelector('#tdb')?.value.trim(),
           };
           busy = 'tpl';
-          paint();
+          paintBusy();
           try {
             const res = await withCapacityOverride((b) => api.addTemplate(pick.id, b), cfg);
             toast(`${pick.name} is running.`);
@@ -154,9 +169,9 @@ export async function view() {
             location.hash = `#/apps?s=${encodeURIComponent(res.id)}`;
           } catch (e) {
             busy = '';
-            paint();
-            const curErr = root.querySelector('#err');
-            if (curErr) curErr.textContent = e.message;
+            paintBusy();
+            showFormError(root.querySelector('#err'), e.message);
+            capacityControl?.refresh();
           }
         },
         compose: async () => {
@@ -165,16 +180,15 @@ export async function view() {
           const cerr = root.querySelector('#cerr');
           if (cerr) cerr.textContent = '';
           busy = 'cmp';
-          const cbtn = root.querySelector('[data-act="compose"]');
-          if (cbtn) cbtn.textContent = 'Deploying Compose stack…';
+          paintBusy();
           try {
             const res = await withCapacityOverride((b) => api.deployCompose(yaml, b), { stack });
             toast(`Deployed ${(res.names || []).join(', ')}.`);
             location.hash = res.names?.[0] ? `#/apps?s=${encodeURIComponent(res.names[0])}` : '#/apps';
           } catch (e) {
             busy = '';
-            if (cbtn) cbtn.textContent = 'Deploy compose file';
-            if (cerr) cerr.textContent = e.message;
+            paintBusy();
+            showFormError(cerr, e.message);
           }
         },
       });

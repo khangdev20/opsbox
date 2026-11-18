@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use opsbox_proto::frame;
 use opsbox_proto::{
@@ -15,10 +15,10 @@ use opsbox_proto::{
     DockerContainer, DockerContainerAction, DockerContainerInspect, DockerContainerStat,
     DockerExecOutput, DockerExecRequest, DockerImage, DockerLogFrame, DockerLogLine, DockerNetwork,
     DockerStatus, DockerVolume, FileContent, FirewallChange, FirewallState, HostInfo, HostSettings,
-    JobInfo, JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivOp, PrivReply, PrivRequest,
-    PrivResponse, PrivResult, PtyFrame, RawSample, ResticSnapshotInfo, Secret, SecurityScan,
-    Staged, SystemFacts, SystemUser, TemplateStartRequest, UnitActionKind, UnitInfo,
-    WatchdogStatus,
+    JobInfo, JournalEntry, NewRule, PkgSelect, PkgState, PrivError, PrivErrorCode, PrivOp,
+    PrivReply, PrivRequest, PrivResponse, PrivResult, PtyFrame, RawSample, ResticSnapshotInfo,
+    Secret, SecurityScan, Staged, SystemFacts, SystemUser, TemplateStartRequest, UnitActionKind,
+    UnitInfo, WatchdogStatus,
 };
 use tokio::net::{
     UnixStream,
@@ -47,6 +47,29 @@ pub enum ClientError {
     /// `priv` understood the request and refused or failed it.
     #[error("the privileged helper reported an error: {}", .0.message)]
     Remote(PrivError),
+}
+
+/// One log line per failed call, with what a person needs to tell "helper down" from
+/// "helper slow". A refusal `priv` words itself (a name already taken, say) is the
+/// caller's mistake, not a helper failure, so it stays at debug level.
+fn log_failure(request_id: &str, op: &str, elapsed: Duration, error: &ClientError) {
+    let elapsed_ms = elapsed.as_millis() as u64;
+    match error {
+        ClientError::Remote(remote) if remote.code != PrivErrorCode::Forbidden => tracing::debug!(
+            request_id,
+            op,
+            elapsed_ms,
+            error = %error,
+            "privileged helper call failed"
+        ),
+        _ => tracing::warn!(
+            request_id,
+            op,
+            elapsed_ms,
+            error = %error,
+            "privileged helper call failed"
+        ),
+    }
 }
 
 impl ClientError {
@@ -227,9 +250,16 @@ impl PrivClient {
         actor: Option<&str>,
         op: PrivOp,
     ) -> Result<PrivReply, ClientError> {
-        tokio::time::timeout(self.timeout, self.call_inner(request_id, actor, op))
+        let name = op.name();
+        let started = Instant::now();
+        let result = tokio::time::timeout(self.timeout, self.call_inner(request_id, actor, op))
             .await
-            .map_err(|_| ClientError::Timeout)?
+            .map_err(|_| ClientError::Timeout)
+            .and_then(|r| r);
+        if let Err(e) = &result {
+            log_failure(request_id, name, started.elapsed(), e);
+        }
+        result
     }
 
     async fn call_inner(
@@ -1383,19 +1413,22 @@ impl PrivClient {
         service: &str,
         image_refs: Vec<String>,
     ) -> Result<Vec<String>, ClientError> {
-        self.expect(
-            rid,
-            Some(actor),
-            PrivOp::DeployPruneImages {
-                service: service.to_owned(),
-                image_refs,
-            },
-            |r| match r {
-                PrivReply::PrunedImages(v) => Ok(v),
-                o => Err(o),
-            },
-        )
-        .await
+        // Removing several large images can take longer than the 10 s default.
+        self.clone()
+            .with_timeout(Duration::from_secs(120))
+            .expect(
+                rid,
+                Some(actor),
+                PrivOp::DeployPruneImages {
+                    service: service.to_owned(),
+                    image_refs,
+                },
+                |r| match r {
+                    PrivReply::PrunedImages(v) => Ok(v),
+                    o => Err(o),
+                },
+            )
+            .await
     }
 
     pub async fn deploy_delete_service(

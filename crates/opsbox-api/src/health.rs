@@ -34,8 +34,25 @@ pub(crate) struct Readiness {
 struct Checks {
     database: &'static str,
     privileged_helper: &'static str,
+    /// Only present when `serve` and `priv` are not the same build.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    versions: Option<Versions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     proxy: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct Versions {
+    serve: &'static str,
+    helper: String,
+}
+
+/// How the helper looked to the readiness probe.
+enum Helper {
+    Ok,
+    Failing,
+    /// Answered, but it is a different build from `serve` (a half-finished update).
+    Mismatch(String),
 }
 
 fn label(ok: bool) -> &'static str {
@@ -64,10 +81,18 @@ pub(crate) async fn readyz(
     };
     let helper = async {
         match state.priv_client.ping(&request_id).await {
-            Ok(_) => true,
+            Ok(version) if version == state.version => Helper::Ok,
+            Ok(version) => {
+                warn!(
+                    serve = state.version,
+                    helper = %version,
+                    "readiness: privileged helper runs a different version"
+                );
+                Helper::Mismatch(version)
+            }
             Err(e) => {
                 warn!(error = %e, "readiness: privileged helper check failed");
-                false
+                Helper::Failing
             }
         }
     };
@@ -91,7 +116,8 @@ pub(crate) async fn readyz(
         }
     };
 
-    let (db_ok, helper_ok, proxy_opt) = tokio::join!(db, helper, proxy_check);
+    let (db_ok, helper, proxy_opt) = tokio::join!(db, helper, proxy_check);
+    let helper_ok = matches!(helper, Helper::Ok);
     let proxy_ok = !proxy_required || proxy_opt == Some(true);
     let proxy_label = match (proxy_opt, proxy_required) {
         (Some(true), _) => Some("ok"),
@@ -110,7 +136,17 @@ pub(crate) async fn readyz(
             status: if ready { "ready" } else { "not_ready" },
             checks: Checks {
                 database: label(db_ok),
-                privileged_helper: label(helper_ok),
+                privileged_helper: match helper {
+                    Helper::Mismatch(_) => "version mismatch",
+                    _ => label(helper_ok),
+                },
+                versions: match helper {
+                    Helper::Mismatch(helper) => Some(Versions {
+                        serve: state.version,
+                        helper,
+                    }),
+                    _ => None,
+                },
                 proxy: proxy_label,
             },
         }),

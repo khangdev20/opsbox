@@ -63,12 +63,33 @@ async fn healthz_is_ok_without_any_dependency() {
 
 #[tokio::test]
 async fn readyz_reports_ready_when_database_and_helper_answer() {
-    let h = Harness::new(true);
+    // Ready means the helper is the same build as `serve`.
+    let h = Harness::new_with(true, |mut s| {
+        s.version = opsbox_priv::VERSION;
+        s
+    });
     let resp = h.get("/readyz").await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
         json(resp).await,
         serde_json::json!({"status": "ready", "checks": {"database": "ok", "privileged_helper": "ok"}})
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn readyz_is_503_with_both_versions_when_the_helper_is_a_different_build() {
+    // The harness serves 9.9.9-test; the real helper on the socket reports its own build.
+    let h = Harness::new(true);
+    let resp = h.get("/readyz").await;
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = json(resp).await;
+    assert_eq!(body["status"], "not_ready");
+    assert_eq!(body["checks"]["database"], "ok");
+    assert_eq!(body["checks"]["privileged_helper"], "version mismatch");
+    assert_eq!(
+        body["checks"]["versions"],
+        serde_json::json!({"serve": "9.9.9-test", "helper": opsbox_priv::VERSION})
     );
     h.shutdown().await;
 }
@@ -82,6 +103,7 @@ async fn readyz_is_503_when_the_helper_is_down() {
     assert_eq!(body["status"], "not_ready");
     assert_eq!(body["checks"]["database"], "ok");
     assert_eq!(body["checks"]["privileged_helper"], "failing");
+    assert!(body["checks"].get("versions").is_none());
 }
 
 // ---------------------------------------------------------------- request ids
@@ -137,7 +159,7 @@ async fn host_error_uses_the_spec_format_when_the_helper_is_down() {
     assert_eq!(v["error"]["code"], "unavailable");
     let message = v["error"]["message"].as_str().unwrap();
     assert!(
-        message.ends_with('.') && message.contains("privileged helper"),
+        message.ends_with('.') && message.contains("helper is not running"),
         "{message}"
     );
     // No internals (socket paths, OS error text) leak to the client.

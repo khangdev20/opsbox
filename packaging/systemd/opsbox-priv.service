@@ -9,6 +9,9 @@ Type=simple
 ExecStart=/usr/local/bin/opsbox priv
 Restart=always
 RestartSec=2
+# On a small server the kernel's out-of-memory killer should pick almost anything else
+# first: without priv, every action that changes the server is paused.
+OOMScoreAdjust=-900
 
 # Runs as root. priv itself listens only on its Unix socket and never opens a network
 # listener, but the tools it runs for you inherit these limits: apt and dnf download

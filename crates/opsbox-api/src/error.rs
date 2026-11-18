@@ -6,7 +6,12 @@ use axum::response::{IntoResponse, Response};
 use opsbox_auth::AuthError;
 use opsbox_priv::ClientError;
 use opsbox_proto::{ApiError, ErrorCode, PrivErrorCode};
-use tracing::error;
+use tracing::{error, warn};
+
+pub(crate) const HELPER_DOWN: &str =
+    "OpsBox's helper is not running. Restart it with `sudo systemctl restart opsbox-priv`.";
+pub(crate) const HELPER_TIMEOUT: &str = "The helper did not answer in time. The operation may still be running; check Containers or System > Jobs before trying again.";
+pub(crate) const HELPER_FORBIDDEN: &str = "The privileged helper does not accept this service. Check the allowed users in its configuration.";
 
 /// An error ready to be sent: status code plus the JSON body.
 #[derive(Debug)]
@@ -41,21 +46,30 @@ impl IntoResponse for HttpError {
     }
 }
 
-/// Failures talking to `priv`. The technical detail goes to the log (inside the
-/// request's span, so it carries the request id); the caller gets a sentence a
-/// person can act on.
+/// Failures talking to `priv`. `PrivClient::call` already logged the real error with the
+/// request id, the op name and the elapsed time; the caller gets a sentence a person can
+/// act on, and each kind of failure says something different: not running (restart it),
+/// too slow (it may still be working, do not start it again) or refused (configuration).
 impl From<ClientError> for HttpError {
     fn from(e: ClientError) -> Self {
-        error!(error = %e, "privileged helper call failed");
         match e {
-            ClientError::Connect { .. } | ClientError::Timeout => Self::new(
-                ErrorCode::Unavailable,
-                "The privileged helper is not running. Start opsbox-priv and try again.",
-            ),
-            ClientError::Remote(remote) if remote.code == PrivErrorCode::Forbidden => Self::new(
-                ErrorCode::Unavailable,
-                "The privileged helper does not accept this service. Check the allowed users in its configuration.",
-            ),
+            ClientError::Connect { .. }
+                if e.connect_kind() == Some(std::io::ErrorKind::PermissionDenied) =>
+            {
+                warn!(error = %e, "privileged helper socket refused this service's user");
+                Self::new(ErrorCode::Unavailable, HELPER_FORBIDDEN)
+            }
+            ClientError::Connect { .. } => Self::new(ErrorCode::Unavailable, HELPER_DOWN),
+            ClientError::Timeout => Self::new(ErrorCode::Unavailable, HELPER_TIMEOUT),
+            ClientError::Remote(remote) if remote.code == PrivErrorCode::Forbidden => {
+                // Which service user was refused is in the helper's log (uid and pid); the
+                // person only needs to know where to look.
+                warn!(
+                    reason = %remote.message,
+                    "privileged helper refused this service's user; see the opsbox-priv log for its uid"
+                );
+                Self::new(ErrorCode::Unavailable, HELPER_FORBIDDEN)
+            }
             ClientError::Remote(remote) => {
                 // `priv` words its refusals and failures for people, so they pass through.
                 let code = match remote.code {
@@ -69,7 +83,10 @@ impl From<ClientError> for HttpError {
                 };
                 Self::new(code, remote.message)
             }
-            ClientError::Io(_) | ClientError::Protocol(_) => Self::internal(),
+            ClientError::Io(_) | ClientError::Protocol(_) => {
+                error!(error = %e, "privileged helper answered badly");
+                Self::internal()
+            }
         }
     }
 }
@@ -102,5 +119,72 @@ impl From<AuthError> for HttpError {
                 Self::internal()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use opsbox_proto::PrivError;
+    use std::io;
+
+    fn connect(kind: io::ErrorKind) -> ClientError {
+        ClientError::Connect {
+            path: "/run/opsbox/priv.sock".into(),
+            source: io::Error::from(kind),
+        }
+    }
+
+    fn message(e: ClientError) -> (ErrorCode, String) {
+        let HttpError(api, _) = e.into();
+        (api.error.code, api.error.message)
+    }
+
+    #[test]
+    fn a_missing_or_refusing_socket_says_the_helper_is_not_running() {
+        for kind in [io::ErrorKind::NotFound, io::ErrorKind::ConnectionRefused] {
+            let (code, text) = message(connect(kind));
+            assert_eq!(code, ErrorCode::Unavailable);
+            assert_eq!(text, HELPER_DOWN);
+            assert!(text.contains("sudo systemctl restart opsbox-priv"));
+        }
+    }
+
+    #[test]
+    fn a_timeout_does_not_claim_the_helper_is_down_or_tell_people_to_start_it() {
+        let (code, text) = message(ClientError::Timeout);
+        assert_eq!(code, ErrorCode::Unavailable);
+        assert_eq!(text, HELPER_TIMEOUT);
+        assert!(text.contains("may still be running"));
+        assert!(!text.contains("not running") && !text.contains("systemctl"));
+    }
+
+    #[test]
+    fn a_refused_service_user_has_its_own_message() {
+        let remote = ClientError::Remote(PrivError {
+            code: PrivErrorCode::Forbidden,
+            message: "This user may not use the privileged helper.".into(),
+        });
+        let (_, text) = message(remote);
+        assert_eq!(text, HELPER_FORBIDDEN);
+        let (_, denied) = message(connect(io::ErrorKind::PermissionDenied));
+        assert_eq!(denied, HELPER_FORBIDDEN);
+    }
+
+    #[test]
+    fn the_three_messages_differ() {
+        assert_ne!(HELPER_DOWN, HELPER_TIMEOUT);
+        assert_ne!(HELPER_DOWN, HELPER_FORBIDDEN);
+        assert_ne!(HELPER_TIMEOUT, HELPER_FORBIDDEN);
+    }
+
+    #[test]
+    fn a_remote_refusal_passes_its_own_sentence_through() {
+        let (code, text) = message(ClientError::Remote(PrivError {
+            code: PrivErrorCode::Conflict,
+            message: "A database named pg-main already exists.".into(),
+        }));
+        assert_eq!(code, ErrorCode::Conflict);
+        assert_eq!(text, "A database named pg-main already exists.");
     }
 }

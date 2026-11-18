@@ -1,17 +1,20 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/16e-transport-security.md` (TLS everywhere, safe cookies). Not committed, not tagged yet. Prior: `03e`, `03d` (committed, not yet released), `16f` (tag `v0.1.0-alpha.20`).
+Last completed prompt: `docs/prompts/archive/03f-form-state-and-helper-errors.md` (forms keep typed values; helper errors say what happened). Not committed, not tagged yet. Prior: `16e`, `03e`, `03d` (not yet released), `16f` (tag `v0.1.0-alpha.20`).
 
-## What works (16e)
-- **Config refuses plain HTTP off loopback.** New `[api] tls` (default `true`). `tls = false` with any non-loopback `listen` (file, `--listen`, env) is an error at load for every command; no override in any build. `serve` uses plain `opsbox_api::serve` only for `tls = false` on loopback. `secure_cookies = "never"` is gone (parse error); `auto` and `always` remain.
-- **`opsbox status`** handshakes with the listener and prints `https://addr`, the TLS version and the certificate SHA-256 (`AA:BB:..`, as browsers show it), or `http://127.0.0.1:..` for a plain loopback listener. Plain HTTP answering on a public address shows as degraded.
-- **TLS settings** explicit: TLS 1.3 then 1.2 only, rustls default suites, ALPN `h2` and `http/1.1` (`tls::server_config`, tested with real handshakes).
-- **Who is calling** (`opsbox-api/src/transport.rs`, outermost middleware): `X-Forwarded-*`, `Forwarded`, `X-Real-IP` are believed only from a loopback peer that sends `X-Opsbox-Proxy-Secret`; otherwise deleted before handlers. One `Transport` value (client IP, https) feeds rate limits, the allowed-address list, audit and cookies. The proxy adds the secret on the panel route only and strips any client copy everywhere. Secret: settings key `opsbox.proxy.forward_secret`, created by `serve`/`opsbox web`.
-- **Cookies:** `Secure` whenever the request arrived over TLS (own listener, trusted proxy, or `always`). Over HTTPS the session cookie is `__Host-opsbox_session` (`Path=/`, no Domain, HttpOnly, SameSite=Strict); the plain name is ignored there. `tools.rs` strips both names from tool cookies. Sign-out deletes the session server side (tested; copied cookie fails).
-- **Tests:** `transport.rs` (9 unit), `session.rs` cookie attributes, `tls.rs` (versions, ALPN, probe), `config.rs` (rejection matrix), `status.rs` (https+fingerprint, plain, public-plain), `auth_http.rs` (forged headers, trusted proxy, TLS listener), `transport_http.rs` (real sockets, forged headers and audit peer), `security_http.rs`, `github_http.rs` and `e2e_proxy.rs` (real proxy to real serve with the secret).
-- **`scripts/check-transport.sh <url>`**: scheme, TLS version, fingerprint, legacy-protocol refusal, plain-HTTP refusal, security headers, and cookie attributes of a login (`OPSBOX_USER/PASSWORD/CODE`). Run here against a real local `opsbox serve` (TLS and plain loopback); the refused config was checked with the binary.
-- Docs: `docs/CONFIG.md`, `docs/API.md`, `docs/VERIFY.md`, new `docs/THREAT_MODEL.md`, `docs/DECISIONS.md`.
-- Verified here: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test -p opsbox-api -p opsbox -p opsbox-proxy` (all pass except the known `capacity_http` fixture failure), `shellcheck scripts/check-transport.sh`, `tools/generate-api.py --check`.
+## What works (03f)
+- **Forms:** a failed submit no longer rebuilds anything. Templates (`paint` only on picking another template; `paintBusy` for button/labels), New app and the memory dialog (`editMemory` now uses `run`, so the dialog stays open) keep every field, the override box and the confirmation sentence; the error shows in `role="alert"` and takes focus (`showFormError` in `ui.js`). `bindCapacity` returns `repaint` besides `refresh`.
+- **Helper errors:** Connect / Timeout / Forbidden have separate messages (`error.rs`); one log line per failed call with request id, op and elapsed ms (`client.rs`). Same wording in `AuthError::HelperUnavailable`.
+- **Version skew:** `/readyz` is 503 with `privileged_helper: "version mismatch"` and `checks.versions` when `priv` and `serve` differ; `opsbox status` prints `MISMATCH` and is unhealthy. `opsbox update` already restarts priv, proxy and serve together.
+- **Banner:** persistent panel banner when `/readyz` says the helper is down or mismatched, with the restart command and a Copy button; clears on its own (10 s poll).
+- **Unit:** `opsbox-priv.service` has `Restart=always`, `RestartSec=2`, `OOMScoreAdjust=-900` (test `opsbox-priv/tests/unit_file.rs`).
+- **Tests:** `error.rs` (5 unit), `http.rs` (`/readyz` ready, mismatch, down), `status.rs` (mismatch), `unit_file.rs`; `tools/check-forms-ui.mjs` (headless Chrome: refused submit on all three forms, banner down/mismatch/clear; it fails against the old `templates.js`). Not added to CI (needs Chrome).
+- Verified here: `cargo test -p opsbox-api -p opsbox-priv -p opsbox-auth`, `-p opsbox status`, clippy `-D warnings`, `cargo fmt`, `generate-api.py --check`, `check-forms-ui.mjs` and the other `tools/check-*-ui.mjs`.
+- Priv calls reachable from the capacity-guarded POSTs: all but `deploy_ensure_dir`, `deploy_image_exists`, `secret_seal/open` and `capacity` already use long timeouts (`patient()` or inside `client.rs`); those four are quick reads and stay at 10 s. `deploy_prune_images` was the one that needed more: now 120 s.
+
+## Earlier (16e, uncommitted with 03e/03d): TLS everywhere, safe cookies
+- Config refuses plain HTTP off loopback; `opsbox status` prints scheme, TLS version and fingerprint; `transport.rs` decides client IP/https; `__Host-` session cookie over TLS. Details in `docs/DECISIONS.md`, `docs/THREAT_MODEL.md`, `scripts/check-transport.sh`.
+- Not verified on Linux/`opsbox-vm`; fingerprint not yet in the setup-token output; sign-in once after updating (cookie rename).
 
 ## Earlier work, still pending release
 - 03e: update check reasons (`ReleaseChecker`, `reason` in `/updates/self`, "Check now"). 03d: `opsbox-version` crate, release stamping, channel order and migration of old builds. Details in `docs/DECISIONS.md` and `docs/RELEASING.md`.
@@ -23,6 +26,13 @@ Last completed prompt: `docs/prompts/archive/16e-transport-security.md` (TLS eve
 - `opsbox web` writing a route before `serve` ran once creates the secret; two processes creating it at the same moment could race (the later write wins; `serve` re-reads on restart).
 - `opsbox update` (CLI) does not read the panel's channel setting; `web/js/api.js` mock still says `current: '0.1.0'`.
 - Earlier open items: screenshots use demo data, live DB/R2/MinIO/SFTP/alert checks, pgweb path prefix, Capacity override click-through, idle browser CPU profiling, Caddy/Traefik live cutovers, the `capacity_http` queued-workloads fixture issue (see DECISIONS).
+
+## Found, not fixed (03f)
+- Database page dialogs (extension, pooler) still close before the request runs, so a refused request loses what was typed there; convert them to `run` like `editMemory`.
+- The prompt's capacity reserve check (opsbox's 128 MB covering `serve` and `priv`, measured RSS in DECISIONS) is not done.
+- Streaming priv calls (`deploy_build`, `docker_logs_follow`, `pty_open`) do not use `call`, so their failures log only the mapped error, without op/elapsed.
+- Existing installs get `OOMScoreAdjust` only after reinstall (`install.sh`); the update path does not rewrite unit files.
+- Not run on `opsbox-vm` (see below).
 
 ## Next
 - Commit, push, wait for CI, tag `v0.1.0-alpha.21`; VM verification for 03d, 03e and 16e.

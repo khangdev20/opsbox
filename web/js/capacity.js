@@ -41,7 +41,9 @@ export function bindCapacity(root, request, submit = 'button[type="submit"]') {
     last = null; paint(); clearTimeout(timer); timer = setTimeout(refresh, 200);
   });
   refresh();
-  return { refresh, dispose() { clearTimeout(timer); generation++; } };
+  // `repaint` re-applies the button state (for example after `data-capacity-busy` changed)
+  // without a new check, so the result line and the override fields stay as they are.
+  return { refresh, repaint: paint, dispose() { clearTimeout(timer); generation++; } };
 }
 export async function withCapacityOverride(run, body) {
   try { return await run(body); } catch (e) {
@@ -53,9 +55,11 @@ export async function withCapacityOverride(run, body) {
   }
 }
 export async function editMemory(service) {
-  const out = await formDialog({ title: `Memory for ${service.id}`, fields: [], submit: 'Save limit', capacity: { memory: service.memoryLimitMb || (service.kind === 'db' ? 256 : 128), request: (root) => ({ feature: service.kind === 'db' ? 'database' : 'app', memory_mb: capacityPayload(root).memoryLimitMb, replacing: service.name || service.id }) } });
+  // `run` keeps the dialog open on a failure, so the typed limit, the override box and the
+  // confirmation sentence are still there next to the error.
+  const out = await formDialog({ title: `Memory for ${service.id}`, fields: [], submit: 'Save limit', run: (values) => api.updateService(service.id, values.capacity), capacity: { memory: service.memoryLimitMb || (service.kind === 'db' ? 256 : 128), request: (root) => ({ feature: service.kind === 'db' ? 'database' : 'app', memory_mb: capacityPayload(root).memoryLimitMb, replacing: service.name || service.id }) } });
   if (!out) return;
-  await api.updateService(service.id, out.capacity); toast('Memory limit saved.');
+  toast('Memory limit saved.');
 }
 export function capacityCard(c) {
   if (!c) return section('Capacity', html`<p class="muted">Capacity is unavailable. Check the privileged helper.</p>`);

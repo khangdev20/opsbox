@@ -152,6 +152,20 @@ async function http(path, { method = 'GET', body } = {}) {
   return data;
 }
 
+// Is the privileged helper usable? `/readyz` answers 503 with the reason, so a non-2xx
+// reply is data here, not an error. { state: 'ok' | 'down' | 'mismatch', serve, helper }.
+// Not reachable at all (the panel itself is down) is left to the live indicator.
+export async function getHelperHealth() {
+  if (MODE !== 'http') return { state: 'ok' };
+  let res;
+  try { res = await fetch('/readyz', { credentials: 'same-origin', headers: { Accept: 'application/json' } }); } catch { return { state: 'ok' }; }
+  let body = null;
+  try { body = await res.json(); } catch { /* not JSON: a proxy error page, not our answer */ }
+  const helper = body?.checks?.privileged_helper;
+  if (helper === 'version mismatch') return { state: 'mismatch', serve: body.checks.versions?.serve || '', helper: body.checks.versions?.helper || '' };
+  if (helper === 'failing') return { state: 'down' };
+  return { state: 'ok' };
+}
 
 // ---- helpers for the System functions
 // The page registers these so the API layer can ask a person things: confirm a risky firewall

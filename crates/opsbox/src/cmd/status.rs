@@ -102,7 +102,7 @@ pub struct Report {
 impl Report {
     pub fn healthy(&self) -> bool {
         matches!(self.serve, ServeState::Ready { .. })
-            && matches!(self.privileged, PrivState::Ok { .. })
+            && matches!(&self.privileged, PrivState::Ok { version, .. } if version == VERSION)
             && !matches!(self.proxy, ProxyState::Down(_))
             && !matches!(self.watchdog, WatchdogState::Down(_))
     }
@@ -139,17 +139,15 @@ impl Report {
         }
 
         let (tag, text) = match &self.privileged {
-            PrivState::Ok { version, millis } => {
-                let note = if version == VERSION {
-                    String::new()
-                } else {
-                    format!(" (this binary is v{VERSION}; restart opsbox-priv after an update)")
-                };
-                (
-                    "ok      ",
-                    format!("v{version}, answered in {millis} ms{note}"),
-                )
+            PrivState::Ok { version, millis } if version == VERSION => {
+                ("ok      ", format!("v{version}, answered in {millis} ms"))
             }
+            PrivState::Ok { version, millis } => (
+                "MISMATCH",
+                format!(
+                    "v{version}, answered in {millis} ms; this binary is v{VERSION}. Run `sudo systemctl restart opsbox-priv` so both are the same build"
+                ),
+            ),
             PrivState::Down(why) => ("DOWN    ", why.clone()),
             PrivState::Denied(why) => ("DENIED  ", why.clone()),
         };
@@ -257,7 +255,9 @@ impl Report {
         ) {
             let _ = writeln!(out, "Logs: journalctl -u opsbox -n 50");
         }
-        if matches!(self.privileged, PrivState::Down(_) | PrivState::Denied(_)) {
+        if matches!(self.privileged, PrivState::Down(_) | PrivState::Denied(_))
+            || matches!(&self.privileged, PrivState::Ok { version, .. } if version != VERSION)
+        {
             let _ = writeln!(out, "Logs: journalctl -u opsbox-priv -n 50");
         }
         if matches!(self.proxy, ProxyState::Down(_)) {
@@ -947,5 +947,38 @@ mod tests {
         assert!(text.contains("DOWN"), "{text}");
         assert!(text.contains("connection refused"), "{text}");
         assert!(text.contains("none (built-in defaults)"), "{text}");
+    }
+
+    #[test]
+    fn a_helper_from_another_build_is_not_healthy() {
+        let mut report = Report {
+            config_file: None,
+            serve_addr: "127.0.0.1:8443".parse().unwrap(),
+            serve: ServeState::Ready {
+                version: VERSION.into(),
+            },
+            serve_transport: ServeTransport::Unknown,
+            priv_socket: "/run/opsbox/priv.sock".into(),
+            privileged: PrivState::Ok {
+                version: "0.0.1-old".into(),
+                millis: 1,
+            },
+            proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
+            proxy: ProxyState::NotConfigured,
+            watchdog_addr: "127.0.0.1:8444".parse().unwrap(),
+            watchdog: WatchdogState::NotConfigured,
+        };
+        assert!(!report.healthy());
+        let text = report.render();
+        assert!(
+            text.contains("MISMATCH") && text.contains("0.0.1-old"),
+            "{text}"
+        );
+        assert!(text.contains("systemctl restart opsbox-priv"), "{text}");
+        report.privileged = PrivState::Ok {
+            version: VERSION.into(),
+            millis: 1,
+        };
+        assert!(report.healthy());
     }
 }

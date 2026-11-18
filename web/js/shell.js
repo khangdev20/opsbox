@@ -396,8 +396,37 @@ function paintTheme() {
   b.innerHTML = svg(l ? moonIcon : sunIcon, 18); b.setAttribute('aria-label', l ? 'Switch to dark theme' : 'Switch to light theme'); b.title = b.getAttribute('aria-label');
 }
 
+// ---------------- helper banner ----------------
+// Shown on every page, not only as a toast, while the privileged helper is down or is a different
+// build from the panel: pages that read keep working, actions that change the server do not.
+export const HELPER_RESTART = 'sudo systemctl restart opsbox-priv';
+export function helperBannerHtml(h) {
+  if (!h || h.state === 'ok') return '';
+  const text = h.state === 'mismatch'
+    ? `OpsBox's helper is running a different version (${h.helper || 'unknown'}) than the panel (${h.serve || 'unknown'}). Actions that change the server are paused.`
+    : "OpsBox's helper is not running. Actions that change the server are paused.";
+  return html`<div class="crit-banner" role="alert" aria-label="Helper status">
+    <span class="crit-ico" aria-hidden="true">${raw(svg('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>', 16))}</span>
+    <span class="crit-txt">${text} Restart it with <span class="mono">${HELPER_RESTART}</span></span>
+    <button type="button" class="btn" data-act="copy-helper-cmd">Copy</button>
+  </div>`.toString();
+}
+let helperState = 'ok||', stopHelperPoll = null;
+export async function refreshHelperBanner() {
+  const host = document.getElementById('helper-banner'); if (!host) return;
+  let h;
+  try { h = await api.quiet(() => api.getHelperHealth()); } catch { return; }
+  // Repaint only when the answer changed, so a focused Copy button is not rebuilt every poll.
+  const key = `${h.state}|${h.serve || ''}|${h.helper || ''}`;
+  if (key === helperState) return;
+  helperState = key;
+  host.innerHTML = helperBannerHtml(h);
+}
+
 export function unmountShell() {
   if (stopAttnPoll) { stopAttnPoll(); stopAttnPoll = null; }
+  if (stopHelperPoll) { stopHelperPoll(); stopHelperPoll = null; }
+  helperState = 'ok||';
   attnData = { items: [], unread: 0, critical: 0 };
   attnInflight = null;
   attnBooted = false;
@@ -420,6 +449,7 @@ export function mountShell(app) {
     <aside class="side" aria-label="Main"><nav id="nav" class="nav" aria-label="Sections"></nav>
       <div class="side-foot"><button type="button" class="side-toggle" id="side-toggle" aria-label="Collapse sidebar" title="Collapse sidebar">${svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/>')}<span class="lbl">Collapse</span></button></div></aside>
     <div class="content">
+      <div id="helper-banner" class="helper-banner"></div>
       <div id="view" style="flex:1;display:flex;flex-direction:column"></div>
       <footer class="statusbar" aria-label="Server status"><div class="wrap" id="status"></div></footer>
     </div>
@@ -427,6 +457,13 @@ export function mountShell(app) {
   paintTheme(); paintBell(); loadHostName();
   if (stopAttnPoll) stopAttnPoll();
   stopAttnPoll = poll(refreshAttention, 15000, { immediate: true });
+  if (stopHelperPoll) stopHelperPoll();
+  helperState = 'ok||';
+  stopHelperPoll = poll(refreshHelperBanner, 10000, { immediate: true });
+  document.getElementById('helper-banner').addEventListener('click', async (e) => {
+    if (!e.target.closest('[data-act="copy-helper-cmd"]')) return;
+    try { await navigator.clipboard.writeText(HELPER_RESTART); toast('Copied.'); } catch { toast(`Select and copy: ${HELPER_RESTART}`); }
+  });
   document.getElementById('theme-btn').addEventListener('click', () => { toggleTheme(); paintTheme(); });
   document.getElementById('open-pal').addEventListener('click', openPalette);
   const shell = app.querySelector('.shell'), tg = document.getElementById('side-toggle');

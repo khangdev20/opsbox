@@ -62,7 +62,9 @@ pub enum AuthError {
     },
     #[error("There is nothing at this address.")]
     NotFound,
-    #[error("The privileged helper is not running. Start opsbox-priv and try again.")]
+    #[error(
+        "OpsBox's helper is not running. Restart it with `sudo systemctl restart opsbox-priv`."
+    )]
     HelperUnavailable,
     #[error("internal error: {0}")]
     Internal(String),

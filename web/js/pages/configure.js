@@ -1,4 +1,4 @@
-import { html, header, toast, setBusy } from '../ui.js';
+import { html, header, toast, setBusy, showFormError } from '../ui.js';
 import { capacityFields, bindCapacity, capacityPayload } from '../capacity.js';
 import * as api from '../api.js';
 
@@ -45,7 +45,7 @@ export async function view({ query }) {
         ${isImage ? '' : html`<div class="item-row"><label><input type="checkbox" id="autoDeploy" name="autoDeploy" checked><span><b>Auto-deploy on push</b><span class="sm muted">Trigger a new deploy when commits arrive on ${branch}.</span></span></label></div>`}
         <div class="field"><label for="vars">Environment variables</label><textarea class="input" id="vars" name="vars" rows="4" placeholder="KEY=value (one per line)" style="height:auto;font-family:var(--mono)"></textarea></div>
         ${capacityFields(128)}
-        <p id="err" class="form-err" role="alert"></p>
+        <p id="err" class="form-err" role="alert" tabindex="-1"></p>
         <div class="row"><button class="btn primary" type="submit">Deploy</button><a class="btn link" href="#/apps/new">Back</a></div>
       </form></main>`,
     mount(root) {
@@ -87,8 +87,10 @@ export async function view({ query }) {
           if (res?.deployId) qs.set('log', res.deployId);
           location.hash = `#/apps?${qs.toString()}`;
         } catch (err) {
-          root.querySelector('#err').textContent = err.message;
-          setBusy(b, false); root.removeAttribute('data-capacity-busy'); this._capacity?.refresh();
+          // Only the button and the error line change; every field stays as typed.
+          setBusy(b, false); root.removeAttribute('data-capacity-busy');
+          showFormError(root.querySelector('#err'), err.message);
+          this._capacity?.refresh();
         }
       });
     },

@@ -622,6 +622,15 @@ export function bindActions(root, handlers) {
   });
 }
 
+// Shows a failure on the form's `role="alert"` line and moves focus there. Nothing else on the
+// form is touched: what the person typed stays exactly as it was.
+export function showFormError(el, message) {
+  if (!el) return;
+  el.textContent = message;
+  if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '-1');
+  el.focus?.();
+}
+
 // ---------- form dialog: fields = [{name,label,value,placeholder,hint,type,options,error}] ----------
 // type: text (default) | password | number (stepper, min/max/step) | textarea | checkbox.
 // With `run`, the dialog stays open while it works (submit shows a spinner) and shows the
@@ -644,7 +653,7 @@ export function formDialog({ title, body = '', fields, submit = 'Save', danger =
   return new Promise((resolve) => {
     const d = document.createElement('dialog');
     d.setAttribute('aria-labelledby', 'dlg-t');
-    d.innerHTML = `<form method="dialog" novalidate><div class="d-b"><h2 id="dlg-t">${esc(title)}</h2>${body ? `<p class="muted">${esc(body)}</p>` : ''}${fields.map(fieldHtml).join('')}<p class="form-err" role="alert"></p></div><div class="d-f"><button type="button" class="btn" data-no>Cancel</button><button type="submit" class="btn ${danger ? 'danger' : 'primary'}" value="yes">${esc(submit)}</button></div></form>`;
+    d.innerHTML = `<form method="dialog" novalidate><div class="d-b"><h2 id="dlg-t">${esc(title)}</h2>${body ? `<p class="muted">${esc(body)}</p>` : ''}${fields.map(fieldHtml).join('')}<p class="form-err" role="alert" tabindex="-1"></p></div><div class="d-f"><button type="button" class="btn" data-no>Cancel</button><button type="submit" class="btn ${danger ? 'danger' : 'primary'}" value="yes">${esc(submit)}</button></div></form>`;
     const form = d.querySelector('form'), ok = d.querySelector('button[type=submit]'), errLine = d.querySelector('.form-err');
     d.querySelector('[data-no]').addEventListener('click', () => d.close('no'));
     let result = null, capacityControl, capacityModule;
@@ -674,7 +683,7 @@ export function formDialog({ title, body = '', fields, submit = 'Save', danger =
         const msg = err.message || String(err);
         const f = err.field && d.querySelector(`[name="${CSS.escape(err.field)}"]`);
         if (f) { const box = f.closest('.field'); box.classList.add('invalid'); f.setAttribute('aria-invalid', 'true'); let h = box.querySelector('.hint.bad'); if (!h) { h = document.createElement('span'); h.className = 'hint bad'; box.append(h); } h.textContent = msg; f.focus(); }
-        else errLine.textContent = msg;
+        else showFormError(errLine, msg);
       } finally { setBusy(ok, false); }
     });
     d.addEventListener('close', () => { capacityControl?.dispose(); d.remove(); resolve(d.returnValue === 'yes' ? result : null); });
