@@ -49,7 +49,7 @@ const REAL = new Set([
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
   'dockerStatus', 'installDocker', 'listContainers', 'listDocker', 'inspectContainer', 'containerAction', 'containerLogs',
-  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap',
+  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs',
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
   'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
   'getRecovery',
@@ -94,7 +94,7 @@ export const PAGE_USES = {
   overview: ['getCapacity', 'getProxyNetwork', 'getAttention', 'getHost', 'getMetrics'],
   recovery: MODE === 'http' ? ['getRecovery'] : ['getRecovery', 'recoveryAction', 'simulateFailure'],
   security: ['getSecurity', 'inviteUser', 'openSsh', 'removeUser', 'setAllowIps', 'signOutAll', 'toggleCheck'],
-  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
+  settings: ['getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts', 'checkPanelDns', 'completeGithubManifest', 'createToken', 'deleteDeployKey', 'disconnectGithub', 'exportConfig', 'getGithubStatus', 'getDisk', 'getSettings', 'growFs', 'issuePanelCert', 'listDeployKeys', 'removePanelDomain', 'revokeToken', 'saveSettings', 'setOpsboxAutoUpdate', 'setPanelLocalOnly', 'setSwap', 'startGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook'],
   setup: ['auth.claim', 'auth.setupAdmin', 'auth.setupConfirm'],
   system: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'listContainers', 'updateService', 'addJob', 'cancelReboot', 'confirmFirewall', 'removeJob', 'addRule', 'getFirewall', 'getJobs', 'getJournal', 'getUnits', 'getUpdates', 'installUpdates', 'openSsh', 'reboot', 'removeRule', 'runJob', 'setAutoUpdates', 'unitAction'],
   templates: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addTemplate', 'deployCompose', 'getProject', 'getTemplates'],
@@ -1732,7 +1732,33 @@ export async function revokeToken(id) { sample('revokeToken'); if (real('revokeT
 export async function setSwap(v) { sample('setSwap');
   if (real('setSwap')) { const mb = v === 'None' ? 0 : Math.round(parseFloat(v) * 1024); const { task } = await http('/system/swap', { method: 'PUT', body: { sizeMb: mb } }); await waitTask(task, { every: 1000 }); return; }
   await lag(400); ST.swap = v; audit(`swap ${v}`); }
-export async function growFs() { sample('growFs'); await lag(900); ST.fsGrown = true; audit('grow filesystem'); }
+// Disk and filesystem of "/" for Settings → Memory and disk. Real shape: GET /system/disk (docs/API.md).
+const diskMock = () => {
+  const GB = 1073741824, grown = ST.fsGrown;
+  return {
+    growpart_installed: true, growpart_installable: true,
+    volumes: [{
+      mount: '/', device: '/dev/vda1', fs: 'ext4', layout: 'partition', partition: '/dev/vda1', disk: '/dev/vda',
+      fs_bytes: (grown ? 119 : 99) * GB, partition_bytes: (grown ? 120 : 100) * GB - GB, disk_bytes: 120 * GB,
+      growable_bytes: grown ? 0 : 20 * GB, growable: !grown, steps: grown ? [] : ['grow_partition', 'resize_fs'], refusal: null,
+    }],
+  };
+};
+export async function getDisk() { sample('getDisk');
+  if (real('getDisk')) return http('/system/disk');
+  await lag(150); return diskMock(); }
+// Starts the task (a wrong password or a refusal throws here), then waits for it to finish.
+// `onStarted` runs once the server accepted the request so a dialog can close and let the task dock show progress.
+export async function growFs({ mount = '/', password = '', confirm = 'grow', installTools = false, onStarted = null } = {}) { sample('growFs');
+  if (real('growFs')) {
+    const { task } = await http('/system/disk/grow', { method: 'POST', body: { mount, confirm, password, install_tools: !!installTools } });
+    if (onStarted) onStarted(task);
+    return (await waitTask(task, { every: 1500, max: 30 * 60 * 1000 })).result;
+  }
+  await lag(300); if (confirm !== 'grow') { const e = new Error('Type grow to confirm.'); e.field = 'confirm'; throw e; }
+  const before = diskMock().volumes[0]; if (onStarted) onStarted('demo');
+  await lag(900); ST.fsGrown = true; audit('grow filesystem');
+  return { mount, before, after: diskMock().volumes[0] }; }
 export async function checkOpsboxUpdate() { sample('checkOpsboxUpdate');
   if (real('checkOpsboxUpdate')) return http('/updates/check', { method: 'POST' });
   await lag(250); return { current: '0.1.0', channel: ST.channel, checkedChannel: ST.channel, auto: ST.autoUpdate, window: 3, updateAvailable: false, latest: null, reason: 'up_to_date', checkedAt: Math.floor(Date.now() / 1000) }; }

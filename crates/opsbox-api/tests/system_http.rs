@@ -25,6 +25,7 @@ async fn reading_needs_a_session_and_every_change_needs_an_admin() {
         "/api/v1/system/journal",
         "/api/v1/jobs",
         "/api/v1/firewall",
+        "/api/v1/system/disk",
         "/api/v1/tasks/x",
     ] {
         assert_eq!(
@@ -75,6 +76,11 @@ async fn reading_needs_a_session_and_every_change_needs_an_admin() {
             Method::PUT,
             "/api/v1/system/swap",
             Some(json!({"sizeMb": 1024})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/system/disk/grow",
+            Some(json!({"mount": "/", "confirm": "grow", "password": "x"})),
         ),
         (
             Method::PUT,
@@ -381,5 +387,60 @@ async fn journal_arguments_are_checked() {
         anon.get("/api/v1/stream/journal").await.status,
         StatusCode::UNAUTHORIZED
     );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn growing_the_disk_asks_for_the_password_before_looking_at_anything() {
+    let h = Harness::new(true);
+    let mut a = h.signed_in("theadmin", Role::Admin);
+    let r = a
+        .post(
+            "/api/v1/system/disk/grow",
+            json!({"mount": "/", "confirm": "grow", "password": "not the password"}),
+        )
+        .await;
+    assert_eq!(
+        (r.status, code(&r)),
+        (StatusCode::FORBIDDEN, "forbidden".to_owned())
+    );
+    assert!(
+        r.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("password")
+    );
+    // The refusal never started a task.
+    assert!(r.json().get("task").is_none());
+    // A missing field is a validation error, not a crash.
+    let r = a
+        .post("/api/v1/system/disk/grow", json!({"mount": "/"}))
+        .await;
+    assert!(r.status.is_client_error(), "{}", r.text());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_disk_view_is_data_or_a_clear_unsupported() {
+    let h = Harness::new(true);
+    let mut v = h.signed_in("viewer1", Role::Viewer);
+    let r = v.get("/api/v1/system/disk").await;
+    match r.status.as_u16() {
+        200 => {
+            let j = r.json();
+            assert!(
+                j["volumes"].is_array() && j["growpart_installed"].is_boolean(),
+                "{j}"
+            );
+            for vol in j["volumes"].as_array().unwrap() {
+                assert!(
+                    vol["mount"].is_string() && vol["growable_bytes"].is_number(),
+                    "{vol}"
+                );
+            }
+        }
+        501 => assert_eq!(code(&r), "unsupported"),
+        _ => assert!(r.json()["error"]["message"].is_string(), "{}", r.text()),
+    }
     h.shutdown().await;
 }

@@ -145,6 +145,13 @@ Workload create/deploy/update, template/Compose install, database pooler/extensi
 
 A signed-in Owner (`admin` role) may add `override:true` and `capacityConfirmation:"I understand this server may run out of memory"` to a workload request. Missing/wrong confirmation is `409 confirmation_required`; Deployer and every API token receive `403 forbidden`, even if the workload would fit. Successful blocked overrides produce `capacity.override` audit entries and `overCapacity:true` on service views until reservations/pressure fit again. Cgroup v2 enforcement cannot be bypassed. Scheduled backups retry for 30 minutes, then run at lowest priority and raise a backup-capacity alert; manual runs return 409 instead.
 
+## Grow filesystem (prompt 16h, Spec 7.8.1)
+
+| Request | Response / behaviour |
+|---|---|
+| `GET /system/disk` | Any signed-in role. `{volumes:[{mount,device,fs,layout,partition,disk,fs_bytes,partition_bytes,disk_bytes,growable_bytes,growable,steps,refusal}],growpart_installed,growpart_installable}`. `layout` is `partition`, `disk`, `lvm` or `other`; `steps` is an ordered list of `install_growpart`, `grow_partition`, `resize_pv`, `resize_fs`. Volumes: `/`, plus the data and Docker directories when they are on other filesystems. `refusal` says why a volume cannot be grown (unsupported filesystem, RAID, encryption, several disks, ...); `growable:false` with no `refusal` means the disk simply has no unused space. |
+| `POST /system/disk/grow {mount,confirm:"grow",password,install_tools?}` | Interactive admin only (no tokens). Wrong password is `403` and audits `system.disk.grow` as denied; wrong `confirm` is `422` (field `confirm`); an unknown `mount` is `422`; a refused or nothing-to-grow volume is `409` with the reason; a missing `growpart` without `install_tools:true` is `422` (field `install_tools`). Otherwise `202 {task}` for kind `system.disk_grow`; the task log lists the steps as they run and `result` is `{mount,before,after}` with `fs_bytes`, `partition_bytes`, `disk_bytes`, `growable_bytes`. Audit `system.disk.grow` records the steps and the before and after sizes (failures record the failing step). |
+
 ## Implemented routes
 
 ## Proxy network conflicts (prompt 03c)
@@ -314,6 +321,8 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `GET` | `/api/v1/stream/journal` | [system::stream_journal](../crates/opsbox-api/src/system.rs) |
 | `GET` | `/api/v1/stream/metrics` | [metrics::stream](../crates/opsbox-api/src/metrics.rs) |
 | `GET` | `/api/v1/stream/terminal` | [terminal::stream](../crates/opsbox-api/src/terminal.rs) |
+| `GET` | `/api/v1/system/disk` | [system::get_disk](../crates/opsbox-api/src/system.rs) |
+| `POST` | `/api/v1/system/disk/grow` | [system::grow_disk](../crates/opsbox-api/src/system.rs) |
 | `PUT` | `/api/v1/system/hostname` | [system::set_hostname](../crates/opsbox-api/src/system.rs) |
 | `GET` | `/api/v1/system/journal` | [system::get_journal](../crates/opsbox-api/src/system.rs) |
 | `POST` | `/api/v1/system/reboot` | [system::reboot](../crates/opsbox-api/src/system.rs) |

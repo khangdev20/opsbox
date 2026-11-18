@@ -1,4 +1,4 @@
-import { html, st, btn, table, section, header, sw, bindActions, confirmDialog, askForm, toast, download } from '../ui.js';
+import { html, st, btn, table, section, header, sw, bindActions, confirmDialog, askForm, toast, download, bytes } from '../ui.js';
 import * as api from '../api.js';
 import { networkCard, networkActions } from '../network.js';
 import { noOfferText, checkedLine, checkToast } from '../update-status.js';
@@ -31,6 +31,7 @@ export async function view({ query = {} } = {}) {
   }
   let d = await api.getSettings(), root;
   let proxyNetwork = await api.getProxyNetwork().catch((e) => ({ error: e.message })), proxyBusy = false;
+  let disk = await api.getDisk().catch((e) => ({ error: e.message })), growing = '';
   let dns = null, busy = '', panelErr = '', ghBusy = false;
   const upd = () => d.opsboxUpdate || { current: '0.1.0', channel: d.channel || 'stable', auto: !!d.autoUpdate, window: 3, updateAvailable: false, latest: null, reason: null, checkedAt: null, previousVersion: null, lastOutcome: null };
   const panelInfo = () => d.panelInfo || { domain: d.panel || null, activeDomain: null, certStatus: 'none', proxyReachable: true, rawPortOpen: true, listen: '0.0.0.0:8443' };
@@ -179,12 +180,23 @@ export async function view({ query = {} } = {}) {
       </div>` : ''}
     </div>`)}
     ${section('API tokens', html`${table('API tokens', [['Name'], ['Can do'], ['Last used'], ['', 'r']], d.tokens.map((t) => [html`<span class="mono">${t.name}</span>`, t.can, t.last, btn('Revoke', { act: 'revoke', data: { id: t.id }, kind: 'link' })]))}<div>${btn('Create token', { act: 'token' })}</div>`)}
-    ${section('Memory and disk', html`<div style="max-width:520px;display:flex;flex-direction:column;gap:16px"><p class="muted sm">Swap protects small instances from running out of memory. Disk growth needs the volume enlarged at your cloud provider first.</p>
+    ${section('Memory and disk', html`<div style="max-width:520px;display:flex;flex-direction:column;gap:16px"><p class="muted sm">Swap protects small instances from running out of memory. To get more disk space, enlarge the volume at your cloud provider first; opsbox then grows the partition and filesystem for you.</p>
       <div class="field"><label for="sw">Swap file</label><select class="select" id="sw" data-act="swap">${(SWAP.includes(d.swap) ? SWAP : [...SWAP, d.swap]).map((v) => html`<option${v === d.swap ? ' selected' : ''}>${v}</option>`)}</select></div>
-      <div class="row">${sampleBadge()}${btn('Grow filesystem to fill disk', { act: 'grow', disabled: LIVE || d.fsGrown })}<span class="mono sm muted">disk 120 GB · filesystem ${d.fsGrown ? '120' : '100'} GB</span></div></div>`)}
+      ${diskBlock()}</div>`)}
     ${section('GitHub', renderGithubSection(pi))}
     ${section('opsbox updates', html`<div class="list-row"><span>${statusText}<br><span class="sm muted" id="ucheck">${checkedLine(u)}</span></span><div class="row">${btn('Check now', { act: 'check' })}${u.updateAvailable ? btn('Update now', { act: 'updateNow', kind: 'primary' }) : ''}${u.previousVersion ? btn(`Roll back to ${u.previousVersion}`, { act: 'rollback' }) : ''}</div></div>${u.lastOutcome ? html`<p class="sm muted">${u.lastOutcome.message}</p>` : ''}<div class="list-row"><span>Release channel${chanSource ? html` <span class="sm muted">(${chanSource})</span>` : ''}</span><select class="select" id="uch" style="width:auto"><option value="stable"${u.channel === 'stable' ? ' selected' : ''}>stable</option><option value="beta"${u.channel === 'beta' ? ' selected' : ''}>beta</option></select></div><div class="list-row"><span>Update opsbox automatically</span><div class="row">${sw('Update opsbox automatically', u.auto, 'autoup')}<select class="select" id="uwin" aria-label="Daily update window" style="width:auto">${hours.map((h) => html`<option value="${h}"${h === (u.window ?? 3) ? ' selected' : ''}>${String(h).padStart(2, '0')}:00 UTC</option>`)}</select></div></div><p class="muted sm">If a new version fails its health check after 2 minutes, opsbox rolls back to the previous one by itself.</p>`)}
     ${section('Export and uninstall', html`${sampleBadge()}<p class="muted sm" style="max-width:620px">Export saves services and settings as a file you can import on a new server. Uninstall removes opsbox but leaves your apps and data running.</p><div class="row">${btn('Export configuration', { act: 'export', disabled: LIVE })}${btn('Uninstall opsbox', { act: 'uninstall', kind: 'danger', disabled: LIVE })}</div>`)}`;
+  };
+  // One block per filesystem opsbox watches (GET /system/disk). Grow shows only when there is space to take.
+  const diskBlock = () => {
+    if (disk.error) return html`<p class="sm muted" role="status">Could not read the disk: ${disk.error}</p>`;
+    return html`${(disk.volumes || []).map((v) => html`<div class="col gap12" style="border-top:1px solid var(--ls);padding-top:14px">
+      <div class="row spread"><span><b class="mono">${v.mount}</b> <span class="sm muted mono">${v.device} · ${v.fs}</span></span><span class="mono sm muted">filesystem ${bytes(v.fs_bytes)}${v.disk_bytes ? ` · disk ${bytes(v.disk_bytes)}` : ''}</span></div>
+      ${v.growable ? html`<div class="row spread">${st('warn', `${bytes(v.growable_bytes)} not used yet`)}${btn(growing === v.mount ? 'Growing…' : 'Grow filesystem to fill disk', { act: 'grow', data: { mount: v.mount }, kind: 'primary', disabled: !!growing })}</div>
+        <p class="sm muted">The disk is bigger than the filesystem. opsbox grows the partition, then the filesystem, while everything keeps running.${(v.steps || []).includes('install_growpart') ? ' It installs the growpart tool first.' : ''}</p>`
+      : v.refusal ? html`<div class="row">${st('warn', 'Cannot grow automatically')}</div><p class="sm muted">${v.refusal}</p>`
+      : html`<p class="sm muted">All of the disk is in use. To get more space, enlarge the volume at your cloud provider first, then come back here.</p>`}
+    </div>`)}`;
   };
   const paint = () => { root.querySelector('#b').innerHTML = body().toString(); };
   const refreshNetwork = async () => {
@@ -192,7 +204,7 @@ export async function view({ query = {} } = {}) {
     const card = root?.querySelector('#network-card');
     if (card) card.innerHTML = networkCard(proxyNetwork, proxyBusy).toString();
   };
-  const reload = async () => { d = await api.getSettings(); await refreshNetwork(); paint(); };
+  const reload = async () => { d = await api.getSettings(); disk = await api.getDisk().catch((e) => ({ error: e.message })); await refreshNetwork(); paint(); };
   return {
     unmount() { clearInterval(this._networkTimer); root = null; },
     nav: null, title: 'Settings',
@@ -312,7 +324,35 @@ export async function view({ query = {} } = {}) {
           }
         },
         revoke: async (el) => { if (await confirmDialog({ title: 'Revoke this token?', body: 'Anything using it stops working.', confirm: 'Revoke', danger: true })) { await api.revokeToken(el.dataset.id); await reload(); } },
-        grow: async () => { await api.growFs(); toast('Filesystem grown.'); await reload(); },
+        grow: async (el) => {
+          const v = (disk.volumes || []).find((x) => x.mount === el.dataset.mount);
+          if (!v || growing) return;
+          const needsTool = (v.steps || []).includes('install_growpart');
+          let finished;
+          // The dialog closes once the server accepted the request; the task dock then shows each step.
+          const out = await askForm({
+            title: `Grow ${v.mount} by ${bytes(v.growable_bytes)}?`,
+            body: `opsbox grows the partition and then the filesystem while your apps keep running. Enter your password and type grow to confirm.${needsTool ? ' The growpart tool (package cloud-guest-utils) is missing and will be installed first.' : ''}`,
+            fields: [
+              { name: 'password', label: 'Account password', type: 'password' },
+              { name: 'confirm', label: 'Type grow to confirm', placeholder: 'grow' },
+              ...(needsTool ? [{ name: 'install_tools', label: 'Install growpart if it is missing', type: 'checkbox', value: true }] : []),
+            ],
+            submit: 'Grow filesystem',
+          }, (o) => new Promise((resolve, reject) => {
+            finished = api.growFs({ mount: v.mount, password: o.password, confirm: o.confirm.trim(), installTools: !!o.install_tools, onStarted: () => resolve(true) });
+            finished.catch(reject);
+          }));
+          if (!out) return;
+          growing = v.mount; paint();
+          try {
+            const r = await finished;
+            const from = r?.before?.fs_bytes, to = r?.after?.fs_bytes;
+            toast(from && to ? `Filesystem grown: ${bytes(from)} → ${bytes(to)}.` : 'Filesystem grown.');
+          } catch (e) { toast(e.message, 'err'); }
+          growing = '';
+          await reload();
+        },
         ghConnect: async () => {
           ghBusy = true; ghErr = '';
           const org = (root.querySelector('#gh-org')?.value || ghOrg || '').trim();

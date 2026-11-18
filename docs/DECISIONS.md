@@ -455,3 +455,17 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **`opsbox status` probes the listener.** It does a TLS handshake (accepting any certificate, nothing sent) to learn the scheme, protocol version and fingerprint, instead of reading configuration or the certificate file. Plain HTTP answering on a non-loopback address is reported as degraded.
 
 **03f: helper errors and form state.** `PrivClient::call` logs every failed call once (`privileged helper call failed request_id op elapsed_ms error`; a `priv` refusal other than Forbidden is debug, since it is the caller's mistake). `From<ClientError>` maps Connect (not found/refused) to "helper is not running + restart command", Timeout to "did not answer in time, may still be running" and Forbidden or a permission-denied socket to the allowed-users message. The helper version is already in `Pong`; `/readyz` compares it with `serve`'s version and answers 503 with `privileged_helper: "version mismatch"` and `checks.versions {serve, helper}` (only on a mismatch). `opsbox status` shows `MISMATCH` and is unhealthy then. `OOMScoreAdjust=-900` is in `packaging/systemd/opsbox-priv.service` (installed by `install.sh`; existing installs get it on reinstall). `deploy_prune_images` now has a 120 s timeout. The panel's banner reuses `.crit-banner` and polls `/readyz` every 10 s. Forms are rebuilt only on picking a different template; busy/error states touch the button and `role="alert"` line (`showFormError`, which also focuses it).
+
+## Prompt 16h (grow the filesystem)
+
+**"Owner" is the `admin` role.** The prompt asks for Owner, re-auth and a typed confirm. opsbox has no separate Owner role (`Viewer < Deployer < Admin`), so the endpoint needs an interactive admin (tokens refused with `deny_token`), the account password again (same check as the backup recovery key) and the typed word `grow`.
+
+**One typed `PrivOp` per step, devices re-derived in `priv`.** `DiskGrow {mount, step}` carries no device name. `priv` runs detection again on every step and builds the command from that, so a compromised `serve` can only grow a volume opsbox already watches (`/`, the data directory, Docker's directory). Steps are listed, not planned by `serve`, so the task log can show them as they run.
+
+**`growable_bytes` is disk tail plus unused LVM space plus a large filesystem gap.** A filesystem is always a few percent smaller than its device (journal, inode tables), so a gap counts only when it is at least 1 GiB and 10% of the container; anything under 64 MiB behind a partition or in a volume group is alignment and GPT bookkeeping. Space behind a partition counts only if it is the last partition on the disk (start sectors from `/sys/class/block`). If a start sector cannot be read, nothing is offered.
+
+**`/proc/partitions` is not read.** `lsblk -J -b` already reports every device and size, and `/sys/class/block/<part>/start` supplies the one thing it does not.
+
+**btrfs inside LVM is refused.** The prompt names `lvextend -r`, which calls `fsadm`; `fsadm` does not reliably resize btrfs, so that combination says "grow it by hand" instead of risking a half-grown volume. btrfs on a partition or disk is supported.
+
+**`lvextend` with nothing free is success.** It exits non-zero with "matches existing size"; the step reports that the volume already uses all free space. Same for `growpart` exit 1 with `NOCHANGE`.

@@ -10,6 +10,7 @@ pub mod cleanup;
 pub(crate) mod cron;
 pub(crate) mod database;
 pub(crate) mod deploy;
+pub(crate) mod disk;
 pub mod docker;
 mod doctor;
 pub(crate) mod exec;
@@ -183,6 +184,8 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::Reboot { delay_min } => hostset::reboot(*delay_min).map(|()| PrivReply::Done),
         PrivOp::RebootCancel => hostset::reboot_cancel().map(|()| PrivReply::Done),
         PrivOp::SwapSet { size_mb } => hostset::set_swap(*size_mb).map(|()| PrivReply::Done),
+        PrivOp::DiskState => disk::state(env),
+        PrivOp::DiskGrow { mount, step } => disk::grow(env, mount, *step),
         PrivOp::HostnameSet { name } => hostset::set_hostname(name).map(|()| PrivReply::Done),
         PrivOp::TimezoneSet { zone } => hostset::set_timezone(zone).map(|()| PrivReply::Done),
         PrivOp::FileList { path, jail } => {

@@ -594,6 +594,33 @@ impl PrivClient {
         self.done(rid, actor, PrivOp::SwapSet { size_mb }).await
     }
 
+    pub async fn disk_state(&self, rid: &str) -> Result<opsbox_proto::DiskState, ClientError> {
+        self.expect(rid, None, PrivOp::DiskState, |r| match r {
+            PrivReply::Disk(d) => Ok(*d),
+            o => Err(o),
+        })
+        .await
+    }
+
+    /// Run one step of growing the filesystem at `mount`; returns what the tool printed.
+    pub async fn disk_grow(
+        &self,
+        rid: &str,
+        actor: &str,
+        mount: &str,
+        step: opsbox_proto::DiskStep,
+    ) -> Result<Vec<String>, ClientError> {
+        let op = PrivOp::DiskGrow {
+            mount: mount.to_owned(),
+            step,
+        };
+        self.expect(rid, Some(actor), op, |r| match r {
+            PrivReply::DiskStep { log } => Ok(log),
+            o => Err(o),
+        })
+        .await
+    }
+
     pub async fn hostname_set(
         &self,
         rid: &str,

@@ -491,7 +491,7 @@ export function toast(msg, kind = '') {
 
 // Long tasks: api.js emits opsbox:task while it waits for one; each becomes a row in the dock.
 const tasks = new Map();
-const TASK_NAMES = { 'updates.install': 'Installing updates', 'updates.auto': 'Changing automatic updates', 'cleanup.run': 'Cleaning up', 'docker.install': 'Installing Docker', 'system.swap': 'Changing swap', 'backups.run': 'Running a backup', 'backups.restore': 'Restoring a backup', 'backups.restore_test': 'Testing a restore', 'backups.check': 'Checking backups', 'backups.prune': 'Pruning old backups', panel_cert: 'Issuing the panel certificate' };
+const TASK_NAMES = { 'updates.install': 'Installing updates', 'updates.auto': 'Changing automatic updates', 'cleanup.run': 'Cleaning up', 'docker.install': 'Installing Docker', 'system.swap': 'Changing swap', 'system.disk_grow': 'Growing the disk', 'backups.run': 'Running a backup', 'backups.restore': 'Restoring a backup', 'backups.restore_test': 'Testing a restore', 'backups.check': 'Checking backups', 'backups.prune': 'Pruning old backups', panel_cert: 'Issuing the panel certificate' };
 const taskLabel = (t) => t.label || TASK_NAMES[t.kind] || String(t.kind || 'Working').replace(/[._-]+/g, ' ').replace(/^./, (c) => c.toUpperCase());
 function taskSteps(t) {
   if (Array.isArray(t.steps) && t.steps.length) return t.steps.map((s) => ({ label: s.label || String(s), state: s.state || 'done' }));

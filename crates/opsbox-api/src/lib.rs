@@ -326,6 +326,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/firewall/confirm", post(system::confirm_firewall))
         .route("/api/v1/ssh/emergency", post(system::ssh_emergency))
         .route("/api/v1/system/swap", put(system::set_swap))
+        .route("/api/v1/system/disk", get(system::get_disk))
+        .route("/api/v1/system/disk/grow", post(system::grow_disk))
         .route("/api/v1/system/hostname", put(system::set_hostname))
         .route("/api/v1/system/timezone", put(system::set_timezone))
         .route("/api/v1/metrics", get(metrics::get_metrics))

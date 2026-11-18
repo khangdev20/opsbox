@@ -755,6 +755,152 @@ pub(crate) async fn set_swap(
     ))
 }
 
+// --------------------------------------------------------------------- disk
+
+/// `GET /api/v1/system/disk`: for `/` and the opsbox data and Docker directories (when they
+/// are on other filesystems), what is mounted, how big it is and how much disk is unused.
+pub(crate) async fn get_disk(
+    State(state): State<AppState>,
+    Viewer(_): Viewer,
+    Extension(RequestId(rid)): Extension<RequestId>,
+) -> Result<Json<Value>, HttpError> {
+    let d = patient(&state, 60).disk_state(&rid).await?;
+    Ok(Json(serde_json::to_value(d).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct GrowDiskBody {
+    mount: String,
+    /// The word `grow`, typed by the person.
+    confirm: String,
+    /// The account password again (owner re-authentication).
+    password: String,
+    /// The person agreed to install `growpart` when it is missing.
+    #[serde(default)]
+    install_tools: bool,
+}
+
+fn disk_sizes(v: &opsbox_proto::DiskVolume) -> Value {
+    json!({
+        "fs_bytes": v.fs_bytes,
+        "partition_bytes": v.partition_bytes,
+        "disk_bytes": v.disk_bytes,
+        "growable_bytes": v.growable_bytes,
+    })
+}
+
+const DISK_TASK: &str = "system.disk_grow";
+
+/// `POST /api/v1/system/disk/grow`: grow the filesystem mounted at `mount` into the space the
+/// enlarged disk gave it. An interactive admin session, the password again and the typed
+/// word `grow` are all required. Each step is its own typed operation in `priv`.
+pub(crate) async fn grow_disk(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(b): ApiJson<GrowDiskBody>,
+) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    crate::session::deny_token(&who)?;
+    let ok = state
+        .auth
+        .verify_user_password(&who.user.id, &b.password)
+        .await
+        .map_err(|_| HttpError::internal())?;
+    if !ok {
+        state.auth.audit(
+            &who.user.name,
+            ActorKind::User,
+            Some(&client.ip),
+            "system.disk.grow",
+            Some(&b.mount),
+            AuditResult::Denied,
+            json!({ "reason": "wrong_password" }),
+        );
+        return Err(HttpError::new(
+            ErrorCode::Forbidden,
+            "Incorrect account password.",
+        ));
+    }
+    if b.confirm.trim() != "grow" {
+        return Err(invalid("confirm", "Type grow to confirm."));
+    }
+    let pc = patient(&state, 25 * 60);
+    let before = pc.disk_state(&rid).await?;
+    let vol = before
+        .volumes
+        .iter()
+        .find(|v| v.mount == b.mount)
+        .cloned()
+        .ok_or_else(|| invalid("mount", "That is not a volume opsbox can grow."))?;
+    if let Some(why) = &vol.refusal {
+        return Err(HttpError::new(ErrorCode::Conflict, why.clone()));
+    }
+    if !vol.growable {
+        return Err(HttpError::new(
+            ErrorCode::Conflict,
+            "There is nothing to grow yet. Enlarge the volume at your cloud provider first.",
+        ));
+    }
+    if vol.steps.contains(&opsbox_proto::DiskStep::InstallGrowpart) && !b.install_tools {
+        return Err(invalid(
+            "install_tools",
+            "Growing the partition needs the growpart tool (package cloud-guest-utils). Allow opsbox to install it, or install it yourself.",
+        ));
+    }
+    let (name, ip, s) = (who.user.name.clone(), client.ip.clone(), state.clone());
+    let task = state.tasks.start(DISK_TASK, async move {
+        let mut log: Vec<String> = Vec::new();
+        for step in &vol.steps {
+            log.push(format!("{}…", step.label()));
+            s.tasks.progress(DISK_TASK, log.clone());
+            if let Err(e) = pc.disk_grow(&rid, &name, &vol.mount, *step).await {
+                s.auth.audit(
+                    &name,
+                    ActorKind::User,
+                    Some(&ip),
+                    "system.disk.grow",
+                    Some(&vol.mount),
+                    AuditResult::Failed,
+                    json!({ "step": step.as_str(), "before": disk_sizes(&vol) }),
+                );
+                return Err(HttpError::from(e));
+            }
+            if let Some(last) = log.last_mut() {
+                *last = step.label().to_owned();
+            }
+        }
+        let after = pc
+            .disk_state(&rid)
+            .await
+            .ok()
+            .and_then(|d| d.volumes.into_iter().find(|v| v.mount == vol.mount));
+        let steps: Vec<&str> = vol.steps.iter().map(|s| s.as_str()).collect();
+        let detail = json!({
+            "steps": steps,
+            "before": disk_sizes(&vol),
+            "after": after.as_ref().map(disk_sizes),
+        });
+        s.auth.audit(
+            &name,
+            ActorKind::User,
+            Some(&ip),
+            "system.disk.grow",
+            Some(&vol.mount),
+            AuditResult::Ok,
+            detail,
+        );
+        Ok(Outcome {
+            log,
+            result: json!({ "mount": vol.mount, "before": disk_sizes(&vol), "after": after.as_ref().map(disk_sizes) }),
+        })
+    })?;
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "task": task })),
+    ))
+}
+
 #[derive(Deserialize)]
 pub(crate) struct HostnameBody {
     name: String,

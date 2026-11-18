@@ -204,6 +204,14 @@ pub enum PrivOp {
     SwapSet {
         size_mb: u64,
     },
+    /// Look at the filesystems opsbox lives on and how much disk each one leaves unused.
+    DiskState,
+    /// Run one step of growing the filesystem mounted at `mount`. The devices come from
+    /// what `priv` finds on the machine, never from the caller.
+    DiskGrow {
+        mount: String,
+        step: crate::disk::DiskStep,
+    },
     HostnameSet {
         name: String,
     },
@@ -483,6 +491,8 @@ impl PrivOp {
             Self::Reboot { .. } => "reboot",
             Self::RebootCancel => "reboot_cancel",
             Self::SwapSet { .. } => "swap_set",
+            Self::DiskState => "disk_state",
+            Self::DiskGrow { .. } => "disk_grow",
             Self::HostnameSet { .. } => "hostname_set",
             Self::TimezoneSet { .. } => "timezone_set",
             Self::FileList { .. } => "file_list",
@@ -595,6 +605,11 @@ impl PrivResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum PrivReply {
+    Disk(Box<crate::disk::DiskState>),
+    /// What a disk-growing step printed.
+    DiskStep {
+        log: Vec<String>,
+    },
     Capacity(Box<opsbox_capacity::Snapshot>),
     CapacityImageSize {
         disk_mb: u64,

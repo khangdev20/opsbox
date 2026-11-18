@@ -316,6 +316,12 @@ Preview environments per pull request are a later phase; the data model already 
 - **Emergency SSH**: open 22/tcp for the caller's IP only, enable `sshd` if disabled, schedule closing after 1 hour (timer), alert while open.
 - **Swap**: create or resize a swap file with `fallocate`/`dd`, `mkswap`, `swapon`, fstab entry.
 - **Grow filesystem**: detect partition and filesystem (`growpart`, `resize2fs`, `xfs_growfs`); only offered when the block device is larger than the partition.
+
+#### 7.8.1 Grow filesystem
+
+`GET /system/disk` reads `findmnt -J -T <path>` for `/`, the data directory and Docker's directory, and `lsblk -J -b` plus `/sys/class/block/<part>/start`. Per filesystem it returns device, partition, disk, filesystem type, layout (`partition`, `disk`, `lvm`, `other`), `fs_bytes`, `partition_bytes`, `disk_bytes`, `growable_bytes`, the steps Grow would run and, when it must refuse, a plain-language `refusal`. `growable_bytes` counts space after the last partition, unused physical-volume space and a filesystem much smaller than its container; amounts under 64 MiB and normal metadata overhead are ignored.
+
+`POST /system/disk/grow` (interactive admin, password again, typed `grow`) runs one task. Each step is a typed `PrivOp::DiskGrow {mount, step}`; `priv` detects again and takes every device name from that, never from the caller: `InstallGrowpart` (apt `cloud-guest-utils` / dnf `cloud-utils-growpart`, only if the caller allowed it), `GrowPartition` (`growpart <disk> <n>`), `ResizePv` (`pvresize`), `ResizeFs` (`resize2fs`, `xfs_growfs <mount>`, `btrfs filesystem resize max <mount>`, or `lvextend -r -l +100%FREE` for LVM). Refused: any other filesystem, RAID, encryption, a volume over several disks, btrfs inside LVM, a partition that is not the last on its disk.
 - **Hostname and time zone**: `hostnamectl`, `timedatectl`.
 
 ### 7.9 Terminal
