@@ -23,6 +23,8 @@ struct Assets;
 /// vendored versions. Updating a vendored file in place means users keep the old one
 /// for up to a year, so rename it or version its directory when upgrading.
 const CACHE_LONG: &str = "public, max-age=31536000, immutable";
+/// HTML must never be stored (hardening middleware also enforces this).
+const CACHE_HTML: &str = "no-store";
 /// Revalidate every time (cheap: the ETag usually answers 304).
 const CACHE_REVALIDATE: &str = "no-cache";
 
@@ -108,6 +110,8 @@ fn lookup(request_path: &str) -> Option<String> {
 fn cache_control(path: &str) -> &'static str {
     if path.starts_with("fonts/") || path.starts_with("vendor/") {
         CACHE_LONG
+    } else if path.ends_with(".html") {
+        CACHE_HTML
     } else {
         CACHE_REVALIDATE
     }
@@ -230,7 +234,7 @@ mod tests {
     fn cache_policy_follows_the_spec() {
         assert_eq!(cache_control("fonts/Geist.woff2"), CACHE_LONG);
         assert_eq!(cache_control("vendor/monaco/vs/loader.js"), CACHE_LONG);
-        assert_eq!(cache_control("index.html"), CACHE_REVALIDATE);
+        assert_eq!(cache_control("index.html"), CACHE_HTML);
         assert_eq!(cache_control("js/api.js"), CACHE_REVALIDATE);
         assert_eq!(cache_control("css/app.css"), CACHE_REVALIDATE);
     }

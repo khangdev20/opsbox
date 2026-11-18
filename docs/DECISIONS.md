@@ -516,6 +516,16 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 
 **Mock API CI.** `tools/check-mock-api.mjs` fails when a page calls an `api.js` export that is not in `REAL`, unless allowlisted (demo-only recovery actions; Desktop-only outgoing keys / mock terminal hosts). Unused mock exports `getReclaimable` and `addDestination` were removed; `getAudit` stays (Security, already real).
 
+## Prompt 16r (default security headers)
+
+**HSTS only on a real DNS name over HTTPS.** Self-signed IP mode must not send `Strict-Transport-Security`: browsers would pin that IP after a certificate regeneration and lock the operator out. Detection uses the request `Host` (DNS name with at least two labels, not an IP or `localhost`) plus `Transport.https` from the listener or trusted proxy — the same facts cookies already use.
+
+**One middleware owns every response header.** `hardening::middleware` sets `no-store` for `/api/*` and HTML, the full panel CSP, Permissions-Policy, COOP, and strips `Server`. `/tools/…` alone gets a looser CSP (`unsafe-inline` / `unsafe-eval`) so pgweb and Adminer keep working without relaxing the panel.
+
+**Inline styles stay in the panel CSP.** The lit/html UI still uses `style="…"` in many places; dropping `'unsafe-inline'` from `style-src` would break the panel. Scripts stay `'self'` only.
+
+**Monaco worker is a same-origin file.** The editor used a `data:` worker URL, which CSP `script-src 'self'` would block. `web/vendor/monaco/opsbox-editor.worker.js` bootstraps `workerMain.js` so the Files page keeps working without opening `data:` or `blob:` in the policy.
+
 ## Prompt 16q (import configuration)
 
 **Two POSTs, not one with `dry_run`.** Preview (`/config/import/preview`) and apply (`/config/import/apply`) are separate so the UI can show the plan, ask for the account password again, and only then start the task. The document travels in the JSON body (same reason export is a POST: password and passphrase must not appear in a URL).

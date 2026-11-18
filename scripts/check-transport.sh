@@ -105,13 +105,38 @@ fi
 
 echo "== headers: $url/api/v1/session"
 curl -sk -m 10 -D "$tmp/headers" -o /dev/null "$url/api/v1/session" || bad "could not fetch $url/api/v1/session"
-for h in x-content-type-options x-frame-options referrer-policy content-security-policy cache-control; do
+for h in x-content-type-options x-frame-options referrer-policy content-security-policy cache-control \
+    permissions-policy cross-origin-opener-policy; do
     v=$(grep -i "^$h:" "$tmp/headers" | head -n 1 | tr -d '\r')
     if [ -n "$v" ]; then ok "$v"; else bad "missing header: $h"; fi
 done
-v=$(grep -i '^strict-transport-security:' "$tmp/headers" | head -n 1 | tr -d '\r')
-if [ -n "$v" ]; then ok "$v"; else note "no Strict-Transport-Security from serve itself (the proxy adds it on the panel domain)"; fi
+if grep -iq '^server:' "$tmp/headers"; then bad "Server header must not be sent"; else ok "no Server header"; fi
 if grep -iq '^cache-control:.*no-store' "$tmp/headers"; then ok "API answers are not cached"; else bad "API answers are cacheable"; fi
+# HSTS only when the URL is HTTPS on a real DNS name (not an IP or loopback).
+# A name with two letter-bearing labels (panel.example.com) counts; bare IPs do not.
+v=$(grep -i '^strict-transport-security:' "$tmp/headers" | head -n 1 | tr -d '\r')
+expect_hsts=0
+if [ "$scheme" = https ] && ! is_loopback "$host"; then
+    case $host in
+        *[a-zA-Z]*.*[a-zA-Z]*) expect_hsts=1 ;;
+    esac
+fi
+if [ "$expect_hsts" = 1 ]; then
+    case $v in
+        *[Ss]trict-[Tt]ransport-[Ss]ecurity:*max-age=31536000*) ok "$v" ;;
+        *) bad "expected Strict-Transport-Security: max-age=31536000 on HTTPS domain (got: ${v:-none})" ;;
+    esac
+else
+    if [ -n "$v" ]; then bad "HSTS must be absent on self-signed IP / loopback (got: $v)"; else ok "no HSTS (self-signed IP or loopback)"; fi
+fi
+
+echo "== headers: $url/ (HTML)"
+curl -sk -m 10 -D "$tmp/html" -o /dev/null "$url/" || bad "could not fetch $url/"
+if grep -iq '^cache-control:.*no-store' "$tmp/html"; then ok "HTML is not cached"; else bad "HTML answers are cacheable"; fi
+for h in x-content-type-options x-frame-options content-security-policy permissions-policy cross-origin-opener-policy; do
+    v=$(grep -i "^$h:" "$tmp/html" | head -n 1 | tr -d '\r')
+    if [ -n "$v" ]; then ok "HTML $v"; else bad "HTML missing header: $h"; fi
+done
 
 echo "== login cookies"
 if [ -n "${OPSBOX_USER:-}" ] && [ -n "${OPSBOX_PASSWORD:-}" ] && [ -n "${OPSBOX_CODE:-}" ]; then

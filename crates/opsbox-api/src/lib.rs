@@ -722,6 +722,7 @@ pub fn router(state: AppState) -> Router {
             limits,
             limits::middleware,
         ))
+        // After transport: hardening can read Transport.https for conditional HSTS.
         .layer(axum::middleware::from_fn(hardening::middleware))
         .layer(axum::middleware::from_fn(request_id::middleware))
         // First of all: decide who is calling and drop forwarding headers nobody vouches for.

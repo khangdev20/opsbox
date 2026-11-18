@@ -16,9 +16,22 @@ What we defend against: someone on the network reading or changing traffic, a co
 | Another program on the same machine posing as the proxy | Loopback alone is not enough: it must also know the secret, which is stored in the database (mode 0600) and added by the proxy to the panel route only. | `transport.rs` tests |
 | Session kept after sign-out | Sign-out deletes the session on the server; a copied cookie stops working. | `auth_http.rs` |
 
-Not covered here: response caching and default headers (16r). In scope for no one: encrypting JSON inside TLS, mutual TLS, a WAF.
+In scope for no one: encrypting JSON inside TLS, mutual TLS, a WAF.
 
 Known limit: the proxy secret is in the database and in the proxy's route table in memory. Anyone who can read either already controls opsbox.
+
+## Default response headers (prompt 16r)
+
+What we defend against: a response that gets cached with secrets, a page framed or scripted by another origin, a browser that remembers HSTS for a disposable self-signed IP certificate, and error bodies that leak internals.
+
+| Threat | Control | Where it is pinned |
+|---|---|---|
+| API / HTML cached by a proxy or browser | `Cache-Control: no-store` on every `/api/*` response and on HTML; only hashed `fonts/` / `vendor/` assets may use long-lived `immutable` | `hardening.rs`, `hardening_http.rs`, `scripts/check-transport.sh` |
+| Clickjacking / hostile framing | `X-Frame-Options: DENY` and CSP `frame-ancestors 'none'` | `hardening.rs` |
+| Inline or third-party script on the panel | CSP `default-src` / `script-src 'self'` (inline styles kept for the lit UI); `/tools/…` alone gets a looser CSP for pgweb/Adminer | `hardening.rs` |
+| HSTS lock-out after self-signed cert rotation | `Strict-Transport-Security: max-age=31536000` only when the request is HTTPS on a real DNS name; absent for IP Host and loopback HTTP | `hardening::should_send_hsts`, `hardening_http.rs` |
+| Fingerprinting via `Server` / stack traces | `Server` removed; `HttpError` messages never include paths, backtraces or secrets | `hardening.rs`, `error.rs` |
+| Camera / mic / geolocation prompts; cross-origin window attacks | `Permissions-Policy: camera=(), microphone=(), geolocation=()`; `Cross-Origin-Opener-Policy: same-origin` | `hardening.rs` |
 
 ## Secrets in responses and logs (prompt 16o)
 

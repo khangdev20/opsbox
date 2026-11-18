@@ -9,9 +9,11 @@ function loadMonaco() {
   if (monacoP) return monacoP;
   monacoP = loadAmd().then((require) => new Promise((resolve, reject) => {
     const base = new URL('../../vendor/monaco/vs', import.meta.url).href;
-      window.MonacoEnvironment = { getWorkerUrl: () => `data:text/javascript;charset=utf-8,${encodeURIComponent(`self.MonacoEnvironment={baseUrl:'${base}/'};importScripts('${base}/base/worker/workerMain.js');`)}` };
-      require.config({ paths: { vs: base } });
-      require(['vs/editor/editor.main'], () => resolve(window.monaco), reject);
+    // Same-origin worker file (not data:) so CSP script-src 'self' allows it.
+    const worker = new URL('../../vendor/monaco/opsbox-editor.worker.js', import.meta.url).href;
+    window.MonacoEnvironment = { getWorkerUrl: () => worker };
+    require.config({ paths: { vs: base } });
+    require(['vs/editor/editor.main'], () => resolve(window.monaco), reject);
   })).catch((e) => { monacoP = null; throw e; });
   return monacoP;
 }

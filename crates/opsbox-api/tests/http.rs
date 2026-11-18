@@ -218,7 +218,7 @@ async fn root_serves_the_ui_and_revalidates() {
     let resp = h.get("/").await;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(header_str(&resp, "content-type").starts_with("text/html"));
-    assert_eq!(header_str(&resp, "cache-control"), "no-cache");
+    assert_eq!(header_str(&resp, "cache-control"), "no-store");
     assert_eq!(header_str(&resp, "x-content-type-options"), "nosniff");
     let etag = header_str(&resp, "etag").to_owned();
     assert!(etag.starts_with('"') && etag.ends_with('"'));

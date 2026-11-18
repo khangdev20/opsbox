@@ -42,9 +42,15 @@ The inventory below is generated from the actual axum router. Run `python3 tools
 
 ## Errors and limits
 
-Errors are `{error:{code,message,field?}}`; `message` is safe to display. Codes include `validation` (400), `unauthorized` (401), `forbidden` (403), `not_found` (404), `method_not_allowed` (405), `timeout` (408), `conflict`/`confirmation_required` (409), `too_large` (413), `rate_limited` (429), `internal` (500), `unsupported` (501), `unavailable` (503). A 429 includes `Retry-After` seconds. Every response has a fresh `X-Request-Id`.
+Errors are `{error:{code,message,field?}}`; `message` is safe to display (no stack traces, paths or secrets). Codes include `validation` (400), `unauthorized` (401), `forbidden` (403), `not_found` (404), `method_not_allowed` (405), `timeout` (408), `conflict`/`confirmation_required` (409), `too_large` (413), `rate_limited` (429), `internal` (500), `unsupported` (501), `unavailable` (503). A 429 includes `Retry-After` seconds. Every response has a fresh `X-Request-Id`.
 
-API responses have `Cache-Control: no-store`. Ordinary requests are limited to 1 MiB and 30 seconds; editor requests allow 12 MiB JSON (5 MiB UTF-8 content) and 60 seconds. Transfers have a configurable 2 GiB default body limit and a two-hour handler deadline. WebSocket frames/messages are capped at 64 KiB, queued writes at 256 KiB, with at most 64 streams and eight terminals.
+### Default security headers
+
+Every response from `serve` (API, UI, downloads, errors, 404s) carries: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, `Cross-Origin-Opener-Policy: same-origin`, and a `Content-Security-Policy` of `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'`. Data tools under `/tools/…` (pgweb, Adminer) get a looser CSP on that prefix only (`unsafe-inline` / `unsafe-eval` for their UIs). There is no `Server` version header.
+
+`Cache-Control: no-store` applies to all `/api/*` responses and HTML; hashed static assets under `fonts/` and `vendor/` may use long-lived `immutable` caching. `Strict-Transport-Security: max-age=31536000` is sent only when the request arrived over HTTPS on a real DNS name (panel domain via the proxy); it is absent on self-signed IP mode and loopback HTTP so a certificate change cannot lock browsers out. No `includeSubDomains` or preload by default.
+
+Ordinary requests are limited to 1 MiB and 30 seconds; editor requests allow 12 MiB JSON (5 MiB UTF-8 content) and 60 seconds. Transfers have a configurable 2 GiB default body limit and a two-hour handler deadline. WebSocket frames/messages are capped at 64 KiB, queued writes at 256 KiB, with at most 64 streams and eight terminals.
 
 Token buckets: each IP has burst 120, refill 2/sec; login/setup/invitation/enrolment share burst 20, refill 1 per 3 sec; each authenticated session/token has burst 120, refill 4/sec; secret reveal endpoints share a per-session burst of 10, refill 1 per 30 sec. Each bucket table holds at most 4096 keys; new keys are refused when full until idle entries expire after 15 minutes. Health probes and static assets do not consume these budgets. Account/IP lockout remains a separate persisted policy.
 
