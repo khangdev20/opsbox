@@ -1,9 +1,19 @@
-import { html, esc, ago, st, btn, tabs, table, section, header, bindActions, confirmDialog, toast, gb, num, patch, empty, refreshing, announce, openModal } from '../ui.js';
+import { html, raw, esc, ago, st, btn, tabs, table, section, header, bindActions, confirmDialog, toast, gb, num, patch, empty, refreshing, announce, openModal, iconAct } from '../ui.js';
 import * as api from '../api.js';
 import { listeners } from '../store.js';
 
 const KINDS = ['containers', 'images', 'volumes', 'networks'];
 const MAX_LOG_LINES = 800;
+
+// "ghcr.io/org/app:f6a7984…" -> { name: "app", tag: "f6a7984" }
+function shortImage(ref = '') {
+  const at = ref.split('@')[0];
+  const i = at.lastIndexOf(':');
+  const hasTag = i > at.lastIndexOf('/');
+  const repo = hasTag ? at.slice(0, i) : at;
+  const tag = hasTag ? at.slice(i + 1) : 'latest';
+  return { name: repo.split('/').pop() || repo, tag: /^[0-9a-f]{12,}$/.test(tag) ? tag.slice(0, 7) : tag };
+}
 
 function formatLogTime(ts) {
   if (!ts) return '';
@@ -137,22 +147,27 @@ export async function view() {
       }
       put(el, table(
         'Containers',
-        [['Name'], ['Image'], ['State'], ['CPU', 'r'], ['Mem', 'r'], ['Ports'], ['', 'r']],
-        data.map((c) => Object.assign([
-          html`<span class="mono">${c.name}</span>${c.managed ? (c.service ? html`<div class="sm muted">opsbox · ${c.service}</div>` : html`<div class="sm muted">opsbox</div>`) : html`<div class="sm muted">unmanaged</div>`}`,
-          html`<span class="mono muted">${c.image}</span>`,
-          renderStateBadge(c),
-          c.state === 'running' ? num(c.cpu ?? 0, 'pct1') : '–',
-          c.state === 'running' ? num(c.mem ?? 0, 'mb') : '–',
-          c.ports || '–',
-          html`<span class="row" style="justify-content:flex-end">
-            ${btn('Logs', { act: 'logs', data: { id: c.id, name: c.name }, kind: 'link' })}
-            ${btn('Inspect', { act: 'inspect', data: { id: c.id }, kind: 'link' })}
-            ${c.state === 'running' || c.state === 'restarting' || c.state === 'paused'
-              ? html`${btn('Restart', { act: 'do', data: { id: c.id, name: c.name, a: 'restart' }, kind: 'link' })}${btn('Stop', { act: 'do', data: { id: c.id, name: c.name, a: 'stop' }, kind: 'link' })}`
-              : html`${btn('Start', { act: 'do', data: { id: c.id, name: c.name, a: 'start' }, kind: 'link' })}${btn('Delete', { act: 'del', data: { id: c.id, name: c.name }, kind: 'link' })}`}
-          </span>`,
-        ], { meta: { key: c.id, sig: c.state } })),
+        [['Container'], ['State'], ['CPU', 'r'], ['Memory', 'r'], ['Ports'], [html`<span class="sr">Actions</span>`, 'r']],
+        data.map((c) => {
+          const img = shortImage(c.image);
+          const live = c.state === 'running' || c.state === 'restarting' || c.state === 'paused';
+          const ports = String(c.ports || '').split(/,\s*/).filter((p) => p && p !== '–' && p !== '-');
+          return Object.assign([
+            html`<div class="cname"><span class="mono">${c.name}</span>
+              <span class="sm muted cmeta"><span class="tag-sm">${c.managed ? (c.service ? `opsbox · ${c.service}` : 'opsbox') : 'unmanaged'}</span><span class="mono" title="${c.image}">${img.name}:${img.tag}</span></span></div>`,
+            html`<span class="nowrap">${renderStateBadge(c)}</span>`,
+            c.state === 'running' ? html`<span class="nowrap">${num(c.cpu ?? 0, 'pct1')}</span>` : '–',
+            c.state === 'running' ? html`<span class="nowrap">${num(c.mem ?? 0, 'mb')}</span>` : '–',
+            ports.length ? html`<span class="cports">${ports.map((p) => html`<span class="tag-sm mono">${p}</span>`)}</span>` : html`<span class="muted">–</span>`,
+            html`<span class="acts">
+              ${iconAct('logs', `Logs of ${c.name}`, 'logs', { id: c.id, name: c.name })}
+              ${iconAct('inspect', `Inspect ${c.name}`, 'inspect', { id: c.id })}
+              ${live
+                ? html`${iconAct('do', `Restart ${c.name}`, 'restart', { id: c.id, name: c.name, a: 'restart' })}${iconAct('do', `Stop ${c.name}`, 'stop', { id: c.id, name: c.name, a: 'stop' }, { danger: true })}`
+                : html`${iconAct('do', `Start ${c.name}`, 'start', { id: c.id, name: c.name, a: 'start' })}${iconAct('del', `Delete ${c.name}`, 'del', { id: c.id, name: c.name }, { danger: true })}`}
+            </span>`,
+          ], { meta: { key: c.id, sig: c.state } });
+        }),
       ));
       return;
     }
@@ -190,9 +205,9 @@ export async function view() {
       return;
     }
     const statusText = logError ? `Error: ${logError}` : logEnded ? 'Stream ended' : logFollow ? 'Following live' : 'Paused';
-    put(el, `<div style="margin-top:20px">${section(
+    put(el, `<div class="mt20">${section(
       `Logs: ${logTarget.name}`,
-      html`${logError ? html`<p class="sm" style="color:var(--danger)">${logError}</p>` : ''}
+      html`${logError ? html`<p class="sm err-t">${logError}</p>` : ''}
         <pre class="code" id="logpre" aria-label="Container logs">${renderLogLines(logLines)}</pre>`,
       html`<div class="row">
         <span class="sm muted">${statusText}</span>

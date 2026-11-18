@@ -59,7 +59,7 @@ export async function view({ query = {} } = {}) {
       return html`<div class="row">${st('build', 'Issuing certificate...')}</div>`;
     }
     if (pi.certStatus === 'error') {
-      return html`<div class="col gap6">${st('fail', 'Certificate error')}${pi.certError ? html`<span class="sm" style="color:var(--danger)">${pi.certError}</span>` : ''}</div>`;
+      return html`<div class="col gap6">${st('fail', 'Certificate error')}${pi.certError ? html`<span class="sm err-t">${pi.certError}</span>` : ''}</div>`;
     }
     return '';
   };
@@ -130,7 +130,7 @@ export async function view({ query = {} } = {}) {
           ]))}
         </div>`
       : '';
-    return html`<div class="col gap12">${ghErr ? html`<p role="alert" style="color:var(--danger);font-size:13px">${ghErr}</p>` : ''}${mainBlock}${keysBlock}</div>`;
+    return html`<div class="col gap12">${ghErr ? html`<p class="form-err" role="alert">${ghErr}</p>` : ''}${mainBlock}${keysBlock}</div>`;
   };
   const body = () => {
     const u = upd();
@@ -147,7 +147,7 @@ export async function view({ query = {} } = {}) {
     ${section('General', html`<div style="max-width:520px;display:flex;flex-direction:column;gap:16px">
       <div class="field"><label for="sh">Hostname</label><input class="input" id="sh" value="${d.hostname}"></div>
       <div class="field"><label for="sz">Time zone</label><select class="select" id="sz">${(d.timezones || TZ).map((z) => html`<option${z === d.tz ? ' selected' : ''}>${z}</option>`)}</select><span class="hint">Used for cron jobs, backups and alert quiet hours.</span></div>
-      <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p><div>${btn('Save', { act: 'save', kind: 'primary' })}</div></div>`)}
+      <p id="err" class="form-err" role="alert"></p><div>${btn('Save', { act: 'save', kind: 'primary' })}</div></div>`)}
     <div id="network-card">${networkCard(proxyNetwork, proxyBusy)}</div>
     ${section('Panel address', html`<div class="col gap16">
       <div class="field"><label for="sp">Panel domain</label>
@@ -160,7 +160,7 @@ export async function view({ query = {} } = {}) {
         <span class="hint">Point a DNS A or AAAA record to this server, click Check DNS, then Issue certificate.</span>
       </div>
       ${busy ? html`<div class="row">${st('build', busy)}</div>` : ''}
-      ${panelErr ? html`<p role="alert" style="color:var(--danger);font-size:13px">${panelErr}</p>` : ''}
+      ${panelErr ? html`<p class="form-err" role="alert">${panelErr}</p>` : ''}
       ${renderCertStatus(pi)}
       ${dns ? html`<div class="col gap12">
         <div class="row">${dns.pointsHere ? st('ok', 'points here') : st('warn', 'waiting for DNS')}<span class="sm muted">${dns.message}</span></div>
@@ -197,6 +197,7 @@ export async function view({ query = {} } = {}) {
     mount(r) {
       root = r; paint();
       if (query.section === 'network') root.querySelector('#network')?.scrollIntoView();
+      if (query.section === 'tokens') [...root.querySelectorAll('.sec h2')].find((h) => h.textContent === 'API tokens')?.closest('.sec').scrollIntoView();
       this._networkTimer = setInterval(() => { if (!proxyBusy) refreshNetwork(); }, 5000);
       root.addEventListener('input', (e) => {
         if (e.target.id === 'sp') {

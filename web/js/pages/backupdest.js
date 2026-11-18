@@ -39,7 +39,7 @@ export async function view() {
       ${section('Where to find these keys', html`<ol class="howto">${p.steps.map((x) => html`<li>${x}</li>`)}</ol>${p.tip ? html`<div class="note ok"><b>Good choice:</b> ${p.tip}</div>` : ''}`)}
       ${section('Encryption', html`<p class="muted sm">Everything is encrypted on this server before upload. ${p.name} only ever sees encrypted data.</p><div>${btn('Download recovery key', { act: 'key' })}</div><p class="sm" style="color:var(--warn);margin:0">▲ Keep the recovery key off this server. Without it, these backups cannot be opened.</p>`)}
     </div></div>
-    <div class="row" style="justify-content:flex-end"><a class="btn" href="#/backups">Cancel</a>${btn('Save destination', { act: 'save', kind: 'primary', disabled: !test?.ok })}</div>`;
+    <div class="row end"><a class="btn" href="#/backups">Cancel</a>${btn('Save destination', { act: 'save', kind: 'primary', disabled: !test?.ok })}</div>`;
   };
   const read = () => root.querySelectorAll('[data-k]').forEach((i) => { vals[i.dataset.k] = i.value; });
   const paint = () => { root.querySelector('#b').innerHTML = body().toString(); };

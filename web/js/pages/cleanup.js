@@ -38,7 +38,7 @@ export async function view() {
     return html`${segBar([...parts.map(([g, c]) => [g, c]), ...(free > 0 ? [[free, 'var(--line)']] : [])], 'Disk usage breakdown')}
       <p class="sm muted mono" style="margin:8px 0 24px">${Math.round(used)} of ${total} GB used · ${num(rec, 'bytes')} reclaimable · scanned ${ageLabel(d.scannedAt, d.scanned)} · ${btn('Rescan', { act: 'rescan', kind: 'link' })}${d.pending ? ' · scanning…' : ''}</p>
       ${d.items.length ? d.items.map((i) => html`<div class="item-row" data-key="${i.id}" data-sig="${i.pending}"><label><input type="checkbox" data-act="pick" data-id="${i.id}" ${raw(picked.has(i.id) ? 'checked' : '')} ${raw(i.pending ? 'disabled' : '')}><span><b>${i.title}</b><span class="sm ${i.warn ? '' : 'muted'}" ${raw(i.warn ? 'style="color:var(--warn)"' : '')}>${i.desc}</span></span></label><span class="mono">${i.pending ? 'scanning…' : (i.id === 'docker-volumes' && !by(i) ? btn('Calculate size', { act: 'volSize', kind: 'link' }) : num(by(i), 'bytes'))}</span></div>`) : empty('Nothing to clean. Your disk is tidy.')}
-      <div class="row" style="margin-top:20px">${btn(html`Clean ${num(sum(), 'bytes')}`, { act: 'run', kind: 'primary', disabled: !picked.size })}<span class="sm muted">${picked.size} selected</span></div>`;
+      <div class="row mt20">${btn(html`Clean ${num(sum(), 'bytes')}`, { act: 'run', kind: 'primary', disabled: !picked.size })}<span class="sm muted">${picked.size} selected</span></div>`;
   };
 
   const paint = () => {

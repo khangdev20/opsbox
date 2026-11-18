@@ -2,7 +2,9 @@
 // that drives the live-data helpers (tween, flash, list diffing, chart append, tasks).
 import { html, raw, st, btn, sw, tabs, table, section, empty, sk, skeletonSection, bar, segBar, num, numberField, dropzone, chk,
   toast, confirmDialog, formDialog, keepOrUndoDialog, bindActions, flash, patch, createChart, trackTask, setSwitch, announce,
-  initUi, reportPoll, liveState } from './ui.js';
+  initUi, reportPoll, liveState, logo, iconAct } from './ui.js';
+import { accountMenu, navMarkup } from './shell.js';
+import { procRow } from './pages/overview.js';
 import { applyTheme, initialTheme, toggleTheme } from './store.js';
 
 applyTheme(initialTheme());
@@ -65,6 +67,12 @@ const pane = (theme, s) => {
     ${sub('Buttons', html`${btnRow('Default', '')}${btnRow('Primary', 'primary')}${btnRow('Danger', 'danger')}${btnRow('Link (row action)', 'link')}${btnRow('Link, destructive', 'link dg')}
       <div class="kit-row"><span class="kit-l">Icon only</span>${['default', 'hover', 'focus', 'disabled'].map((x) => cell(x, html`<button type="button" class="btn icon${cls(x)}" aria-label="Settings"${raw(x === 'disabled' ? ' disabled' : '')}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/></svg></button>`))}</div>
       <div class="kit-row"><span class="kit-l">Async</span>${cell('click: 1.5 s call', html`<button type="button" class="btn primary" data-act="slow">Save changes</button>`)}${cell('A link button', html`<a class="btn" href="#">Anchor as button</a>`)}</div>`, 'Height 36 px, 44 px touch target. A button that calls the API shows a spinner, keeps its width and cannot be double-clicked.')}
+    ${sub('Brand and shell', html`<div class="kit-row"><span class="kit-l">Logo</span>${cell('top bar (30 px)', logo({ href: '#' }))}${cell('sign-in (36 px)', logo({ size: 'lg' }))}${cell('safe mode (26 px)', logo({ size: 'sm' }))}</div>
+      <div class="kit-row"><span class="kit-l">Account menu</span>${cell('closed (pill)', html`<div class="kit-menu">${accountMenu({ user: 'minh.dev', role: 'Owner', demo: true })}</div>`)}${cell('open: name, role, 2FA, items, sign out in danger colour', html`<div class="kit-menu open">${accountMenu({ user: 'minh.dev', role: 'Owner', demo: true })}</div>`)}</div>
+      <div class="kit-row"><span class="kit-l">Sidebar groups</span>${cell('expanded', html`<div class="kit-side"><aside class="side" aria-label="Sidebar demo"><nav class="nav">${raw(navMarkup('containers'))}</nav><div class="side-foot"><button type="button" class="side-toggle">${raw('<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg>')}<span class="lbl">Collapse</span></button></div></aside></div>`)}
+        ${cell('collapsed: labels become dividers, icon only', html`<div class="kit-side"><div class="shell collapsed"><aside class="side" aria-label="Collapsed sidebar demo"><nav class="nav">${raw(navMarkup('apps'))}</nav><div class="side-foot"><button type="button" class="side-toggle">${raw('<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 10l-2 2 2 2"/></svg>')}<span class="lbl">Collapse</span></button></div></aside></div></div>`)}</div>
+      <div class="kit-row"><span class="kit-l">Top process rows</span>${cell('rank, tile, name + pid, CPU and memory bars, "this" badge', html`<div class="kit-w2 procs"><div class="pr pr-h"><span class="pr-rank">#</span><span>Process</span><span class="r">CPU</span><span class="r">Memory</span></div>${[{ name: 'postgres', pid: 1204, cpu: 8.1, mem: 612 }, { name: 'node', pid: 2231, cpu: 6.4, mem: 388 }, { name: 'opsbox', pid: 412, cpu: 0.1, mem: 14, self: true }].map((p, i) => procRow(p, i, 8.1, 8192))}</div>`)}${cell('sort switch and live badge', html`<div class="col gap12"><div class="seg-radio" role="radiogroup" aria-label="Sort by"><button type="button" role="radio" aria-checked="true">CPU</button><button type="button" role="radio" aria-checked="false">Memory</button></div><span><span class="live-badge">● live</span> <span class="live-badge stale">● paused</span></span><a class="more" href="#">All →</a></div>`)}</div>
+      <div class="kit-row"><span class="kit-l">Row actions</span>${cell('icon actions (tooltip, danger tint, disabled)', html`<span class="acts">${iconAct('noop', 'Logs', 'logs')}${iconAct('noop', 'Restart', 'restart')}${iconAct('noop', 'Make primary', 'star')}${iconAct('noop', 'Delete', 'del', {}, { danger: true })}${iconAct('noop', 'Disabled', 'check', {}, { disabled: true })}</span>`)}</div>`)}
     ${sub('Text fields', html`<div class="kit-row">${['default', 'hover', 'focus', 'disabled', 'readonly', 'invalid'].map((x) => field(x, x, 'tf'))}</div>
       <div class="kit-row">${cell('number + stepper (memory)', html`<div class="field"><label for="n-${s}">Memory limit (MB)</label>${numberField({ id: `n-${s}`, name: 'n', value: 256, min: 64, max: 4096, step: 64, label: 'memory' })}</div>`)}
         ${cell('search', html`<div class="field"><label for="q-${s}">Search</label><input class="input" id="q-${s}" type="search" value="postgres" placeholder="Search…"></div>`)}
@@ -100,7 +108,7 @@ function mount() {
     <div class="kit-grid">${pane('dark', 'd')}${pane('light', 'l')}</div>`;
   root.querySelectorAll('[data-chart]').forEach((h) => {
     const pct = h.dataset.chart === 'pct';
-    const c = pct ? createChart(h, { label: 'CPU and memory', series: [{ color: 'var(--muted)', width: 1.5 }, { color: 'var(--accent)', width: 2 }], cap: 100, floor: 20 })
+    const c = pct ? createChart(h, { label: 'CPU and memory', series: [{ color: 'var(--muted)', width: 1.5, dash: '5 4' }, { color: 'var(--text)', width: 2 }], cap: 100, floor: 20 })
       : createChart(h, { label: 'Network MB/s', series: [{ color: 'var(--ok)', width: 2 }], cap: Infinity, floor: 4, fmt: (v) => `${+v.toFixed(1)}` });
     c.kind = h.dataset.chart; charts.push(c);
   });

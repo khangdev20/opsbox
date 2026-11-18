@@ -433,3 +433,13 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **Validation and scope ambiguities.** Traefik has no offline config-validation subcommand, so `serde-saphyr` 2.2 (MIT/Apache-2.0, deserialize only) parses its static YAML; existing locked `toml` parses TOML. A structural comparison proves only entrypoint addresses changed, then live probes verify the reload. Existing locked X.509/PEM crates provide certificate names/expiry. Apache port-qualified `VirtualHost` blocks cannot follow a Listen-only rewrite; automatic moves currently refuse those layouts pending the user's choice about changing those socket declarations. HTTP servers that redirect all plaintext traffic back to HTTPS need to honor forwarded scheme before TLS termination; the action restores passthrough on a status-class regression.
 
 **Verification limitation inherited from 16b.** `capacity_http::queued_workloads_block_database_resize_pooler_and_memory_adding_extensions` also fails on unchanged commit `450e0bf`: the stopped PostgreSQL fixture causes “Start this database first” before the expected structured pooler capacity refusal. The conventions exclude unrelated fixes; a fixture correction was requested separately. All other workspace tests, including adoption, pass. VM verification covers real plain Docker, Compose, nginx.service, imported certificates, unknown/missing SNI, app precedence, refusal and Undo.
+
+### Align the panel with the design (prompt 16d)
+
+**`gen.py` is the source; the canvas was not consulted.** Boards render statically through `design/preview.py` (own mini resolver for `dc-import`, `sc-if`, `{{theme}}`), so hover, the open menu and the collapsed sidebar come from `gen.py`. The owner's concurrent edits to `design/` were left untouched and uncommitted.
+
+**Real data only.** The session has no display name or process type, so the account menu shows the sign-in name and role, and Top processes shows PID only. "2FA on" is shown because every browser session passed a TOTP code. Overview row 2 reuses `listContainers`, `scanCleanup` and `getSecurity().audit` (all real), each failing independently into an empty state. The Memory sort reorders the processes the API returned.
+
+**Components.** Brand, account menu, sidebar groups and `iconAct` are shared (`ui.js`, `shell.js`); inline styles in page modules became classes (`form-err`, `err-t`, `row.end`, `mt*`/`mb*`). Process tiles use new `--c1..--c6` tokens; `--brand` is `#FC5801` in both themes (about 3.3:1 on the light background, accepted as large bold text by the design).
+
+**Verification.** Screenshots come from demo mode, not `opsbox-vm` (Owner credentials plus 2FA are not available to automation).

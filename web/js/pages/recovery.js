@@ -1,4 +1,5 @@
-import { html, st, btn, bindActions, toast } from '../ui.js';
+import { html, st, btn, bindActions, toast, logo } from '../ui.js';
+import { session } from '../store.js';
 import * as api from '../api.js';
 
 const LIVE = api.MODE === 'http';
@@ -20,12 +21,12 @@ export async function view() {
           : !d.running
             ? 'opsbox-watchdog is not running.'
             : 'opsbox is healthy.';
-      root.querySelector('#b').innerHTML = html`<div class="row" style="margin-bottom:16px"><span class="safe-tag">WATCHDOG</span><span class="muted">Safe Mode runs separately from the panel on :${safePort}.</span></div>
+      root.querySelector('#b').innerHTML = html`<div class="row mb16"><span class="safe-tag">WATCHDOG</span><span class="muted">Safe Mode runs separately from the panel on :${safePort}.</span></div>
         <h1>${headline}</h1>
         ${d.updateMessage ? html`<p class="muted sm">${d.updateMessage}</p>` : ''}
         <div style="margin:20px 0">${(d.checks || []).map(([n, k, s, note]) => html`<div class="list-row"><span>${st(k, n)}</span><span class="mono sm">${s} <span class="muted">· ${note}</span></span></div>`)}</div>
         <pre class="code" aria-label="Recent watchdog log">${(d.log && d.log.length) ? d.log.join('\n') : 'No recent watchdog log entries.'}</pre>
-        <div class="col gap6" style="margin-top:16px">
+        <div class="col gap6 mt16">
           <div class="row">
             <a class="btn primary" href="${safeUrl}" target="_blank" rel="noopener">Open Safe Mode (:${safePort})</a>
             ${d.canRollback && d.previousVersion ? html`<a class="btn" href="#/settings">Rollback (${d.previousVersion} available)</a>` : ''}
@@ -36,18 +37,18 @@ export async function view() {
       return;
     }
 
-    root.querySelector('#b').innerHTML = html`<div class="row" style="margin-bottom:16px"><span class="safe-tag">SAFE MODE</span><span class="muted">Served by the watchdog on :8444, separate from the main panel.</span></div>
+    root.querySelector('#b').innerHTML = html`<div class="row mb16"><span class="safe-tag">SAFE MODE</span><span class="muted">Served by the watchdog on :8444, separate from the main panel.</span></div>
       <h1>${d.failed ? 'opsbox is not running.' : 'opsbox is healthy.'}</h1>
       <div style="margin:20px 0">${d.checks.map(([n, k, s, note]) => html`<div class="list-row"><span>${st(k, n)}</span><span class="mono sm">${s} <span class="muted">· ${note}</span></span></div>`)}</div>
       <pre class="code" aria-label="Recent log">${d.log.join('\n')}</pre>
-      <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p>
-      <div class="row" style="margin-top:16px">${btn('Free disk space', { act: 'free', kind: d.failed ? 'primary' : '' })}${btn('Restart opsbox', { act: 'restart' })}${btn('Roll back to 0.1.3', { act: 'rollback' })}${btn('Open SSH for 1 hour', { act: 'ssh' })}${btn('Reboot', { act: 'reboot', kind: 'danger' })}</div>
-      <div class="row" style="margin-top:24px">${d.failed ? '' : btn('Simulate failure', { act: 'sim', kind: 'link' })}<a class="btn link" href="#/">Back to panel</a></div>`.toString();
+      <p id="err" class="form-err" role="alert"></p>
+      <div class="row mt16">${btn('Free disk space', { act: 'free', kind: d.failed ? 'primary' : '' })}${btn('Restart opsbox', { act: 'restart' })}${btn('Roll back to 0.1.3', { act: 'rollback' })}${btn('Open SSH for 1 hour', { act: 'ssh' })}${btn('Reboot', { act: 'reboot', kind: 'danger' })}</div>
+      <div class="row mt24">${d.failed ? '' : btn('Simulate failure', { act: 'sim', kind: 'link' })}<a class="btn link" href="#/">Back to panel</a></div>`.toString();
   };
   const act = (a) => async () => { try { const r = await api.recoveryAction(a); toast(r.msg); await paint(); } catch (e) { root.querySelector('#err').textContent = e.message; } };
   return {
     nav: null, title: 'Safe mode',
-    html: html`<main class="narrow" id="b" style="padding-top:48px"></main>`,
+    html: html`<header class="safe-head"><div class="wrap">${logo({ size: 'sm' })}<span class="safe-tag">SAFE MODE</span><span class="grow"></span><span class="muted mono sm">${location.hostname}${session.user ? ` · signed in as ${session.user}` : ''}</span></div></header><main class="narrow" id="b"></main>`,
     async mount(r) {
       root = r; await paint();
       if (!LIVE) {

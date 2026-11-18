@@ -56,7 +56,7 @@ export async function view({ path, query }) {
       <dt class="muted">Databases</dt><dd>${l.databases.length} · ${bytes(l.databases.reduce((a, x) => a + x.sizeBytes, 0))}</dd>
       <dt class="muted">Data volume</dt><dd class="mono">${d.dataVolume}</dd>
     </dl>
-    <p class="sm muted" style="margin-top:10px">Each app you connect gets its own database and login. Other apps cannot open it.</p>`);
+    <p class="sm muted mt10">Each app you connect gets its own database and login. Other apps cannot open it.</p>`);
   };
 
   const appsSection = () => {
@@ -66,20 +66,20 @@ export async function view({ path, query }) {
       html`<span class="mono">${a.user}</span>`,
       a.connections == null ? html`<span class="muted">—</span>` : html`${a.connections}`,
       d.pooler.enabled ? btn(a.pooled ? 'Pooled' : 'Direct', { act: 'pooled', data: { app: a.app, on: a.pooled ? '' : '1' }, kind: 'link' }) : html`<span class="muted">Direct</span>`,
-      html`<span class="row" style="justify-content:flex-end">${btn('Show connection string', { act: 'reveal', data: { app: a.app, pooled: a.pooled ? '1' : '' }, kind: 'link' })}${btn('New password', { act: 'rotateapp', data: { app: a.app }, kind: 'link' })}${btn('Remove', { act: 'rmapp', data: { app: a.app }, kind: 'link' })}</span>`,
+      html`<span class="row end">${btn('Show connection string', { act: 'reveal', data: { app: a.app, pooled: a.pooled ? '1' : '' }, kind: 'link' })}${btn('New password', { act: 'rotateapp', data: { app: a.app }, kind: 'link' })}${btn('Remove', { act: 'rmapp', data: { app: a.app }, kind: 'link' })}</span>`,
     ]);
     return section('Apps and logins', html`${rows.length
       ? table('Apps using this database', [['App'], ['Database'], ['Login'], ['Open connections'], ['Route'], ['', 'r']], rows)
       : html`<p class="muted">No app is using this database yet. Open an app's <b>Variables</b> tab and choose <b>Connect database</b>: it gets its own database and a login that can only open that database.</p>`}
-      <div class="row" style="margin-top:12px">${btn('Show administrator connection string', { act: 'reveal', data: { app: '' }, kind: '' })}</div>
-      <p class="sm muted" style="margin-top:6px">Connection strings are shown after you enter a fresh two-factor code, and each time is recorded in the audit log.</p>`);
+      <div class="row mt12">${btn('Show administrator connection string', { act: 'reveal', data: { app: '' }, kind: '' })}</div>
+      <p class="sm muted mt6">Connection strings are shown after you enter a fresh two-factor code, and each time is recorded in the audit log.</p>`);
   };
 
   const dbsSection = () => {
     const l = d.live; if (!l) return '';
     return section('Databases and users', html`
       ${table('Databases', [['Name'], ['Owner'], ['Size', 'r'], ['', 'r']], l.databases.map((x) => [html`<span class="mono">${x.name}</span>`, html`<span class="mono">${x.owner}</span>`, bytes(x.sizeBytes), btn(x.name === l.database ? 'Showing' : 'Inspect tables', { act: 'inspect', data: { db: x.name }, kind: 'link', disabled: x.name === l.database })]))}
-      <div style="margin-top:16px"></div>
+      <div class="mt16"></div>
       ${table('Users and what they can open', [['Login'], ['Can open'], ['Connections', 'r']], l.users.map((u) => [
         html`<span class="mono">${u.name}</span>${u.superuser ? html` <span class="tag-sm">full access</span>` : ''}${u.canLogin ? '' : html` <span class="tag-sm">group</span>`}`,
         u.superuser ? html`<span class="muted">Everything</span>` : html`${(u.databases || []).map((x) => html`<span class="mono tag-sm">${x}</span> `)}`,
@@ -132,8 +132,8 @@ export async function view({ path, query }) {
         <dt class="muted">Status</dt><dd>${p.enabled ? st('ok', `on · ${p.mode} mode`) : st('off', 'off')}</dd>
         ${p.enabled ? html`<dt class="muted">Name on the network</dt><dd class="mono">${p.host}:${p.port}</dd>` : ''}
       </dl>
-      <div class="row" style="margin-top:12px">${p.enabled ? btn('Turn off', { act: 'pooler', data: { on: '' }, disabled: !!busy }) : btn(busy === 'pooler' ? 'Starting…' : 'Turn on', { act: 'pooler', data: { on: '1' }, kind: 'primary', disabled: !!busy || !d.running })}</div>
-      ${p.enabled ? html`<p class="sm muted" style="margin-top:6px">Use the <b>Route</b> column above to send an app through the pooler, then redeploy that app.</p>` : ''}`);
+      <div class="row mt12">${p.enabled ? btn('Turn off', { act: 'pooler', data: { on: '' }, disabled: !!busy }) : btn(busy === 'pooler' ? 'Starting…' : 'Turn on', { act: 'pooler', data: { on: '1' }, kind: 'primary', disabled: !!busy || !d.running })}</div>
+      ${p.enabled ? html`<p class="sm muted mt6">Use the <b>Route</b> column above to send an app through the pooler, then redeploy that app.</p>` : ''}`);
   };
 
   const upgradeSection = () => {
@@ -149,7 +149,7 @@ export async function view({ path, query }) {
     const have = new Set(t.map((s) => s.templateId));
     return section('Data tools', html`
       <p class="sm muted">Look at and edit your data in the browser. Tools open only while you are signed in to opsbox and are never published on the internet.</p>
-      ${t.length ? html`<div class="row" style="margin-bottom:10px">${t.map((s) => html`<a class="btn primary" href="/tools/${encodeURIComponent(s.id)}/" target="_blank" rel="noopener">Open ${s.id}</a>`)}</div>` : ''}
+      ${t.length ? html`<div class="row mb10">${t.map((s) => html`<a class="btn primary" href="/tools/${encodeURIComponent(s.id)}/" target="_blank" rel="noopener">Open ${s.id}</a>`)}</div>` : ''}
       <div class="row">${DATA_TOOLS.filter(([tid]) => !have.has(tid)).map(([tid, name, hint]) => html`<span>${btn(`Add ${name}`, { act: 'addtool', data: { t: tid }, disabled: !!busy })}<span class="sm muted" style="margin-left:6px">${hint}</span></span>`)}</div>`);
   };
 

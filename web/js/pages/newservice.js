@@ -35,7 +35,7 @@ export async function view({ query = {} } = {}) {
         <div class="row spread">
           <div>
             <div class="row" style="gap:8px">${st('off', 'GitHub not connected')}</div>
-            <p class="sm muted" style="margin-top:6px">Connect a private GitHub App in Settings to browse repositories and receive automatic push webhooks.</p>
+            <p class="sm muted mt6">Connect a private GitHub App in Settings to browse repositories and receive automatic push webhooks.</p>
           </div>
           ${server.role === 'admin' || api.MODE === 'mock'
             ? html`<a class="btn primary" href="#/settings">Connect GitHub in Settings</a>`
@@ -52,7 +52,7 @@ export async function view({ query = {} } = {}) {
         <div class="row spread">
           <div>
             <div class="row" style="gap:8px">${st('warn', 'Awaiting repository access')}<b>${gh.appSlug}</b></div>
-            <p class="sm muted" style="margin-top:6px">Your GitHub App is created, but not installed on any account or repository yet.</p>
+            <p class="sm muted mt6">Your GitHub App is created, but not installed on any account or repository yet.</p>
           </div>
           <div class="row">
             ${gh.installUrl ? html`<a class="btn primary" href="${gh.installUrl}" target="_blank" rel="noopener">Choose repositories on GitHub ↗</a>` : ''}
@@ -70,7 +70,7 @@ export async function view({ query = {} } = {}) {
         </div>
         <a class="btn link" href="#/apps">Cancel</a>
       </div>
-      ${ghErr ? html`<p role="alert" style="color:var(--danger);font-size:13px">${ghErr}</p>` : ''}
+      ${ghErr ? html`<p class="form-err" role="alert">${ghErr}</p>` : ''}
       <div class="field"><label for="q">Search repositories</label><input class="input lg" id="q" placeholder="owner/repo, language, Dockerfile…" value="${q}" autocomplete="off"></div>
       <div id="l">${renderRepoList()}</div>
     </div>`;
@@ -83,7 +83,7 @@ export async function view({ query = {} } = {}) {
         <input class="input grow" id="dk-repo" placeholder="owner/private-repo or git@github.com:owner/private-repo.git" value="${dkRepo}"${busy ? ' disabled' : ''}>
         ${btn(busy ? 'Generating…' : 'Generate deploy key', { act: 'genKey', kind: 'primary', disabled: busy })}
       </div>
-      ${dkErr ? html`<p role="alert" style="color:var(--danger);font-size:13px">${dkErr}</p>` : ''}
+      ${dkErr ? html`<p class="form-err" role="alert">${dkErr}</p>` : ''}
     </div>`)}
     ${keys.length ? keys.map((k) => section(k.repo, html`<div class="col gap12">
       <div class="row spread">
@@ -106,7 +106,7 @@ export async function view({ query = {} } = {}) {
         <input class="input grow" id="pub-url" placeholder="https://github.com/owner/repo" value="${pubUrl}"${busy ? ' disabled' : ''}>
         ${btn(busy ? 'Checking…' : 'Check repository', { act: 'checkPub', kind: 'primary', disabled: busy })}
       </div>
-      ${pubErr ? html`<p role="alert" style="color:var(--danger);font-size:13px">${pubErr}</p>` : ''}
+      ${pubErr ? html`<p class="form-err" role="alert">${pubErr}</p>` : ''}
       ${pubInfo ? html`<div class="list-row" style="border-top:1px solid var(--ls);border-bottom:0;padding-top:12px">
         <div>
           <div class="mono">${pubInfo.repo}</div>

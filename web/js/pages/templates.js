@@ -64,7 +64,7 @@ export async function view() {
       ${isDataTool ? html`<p class="sm muted">${pick.name} is never published on its own address. You open it from the database page or at <span class="mono">/tools/${pick.id}-main/</span>, and only while you are signed in to opsbox.</p>` : ''}
       <p class="sm muted">Credentials are generated, encrypted at rest, and shown once upon creation.</p>
       ${capacityFields(pick.min_memory_mb || (isDb ? 256 : 128))}
-      <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p>
+      <p id="err" class="form-err" role="alert"></p>
       <div>${btn(busy === 'tpl' ? `Starting ${pick.name}…` : `Add ${pick.name}`, { act: 'add', kind: 'primary', disabled: busy === 'tpl' })}</div>`);
   };
 
@@ -87,7 +87,7 @@ export async function view() {
           <p class="muted sm">Paste a docker-compose.yml. Validated via <span class="mono">docker compose config</span> and attached to your project network.</p>
           <div class="field"><label for="cn">Stack name <span class="muted">(optional)</span></label><input class="input" id="cn" placeholder="shop" autocomplete="off"></div>
           <div class="editor" style="border-radius:8px"><textarea id="yml" spellcheck="false" aria-label="Compose file" style="min-height:190px">${YML}</textarea></div>
-          <p id="cerr" role="alert" style="color:var(--danger);font-size:13px"></p>
+          <p id="cerr" class="form-err" role="alert"></p>
           <div>${btn(busy === 'cmp' ? 'Deploying Compose stack…' : 'Deploy compose file', { act: 'compose', kind: 'primary', disabled: busy === 'cmp' })}</div>`)}
       </div><div id="fm"></div></div></main>`,
     mount(r) {

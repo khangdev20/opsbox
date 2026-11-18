@@ -1,4 +1,4 @@
-import { html, st, btn, table, section, header, bindActions, confirmDialog, askForm, formDialog, download, toast, bytes, gb } from '../ui.js';
+import { html, st, btn, table, section, header, bindActions, confirmDialog, askForm, formDialog, download, toast, bytes, gb, iconAct } from '../ui.js';
 import { server } from '../store.js';
 import * as api from '../api.js';
 
@@ -37,13 +37,13 @@ export async function view() {
           'Backup schedules',
           [['What'], ['Schedule'], ['Keep'], ['Destination'], ['Last run'], ['', 'r']],
           d.jobs.map((j) => [
-            html`<b>${j.what}</b><div class="sm muted">${j.note}${j.enabled === false ? ' · disabled' : ''}</div>${j.lastError ? html`<div class="sm" style="color:var(--danger)">${j.lastError}</div>` : ''}`,
+            html`<b>${j.what}</b><div class="sm muted">${j.note}${j.enabled === false ? ' · disabled' : ''}</div>${j.lastError ? html`<div class="sm err-t">${j.lastError}</div>` : ''}`,
             html`<div>${j.cronHuman || j.cron}</div><div class="mono sm muted">${j.cron}</div>`,
             html`<span class="mono">${j.keep}</span>`,
             html`<span class="mono">${j.dest}</span>`,
             st(j.state, j.last),
             isAdmin
-              ? html`<span class="row" style="justify-content:flex-end">${btn('Run now', { act: 'run', data: { id: j.id }, kind: 'link' })}${btn('Edit', { act: 'editjob', data: { id: j.id }, kind: 'link' })}${j.id !== 'opsbox-self' ? btn('Delete', { act: 'deljob', data: { id: j.id }, kind: 'link' }) : ''}</span>`
+              ? html`<span class="acts">${iconAct('run', `Run ${j.what} now`, 'start', { id: j.id })}${iconAct('editjob', `Edit ${j.what}`, 'edit', { id: j.id })}${j.id !== 'opsbox-self' ? iconAct('deljob', `Delete ${j.what}`, 'del', { id: j.id }, { danger: true }) : ''}</span>`
               : '',
           ]),
         ), isAdmin ? btn('+ Add schedule', { act: 'addjob' }) : '')}
@@ -58,7 +58,7 @@ export async function view() {
               html`<span class="mono">${k.where}</span>`,
               st(checkKind(k), k.check),
               isAdmin
-                ? html`<span class="row" style="justify-content:flex-end">${btn('Test', { act: 'testrestore', data: { id: k.id }, kind: 'link' })}${btn('Restore', { act: 'restore', data: { id: k.id }, kind: 'link' })}</span>`
+                ? html`<span class="acts">${iconAct('testrestore', 'Test restore', 'check', { id: k.id })}${iconAct('restore', 'Restore', 'restore', { id: k.id })}</span>`
                 : '',
             ])
             : [[html`<span class="muted">No snapshots yet — click <b>Back up now</b> to create the first encrypted snapshot.</span>`, '', '', '', '', '']],
@@ -76,7 +76,7 @@ export async function view() {
                 ? st('warn', 'needs key / verify')
                 : st('warn', x.status === 'restic_missing' ? 'restic missing' : 'local only'),
             isAdmin
-              ? html`<span class="row" style="justify-content:flex-end">${x.publicKey ? btn('SSH key', { act: 'showkey', data: { id: x.id }, kind: 'link' }) : ''}${x.id !== 'local' ? btn('Test', { act: 'testdest', data: { id: x.id }, kind: 'link' }) : ''}${!x.isDefault && (x.id === 'local' || x.ok) ? btn('Default', { act: 'defaultdest', data: { id: x.id }, kind: 'link' }) : ''}${x.id !== 'local' ? btn('Delete', { act: 'deldest', data: { id: x.id }, kind: 'link' }) : ''}</span>`
+              ? html`<span class="acts">${x.publicKey ? iconAct('showkey', 'Show SSH key', 'key', { id: x.id }) : ''}${x.id !== 'local' ? iconAct('testdest', `Test ${x.name}`, 'check', { id: x.id }) : ''}${!x.isDefault && (x.id === 'local' || x.ok) ? iconAct('defaultdest', `Make ${x.name} the default`, 'star', { id: x.id }) : ''}${x.id !== 'local' ? iconAct('deldest', `Delete ${x.name}`, 'del', { id: x.id }, { danger: true }) : ''}</span>`
               : '',
           ]),
         ), isAdmin ? html`<a class="btn link" href="#/backups/new">+ Add destination</a>` : '')}

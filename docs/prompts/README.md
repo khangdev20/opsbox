@@ -34,4 +34,5 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 16 | Databases part B: management (`16-databases-manage.md`) | 5b | ✓ |
 | 16b | UI polish: live-data motion and styled controls (`16b-ui-polish.md`) | release prep | ✓ |
 | 16c | Move an existing website behind opsbox (`16c-adopt-existing-web.md`) | 4 (fix) | ✓ |
+| 16d | Align the Linux panel with the design (`16d-align-panel-with-design.md`) | release prep | ✓ |
 | 17 | Alpha release (`17-alpha-release.md`) | release | |

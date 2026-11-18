@@ -1,5 +1,5 @@
 import { adoptedDomains } from '../network.js';
-import { html, raw, ago, st, btn, tabs, table, section, header, sw, bindActions, confirmDialog, askForm, toast, patch, empty, announce } from '../ui.js';
+import { html, raw, ago, st, btn, tabs, table, section, header, sw, bindActions, confirmDialog, askForm, toast, patch, empty, announce, iconAct } from '../ui.js';
 import { editMemory, withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
 import { listeners } from '../store.js';
@@ -139,10 +139,10 @@ export async function view({ query }) {
       return st('ok', `valid · renews in ${d.renews ?? '?'} d${stage}`);
     }
     if (d.cert === 'expiring') {
-      return html`<div>${st('warn', `expiring · ${d.renews ?? '?'} d`)}${d.certError ? html`<div class="sm" style="color:var(--danger)">${d.certError}</div>` : ''}</div>`;
+      return html`<div>${st('warn', `expiring · ${d.renews ?? '?'} d`)}${d.certError ? html`<div class="sm err-t">${d.certError}</div>` : ''}</div>`;
     }
     if (d.cert === 'error') {
-      return html`<div>${st('fail', 'certificate error')}${d.certError ? html`<div class="sm" style="color:var(--danger)">${d.certError}</div>` : ''}</div>`;
+      return html`<div>${st('fail', 'certificate error')}${d.certError ? html`<div class="sm err-t">${d.certError}</div>` : ''}</div>`;
     }
     if (d.cert === 'pending') return st('build', 'issuing…');
     return st('off', 'not issued yet');
@@ -162,14 +162,14 @@ export async function view({ query }) {
       st('ok', doms.network || 'opsbox-default'),
       st('off', 'internal HTTP'),
       html`<span class="sm muted">—</span>`,
-      html`<span class="row" style="justify-content:flex-end">${btn('Copy', { act: 'copydom', data: { n: internalTarget }, kind: 'link' })}</span>`,
+      html`<span class="acts">${iconAct('copydom', 'Copy internal address', 'copy', { n: internalTarget })}</span>`,
     ];
     const domainRows = publicDoms.map((d) => [
       html`<span class="row" style="gap:8px;flex-wrap:wrap"><b>${d.name}</b>${d.primary ? tag('primary') : ''}${d.redirect ? tag(`redirects → ${d.redirect}`) : ''}${d.custom && !d.primary && !d.redirect ? tag('custom') : ''}</span>`,
       dnsSt(d),
       certSt(d),
       html`<span class="row" style="gap:10px;flex-wrap:wrap"><span class="row sm" style="gap:6px">${sw(`Force HTTPS for ${d.name}`, !!d.forceHttps, 'toggleForce', { n: d.name })}<span>Force HTTPS</span></span><span class="row sm" style="gap:6px">${sw(`HSTS for ${d.name}`, !!d.hsts, 'toggleHsts', { n: d.name })}<span>HSTS</span></span></span>`,
-      html`<span class="row" style="justify-content:flex-end">${d.dns === 'pending' ? btn('Check DNS', { act: 'dns', data: { n: d.name }, kind: 'link', disabled: !!domBusy }) : (d.cert !== 'valid' && d.cert !== 'expiring' ? btn('Issue cert', { act: 'issuecert', data: { n: d.name }, kind: 'link', disabled: !!domBusy || proxyDown }) : btn('Renew', { act: 'issuecert', data: { n: d.name }, kind: 'link', disabled: !!domBusy || proxyDown }))}${!d.primary && !d.redirect ? btn('Make primary', { act: 'primary', data: { n: d.name }, kind: 'link', disabled: !!domBusy }) : ''}${btn('Remove', { act: 'rmdom', data: { n: d.name }, kind: 'link', disabled: !!domBusy })}</span>`,
+      html`<span class="acts">${d.dns === 'pending' ? iconAct('dns', `Check DNS for ${d.name}`, 'globe', { n: d.name }, { disabled: !!domBusy }) : iconAct('issuecert', `${d.cert !== 'valid' && d.cert !== 'expiring' ? 'Issue certificate' : 'Renew certificate'} for ${d.name}`, 'cert', { n: d.name }, { disabled: !!domBusy || proxyDown })}${!d.primary && !d.redirect ? iconAct('primary', `Make ${d.name} the primary domain`, 'star', { n: d.name }, { disabled: !!domBusy }) : ''}${iconAct('rmdom', `Remove ${d.name}`, 'del', { n: d.name }, { danger: true, disabled: !!domBusy })}</span>`,
     ]);
     const recRows = (doms.serverIps || []).map((ip) => {
       const typ = ip.includes(':') ? 'AAAA' : 'A';
@@ -202,10 +202,10 @@ export async function view({ query }) {
           ${servingDoms.length ? html`<div class="field"><label for="nr">Redirect to</label><select class="select" id="nr"${isWorker || !!domBusy ? ' disabled' : ''}><option value="">Serve the app directly</option>${servingDoms.map((d) => html`<option value="${d.name}">Redirect to ${d.name}</option>`)}</select><span class="hint">Optional: forward all requests from this domain to an existing domain.</span></div>` : ''}
           <div class="item-row"><label><input type="checkbox" id="nf" checked${isWorker || !!domBusy ? ' disabled' : ''}><span><b>Force HTTPS</b><span class="sm muted">Redirect http:// to https:// once the certificate is issued</span></span></label></div>
           <div class="item-row"><label><input type="checkbox" id="nh" checked${isWorker || !!domBusy ? ' disabled' : ''}><span><b>Enable HSTS</b><span class="sm muted">Send Strict-Transport-Security over HTTPS</span></span></label></div>
-          <p id="derr" role="alert" style="color:var(--danger);font-size:13px">${domErr}</p>
+          <p id="derr" class="form-err" role="alert">${domErr}</p>
           <div>${btn('Add domain', { act: 'adddom', kind: 'primary', disabled: isWorker || !!domBusy })}</div></section>
           <section class="sec"><div class="sec-h"><h2>Certificates</h2></div>
-          ${proxyDown ? html`<div class="row" style="margin-bottom:10px">${st('fail', 'Reverse proxy unavailable')}<span class="sm muted">Start opsbox-proxy to issue or renew TLS certificates.</span></div>` : ''}
+          ${proxyDown ? html`<div class="row mb10">${st('fail', 'Reverse proxy unavailable')}<span class="sm muted">Start opsbox-proxy to issue or renew TLS certificates.</span></div>` : ''}
           <dl class="sm" style="display:grid;grid-template-columns:1fr auto;gap:10px;margin:0"><dt class="muted">Issuer</dt><dd style="margin:0">Let's Encrypt (HTTP-01)</dd><dt class="muted">Renewal</dt><dd style="margin:0">30 days before expiry</dd><dt class="muted">If renewal fails</dt><dd style="margin:0">Shown on Overview</dd></dl></section></div>
       </div></div>`;
   };
@@ -231,7 +231,7 @@ export async function view({ query }) {
         valCell,
         btn('Remove', { act: 'rmvar', data: { k }, kind: 'link' }),
       ];
-    })) : html`<p class="muted">No variables yet.</p>`}<div class="row" style="margin-top:12px">${btn('Add variable', { act: 'addvar' })}${!isDb && dbsInProj.length ? btn('Connect database', { act: 'conndb' }) : ''}</div>`;
+    })) : html`<p class="muted">No variables yet.</p>`}<div class="row mt12">${btn('Add variable', { act: 'addvar' })}${!isDb && dbsInProj.length ? btn('Connect database', { act: 'conndb' }) : ''}</div>`;
     const settingsBody = () => html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
         <dt class="muted">Source</dt><dd class="mono">${s.templateId ? `template:${s.templateId}` : s.composeStack ? `compose:${s.composeStack}` : (s.sourceKind || 'github')} · ${s.repo}</dd>
         <dt class="muted">Branch / Version</dt><dd class="mono">${s.branch || '—'}</dd>
@@ -242,7 +242,7 @@ export async function view({ query }) {
         <dt class="muted">Domain</dt><dd class="mono">${s.domain || '—'}</dd>
         <dt class="muted">Port</dt><dd class="mono">${s.port || '—'}${s.hostPort ? ` (${networkModeOf(s) === 'public' ? '0.0.0.0' : '127.0.0.1'}:${s.hostPort})` : ''}</dd>
       </dl>
-      <div class="row" style="margin-top:16px">
+      <div class="row mt16">
         ${isDb ? btn('Network exposure…', { act: 'setexposure' }) : ''}
         ${s.sourceKind !== 'docker_image' && !s.templateId && !s.composeStack ? btn(s.autoDeploy === false ? 'Enable auto-deploy' : 'Disable auto-deploy', { act: 'toggleAuto' }) : ''}
         ${/^(adminer|pgweb)$/.test(s.templateId || '') && s.state === 'active' ? html`<a class="btn primary" href="/tools/${encodeURIComponent(s.id)}/" target="_blank" rel="noopener">Open ${s.templateId}</a>` : ''}
@@ -260,18 +260,18 @@ export async function view({ query }) {
         <dt class="muted">Credentials rotated</dt><dd>${s.credentialsRotatedAt ? ago(s.credentialsRotatedAt) : 'Never'}</dd>
         <dt class="muted">Volume / Backup</dt><dd>${s.note || 'Persistent named volume'}${s.backup ? ` · ${s.backup.enabled ? `auto ${s.backup.method} (${s.backup.cron})` : 'auto backup off'}` : ''}</dd>
       </dl>
-      <div class="row" style="margin-top:14px">
+      <div class="row mt14">
         ${/^postgres|^postgis$/.test(s.templateId || '') ? html`<a class="btn primary" href="#/databases/${encodeURIComponent(s.id)}">Manage database</a>` : ''}
         ${btn('Rotate credentials', { act: 'rotatedb', disabled: s.state !== 'active' })}
         ${staleApps.length ? btn(`Redeploy ${staleApps.length} stale app${staleApps.length === 1 ? '' : 's'}`, { act: 'redeployStale', kind: 'primary' }) : ''}
       </div>
-      ${s.state !== 'active' ? html`<p class="sm muted" style="margin-top:6px">Database must be running to rotate credentials.</p>` : ''}
-      <div style="margin-top:18px">
+      ${s.state !== 'active' ? html`<p class="sm muted mt6">Database must be running to rotate credentials.</p>` : ''}
+      <div class="mt18">
         ${connectedApps.length ? table('Connected apps', [['App'], ['Variables'], ['Status'], ['', 'r']], connectedApps.map((c) => [
           html`<button type="button" class="btn link mono" data-act="select" data-id="${c.id}">${c.id}</button>`,
           html`${(c.vars || []).map((k) => html`<span class="mono tag-sm">${k}</span> `)}`,
           c.needsRedeploy ? st('warn', 'Needs redeploy') : st('ok', 'Up to date'),
-          html`<span class="row" style="justify-content:flex-end">${c.needsRedeploy ? btn('Redeploy', { act: 'redeployApp', data: { id: c.id }, kind: 'primary' }) : ''}${btn('Disconnect', { act: 'disconndb', data: { app: c.id }, kind: 'link' })}</span>`,
+          html`<span class="acts">${c.needsRedeploy ? btn('Redeploy', { act: 'redeployApp', data: { id: c.id }, kind: 'primary' }) : ''}${iconAct('disconndb', `Disconnect ${c.id}`, 'unlink', { app: c.id }, { danger: true })}</span>`,
         ])) : html`<p class="sm muted">No connected apps yet. Open an app's <b>Variables</b> tab and click <b>Connect database</b>.</p>`}
       </div>`;
     }
@@ -281,16 +281,16 @@ export async function view({ query }) {
         const [k, l] = DST[d.status] || ['off', d.status];
         const shortCommit = d.commit ? d.commit.slice(0, 7) : d.id.slice(0, 7);
         const trig = d.trigger ? html` <span class="tag-sm">${d.trigger}</span>` : '';
-        const errHint = d.status === 'failed' && d.error ? html`<div class="sm" style="color:var(--danger)">${d.error}</div>` : '';
+        const errHint = d.status === 'failed' && d.error ? html`<div class="sm err-t">${d.error}</div>` : '';
         return Object.assign([
           html`<span class="mono">${shortCommit}</span>`,
           html`${d.msg}${trig}${errHint}`,
           st(k, l),
           ago(d.at),
-          html`<span class="row" style="justify-content:flex-end">${btn(logDeploy === d.id ? 'Hide log' : 'Log', { act: 'log', data: { id: d.id }, kind: 'link' })}${d.status === 'replaced' ? btn('Roll back', { act: 'rollback', data: { id: d.id }, kind: 'link' }) : ''}</span>`,
+          html`<span class="acts">${iconAct('log', logDeploy === d.id ? 'Hide build log' : 'Show build log', 'log', { id: d.id })}${d.status === 'replaced' ? iconAct('rollback', 'Roll back to this deploy', 'rollback', { id: d.id }) : ''}</span>`,
         ], { meta: { key: `d-${d.id}`, sig: d.status } });
       })) : empty('No deploys yet.')}
-      ${logDeploy ? html`<div style="margin-top:14px"><pre class="code" id="build-log" aria-label="Build log">${logLoading ? 'Loading build log…' : (logLines.join('\n') || '(no log lines yet)')}</pre></div>` : ''}`;
+      ${logDeploy ? html`<div class="mt14"><pre class="code" id="build-log" aria-label="Build log">${logLoading ? 'Loading build log…' : (logLines.join('\n') || '(no log lines yet)')}</pre></div>` : ''}`;
     else if (t === 1) body = varsBody();
     else if (t === 2) body = s.internalOnly
       ? html`<p class="muted">This service runs on the internal project network only (<span class="mono">${s.id}:${s.port || '—'}</span>) without an internet-facing host port.</p>`

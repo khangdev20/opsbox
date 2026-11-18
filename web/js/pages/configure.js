@@ -45,7 +45,7 @@ export async function view({ query }) {
         ${isImage ? '' : html`<div class="item-row"><label><input type="checkbox" id="autoDeploy" name="autoDeploy" checked><span><b>Auto-deploy on push</b><span class="sm muted">Trigger a new deploy when commits arrive on ${branch}.</span></span></label></div>`}
         <div class="field"><label for="vars">Environment variables</label><textarea class="input" id="vars" name="vars" rows="4" placeholder="KEY=value (one per line)" style="height:auto;font-family:var(--mono)"></textarea></div>
         ${capacityFields(128)}
-        <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p>
+        <p id="err" class="form-err" role="alert"></p>
         <div class="row"><button class="btn primary" type="submit">Deploy</button><a class="btn link" href="#/apps/new">Back</a></div>
       </form></main>`,
     mount(root) {

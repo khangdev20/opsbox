@@ -319,6 +319,31 @@ export function btn(label, { act, data = {}, kind = '', href, aria, disabled, lo
   if (href) return html`<a class="${cls}" href="${href}"${raw(al)}>${label}</a>`;
   return html`<button type="button" class="${cls}"${raw(id ? ` id="${esc(id)}"` : '')}${raw(al)}${raw(act ? ` data-act="${esc(act)}"` : '')}${raw(attrs)}${raw(disabled ? ' disabled' : '')}${raw(loading ? ' aria-busy="true" data-busy="1"' : '')}>${label}</button>`;
 }
+// Compact icon action for table rows (tooltip + aria-label, same data-act wiring as btn()). One row of these
+// replaces a wrapping group of text buttons; `danger` tints it for destructive actions.
+const ROW_ICONS = {
+  logs: '<path d="M4 6h16M4 12h10M4 18h7"/>',
+  inspect: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>',
+  restart: '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  start: '<path d="M8 5.5v13l10-6.5z"/>',
+  del: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>',
+  restore: '<path d="M4 12a8 8 0 1 1 2.3 5.7"/><path d="M4 20v-5h5"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l3 3 5-6"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/>',
+  star: '<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9L12 3z"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+  cert: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/>',
+  unlink: '<path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/><path d="M4 4l16 16"/>',
+  log: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/>',
+  rollback: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 010 12h-3"/>',
+};
+export function iconAct(act, label, icon, data = {}, { danger = false, disabled = false } = {}) {
+  const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${esc(v)}"`).join('');
+  return raw(`<button type="button" class="btn icon row-act${danger ? ' dg' : ''}" data-act="${act}"${attrs}${disabled ? ' disabled' : ''} aria-label="${esc(label)}" title="${esc(label)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ROW_ICONS[icon]}</svg></button>`);
+}
 // Loading state for a button that triggers an API call. Keeps the width, shows an inline
 // spinner (after a short delay so instant actions do not flicker) and blocks double submits.
 export function setBusy(el, on = true, { pending = false } = {}) {
@@ -353,8 +378,8 @@ export function table(caption, heads, rows, { rowAttrs } = {}) {
   });
   return html`<div class="tw${rows.length > 12 ? ' tall' : ''}"><table><caption class="sr">${caption}</caption><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
 }
-export function section(title, body, right = '') {
-  return html`<section class="sec"><div class="sec-h"><h2>${title}</h2>${right}</div>${body}</section>`;
+export function section(title, body, right = '', cls = '') {
+  return html`<section class="sec${cls ? ` ${cls}` : ''}"><div class="sec-h"><h2>${title}</h2>${right}</div>${body}</section>`;
 }
 export function header(title, meta, right = '') {
   return html`<div class="hdr"><div><h1>${title}</h1><div class="meta">${meta}</div></div><div class="row">${right}</div></div>`;
@@ -369,6 +394,18 @@ export function sw(label, on, act, data = {}) {
 }
 export function setSwitch(el, on) { if (el) el.setAttribute('aria-checked', on ? 'true' : 'false'); }
 export const legend = (items) => html`<div class="legend">${items.map(([c, t]) => html`<span><i style="background:${c}"></i>${t}</span>`)}</div>`;
+// The OpsBox mark and wordmark: "Ops" in the text colour, "Box" in the brand orange (see .brand in app.css).
+// `size` is 'lg' on the sign-in screens; `href` makes it a link home.
+export function logo({ href = '', size = '' } = {}) {
+  const inner = html`<img src="img/logo-mark-128.png" alt="" width="30" height="30"><span class="wm">Ops<b>Box</b></span>`;
+  const cls = `brand${size ? ` ${size}` : ''}`;
+  return href ? html`<a class="${cls}" href="${href}" aria-label="OpsBox home">${inner}</a>` : html`<span class="${cls}" role="img" aria-label="OpsBox">${inner}</span>`;
+}
+// Initials for an avatar: "minh.dev" -> "MD", "admin" -> "AD".
+export function initials(name) {
+  const p = String(name || '').split(/[^a-z0-9]+/i).filter(Boolean);
+  return ((p[0] ? p[0][0] : '?') + (p[1] ? p[1][0] : p[0] ? (p[0][1] || '') : '')).toUpperCase();
+}
 export const code = (text, { raw: isRaw = false } = {}) => html`<pre class="code">${isRaw ? raw(text) : text}</pre>`;
 
 const EMPTY_ICON = '<svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8l9-5 9 5v8l-9 5-9-5V8z"/><path d="M3 8l9 5 9-5"/></svg>';
@@ -511,7 +548,7 @@ export function steps(vals, w = 640, h = 180) {
 // update) and the y axis keeps its scale until a value no longer fits (20% headroom) or the
 // data fills under 40% of it, so lines do not bounce. series: [{ color, width }].
 export function createChart(host, { series, label, cap = 100, floor = 20, fmt = (v) => `${Math.round(v)}%`, w = 640, h = 180, every = 1000 }) {
-  host.innerHTML = `<div class="y" aria-hidden="true"><span></span><span></span><span></span></div><svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${esc(label)}" style="width:100%;height:${h}px"><g class="pg">${series.map((s) => `<path fill="none" stroke="${s.color}" stroke-width="${s.width || 2}" vector-effect="non-scaling-stroke"/>`).join('')}</g></svg>`;
+  host.innerHTML = `<div class="y" aria-hidden="true"><span></span><span></span><span></span></div><svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${esc(label)}" style="width:100%;height:${h}px"><g class="pg">${series.map((s) => `<path fill="none" stroke="${s.color}" stroke-width="${s.width || 2}"${s.dash ? ` stroke-dasharray="${s.dash}"` : ''} vector-effect="non-scaling-stroke"/>`).join('')}</g></svg>`;
   const ys = host.querySelectorAll('.y span'), g = host.querySelector('.pg'), paths = [...g.querySelectorAll('path')];
   let base = 0, top = floor, cur = null, anim = null;
   const nice = (v) => { const p = 10 ** Math.floor(Math.log10(v)); const m = v / p; return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * p; };

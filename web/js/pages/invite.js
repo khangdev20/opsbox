@@ -16,12 +16,12 @@ export async function view({ query }) {
     nav: null, title: 'Accept invitation',
     html: info ? html`<div class="split-page">${left}
       <form class="r" id="f" autocomplete="off">
-        <h2 style="font-size:22px">Choose your password</h2>
+        <h2>Choose your password</h2>
         <div class="field"><label for="p">Password</label><input class="input lg" id="p" type="password" autocomplete="new-password"><span class="hint">At least 12 characters. A few random words work well.</span></div>
         <div class="field"><label for="p2">Repeat the password</label><input class="input lg" id="p2" type="password" autocomplete="new-password"></div>
-        <p id="err" role="alert" style="color:var(--danger);font-size:13px"></p>
+        <p id="err" class="form-err" role="alert"></p>
         <div class="row"><button class="btn primary" type="submit">Continue</button></div></form></div>`
-      : html`<div class="split-page">${left}<div class="r"><h2 style="font-size:22px">This invitation does not work</h2><p role="alert" style="color:var(--danger)">${problem}</p><div class="row"><a class="btn" href="#/login">Go to sign in</a></div></div></div>`,
+      : html`<div class="split-page">${left}<div class="r"><h2>This invitation does not work</h2><p role="alert" style="color:var(--danger)">${problem}</p><div class="row"><a class="btn" href="#/login">Go to sign in</a></div></div></div>`,
     mount(root) {
       const f = root.querySelector('#f'); if (!f) return;
       f.addEventListener('submit', async (ev) => {
