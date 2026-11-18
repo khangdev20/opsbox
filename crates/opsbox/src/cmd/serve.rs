@@ -44,35 +44,21 @@ async fn serve(config: Config) -> Result<()> {
         .with_context(|| format!("cannot listen on {}", config.listen))?;
     let addr = listener.local_addr()?;
 
-    let (cert_path, key_path) = {
-        let sys_cert = std::path::Path::new(opsbox_api::tls::DEFAULT_CERT_PATH);
-        let sys_key = std::path::Path::new(opsbox_api::tls::DEFAULT_KEY_PATH);
-        if sys_cert.exists() && sys_key.exists() {
-            (sys_cert.to_path_buf(), sys_key.to_path_buf())
-        } else if let Ok(pair) = opsbox_api::tls::ensure_self_signed_cert(sys_cert, sys_key) {
-            pair
-        } else {
-            let db_dir = config
-                .db_path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or_else(|| std::path::Path::new("/var/lib/opsbox"));
-            opsbox_api::tls::ensure_self_signed_cert(
-                &db_dir.join("panel-selfsigned.crt"),
-                &db_dir.join("panel-selfsigned.key"),
-            )
-            .context("cannot generate self-signed TLS certificate")?
-        }
+    // Config load already refused plain HTTP on a non-loopback address.
+    debug_assert!(config.tls || config.listen.ip().to_canonical().is_loopback());
+    let tls = if config.tls {
+        Some(load_tls(&config)?)
+    } else {
+        None
     };
-    let acceptor = opsbox_api::tls::load_tls_acceptor(&cert_path, &key_path)
-        .context("cannot load TLS certificate")?;
-    let cert_sha256 = opsbox_api::tls::cert_sha256_hex(&cert_path);
+    let cert_sha256 = tls.as_ref().and_then(|t| t.cert_sha256.clone());
 
     info!(
         version = VERSION,
         %addr,
-        tls = true,
-        cert = %cert_path.display(),
+        scheme = if tls.is_some() { "https" } else { "http" },
+        cert = ?tls.as_ref().map(|t| t.cert_path.display().to_string()),
+        cert_sha256 = ?cert_sha256,
         db = %config.db_path.display(),
         schema_version = schema,
         priv_socket = %config.priv_socket.display(),
@@ -86,7 +72,6 @@ async fn serve(config: Config) -> Result<()> {
     let secure = match config.secure_cookies {
         SecureCookiesSetting::Auto => SecureCookies::Auto,
         SecureCookiesSetting::Always => SecureCookies::Always,
-        SecureCookiesSetting::Never => SecureCookies::Never,
     };
     let state = AppState::new(
         store,
@@ -103,7 +88,7 @@ async fn serve(config: Config) -> Result<()> {
     .with_update_channel(config.update_channel)
     .with_backup_dir(&config.backup_dir)
     .with_listen(config.listen)
-    .with_tls(true)
+    .with_tls(tls.is_some())
     .with_terminal_idle(std::time::Duration::from_secs(
         config.terminal_idle_min * 60,
     ))
@@ -140,11 +125,59 @@ async fn serve(config: Config) -> Result<()> {
         announce_setup_token(&config, &token).await;
     }
 
-    opsbox_api::tls::serve_tls(listener, acceptor, state, super::shutdown_signal())
-        .await
-        .context("the HTTPS server failed")?;
+    match tls {
+        Some(tls) => {
+            opsbox_api::tls::serve_tls(listener, tls.acceptor, state, super::shutdown_signal())
+                .await
+                .context("the HTTPS server failed")?;
+        }
+        None => {
+            opsbox_api::serve(listener, state, super::shutdown_signal())
+                .await
+                .context("the HTTP server failed")?;
+        }
+    }
     info!("opsbox serve stopped");
     Ok(())
+}
+
+/// The panel's own TLS: the system certificate when there is one, else a self-signed one
+/// made on first start.
+struct Tls {
+    acceptor: opsbox_api::tls::TlsAcceptor,
+    cert_path: std::path::PathBuf,
+    cert_sha256: Option<String>,
+}
+
+fn load_tls(config: &Config) -> Result<Tls> {
+    let (cert_path, key_path) = {
+        let sys_cert = std::path::Path::new(opsbox_api::tls::DEFAULT_CERT_PATH);
+        let sys_key = std::path::Path::new(opsbox_api::tls::DEFAULT_KEY_PATH);
+        if sys_cert.exists() && sys_key.exists() {
+            (sys_cert.to_path_buf(), sys_key.to_path_buf())
+        } else if let Ok(pair) = opsbox_api::tls::ensure_self_signed_cert(sys_cert, sys_key) {
+            pair
+        } else {
+            let db_dir = config
+                .db_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("/var/lib/opsbox"));
+            opsbox_api::tls::ensure_self_signed_cert(
+                &db_dir.join("panel-selfsigned.crt"),
+                &db_dir.join("panel-selfsigned.key"),
+            )
+            .context("cannot generate self-signed TLS certificate")?
+        }
+    };
+    let acceptor = opsbox_api::tls::load_tls_acceptor(&cert_path, &key_path)
+        .context("cannot load TLS certificate")?;
+    let cert_sha256 = opsbox_api::tls::cert_sha256_hex(&cert_path);
+    Ok(Tls {
+        acceptor,
+        cert_path,
+        cert_sha256,
+    })
 }
 
 /// Write the setup banner to standard error (the journal) and, if possible, to the

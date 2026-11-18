@@ -778,7 +778,10 @@ async fn webhook_is_reachable_through_panel_proxy_even_with_allow_list_active() 
 
     let api_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let api_addr = api_listener.local_addr().unwrap();
-    let app_for_srv = h.app.clone();
+    // The proxy proves itself to `serve` with a shared secret; only then are the client
+    // address and scheme it forwards believed.
+    const PROXY_SECRET: &str = "test-proxy-secret-test-proxy-secret";
+    let app_for_srv = opsbox_api::router(h.state.clone().with_proxy_secret(PROXY_SECRET));
     let (stop_api_tx, stop_api_rx) = oneshot::channel::<()>();
     tokio::spawn(async move {
         let svc = app_for_srv.into_make_service_with_connect_info::<std::net::SocketAddr>();
@@ -800,6 +803,7 @@ async fn webhook_is_reachable_through_panel_proxy_even_with_allow_list_active() 
         hsts: true,
         max_body_bytes: 1024 * 1024,
         is_panel: true,
+        forward_secret: Some(opsbox_proto::Secret::new(PROXY_SECRET)),
     }]);
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

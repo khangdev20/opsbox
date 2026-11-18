@@ -132,7 +132,11 @@ fn valid_host_header(raw: &str) -> Option<&str> {
     Some(trimmed)
 }
 
-fn panel_origin_from_request(state: &AppState, headers: &HeaderMap) -> Result<String, HttpError> {
+fn panel_origin_from_request(
+    state: &AppState,
+    headers: &HeaderMap,
+    https: bool,
+) -> Result<String, HttpError> {
     if let Some(domain) = active_panel_domain(state) {
         return Ok(format!("https://{domain}"));
     }
@@ -141,15 +145,7 @@ fn panel_origin_from_request(state: &AppState, headers: &HeaderMap) -> Result<St
         .and_then(|v| v.to_str().ok())
         .and_then(valid_host_header)
     {
-        let forwarded_https = headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.eq_ignore_ascii_case("https"));
-        let scheme = if state.tls || forwarded_https {
-            "https"
-        } else {
-            "http"
-        };
+        let scheme = if https { "https" } else { "http" };
         return Ok(format!("{scheme}://{host}"));
     }
     Err(HttpError::new(
@@ -492,7 +488,7 @@ pub(crate) async fn start_manifest(
 ) -> Result<Json<Value>, HttpError> {
     let org =
         validate_org(body.as_ref().and_then(|b| b.0.org.as_deref())).map_err(map_deploy_err)?;
-    let panel_origin = panel_origin_from_request(&state, &client.headers)?;
+    let panel_origin = panel_origin_from_request(&state, &client.headers, client.https)?;
     let panel_domain = active_panel_domain(&state);
     let hostname = state
         .priv_client

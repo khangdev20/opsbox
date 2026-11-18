@@ -53,6 +53,11 @@ pub struct Route {
     pub max_body_bytes: u64,
     #[serde(default)]
     pub is_panel: bool,
+    /// For the panel route: a secret the proxy adds (as `X-Opsbox-Proxy-Secret`) to every
+    /// request it forwards, so `serve` can tell the proxy from any other local client
+    /// before it believes `X-Forwarded-For` and `X-Forwarded-Proto`. Never sent to apps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forward_secret: Option<opsbox_proto::Secret>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +412,7 @@ mod tests {
                     hsts: true,
                     max_body_bytes: 0,
                     is_panel: true,
+                    forward_secret: None,
                 }],
             },
         };

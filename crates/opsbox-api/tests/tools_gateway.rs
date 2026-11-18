@@ -163,7 +163,7 @@ async fn gateway_needs_a_session_and_isolates_cookies() {
         store.clone(),
         PrivClient::new("/nonexistent/priv.sock").with_timeout(Duration::from_secs(1)),
         "0.1.0-test",
-        SecureCookies::Never,
+        SecureCookies::Auto,
         AuthConfig {
             hash_params: HashParams {
                 memory_kib: 1024,

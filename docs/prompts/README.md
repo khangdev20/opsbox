@@ -21,6 +21,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 03c1 | Landing site: check and commit the new logo (`03c1-site-logo.md`) | site | ✓ |
 | 03d | Fix self-update versions and channel (`03d-self-update-versions.md`) | 2 (fix) | ✓ |
 | 03e | Self-update: say why nothing is offered (`03e-update-check-reasons.md`) | 2 (fix) | ✓ |
+| 03f | Forms keep typed values; helper errors say what happened (`03f-form-state-and-helper-errors.md`) | 1 (fix) | |
 | 04 | Public first run (`04-public-first-run.md`) | 1c | ✓ |
 | 05 | Proxy and panel domain (`05-proxy-panel-domain.md`) | 4 (panel first) | ✓ |
 | 06 | Watchdog and safe mode (`06-watchdog-safe-mode.md`) | 2 | ✓ |
@@ -38,7 +39,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 16b | UI polish: live-data motion and styled controls (`16b-ui-polish.md`) | release prep | ✓ |
 | 16c | Move an existing website behind opsbox (`16c-adopt-existing-web.md`) | 4 (fix) | ✓ |
 | 16d | Align the Linux panel with the design (`16d-align-panel-with-design.md`) | release prep | ✓ |
-| 16e | Transport security: TLS and cookies (`16e-transport-security.md`) | release prep | |
+| 16e | Transport security: TLS and cookies (`16e-transport-security.md`) | release prep | ✓ |
 | 16f | Notification bell (`16f-notification-bell.md`) | release prep | ✓ |
 | 16g | Capacity tab; Overview one-line summary (`16g-capacity-page.md`) | release prep | |
 | 16h | Grow filesystem (`16h-grow-filesystem.md`) | release prep | |

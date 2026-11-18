@@ -65,7 +65,7 @@ The same block is in the journal (`sudo journalctl -u opsbox | grep -A3 "first-r
 
 5. Click **admin · sign out** (top right): you land on Sign in. Sign in with password + a code. The same code cannot be used twice: sign out and in again within the same 30 seconds with the same code, and it is refused. Wait for the next code.
 6. Five wrong attempts in a row: "Too many attempts. Try again in 30 seconds." (and a longer wait after more).
-7. In the browser dev tools (Application → Cookies): `opsbox_session` is **HttpOnly** and **SameSite=Strict**; `opsbox_csrf` is readable. `Secure` appears only behind an HTTPS proxy.
+7. In the browser dev tools (Application → Cookies): over HTTPS `__Host-opsbox_session` is **HttpOnly**, **Secure** and **SameSite=Strict** with `Path=/` and no Domain; `opsbox_csrf` is readable and Secure. Only on a plain loopback listener (`tls = false`) is the cookie named `opsbox_session` without Secure. `scripts/check-transport.sh https://<server>:8443` checks this from the command line.
 8. Security → Sign out all sessions ends every session, including this one.
 
 **Command line** (in the VM):

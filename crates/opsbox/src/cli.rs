@@ -182,7 +182,7 @@ pub struct ServeArgs {
     /// Folder for staged uploads and downloads [default: /var/lib/opsbox/xfer]
     #[arg(long, env = "OPSBOX_XFER_DIR", value_name = "PATH")]
     pub xfer_dir: Option<PathBuf>,
-    /// Mark cookies Secure: auto (behind an HTTPS proxy), always or never [default: auto]
+    /// Mark cookies Secure: auto (whenever the request arrived over TLS) or always [default: auto]
     #[arg(long, env = "OPSBOX_SECURE_COOKIES", value_enum)]
     pub secure_cookies: Option<crate::config::SecureCookiesSetting>,
     /// Reverse proxy control socket [default: /run/opsbox-proxy/proxy.sock]

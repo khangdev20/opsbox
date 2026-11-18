@@ -9,8 +9,8 @@ use serde_json::json;
 
 use crate::json::ApiJson;
 use crate::session::{
-    Client, Enrolling, SESSION_COOKIE, Viewer, check_origin_if_present, clear_session_cookies,
-    cookie_value, session_cookies,
+    Client, Enrolling, Viewer, check_origin_if_present, clear_session_cookies, cookie_value,
+    session_cookies,
 };
 use crate::{AppState, HttpError, RequestId};
 
@@ -33,7 +33,10 @@ pub(crate) async fn session(
     client: Client,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     let setup_required = state.auth.setup_required()?;
-    let who = match cookie_value(&client.headers, SESSION_COOKIE) {
+    let who = match cookie_value(
+        &client.headers,
+        crate::session::session_cookie_name(client.https),
+    ) {
         Some(token) => state.auth.authenticate(token)?,
         None => None,
     };
@@ -76,12 +79,7 @@ pub(crate) async fn login(
         LoginOutcome::Session(i) => (i, false, SESSION_MAX_AGE),
         LoginOutcome::EnrollRequired(i) => (i, true, ENROLL_MAX_AGE),
     };
-    let cookies = session_cookies(
-        state.secure_cookies,
-        &client.headers,
-        &issued.token,
-        max_age,
-    );
+    let cookies = session_cookies(client.https, &issued.token, max_age);
     let body = Json(
         json!({ "user": issued.user.name, "role": issued.user.role, "enrollRequired": enroll }),
     );
@@ -97,7 +95,7 @@ pub(crate) async fn logout(
     crate::session::deny_token(&who)?;
     state.auth.logout(&who, Some(&client.ip))?;
     Ok((
-        clear_session_cookies(state.secure_cookies, &client.headers),
+        clear_session_cookies(client.https),
         Json(json!({ "ok": true })),
     )
         .into_response())
@@ -112,7 +110,7 @@ pub(crate) async fn revoke_all(
     crate::session::deny_token(&who)?;
     let n = state.auth.revoke_all(&who.user, Some(&client.ip))?;
     Ok((
-        clear_session_cookies(state.secure_cookies, &client.headers),
+        clear_session_cookies(client.https),
         Json(json!({ "sessions": n })),
     )
         .into_response())
@@ -161,12 +159,7 @@ pub(crate) async fn totp_confirm(
         state
             .auth
             .upgrade_enroll_session(&who, Some(&client.ip), client.user_agent.as_deref())?;
-    let cookies = session_cookies(
-        state.secure_cookies,
-        &client.headers,
-        &issued.token,
-        SESSION_MAX_AGE,
-    );
+    let cookies = session_cookies(client.https, &issued.token, SESSION_MAX_AGE);
     Ok((
         cookies,
         Json(json!({ "user": issued.user.name, "role": issued.user.role })),

@@ -77,6 +77,7 @@ pub fn panel_route(state: &AppState, domain: &str) -> Route {
         hsts: true,
         max_body_bytes: state.files.max_upload,
         is_panel: true,
+        forward_secret: state.proxy_secret.as_deref().map(opsbox_proto::Secret::new),
     }
 }
 
@@ -130,6 +131,7 @@ pub fn build_routes_with_panel(
                 hsts: sr.hsts,
                 max_body_bytes: 0,
                 is_panel: false,
+                forward_secret: None,
             });
         }
     }

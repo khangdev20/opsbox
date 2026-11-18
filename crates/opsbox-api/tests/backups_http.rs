@@ -865,7 +865,7 @@ async fn backups_end_to_end_db_stream_volume_path_self_prune_check_and_guards() 
         store.clone(),
         PrivClient::new(&priv_sock).with_timeout(Duration::from_secs(15)),
         "0.1.0-test",
-        SecureCookies::Never,
+        SecureCookies::Auto,
         auth_cfg,
     )
     .with_backup_dir(&backup_dir)

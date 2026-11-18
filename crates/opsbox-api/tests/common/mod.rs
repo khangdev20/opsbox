@@ -45,19 +45,36 @@ impl Harness {
 
     /// A fresh harness with no admin yet, for testing first-run setup gating.
     pub fn new_unclaimed(with_priv: bool) -> Self {
-        Self::build(with_priv, 2 << 20, false, None, capacity_profile())
+        Self::build(with_priv, 2 << 20, false, None, capacity_profile(), |s| s)
+    }
+
+    /// An unclaimed harness whose state is adjusted first (for example `with_tls(true)`).
+    pub fn new_unclaimed_with(with_priv: bool, tweak: impl FnOnce(AppState) -> AppState) -> Self {
+        Self::build(with_priv, 2 << 20, false, None, capacity_profile(), tweak)
+    }
+
+    /// A seeded harness whose state is adjusted first.
+    pub fn new_with(with_priv: bool, tweak: impl FnOnce(AppState) -> AppState) -> Self {
+        Self::build(with_priv, 2 << 20, true, None, capacity_profile(), tweak)
     }
 
     pub fn with_upload_limit(with_priv: bool, max_upload: u64) -> Self {
-        Self::build(with_priv, max_upload, true, None, capacity_profile())
+        Self::build(with_priv, max_upload, true, None, capacity_profile(), |s| s)
     }
 
     pub fn with_github(with_priv: bool, github: opsbox_deploy::GitHubConfig) -> Self {
-        Self::build(with_priv, 2 << 20, true, Some(github), capacity_profile())
+        Self::build(
+            with_priv,
+            2 << 20,
+            true,
+            Some(github),
+            capacity_profile(),
+            |s| s,
+        )
     }
 
     pub fn with_capacity(profile: opsbox_capacity::Profile) -> Self {
-        Self::build(true, 2 << 20, true, None, profile)
+        Self::build(true, 2 << 20, true, None, profile, |s| s)
     }
 
     fn build(
@@ -66,6 +83,7 @@ impl Harness {
         seed_admin: bool,
         github: Option<opsbox_deploy::GitHubConfig>,
         profile: opsbox_capacity::Profile,
+        tweak: impl FnOnce(AppState) -> AppState,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
@@ -121,6 +139,7 @@ impl Harness {
         if let Some(gh) = github {
             state = state.with_github(gh);
         }
+        let state = tweak(state);
         Self {
             app: router(state.clone()),
             state,
@@ -171,7 +190,11 @@ impl Harness {
             )
             .unwrap();
         let mut b = self.browser();
-        b.jar.insert("opsbox_session".into(), token.clone());
+        // Over HTTPS the session cookie carries the `__Host-` prefix.
+        b.jar.insert(
+            opsbox_api::session::session_cookie_name(self.state.tls).into(),
+            token.clone(),
+        );
         b.jar.insert(
             "opsbox_csrf".into(),
             opsbox_auth::tokens::csrf_token(&token),
@@ -222,6 +245,8 @@ pub struct Opts {
     pub origin: Option<String>,
     pub host: String,
     pub extra: Vec<(String, String)>,
+    /// The TCP peer the server sees. `None`: no connection (the default for these tests).
+    pub peer: Option<std::net::SocketAddr>,
 }
 
 impl Default for Opts {
@@ -232,6 +257,7 @@ impl Default for Opts {
             origin: Some(ORIGIN.into()),
             host: HOST.into(),
             extra: Vec::new(),
+            peer: None,
         }
     }
 }
@@ -275,6 +301,9 @@ impl Browser {
         }
         for (k, v) in &opts.extra {
             req = req.header(k, v);
+        }
+        if let Some(peer) = opts.peer {
+            req = req.extension(axum::extract::ConnectInfo(peer));
         }
         let req = match body {
             Some(v) => req

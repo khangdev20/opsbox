@@ -1,7 +1,8 @@
 //! `opsbox status`: is `serve` answering, is `priv` answering?
 //!
-//! `serve` is probed over HTTP on its own listen address (`/healthz`, then
-//! `/readyz`); `priv` by sending it a `Ping` on its socket. Needs no database access
+//! `serve` is probed on its own listen address (`/healthz`, then `/readyz`) over the
+//! scheme it really serves: a TLS handshake tells HTTPS (and which certificate) from
+//! plain HTTP. `priv` by sending it a `Ping` on its socket. Needs no database access
 //! and no root.
 
 use std::fmt::Write as _;
@@ -32,6 +33,24 @@ pub enum ServeState {
         detail: String,
     },
     Down(String),
+}
+
+/// The scheme `serve` answers on, found out by connecting, not read from configuration.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ServeTransport {
+    Https(opsbox_api::tls::TlsProbe),
+    Http,
+    /// Nothing answered, so the scheme is not known.
+    Unknown,
+}
+
+/// `AB:CD:...`, the form browsers print for a SHA-256 certificate fingerprint.
+pub fn colon_fingerprint(hex: &str) -> String {
+    hex.as_bytes()
+        .chunks(2)
+        .map(|c| String::from_utf8_lossy(c).to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -70,6 +89,8 @@ pub struct Report {
     pub config_file: Option<PathBuf>,
     pub serve_addr: SocketAddr,
     pub serve: ServeState,
+    /// What the listener really speaks, learned by connecting to it.
+    pub serve_transport: ServeTransport,
     pub priv_socket: PathBuf,
     pub privileged: PrivState,
     pub proxy_socket: PathBuf,
@@ -101,7 +122,21 @@ impl Report {
             }
             ServeState::Down(why) => ("DOWN    ", why.clone()),
         };
-        let _ = writeln!(out, "serve    {tag} http://{}  {text}", self.serve_addr);
+        let url = match &self.serve_transport {
+            ServeTransport::Https(_) => format!("https://{}", self.serve_addr),
+            ServeTransport::Http => format!("http://{}", self.serve_addr),
+            // Nothing answered: say what the configuration asks for rather than guess.
+            ServeTransport::Unknown => format!("{}", self.serve_addr),
+        };
+        let _ = writeln!(out, "serve    {tag} {url}  {text}");
+        if let ServeTransport::Https(tls) = &self.serve_transport {
+            let _ = writeln!(
+                out,
+                "         {}, certificate SHA-256 {}",
+                tls.version,
+                colon_fingerprint(&tls.cert_sha256)
+            );
+        }
 
         let (tag, text) = match &self.privileged {
             PrivState::Ok { version, millis } => {
@@ -272,7 +307,7 @@ pub async fn collect(config: &Config) -> Report {
     let watchdog_addr = config.watchdog_listen;
     let proxy_expected = Path::new("/etc/systemd/system/opsbox-proxy.service").exists();
     let watchdog_expected = Path::new("/etc/systemd/system/opsbox-watchdog.service").exists();
-    let (mut serve, privileged, proxy, watchdog) = tokio::join!(
+    let ((mut serve, serve_transport), privileged, proxy, watchdog) = tokio::join!(
         probe_serve(serve_addr),
         probe_priv(&config.priv_socket),
         probe_proxy(&config.proxy_socket, proxy_expected),
@@ -284,10 +319,22 @@ pub async fn collect(config: &Config) -> Report {
     {
         serve = ServeState::Ready { version };
     }
+    // Plain HTTP on a public address is refused at config load; if a listener like that is
+    // answering anyway (an older opsbox, another program), say so instead of "ready".
+    if serve_transport == ServeTransport::Http
+        && !serve_addr.ip().to_canonical().is_loopback()
+        && let ServeState::Ready { version } | ServeState::Degraded { version, .. } = serve
+    {
+        serve = ServeState::Degraded {
+            version,
+            detail: "answers plain HTTP on a public address; set api.listen to 127.0.0.1 or remove api.tls = false, then restart opsbox".into(),
+        };
+    }
     Report {
         config_file: config.loaded_from.clone(),
         serve_addr,
         serve,
+        serve_transport,
         priv_socket: config.priv_socket.clone(),
         privileged,
         proxy_socket: config.proxy_socket.clone(),
@@ -399,7 +446,7 @@ async fn probe_priv(socket: &Path) -> PrivState {
 
 // ------------------------------------------------------------------ serve
 
-async fn probe_serve(listen: SocketAddr) -> ServeState {
+async fn probe_serve(listen: SocketAddr) -> (ServeState, ServeTransport) {
     // A wildcard listen address is reached through loopback.
     let addr = if listen.ip().is_unspecified() {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), listen.port())
@@ -407,12 +454,32 @@ async fn probe_serve(listen: SocketAddr) -> ServeState {
         listen
     };
 
-    let health = match http_get(addr, "/healthz").await {
+    let (transport, tls) = match opsbox_api::tls::probe_tls(addr, PROBE_TIMEOUT).await {
+        Ok(tls) => (ServeTransport::Https(tls), true),
+        Err(_) => (ServeTransport::Http, false),
+    };
+    let get = |path: &'static str| async move {
+        if tls {
+            http_get_tls(addr, path).await
+        } else {
+            http_get_plain(addr, path).await
+        }
+    };
+
+    let health = match get("/healthz").await {
         Ok(r) => r,
-        Err(e) => return ServeState::Down(describe_http_error(&e)),
+        Err(e) => {
+            return (
+                ServeState::Down(describe_http_error(&e)),
+                ServeTransport::Unknown,
+            );
+        }
     };
     if health.status != 200 {
-        return ServeState::Down(format!("answered /healthz with HTTP {}", health.status));
+        return (
+            ServeState::Down(format!("answered /healthz with HTTP {}", health.status)),
+            transport,
+        );
     }
     let version = health
         .json
@@ -421,7 +488,7 @@ async fn probe_serve(listen: SocketAddr) -> ServeState {
         .unwrap_or("?")
         .to_owned();
 
-    match http_get(addr, "/readyz").await {
+    let state = match get("/readyz").await {
         Ok(r) if r.status == 200 => ServeState::Ready { version },
         Ok(r) => ServeState::Degraded {
             version,
@@ -432,7 +499,8 @@ async fn probe_serve(listen: SocketAddr) -> ServeState {
             version,
             detail: describe_http_error(&e),
         },
-    }
+    };
+    (state, transport)
 }
 
 fn failing_checks(body: Option<&serde_json::Value>) -> Option<String> {
@@ -460,8 +528,15 @@ struct HttpResponse {
 }
 
 async fn http_get(addr: SocketAddr, path: &str) -> io::Result<HttpResponse> {
+    match http_get_tls(addr, path).await {
+        Ok(r) => Ok(r),
+        Err(_) => http_get_plain(addr, path).await,
+    }
+}
+
+async fn http_get_tls(addr: SocketAddr, path: &str) -> io::Result<HttpResponse> {
     let url = format!("https://{addr}{path}");
-    let tls_res = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let cfg = ureq::Agent::config_builder()
             .timeout_global(Some(PROBE_TIMEOUT))
             .http_status_as_error(false)
@@ -482,14 +557,11 @@ async fn http_get(addr: SocketAddr, path: &str) -> io::Result<HttpResponse> {
         Ok::<_, ureq::Error>(HttpResponse { status, json })
     })
     .await
-    .map_err(io::Error::other)?;
-    match tls_res {
-        Ok(r) => Ok(r),
-        Err(_) => http_get_plain(addr, path).await,
-    }
+    .map_err(io::Error::other)?
+    .map_err(io::Error::other)
 }
 
-/// Plain HTTP/1.1 fallback for tests that bind a plain TCP listener.
+/// Plain HTTP/1.1, for a loopback listener configured with `api.tls = false` (and tests).
 async fn http_get_plain(addr: SocketAddr, path: &str) -> io::Result<HttpResponse> {
     tokio::time::timeout(PROBE_TIMEOUT, async {
         let mut stream = TcpStream::connect(addr).await?;
@@ -630,7 +702,7 @@ mod tests {
             Arc::new(Store::open_in_memory().unwrap()),
             PrivClient::new(&socket),
             VERSION,
-            opsbox_api::SecureCookies::Never,
+            opsbox_api::SecureCookies::Auto,
             opsbox_auth::AuthConfig::default(),
         );
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
@@ -713,6 +785,105 @@ mod tests {
         assert!(!report.healthy());
     }
 
+    fn bare_state(dir: &Path) -> opsbox_api::AppState {
+        opsbox_api::AppState::new(
+            std::sync::Arc::new(opsbox_store::Store::open_in_memory().unwrap()),
+            PrivClient::new(dir.join("priv.sock")),
+            VERSION,
+            opsbox_api::SecureCookies::Auto,
+            opsbox_auth::AuthConfig::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn reports_https_and_the_certificate_fingerprint_of_a_tls_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = opsbox_api::tls::generate_self_signed(&[], None).unwrap();
+        let (cert_path, key_path) = (dir.path().join("c.crt"), dir.path().join("c.key"));
+        std::fs::write(&cert_path, cert).unwrap();
+        std::fs::write(&key_path, key).unwrap();
+        let want = opsbox_api::tls::cert_sha256_hex(&cert_path).unwrap();
+        let acceptor = opsbox_api::tls::load_tls_acceptor(&cert_path, &key_path).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        let state = bare_state(dir.path()).with_tls(true);
+        tokio::spawn(opsbox_api::tls::serve_tls(
+            listener,
+            acceptor,
+            state,
+            std::future::pending(),
+        ));
+        let config = Config::load(
+            Some(&write_config(
+                dir.path(),
+                listen,
+                &dir.path().join("priv.sock"),
+            )),
+            crate::config::Overrides::default(),
+        )
+        .unwrap();
+        let report = collect(&config).await;
+        let ServeTransport::Https(tls) = &report.serve_transport else {
+            panic!("expected https: {}", report.render());
+        };
+        assert_eq!(tls.cert_sha256, want);
+        let text = report.render();
+        assert!(text.contains(&format!("https://{listen}")), "{text}");
+        assert!(!text.contains(&format!("http://{listen}")), "{text}");
+        assert!(text.contains(&colon_fingerprint(&want)), "{text}");
+        assert!(text.contains("TLS 1."), "{text}");
+    }
+
+    #[tokio::test]
+    async fn reports_plain_http_only_as_what_it_is_on_loopback() {
+        let (config, _stops, _dir) = live(true).await;
+        let report = collect(&config).await;
+        assert_eq!(report.serve_transport, ServeTransport::Http);
+        let text = report.render();
+        assert!(
+            text.contains(&format!("http://{}", config.listen)),
+            "{text}"
+        );
+        assert!(!text.contains("certificate"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn plain_http_on_a_public_address_is_never_reported_as_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+        let listen = listener.local_addr().unwrap();
+        tokio::spawn(opsbox_api::serve(
+            listener,
+            bare_state(dir.path()),
+            std::future::pending(),
+        ));
+        let config = Config::load(
+            Some(&write_config(
+                dir.path(),
+                listen,
+                &dir.path().join("priv.sock"),
+            )),
+            crate::config::Overrides::default(),
+        )
+        .unwrap();
+        let report = collect(&config).await;
+        assert!(!report.healthy(), "{}", report.render());
+        match &report.serve {
+            ServeState::Degraded { detail, .. } => {
+                assert!(
+                    detail.contains("plain HTTP on a public address"),
+                    "{detail}"
+                )
+            }
+            other => panic!("expected degraded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fingerprints_are_printed_the_way_browsers_print_them() {
+        assert_eq!(colon_fingerprint("0aff10"), "0A:FF:10");
+    }
+
     #[test]
     fn conflict_is_healthy_with_warning_and_does_not_claim_safe_mode() {
         let report = Report {
@@ -721,6 +892,7 @@ mod tests {
             serve: ServeState::Ready {
                 version: VERSION.into(),
             },
+            serve_transport: ServeTransport::Http,
             priv_socket: "/run/opsbox/priv.sock".into(),
             privileged: PrivState::Ok {
                 version: VERSION.into(),
@@ -759,6 +931,7 @@ mod tests {
             config_file: None,
             serve_addr: "127.0.0.1:8443".parse().unwrap(),
             serve: ServeState::Down("not running (connection refused)".into()),
+            serve_transport: ServeTransport::Unknown,
             priv_socket: "/run/opsbox/priv.sock".into(),
             privileged: PrivState::Ok {
                 version: VERSION.into(),

@@ -19,13 +19,14 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 
 | Section / key | Default | Flag | Environment | Used by |
 |---|---|---|---|---|
-| `[api] listen` | `127.0.0.1:8443` | `--listen ADDR` | `OPSBOX_LISTEN` | serve, status |
+| `[api] listen` | `0.0.0.0:8443` | `--listen ADDR` | `OPSBOX_LISTEN` | serve, status |
 | `[priv] socket` | `/run/opsbox/priv.sock` | `--socket PATH` | `OPSBOX_PRIV_SOCKET` | serve, priv, status |
 | `[priv] allowed_users` | `["opsbox", "root"]` | `--allow-user NAME` (repeatable, or comma list) | `OPSBOX_PRIV_ALLOW_USERS` | priv |
 | `[priv] allowed_uids` | `[]` | `--allow-uid UID` (repeatable, or comma list) | `OPSBOX_PRIV_ALLOW_UIDS` | priv |
 | `[priv] socket_mode` | `"0660"` | `--socket-mode MODE` | `OPSBOX_PRIV_SOCKET_MODE` | priv |
 | `[priv] socket_group` | `"opsbox"` (`""` for none) | `--socket-group GROUP` | `OPSBOX_PRIV_SOCKET_GROUP` | priv |
-| `[api] secure_cookies` | `"auto"` (`"always"`, `"never"`) | `--secure-cookies MODE` | `OPSBOX_SECURE_COOKIES` | serve |
+| `[api] tls` | `true` (`false` only with a loopback `listen`) | | | serve |
+| `[api] secure_cookies` | `"auto"` (`"always"`) | `--secure-cookies MODE` | `OPSBOX_SECURE_COOKIES` | serve |
 | `[priv] master_key` | `/etc/opsbox/master.key` | `--master-key PATH` | `OPSBOX_PRIV_MASTER_KEY` | priv |
 | `[auth] argon2_memory_kib` | `65536` | | | serve, CLI |
 | `[auth] argon2_iterations` | `3` | | | serve, CLI |
@@ -66,7 +67,7 @@ The default includes `root` so an administrator can run `sudo opsbox status`. Re
 
 ### Sign-in settings
 
-- `secure_cookies`: `auto` marks the session cookies `Secure` only when a request arrives through an HTTPS proxy (`X-Forwarded-Proto: https`); `always` and `never` force it. Plain HTTP on loopback cannot use `Secure`, because the browser would then not send the cookie back.
+- `secure_cookies`: `auto` marks the cookies `Secure` whenever the request arrived over TLS: on `serve`'s own TLS listener, or through the opsbox proxy (which proves itself with a shared secret; see Listening address). `always` forces it on any listener. There is no `never`: a config that still says `secure_cookies = "never"` is refused at start with a clear error; delete the line. Over HTTPS the session cookie is named `__Host-opsbox_session` (browsers then accept it only with `Secure`, `Path=/` and no `Domain`); over plain loopback HTTP it is `opsbox_session`. After updating from a build that used the old name, everyone signs in once more.
 - `master_key`: the 32-byte key that seals TOTP secrets (and later other secrets). `priv` creates it with mode 0600 the first time it is needed and refuses a key file that others can read. Back it up with the database: without it, sealed values cannot be opened, and every user would need `opsbox user reset-2fa`.
 - `argon2_memory_kib` and `argon2_iterations`: password hashing cost (default 64 MB, 3 passes, one lane; the spec's values). A sign-in should take well under a third of a second. On a very small machine lower the memory (for example `16384`) rather than the passes. Existing hashes keep working after a change, because each hash records its own cost. Two sign-ins may hash at once, so peak use is about twice the memory setting.
 
@@ -94,12 +95,20 @@ format = "json"
 
 ## Listening address
 
-`serve` requires authentication for machine APIs. It has no native TLS in Phase 1; keep `listen` on a loopback address. If you set another one, `serve` logs a warning at startup. Reach a remote server through an SSH tunnel:
+`serve` never speaks plain HTTP on an address the network can reach.
+
+- **Default:** `serve` terminates TLS itself (TLS 1.2 or newer, 1.3 preferred, `h2` and `http/1.1`) with its self-signed certificate. `opsbox status` prints `https://…`, the TLS version and the certificate's SHA-256 fingerprint, read from the live listener; compare it with what the browser shows before accepting the certificate.
+- **Plain HTTP:** `[api] tls = false` is accepted only with a loopback `listen` (`127.0.0.1`, `::1`), for an SSH tunnel. With any other address the config is refused at load (`serve`, `status` and every other command) with an error naming the address. No flag, environment variable or build type overrides this.
+- **Panel domain:** the opsbox proxy terminates TLS and forwards to `serve`. `serve` believes `X-Forwarded-For` and `X-Forwarded-Proto` only from a loopback peer that also sends the proxy's secret (`X-Opsbox-Proxy-Secret`, stored in the database as `opsbox.proxy.forward_secret` and added by the proxy to panel requests only). From anyone else those headers (and `Forwarded`, `X-Real-IP`) are deleted before a handler sees them, so rate limits, the allowed-address list and the audit log use the real peer.
+
+Reach a server that listens on loopback through an SSH tunnel:
 
 ```sh
 ssh -L 8443:127.0.0.1:8443 you@server
-# then open http://127.0.0.1:8443/?mode=http
+# then open https://127.0.0.1:8443 (or http:// when tls = false)
 ```
+
+`scripts/check-transport.sh <url>` prints the scheme, TLS version, certificate fingerprint, security headers and (with `OPSBOX_USER`, `OPSBOX_PASSWORD`, `OPSBOX_CODE`) the cookie attributes of a login, and fails when something is wrong.
 
 ## Commands that read the configuration
 

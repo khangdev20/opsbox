@@ -287,27 +287,193 @@ async fn session_cookies_have_the_required_attributes() {
     h.shutdown().await;
 }
 
-#[tokio::test]
-async fn cookies_are_marked_secure_behind_an_https_proxy() {
-    let h = Harness::new_unclaimed(true);
-    let (mut b, secret) = setup(&h).await;
-    b.send(Method::POST, "/api/v1/auth/logout", None, Opts::default())
-        .await;
-    let opts = Opts {
-        extra: vec![("x-forwarded-proto".into(), "https".into())],
-        ..Opts::bare()
-    };
+const PROXY_SECRET: &str = "test-proxy-secret-test-proxy-secret";
+
+fn peer(addr: &str) -> Option<std::net::SocketAddr> {
+    Some(addr.parse().unwrap())
+}
+
+/// What `opsbox-proxy` adds when it forwards a client that used HTTPS.
+fn proxy_headers() -> Vec<(String, String)> {
+    vec![
+        ("x-opsbox-proxy-secret".into(), PROXY_SECRET.into()),
+        ("x-forwarded-proto".into(), "https".into()),
+        ("x-forwarded-for".into(), "203.0.113.9".into()),
+    ]
+}
+
+/// Sign in again after `setup` signed out; returns the reply and the cookies it set.
+async fn log_in(b: &mut Browser, secret: &str, opts: Opts) -> (common::Reply, Vec<String>) {
+    let before = b.set_cookies.len();
     let r = b
         .send(
             Method::POST,
             "/api/v1/auth/login",
-            Some(json!({"username": "admin", "password": PASSWORD, "code": code_for(&secret, 1)})),
+            Some(json!({"username": "admin", "password": PASSWORD, "code": code_for(secret, 1)})),
             opts,
         )
         .await;
     assert_eq!(r.status, StatusCode::OK, "{}", r.text());
-    let all: Vec<_> = b.set_cookies.iter().rev().take(2).collect();
-    assert!(all.iter().all(|c| c.contains("Secure")), "{all:?}");
+    let cookies = b.set_cookies[before..].to_vec();
+    (r, cookies)
+}
+
+fn last_login_ip(h: &Harness) -> String {
+    h.store
+        .recent_audit(50)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.action == "auth.login")
+        .and_then(|e| e.ip)
+        .expect("a login was audited with an address")
+}
+
+#[tokio::test]
+async fn a_forged_https_header_does_not_make_cookies_secure_and_the_audit_keeps_the_real_peer() {
+    // Whoever can reach `serve` directly (a remote peer, or a local program) can send any
+    // header. None of these is the proxy, so none of them is believed.
+    for from in ["198.51.100.4:40000", "127.0.0.1:40000"] {
+        for secret_header in [None, Some("not-the-secret-not-the-secret-0000")] {
+            // A fresh server each time: a sign-in code can be used once.
+            let h = Harness::new_unclaimed_with(true, |s| s.with_proxy_secret(PROXY_SECRET));
+            let (mut b, secret) = setup(&h).await;
+            b.send(Method::POST, "/api/v1/auth/logout", None, Opts::default())
+                .await;
+            let mut extra = vec![
+                ("x-forwarded-proto".to_owned(), "https".to_owned()),
+                ("x-forwarded-for".to_owned(), "203.0.113.9".to_owned()),
+                (
+                    "forwarded".to_owned(),
+                    "for=203.0.113.9;proto=https".to_owned(),
+                ),
+            ];
+            if let Some(v) = secret_header {
+                extra.push(("x-opsbox-proxy-secret".into(), v.into()));
+            }
+            let opts = Opts {
+                extra,
+                peer: peer(from),
+                ..Opts::bare()
+            };
+            let (_, cookies) = log_in(&mut b, &secret, opts).await;
+            assert!(
+                cookies[0].starts_with("opsbox_session=")
+                    && cookies.iter().all(|c| !c.contains("Secure")),
+                "{from} {secret_header:?}: {cookies:?}"
+            );
+            assert_eq!(
+                last_login_ip(&h),
+                from.split(':').next().unwrap(),
+                "{from}: audit must show the real peer"
+            );
+            h.shutdown().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn cookies_are_secure_and_host_prefixed_through_the_trusted_proxy() {
+    let h = Harness::new_unclaimed_with(true, |s| s.with_proxy_secret(PROXY_SECRET));
+    let (mut b, secret) = setup(&h).await;
+    b.send(Method::POST, "/api/v1/auth/logout", None, Opts::default())
+        .await;
+    let opts = Opts {
+        extra: proxy_headers(),
+        peer: peer("127.0.0.1:40000"),
+        ..Opts::bare()
+    };
+    let (_, cookies) = log_in(&mut b, &secret, opts.clone()).await;
+    let session = &cookies[0];
+    assert!(session.starts_with("__Host-opsbox_session="), "{session}");
+    for c in &cookies {
+        assert!(
+            c.contains("Secure") && c.contains("SameSite=Strict") && c.contains("Path=/"),
+            "{c}"
+        );
+        assert!(!c.contains("Domain"), "{c}");
+    }
+    assert!(session.contains("HttpOnly"), "{session}");
+    assert_eq!(
+        last_login_ip(&h),
+        "203.0.113.9",
+        "the proxy reports the client"
+    );
+    // The page keeps working through the proxy, and the session is accepted.
+    let mut again = opts.clone();
+    again.csrf = true;
+    let r = b.send(Method::GET, "/api/v1/host", None, again).await;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.text());
+    // Reaching `serve` directly (no proxy, no TLS), the prefixed cookie is not a session:
+    // there the server reads only the plain name.
+    let token = b.jar["__Host-opsbox_session"].clone();
+    let mut direct = h.browser();
+    direct.jar.insert("__Host-opsbox_session".into(), token);
+    assert_eq!(
+        direct.get("/api/v1/host").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn our_own_tls_listener_always_sets_secure_host_cookies_whatever_the_headers() {
+    let h = Harness::new_unclaimed_with(true, |s| s.with_tls(true));
+    let (mut b, secret) = setup(&h).await;
+    let all: Vec<_> = b.set_cookies.clone();
+    let session = all
+        .iter()
+        .rev()
+        .find(|c| c.starts_with("__Host-opsbox_session="))
+        .unwrap_or_else(|| panic!("{all:?}"));
+    assert!(
+        session.contains("Secure") && session.contains("HttpOnly") && session.contains("Path=/"),
+        "{session}"
+    );
+    assert!(
+        all.iter().all(|c| !c.starts_with("opsbox_session=")),
+        "{all:?}"
+    );
+    assert!(
+        all.iter()
+            .filter(|c| c.starts_with("opsbox_csrf="))
+            .all(|c| c.contains("Secure")),
+        "{all:?}"
+    );
+    // Signed in over TLS: the page works with the prefixed cookie.
+    assert_eq!(b.get("/api/v1/host").await.status, StatusCode::OK);
+    // A plain-named cookie, which a sibling site could have planted, is not accepted.
+    let token = b.jar["__Host-opsbox_session"].clone();
+    let mut planted = h.browser();
+    planted.jar.insert("opsbox_session".into(), token);
+    assert_eq!(
+        planted.get("/api/v1/host").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    // Sign out clears the prefixed cookie with the same attributes, and the session is gone
+    // on the server, not just in the browser.
+    let kept = b.jar["__Host-opsbox_session"].clone();
+    b.send(Method::POST, "/api/v1/auth/logout", None, Opts::default())
+        .await;
+    let cleared = b
+        .set_cookies
+        .iter()
+        .rev()
+        .find(|c| c.starts_with("__Host-opsbox_session="))
+        .unwrap();
+    assert!(
+        cleared.contains("Max-Age=0") && cleared.contains("Secure") && cleared.contains("Path=/"),
+        "{cleared}"
+    );
+    let mut replay = h.browser();
+    replay.jar.insert("__Host-opsbox_session".into(), kept);
+    assert_eq!(
+        replay.get("/api/v1/host").await.status,
+        StatusCode::UNAUTHORIZED,
+        "a copied cookie must not work after sign-out"
+    );
+    // And a login over TLS (headers or not) is Secure.
+    let (_, cookies) = log_in(&mut b, &secret, Opts::bare()).await;
+    assert!(cookies.iter().all(|c| c.contains("Secure")), "{cookies:?}");
     h.shutdown().await;
 }
 

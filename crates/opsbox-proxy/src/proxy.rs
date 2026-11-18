@@ -14,7 +14,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Full, Limited, combinators::BoxBody};
 use hyper::body::Incoming;
-use hyper::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, LOCATION, UPGRADE};
+use hyper::header::{
+    CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderValue, LOCATION, UPGRADE,
+};
 use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Request, Response, StatusCode, Uri};
 use hyper_util::rt::{TokioExecutor, TokioIo};
@@ -38,6 +40,8 @@ use crate::proto::{Route, UpstreamTls};
 pub const DEFAULT_MAX_BODY_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
+/// Added to requests for the panel route; `serve` checks it (see `opsbox_api::transport`).
+pub const PANEL_SECRET_HEADER: &str = "x-opsbox-proxy-secret";
 const CHALLENGE_PREFIX: &str = "/.well-known/acme-challenge/";
 
 pub type ProxyBody = BoxBody<Bytes, hyper::Error>;
@@ -121,6 +125,7 @@ impl RouteTable {
                             hsts: true,
                             max_body_bytes: 0,
                             is_panel: false,
+                            forward_secret: None,
                         },
                         false,
                     )
@@ -618,7 +623,12 @@ async fn forward_request(
     let mut clean_headers = HeaderMap::new();
     for (name, value) in &parts.headers {
         let lname = name.as_str().to_ascii_lowercase();
-        if lname == "x-forwarded-for" || lname == "x-forwarded-proto" || lname == "x-forwarded-host"
+        // The proxy's own header is never copied from the client (an app must not see it,
+        // and the panel must not be handed a forged one).
+        if lname == "x-forwarded-for"
+            || lname == "x-forwarded-proto"
+            || lname == "x-forwarded-host"
+            || lname == PANEL_SECRET_HEADER
         {
             continue;
         }
@@ -648,6 +658,14 @@ async fn forward_request(
         && let Ok(v) = h.parse()
     {
         clean_headers.insert("x-forwarded-host", v);
+    }
+    // Only the panel route carries the secret, so `serve` can trust the headers above.
+    if route.is_panel
+        && let Some(secret) = &route.forward_secret
+        && let Ok(mut v) = HeaderValue::from_str(secret.expose())
+    {
+        v.set_sensitive(true);
+        clean_headers.insert(PANEL_SECRET_HEADER, v);
     }
     parts.headers = clean_headers;
 
@@ -881,6 +899,7 @@ mod adopted_tests {
             hsts: false,
             max_body_bytes: 0,
             is_panel: false,
+            forward_secret: None,
         }]);
         assert_eq!(routes.adopted_target("app.test", true), None);
         assert_eq!(routes.adopted_target("www.app.test", true), None);

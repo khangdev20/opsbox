@@ -213,9 +213,11 @@ async fn a_list_that_excludes_you_needs_confirmation_and_then_blocks_other_addre
     let b = h.signed_in("boss", Role::Admin);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    // The local proxy (and only a peer that shows its secret) may report the caller's address.
+    const PROXY_SECRET: &str = "test-proxy-secret-test-proxy-secret";
     tokio::spawn(opsbox_api::serve(
         listener,
-        h.state.clone(),
+        h.state.clone().with_proxy_secret(PROXY_SECRET),
         std::future::pending(),
     ));
     let cookie = b
@@ -230,6 +232,7 @@ async fn a_list_that_excludes_you_needs_confirmation_and_then_blocks_other_addre
             ("X-Opsbox-CSRF", b.jar["opsbox_csrf"].clone()),
             ("Origin", format!("http://{addr}")),
             ("X-Forwarded-For", xff.to_owned()),
+            ("X-Opsbox-Proxy-Secret", PROXY_SECRET.to_owned()),
         ]
     };
     // Through a local proxy, the person's address is the one the proxy reports.
@@ -274,11 +277,18 @@ async fn a_list_that_excludes_you_needs_confirmation_and_then_blocks_other_addre
         200
     );
     let mut tunnel = auth("");
-    tunnel.pop();
+    tunnel.truncate(3);
     assert_eq!(
         raw(addr, "GET", "/api/v1/security", &tunnel, None).await.0,
         200
     );
+    // A local client that is not the proxy cannot name another address: it is the tunnel
+    // (loopback), not 203.0.113.9, which the list would refuse.
+    let mut spoof = auth("203.0.113.9");
+    spoof.pop();
+    let (status, body) = raw(addr, "GET", "/api/v1/security", &spoof, None).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("allowIps"), "{body}");
     assert_eq!(
         raw(addr, "GET", "/healthz", &auth("203.0.113.9"), None)
             .await

@@ -6,9 +6,9 @@
 //! verifies the CSRF token and the Origin header. A handler that takes none of them
 //! is public; there is no way to forget the check on a handler that takes one.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::IpAddr;
 
-use axum::extract::{ConnectInfo, FromRequestParts};
+use axum::extract::FromRequestParts;
 use axum::http::header::{AUTHORIZATION, COOKIE, HOST, ORIGIN, SET_COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method};
@@ -17,20 +17,55 @@ use opsbox_auth::tokens::{self, csrf_token};
 use opsbox_auth::{Principal, SessionKindView};
 use opsbox_proto::{ErrorCode, Role};
 
+use crate::transport::Transport;
 use crate::{AppState, HttpError};
 
+/// Session cookie name on a plain-HTTP (loopback) listener.
 pub const SESSION_COOKIE: &str = "opsbox_session";
+/// Session cookie name over HTTPS. The `__Host-` prefix makes browsers accept it only
+/// with `Secure`, `Path=/` and no `Domain`, so a sibling site cannot plant or replace it.
+pub const HOST_SESSION_COOKIE: &str = "__Host-opsbox_session";
 pub const CSRF_COOKIE: &str = "opsbox_csrf";
 pub const SETUP_COOKIE: &str = "opsbox_setup";
 pub const CSRF_HEADER: &str = "x-opsbox-csrf";
 
 /// When to mark cookies `Secure` (browsers then send them over HTTPS only).
+///
+/// There is no "never": a request that arrived over TLS always gets `Secure` cookies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecureCookies {
-    /// When the request came through an HTTPS proxy (`X-Forwarded-Proto: https`).
+    /// When the request arrived over TLS: our own TLS listener, or a trusted proxy
+    /// (see [`crate::transport`]) that says the client used HTTPS.
     Auto,
+    /// Whatever the listener (for an unrecognised TLS terminator in front of us).
     Always,
-    Never,
+}
+
+/// The session cookie's name for a request that did or did not arrive over HTTPS.
+pub fn session_cookie_name(https: bool) -> &'static str {
+    if https {
+        HOST_SESSION_COOKIE
+    } else {
+        SESSION_COOKIE
+    }
+}
+
+/// How this request arrived (set by the transport middleware).
+pub fn transport_of(parts: &Parts) -> Transport {
+    parts
+        .extensions
+        .get::<Transport>()
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// The session token the browser sent. Over HTTPS only the `__Host-` cookie counts: a
+/// plain-named one could have been planted from another site.
+pub fn session_token(parts: &Parts) -> Option<&str> {
+    cookie_value(
+        &parts.headers,
+        session_cookie_name(transport_of(parts).https),
+    )
 }
 
 pub fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -43,26 +78,13 @@ pub fn cookie_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
         .find_map(|(k, v)| (k == name).then_some(v))
 }
 
-fn is_https(headers: &HeaderMap) -> bool {
-    headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.eq_ignore_ascii_case("https"))
-}
-
 /// Cookie attributes shared by all of ours.
-fn attrs(
-    secure: SecureCookies,
-    headers: &HeaderMap,
-    http_only: bool,
-    max_age: i64,
-    path: &str,
-) -> String {
+fn attrs(https: bool, http_only: bool, max_age: i64, path: &str) -> String {
     let mut s = format!("; Path={path}; SameSite=Strict; Max-Age={max_age}");
     if http_only {
         s.push_str("; HttpOnly");
     }
-    if secure == SecureCookies::Always || (secure == SecureCookies::Auto && is_https(headers)) {
+    if https {
         s.push_str("; Secure");
     }
     s
@@ -75,18 +97,14 @@ fn header(value: String) -> HeaderValue {
 
 /// `Set-Cookie` headers that start a session: the secret cookie (not readable by
 /// scripts) and the CSRF cookie (read by the page and sent back in a header).
-pub fn session_cookies(
-    secure: SecureCookies,
-    req_headers: &HeaderMap,
-    token: &str,
-    max_age: i64,
-) -> impl IntoResponseParts + use<> {
+pub fn session_cookies(https: bool, token: &str, max_age: i64) -> impl IntoResponseParts + use<> {
     AppendHeaders([
         (
             SET_COOKIE,
             header(format!(
-                "{SESSION_COOKIE}={token}{}",
-                attrs(secure, req_headers, true, max_age, "/")
+                "{}={token}{}",
+                session_cookie_name(https),
+                attrs(https, true, max_age, "/")
             )),
         ),
         (
@@ -94,69 +112,44 @@ pub fn session_cookies(
             header(format!(
                 "{CSRF_COOKIE}={}{}",
                 csrf_token(token),
-                attrs(secure, req_headers, false, max_age, "/")
+                attrs(https, false, max_age, "/")
             )),
         ),
     ])
 }
 
-pub fn clear_session_cookies(
-    secure: SecureCookies,
-    req_headers: &HeaderMap,
-) -> impl IntoResponseParts + use<> {
+pub fn clear_session_cookies(https: bool) -> impl IntoResponseParts + use<> {
     AppendHeaders([
         (
             SET_COOKIE,
             header(format!(
-                "{SESSION_COOKIE}={}",
-                attrs(secure, req_headers, true, 0, "/")
+                "{}={}",
+                session_cookie_name(https),
+                attrs(https, true, 0, "/")
             )),
         ),
         (
             SET_COOKIE,
-            header(format!(
-                "{CSRF_COOKIE}={}",
-                attrs(secure, req_headers, false, 0, "/")
-            )),
+            header(format!("{CSRF_COOKIE}={}", attrs(https, false, 0, "/"))),
         ),
     ])
 }
 
 /// The first-run setup cookie only goes to the setup endpoints.
-pub fn setup_cookie(
-    secure: SecureCookies,
-    req_headers: &HeaderMap,
-    token: &str,
-    max_age: i64,
-) -> impl IntoResponseParts + use<> {
+pub fn setup_cookie(https: bool, token: &str, max_age: i64) -> impl IntoResponseParts + use<> {
     AppendHeaders([(
         SET_COOKIE,
         header(format!(
             "{SETUP_COOKIE}={token}{}",
-            attrs(secure, req_headers, true, max_age, "/api/v1/setup")
+            attrs(https, true, max_age, "/api/v1/setup")
         )),
     )])
 }
 
-/// The caller's address. Behind a local proxy the address comes from
-/// `X-Forwarded-For` (its rightmost entry, the one the proxy added); otherwise it is
-/// the TCP peer. Unknown in tests that call the router directly.
+/// The caller's address, as decided by the transport middleware: the TCP peer, or the
+/// address a trusted proxy reports. Unknown in tests that call the router directly.
 pub fn client_ip(parts: &Parts) -> String {
-    let peer = parts
-        .extensions
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0.ip());
-    if peer.is_some_and(|ip| ip.is_loopback())
-        && let Some(fwd) = parts
-            .headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.rsplit(',').next())
-            .and_then(|v| v.trim().parse::<IpAddr>().ok())
-    {
-        return fwd.to_string();
-    }
-    peer.map_or_else(|| "unknown".to_owned(), |ip| ip.to_string())
+    transport_of(parts).client_ip_text()
 }
 
 pub fn user_agent(headers: &HeaderMap) -> Option<String> {
@@ -310,7 +303,7 @@ async fn authorize(
 ) -> Result<Principal, HttpError> {
     // A script may use an API token instead of a session. Nothing about a token is ambient
     // (a browser never adds it by itself), so CSRF and Origin checks do not apply to it.
-    if cookie_value(&parts.headers, SESSION_COOKIE).is_none()
+    if session_token(parts).is_none()
         && let Some(secret) = bearer(&parts.headers)
     {
         let auth = state.auth.clone();
@@ -372,9 +365,7 @@ async fn authorize(
         audit_acceptance(parts, state, &who).await?;
         return Ok(who);
     }
-    let token = cookie_value(&parts.headers, SESSION_COOKIE)
-        .ok_or_else(unauthorized)?
-        .to_owned();
+    let token = session_token(parts).ok_or_else(unauthorized)?.to_owned();
     let who = {
         let auth = state.auth.clone();
         let t = token.clone();
@@ -449,9 +440,7 @@ pub struct ToolGateway(pub Principal);
 impl FromRequestParts<AppState> for ToolGateway {
     type Rejection = HttpError;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, HttpError> {
-        let token = cookie_value(&parts.headers, SESSION_COOKIE)
-            .ok_or_else(unauthorized)?
-            .to_owned();
+        let token = session_token(parts).ok_or_else(unauthorized)?.to_owned();
         let who = {
             let auth = state.auth.clone();
             tokio::task::spawn_blocking(move || auth.authenticate(&token))
@@ -492,6 +481,8 @@ pub struct Client {
     pub ip: String,
     pub user_agent: Option<String>,
     pub headers: HeaderMap,
+    /// The request arrived over TLS: cookies are `Secure` and the session cookie is `__Host-`.
+    pub https: bool,
 }
 
 impl<S: Send + Sync> FromRequestParts<S> for Client {
@@ -501,6 +492,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Client {
             ip: client_ip(parts),
             user_agent: user_agent(&parts.headers),
             headers: parts.headers.clone(),
+            https: transport_of(parts).https,
         })
     }
 }
@@ -567,18 +559,100 @@ mod tests {
         );
     }
 
+    fn set_cookie_texts(parts: impl IntoResponseParts) -> Vec<String> {
+        let response = axum::response::IntoResponse::into_response((parts, ()));
+        response
+            .headers()
+            .get_all(SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap().to_owned())
+            .collect()
+    }
+
     #[test]
-    fn secure_attribute_follows_the_policy() {
-        let plain = HeaderMap::new();
-        let via_https = headers(&[("x-forwarded-proto", "https")]);
-        assert!(!attrs(SecureCookies::Auto, &plain, true, 10, "/").contains("Secure"));
-        assert!(attrs(SecureCookies::Auto, &via_https, true, 10, "/").contains("Secure"));
-        assert!(attrs(SecureCookies::Always, &plain, true, 10, "/").contains("Secure"));
-        assert!(!attrs(SecureCookies::Never, &via_https, true, 10, "/").contains("Secure"));
-        let a = attrs(SecureCookies::Never, &plain, true, 10, "/");
+    fn https_cookies_are_secure_and_host_prefixed() {
+        let c = set_cookie_texts(session_cookies(true, "tok", 60));
+        assert_eq!(c.len(), 2);
+        let session = &c[0];
         assert!(
-            a.contains("HttpOnly") && a.contains("SameSite=Strict") && a.contains("Max-Age=10")
+            session.starts_with("__Host-opsbox_session=tok;"),
+            "{session}"
         );
-        assert!(!attrs(SecureCookies::Never, &plain, false, 10, "/").contains("HttpOnly"));
+        for attr in [
+            "Secure",
+            "HttpOnly",
+            "SameSite=Strict",
+            "Path=/",
+            "Max-Age=60",
+        ] {
+            assert!(session.contains(attr), "{attr} in {session}");
+        }
+        assert!(!session.contains("Domain"), "{session}");
+        let csrf = &c[1];
+        assert!(csrf.starts_with("opsbox_csrf="), "{csrf}");
+        assert!(
+            csrf.contains("Secure") && csrf.contains("SameSite=Strict"),
+            "{csrf}"
+        );
+        assert!(
+            !csrf.contains("HttpOnly"),
+            "the page reads the CSRF cookie: {csrf}"
+        );
+    }
+
+    #[test]
+    fn loopback_http_cookies_are_plain_but_still_strict() {
+        let c = set_cookie_texts(session_cookies(false, "tok", 60));
+        let session = &c[0];
+        assert!(session.starts_with("opsbox_session=tok;"), "{session}");
+        assert!(
+            session.contains("HttpOnly") && session.contains("SameSite=Strict"),
+            "{session}"
+        );
+        assert!(c.iter().all(|x| !x.contains("Secure")), "{c:?}");
+    }
+
+    #[test]
+    fn clearing_uses_the_same_name_and_attributes() {
+        for https in [true, false] {
+            let c = set_cookie_texts(clear_session_cookies(https));
+            assert!(
+                c[0].starts_with(&format!("{}=;", session_cookie_name(https))),
+                "{c:?}"
+            );
+            assert!(c.iter().all(|x| x.contains("Max-Age=0")), "{c:?}");
+            assert_eq!(c.iter().all(|x| x.contains("Secure")), https, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn the_setup_cookie_stays_on_the_setup_path() {
+        let c = set_cookie_texts(setup_cookie(true, "t", 60));
+        assert!(
+            c[0].contains("Path=/api/v1/setup") && c[0].contains("Secure"),
+            "{c:?}"
+        );
+    }
+
+    #[test]
+    fn only_the_cookie_that_fits_the_scheme_is_a_session() {
+        let both = headers(&[(
+            "cookie",
+            "opsbox_session=planted; __Host-opsbox_session=real",
+        )]);
+        let mut parts = axum::http::Request::new(()).into_parts().0;
+        parts.headers = both;
+        assert_eq!(session_token(&parts), Some("planted"), "plain HTTP");
+        parts.extensions.insert(Transport {
+            https: true,
+            ..Transport::default()
+        });
+        assert_eq!(session_token(&parts), Some("real"), "HTTPS");
+        parts.headers = headers(&[("cookie", "opsbox_session=planted")]);
+        assert_eq!(
+            session_token(&parts),
+            None,
+            "a plain cookie is ignored over HTTPS"
+        );
     }
 }

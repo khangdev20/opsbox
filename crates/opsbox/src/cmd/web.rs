@@ -112,6 +112,9 @@ pub fn domain(config: &Config, name: &str, skip_dns_check: bool) -> Result<()> {
         hsts: true,
         max_body_bytes: config.max_upload_mb.saturating_mul(1 << 20),
         is_panel: true,
+        forward_secret: opsbox_api::transport::ensure_proxy_secret(&store)
+            .ok()
+            .map(opsbox_proto::Secret::new),
     };
 
     let routes = opsbox_api::panel::build_routes_with_panel(&store, Some(route));

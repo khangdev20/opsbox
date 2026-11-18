@@ -443,3 +443,13 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **Components.** Brand, account menu, sidebar groups and `iconAct` are shared (`ui.js`, `shell.js`); inline styles in page modules became classes (`form-err`, `err-t`, `row.end`, `mt*`/`mb*`). Process tiles use new `--c1..--c6` tokens; `--brand` is `#FC5801` in both themes (about 3.3:1 on the light background, accepted as large bold text by the design).
 
 **Verification.** Screenshots come from demo mode, not `opsbox-vm` (Owner credentials plus 2FA are not available to automation).
+
+## Prompt 16e (transport security)
+
+**The proxy proves itself with a shared secret; loopback alone is not trust.** `serve` believes `X-Forwarded-For` and `X-Forwarded-Proto` only from a loopback TCP peer that also sends `X-Opsbox-Proxy-Secret`. An SSH tunnel and any local program also arrive from loopback, so a loopback check alone would let them forge a client address (past the allowed-address list) or a scheme. The secret is created by `serve` (and `opsbox web`) in the settings table (`opsbox.proxy.forward_secret`, database mode 0600) and travels to the proxy in the panel `Route` (`forward_secret`, a redacted `Secret`). The proxy removes any client copy of the header on every route and adds its own only on the panel route, so apps never see it. A file-based secret was rejected because `serve` runs unprivileged and `/etc/opsbox` is not writable by it.
+
+**Keep TLS as the default, add `[api] tls`, no `never`.** `serve` already terminated TLS on every listen address (including loopback, where the proxy pins its certificate), so there was no plain-HTTP mode to forbid, only a misleading `opsbox status` line. The new `[api] tls = false` exists for the SSH-tunnel case and is accepted only on loopback; the same check runs for the file, `--listen` and the environment. `secure_cookies = "never"` is removed and now fails to parse; `always` stays for a TLS terminator opsbox does not know.
+
+**`__Host-` only over HTTPS, and the other name is ignored there.** Over TLS the session cookie is `__Host-opsbox_session`; a plain-named cookie is not read, because it could have been planted from a sibling site. Existing sessions end once at update (the old cookie name is not read over HTTPS). The CSRF cookie keeps its name (its value is useless without the session token). The first-run setup cookie keeps `Path=/api/v1/setup`, which `__Host-` forbids; it gets `Secure` only.
+
+**`opsbox status` probes the listener.** It does a TLS handshake (accepting any certificate, nothing sent) to learn the scheme, protocol version and fingerprint, instead of reading configuration or the certificate file. Plain HTTP answering on a non-loopback address is reported as degraded.

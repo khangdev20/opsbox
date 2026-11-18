@@ -407,6 +407,7 @@ async fn spawn_tls_upstream() -> (SocketAddr, String) {
                         "xff": req.headers().get("x-forwarded-for").and_then(|v| v.to_str().ok()),
                         "xfp": req.headers().get("x-forwarded-proto").and_then(|v| v.to_str().ok()),
                         "xfh": req.headers().get("x-forwarded-host").and_then(|v| v.to_str().ok()),
+                        "secret": req.headers().get("x-opsbox-proxy-secret").and_then(|v| v.to_str().ok()),
                         "path": req.uri().path(),
                     });
                     Ok::<_, Infallible>(
@@ -496,6 +497,9 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
         hsts: true,
         max_body_bytes: 1024 * 1024,
         is_panel: true,
+        forward_secret: Some(opsbox_proto::Secret::new(
+            "e2e-proxy-secret-e2e-proxy-secret",
+        )),
     };
     client.set_routes("r1", vec![route]).await.unwrap();
 
@@ -557,6 +561,8 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
             Request::get("/api/v1/host")
                 .header("host", "panel.example.com")
                 .header("x-forwarded-for", "198.51.100.1")
+                // A client cannot supply the proxy's header: the proxy's own replaces it.
+                .header("x-opsbox-proxy-secret", "forged-by-the-client")
                 .body(Full::new(Bytes::new()))
                 .unwrap(),
         )
@@ -577,6 +583,10 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
     assert_eq!(echoed["xfp"], "https");
     assert_eq!(echoed["xfh"], "panel.example.com");
     assert_eq!(echoed["xff"], "198.51.100.1, 127.0.0.1");
+    assert_eq!(
+        echoed["secret"], "e2e-proxy-secret-e2e-proxy-secret",
+        "the panel route carries the proxy's secret, not the client's"
+    );
 
     // 8. Verify WebSocket upgrade (wss://) through proxy to TLS upstream.
     let ws_tcp = TcpStream::connect(https_addr).await.unwrap();
@@ -712,6 +722,7 @@ async fn acme_http01_encryption_https_websocket_and_30d_renewal_e2e() {
                 hsts: false,
                 max_body_bytes: 0,
                 is_panel: false,
+                forward_secret: None,
             }],
         )
         .await
@@ -826,6 +837,7 @@ async fn app_domains_redirect_to_force_https_hsts_and_renewal_failure_persistenc
                     hsts: false,
                     max_body_bytes: 0,
                     is_panel: false,
+                    forward_secret: None,
                 },
                 Route {
                     host: "www.app.example.com".into(),
@@ -837,6 +849,7 @@ async fn app_domains_redirect_to_force_https_hsts_and_renewal_failure_persistenc
                     hsts: true,
                     max_body_bytes: 0,
                     is_panel: false,
+                    forward_secret: None,
                 },
             ],
         )

@@ -919,7 +919,7 @@ async fn app_domains_dns_acme_www_redirect_force_https_hsts_primary_and_renewal_
         store.clone(),
         PrivClient::new(&priv_sock).with_timeout(Duration::from_secs(5)),
         "0.1.0-test",
-        SecureCookies::Never,
+        SecureCookies::Auto,
         AuthConfig {
             hash_params: HashParams {
                 memory_kib: 8,

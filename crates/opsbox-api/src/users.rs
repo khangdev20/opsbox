@@ -76,12 +76,7 @@ pub(crate) async fn claim(
             client.user_agent.as_deref(),
         )
         .await?;
-    let cookies = session_cookies(
-        state.secure_cookies,
-        &client.headers,
-        &issued.token,
-        ENROLL_MAX_AGE,
-    );
+    let cookies = session_cookies(client.https, &issued.token, ENROLL_MAX_AGE);
     let out =
         Json(json!({ "user": issued.user.name, "role": issued.user.role, "enrollRequired": true }));
     Ok((cookies, out).into_response())

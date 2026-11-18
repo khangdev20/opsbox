@@ -577,7 +577,7 @@ exit 1
         store.clone(),
         PrivClient::new(&priv_sock).with_timeout(Duration::from_secs(15)),
         "0.1.0-test",
-        SecureCookies::Never,
+        SecureCookies::Auto,
         AuthConfig {
             hash_params: HashParams {
                 memory_kib: 1024,

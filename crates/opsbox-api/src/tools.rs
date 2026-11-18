@@ -54,7 +54,10 @@ fn tool_cookies(value: &str) -> Option<String> {
         .split(';')
         .map(str::trim)
         .filter(|c| {
-            !c.is_empty() && !c.starts_with("opsbox_session=") && !c.starts_with("opsbox_csrf=")
+            !c.is_empty()
+                && !c.starts_with("opsbox_session=")
+                && !c.starts_with("__Host-opsbox_session=")
+                && !c.starts_with("opsbox_csrf=")
         })
         .collect();
     (!kept.is_empty()).then(|| kept.join("; "))
@@ -244,6 +247,10 @@ mod tests {
     fn panel_cookies_never_reach_the_tool() {
         assert_eq!(
             tool_cookies("opsbox_session=abc; opsbox_csrf=def; adminer_sid=1"),
+            Some("adminer_sid=1".to_owned())
+        );
+        assert_eq!(
+            tool_cookies("__Host-opsbox_session=abc; opsbox_csrf=def; adminer_sid=1"),
             Some("adminer_sid=1".to_owned())
         );
         assert_eq!(tool_cookies("opsbox_session=abc"), None);

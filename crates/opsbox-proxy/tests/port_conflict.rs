@@ -74,6 +74,7 @@ async fn busy_ports_serve_and_promote_without_dropping_inflight_requests() {
         hsts: false,
         max_body_bytes: 0,
         is_panel: false,
+        forward_secret: None,
     }]);
     let (request_seen, seen) = oneshot::channel();
     let (finish, finish_rx) = oneshot::channel();

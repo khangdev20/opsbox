@@ -547,7 +547,7 @@ exit 0
         store.clone(),
         priv_client,
         "0.1.0-test",
-        SecureCookies::Never,
+        SecureCookies::Auto,
         auth_cfg,
     )
     .with_files(opsbox_api::FilesSettings {

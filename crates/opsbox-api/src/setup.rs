@@ -49,12 +49,7 @@ pub(crate) async fn claim(
     check_origin_if_present(&client.headers)?;
     let session = state.auth.claim_setup(&body.token, &client.ip)?;
     Ok((
-        setup_cookie(
-            state.secure_cookies,
-            &client.headers,
-            &session,
-            SETUP_MAX_AGE,
-        ),
+        setup_cookie(client.https, &session, SETUP_MAX_AGE),
         Json(json!({ "ok": true })),
     )
         .into_response())
@@ -129,13 +124,8 @@ pub(crate) async fn confirm(
         .await?;
     // Sign in, and retire the setup cookie.
     let cookies = (
-        session_cookies(
-            state.secure_cookies,
-            &client.headers,
-            &issued.token,
-            7 * 24 * 3600,
-        ),
-        setup_cookie(state.secure_cookies, &client.headers, "", 0),
+        session_cookies(client.https, &issued.token, 7 * 24 * 3600),
+        setup_cookie(client.https, "", 0),
     );
     Ok((
         cookies,

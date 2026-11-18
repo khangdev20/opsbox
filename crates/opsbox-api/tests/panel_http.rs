@@ -159,7 +159,7 @@ async fn readyz_checks_proxy_when_panel_domain_is_active() {
         store.clone(),
         opsbox_priv::PrivClient::new(&priv_sock).with_timeout(Duration::from_secs(5)),
         "9.9.9-test",
-        opsbox_api::SecureCookies::Never,
+        opsbox_api::SecureCookies::Auto,
         opsbox_auth::AuthConfig::default(),
     )
     .with_proxy(

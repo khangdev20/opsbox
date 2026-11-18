@@ -28,10 +28,10 @@ pub enum LogFormat {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum SecureCookiesSetting {
-    /// Behind an HTTPS proxy (`X-Forwarded-Proto: https`).
+    /// Whenever the request arrived over TLS (our own listener, or the opsbox proxy).
     Auto,
+    /// Also on a plain listener, for a TLS terminator opsbox does not know about.
     Always,
-    Never,
 }
 
 // ------------------------------------------------------------------ file model
@@ -57,6 +57,9 @@ struct FileConfig {
 #[serde(default, deny_unknown_fields)]
 struct ApiSection {
     listen: SocketAddr,
+    /// `serve` terminates TLS itself. `false` is accepted only with a loopback `listen`
+    /// (SSH tunnel use); there is no way to serve plain HTTP on a public address.
+    tls: bool,
     secure_cookies: SecureCookiesSetting,
 }
 
@@ -64,6 +67,7 @@ impl Default for ApiSection {
     fn default() -> Self {
         Self {
             listen: DEFAULT_LISTEN.parse().expect("valid default"),
+            tls: true,
             secure_cookies: SecureCookiesSetting::Auto,
         }
     }
@@ -263,6 +267,8 @@ impl Default for LogSection {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen: SocketAddr,
+    /// `serve` terminates TLS itself (always true unless `listen` is on loopback).
+    pub tls: bool,
     pub priv_socket: PathBuf,
     pub allowed_users: Vec<String>,
     pub allowed_uids: Vec<u32>,
@@ -401,6 +407,7 @@ impl Config {
             bail!("proxy fallback ports must be between 1 and 65535");
         }
         let listen = o.listen.unwrap_or(file.api.listen);
+        check_transport(listen, file.api.tls)?;
         let watchdog_listen = o
             .watchdog_listen
             .or(file.watchdog.listen)
@@ -413,6 +420,7 @@ impl Config {
         };
         Ok(Self {
             listen,
+            tls: file.api.tls,
             priv_socket: o.priv_socket.unwrap_or(file.privileged.socket),
             allowed_users,
             allowed_uids,
@@ -448,6 +456,20 @@ impl Config {
             loaded_from,
         })
     }
+}
+
+/// Plain HTTP carries passwords and session cookies, so it is allowed only where the
+/// network cannot see it: a loopback address (reached through an SSH tunnel or by the
+/// opsbox proxy on this machine). No setting, flag or build type changes this.
+fn check_transport(listen: SocketAddr, tls: bool) -> Result<()> {
+    if !tls && !listen.ip().to_canonical().is_loopback() {
+        bail!(
+            "api.listen = {listen} is reachable from the network but api.tls = false would serve it as plain HTTP. \
+             Remove `tls = false` (opsbox then serves HTTPS with its own certificate), or listen on 127.0.0.1 \
+             and reach the panel through an SSH tunnel or a panel domain."
+        );
+    }
+    Ok(())
 }
 
 fn read_file(explicit: Option<&Path>) -> Result<(FileConfig, Option<PathBuf>)> {
@@ -695,5 +717,83 @@ mod tests {
         .unwrap();
         assert_eq!(custom.watchdog_listen, "127.0.0.1:9444".parse().unwrap());
         assert_eq!(custom.watchdog_runtime_dir, Path::new("/tmp/wd"));
+    }
+
+    #[test]
+    fn plain_http_is_refused_on_every_non_loopback_address() {
+        for listen in [
+            "0.0.0.0:8443",
+            "[::]:8443",
+            "203.0.113.7:8443",
+            "192.168.1.5:80",
+        ] {
+            let text = format!("[api]\nlisten = \"{listen}\"\ntls = false\n");
+            let err = load_str(&text, Overrides::default())
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("plain HTTP") && err.contains(listen),
+                "{listen}: {err}"
+            );
+        }
+        // The check also covers an address given on the command line or in the environment.
+        let err = load_str(
+            "[api]\ntls = false\n",
+            Overrides {
+                listen: Some("0.0.0.0:9000".parse().unwrap()),
+                ..Overrides::default()
+            },
+        );
+        assert!(err.is_err(), "the default listen address is public");
+        assert!(
+            load_str(
+                "[api]\nlisten = \"127.0.0.1:8443\"\ntls = false\n",
+                Overrides {
+                    listen: Some("0.0.0.0:9000".parse().unwrap()),
+                    ..Overrides::default()
+                },
+            )
+            .is_err(),
+            "an override cannot move a plain listener onto a public address"
+        );
+        // The IPv4-mapped form of a public address is not loopback either.
+        assert!(
+            load_str(
+                "[api]\nlisten = \"[::ffff:203.0.113.7]:8443\"\ntls = false\n",
+                Overrides::default()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn plain_http_is_allowed_only_on_loopback() {
+        for listen in ["127.0.0.1:8443", "[::1]:8443", "127.1.2.3:9"] {
+            let c = load_str(
+                &format!("[api]\nlisten = \"{listen}\"\ntls = false\n"),
+                Overrides::default(),
+            )
+            .unwrap_or_else(|e| panic!("{listen}: {e}"));
+            assert!(!c.tls);
+        }
+    }
+
+    #[test]
+    fn tls_is_on_by_default_on_any_address() {
+        let c = load_str("", Overrides::default()).unwrap();
+        assert!(c.tls && !c.listen.ip().is_loopback());
+        let c = load_str(
+            "[api]\nlisten = \"203.0.113.7:8443\"\n",
+            Overrides::default(),
+        )
+        .unwrap();
+        assert!(c.tls);
+    }
+
+    #[test]
+    fn secure_cookies_never_is_gone() {
+        assert!(load_str("[api]\nsecure_cookies = \"never\"\n", Overrides::default()).is_err());
+        let c = load_str("[api]\nsecure_cookies = \"always\"\n", Overrides::default()).unwrap();
+        assert_eq!(c.secure_cookies, SecureCookiesSetting::Always);
     }
 }

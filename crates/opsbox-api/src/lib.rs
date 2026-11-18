@@ -2,7 +2,8 @@
 //! embedded web UI.
 //!
 //! Phase 1 authenticates machine APIs and delegates system access to `priv`.
-//! Listen on loopback or use a trusted HTTPS proxy; native TLS arrives later.
+//! `serve` terminates TLS itself (or listens on loopback only); see `transport` for which
+//! forwarding headers are believed.
 
 mod access;
 mod alerts;
@@ -38,6 +39,7 @@ mod terminal;
 pub mod tls;
 mod tokens;
 mod tools;
+pub mod transport;
 mod ui;
 mod update;
 mod users;
@@ -67,6 +69,7 @@ pub use panel::sync_proxy_routes;
 pub use request_id::RequestId;
 pub use session::SecureCookies;
 pub use terminal::{DEFAULT_IDLE as DEFAULT_TERMINAL_IDLE, TerminalSettings};
+pub use transport::Transport;
 
 /// Request bodies above this are rejected (docs/BACKEND_SPEC.md section 6.1). The
 /// streamed upload and editor endpoints have separate limits below.
@@ -99,7 +102,10 @@ pub struct AppState {
     pub listen: std::net::SocketAddr,
     pub allow: allowlist::AllowList,
     pub secure_cookies: SecureCookies,
+    /// `serve` terminates TLS itself on its listener.
     pub tls: bool,
+    /// Secret `opsbox-proxy` adds to forwarded panel requests; see [`transport`].
+    pub proxy_secret: Option<Arc<str>>,
     pub tls_cert_sha256: Option<String>,
     pub proxy: Option<opsbox_proxy::ProxyClient>,
     pub public_ips: Vec<std::net::IpAddr>,
@@ -154,6 +160,7 @@ impl AppState {
             allow,
             secure_cookies,
             tls: false,
+            proxy_secret: None,
             tls_cert_sha256: None,
             proxy: None,
             public_ips: Vec::new(),
@@ -197,13 +204,18 @@ impl AppState {
         self.deploy = deploy;
         self
     }
-    /// Mark whether `serve` is terminating native TLS (forces `Secure` cookies in Auto mode).
+    /// Mark whether `serve` is terminating native TLS. Requests on a TLS listener get
+    /// `Secure` cookies whatever headers they carry.
     #[must_use]
     pub fn with_tls(mut self, tls: bool) -> Self {
         self.tls = tls;
-        if tls && self.secure_cookies == SecureCookies::Auto {
-            self.secure_cookies = SecureCookies::Always;
-        }
+        self
+    }
+
+    /// Believe the forwarding headers of a loopback peer that sends this secret.
+    #[must_use]
+    pub fn with_proxy_secret(mut self, secret: impl Into<Arc<str>>) -> Self {
+        self.proxy_secret = Some(secret.into());
         self
     }
     /// Use these file-transfer settings instead of the defaults.
@@ -249,6 +261,12 @@ impl AppState {
         self.proxy = Some(client);
         self.tls_cert_sha256 = tls_cert_sha256;
         self.public_ips = public_ips;
+        match transport::ensure_proxy_secret(&self.store) {
+            Ok(secret) => self.proxy_secret = Some(secret.into()),
+            Err(e) => {
+                tracing::error!(error = %e, "no proxy secret: forwarded client addresses will not be trusted");
+            }
+        }
         self
     }
 
@@ -628,6 +646,8 @@ pub fn router(state: AppState) -> Router {
         ));
 
     let setup_guard_state = state.auth.clone();
+    let transport_policy =
+        transport::Policy::new(state.proxy_secret.clone(), state.tls, state.secure_cookies);
     Router::new()
         .merge(ordinary)
         .merge(network_changes)
@@ -665,6 +685,11 @@ pub fn router(state: AppState) -> Router {
         ))
         .layer(axum::middleware::from_fn(hardening::middleware))
         .layer(axum::middleware::from_fn(request_id::middleware))
+        // First of all: decide who is calling and drop forwarding headers nobody vouches for.
+        .layer(axum::middleware::from_fn_with_state(
+            transport_policy,
+            transport::middleware,
+        ))
 }
 
 async fn setup_guard(
