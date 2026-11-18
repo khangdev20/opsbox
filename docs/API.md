@@ -152,6 +152,18 @@ A signed-in Owner (`admin` role) may add `override:true` and `capacityConfirmati
 | `GET /system/disk` | Any signed-in role. `{volumes:[{mount,device,fs,layout,partition,disk,fs_bytes,partition_bytes,disk_bytes,growable_bytes,growable,steps,refusal}],growpart_installed,growpart_installable}`. `layout` is `partition`, `disk`, `lvm` or `other`; `steps` is an ordered list of `install_growpart`, `grow_partition`, `resize_pv`, `resize_fs`. Volumes: `/`, plus the data and Docker directories when they are on other filesystems. `refusal` says why a volume cannot be grown (unsupported filesystem, RAID, encryption, several disks, ...); `growable:false` with no `refusal` means the disk simply has no unused space. |
 | `POST /system/disk/grow {mount,confirm:"grow",password,install_tools?}` | Interactive admin only (no tokens). Wrong password is `403` and audits `system.disk.grow` as denied; wrong `confirm` is `422` (field `confirm`); an unknown `mount` is `422`; a refused or nothing-to-grow volume is `409` with the reason; a missing `growpart` without `install_tools:true` is `422` (field `install_tools`). Otherwise `202 {task}` for kind `system.disk_grow`; the task log lists the steps as they run and `result` is `{mount,before,after}` with `fs_bytes`, `partition_bytes`, `disk_bytes`, `growable_bytes`. Audit `system.disk.grow` records the steps and the before and after sizes (failures record the failing step). |
 
+## Configuration export (prompt 16i, Spec 7.8.2)
+
+| Request | Response / behaviour |
+|---|---|
+| `POST /config/export {password, passphrase?}` | Interactive admin only (no tokens), account password asked again. Returns the document (`Content-Type: application/json`, `Cache-Control: no-store`, `Content-Disposition: attachment; filename="opsbox-config-<host>-<YYYY-MM-DD>.json"`). Wrong password is `403` and audits `config.export` as denied; a `passphrase` shorter than 8 characters is `400` (field `passphrase`); an empty `passphrase` means "no secrets". It is a `POST` on purpose: the password and passphrase never go into a URL or an access log (the original plan said `GET`). |
+
+The document is `"format": "opsbox-config/1"`, checked in as a JSON Schema at [`docs/schemas/config-export-v1.json`](schemas/config-export-v1.json). Top-level keys: `exportedAt`, `exportedBy`, `opsboxVersion`, `host`, `services` (source, build, port, health path, domains, limits, exposure, owner, variables), `templates`, `composeProjects`, `databases` (engine, version, volume, pooler, linked apps; no data), `backups` (`destinations` metadata, `jobs`), `alerts` (`rules`, `quiet`, `channels` by id), `network` (panel domain, local-only, allowed addresses), `updates`, `firewall` (`null` and listed under `unavailable` when `priv` cannot read it), `users` (name, role, whether two-factor is on), `notExported` (what is left out and why) and `secrets`.
+
+- **Without a passphrase** `secrets` is `{included:false, needsReentry:[{kind,reason,...}]}`: every secret variable, backup destination key, alert channel setting, deploy key, user password and two-factor secret, API tokens and the GitHub connection is named there and nothing secret is in the file. Variables the owner did not mark secret are carried in the open.
+- **With a passphrase** `secrets` is `{included:true, encryption:{cipher:"xchacha20poly1305", kdf:"argon2id", memoryKib, iterations, parallelism, salt, nonce}, ciphertext, needsReentry}`: the secret variables, backup destination credentials and alert channel settings are sealed in `ciphertext` (Argon2id from the passphrase, XChaCha20-Poly1305, authenticated against this format name). `needsReentry` then lists only what cannot be exported at all (users, tokens, GitHub, deploy keys). The passphrase is used for this one request: not stored, logged or audited. A wrong passphrase or a changed file fails to open (`opsbox_api::export::decrypt_secrets`), it never yields partial data.
+- Audit `config.export` (both ways; denied on a wrong password): `{file, includeSecrets, encrypted, services, secretsExported}`; never the passphrase or any value.
+
 ## Implemented routes
 
 ## Proxy network conflicts (prompt 03c)
@@ -220,6 +232,7 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `GET` | `/api/v1/cleanup/volumes` | [cleanup::volume_sizes](../crates/opsbox-api/src/cleanup.rs) |
 | `POST` | `/api/v1/compose` | [templates::deploy_compose](../crates/opsbox-api/src/templates.rs) |
 | `DELETE` | `/api/v1/compose/{stack}` | [templates::delete_compose_stack](../crates/opsbox-api/src/templates.rs) |
+| `POST` | `/api/v1/config/export` | [export::export](../crates/opsbox-api/src/export.rs) |
 | `GET` | `/api/v1/databases/{id}` | [databases::overview](../crates/opsbox-api/src/databases.rs) |
 | `PUT` | `/api/v1/databases/{id}/apps/{app}/pooled` | [databases::set_app_pooled](../crates/opsbox-api/src/databases.rs) |
 | `POST` | `/api/v1/databases/{id}/apps/{app}/remove` | [databases::remove_app](../crates/opsbox-api/src/databases.rs) |

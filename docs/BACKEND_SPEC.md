@@ -237,7 +237,7 @@ The UI calls these through `web/js/api.js`. Left column is the current mock func
 | `getBackups`, `runBackup`, `restoreBackup` | `GET /backups`, `POST /backups/jobs/{id}/run`, `POST /backups/snapshots/{id}/restore` |
 | `PROVIDERS`, `testDestination`, `saveDestination`, `addDestination` | `GET /backups/providers`, `POST /backups/destinations/test`, `POST /backups/destinations` |
 | `getAlerts`, `setRule`, `testAlert`, `connectChannel`, `silenceAlert`, `setQuiet` | `GET /alerts`, `PUT /alerts/rules/{id}`, `POST /alerts/test`, `PUT /alerts/channels/{id}`, `POST /alerts/events/{id}/silence`, `PUT /alerts/quiet-hours` |
-| `getSettings`, `saveSettings`, `setSwap`, `growFs`, `setOpsboxAutoUpdate`, `disconnectGithub`, `exportConfig` | `GET/PUT /settings`, `PUT /system/swap`, `POST /system/disks/grow`, `PUT /update/auto`, `DELETE /github`, `GET /export` |
+| `getSettings`, `saveSettings`, `setSwap`, `growFs`, `setOpsboxAutoUpdate`, `disconnectGithub`, `exportConfig` | `GET/PUT /settings`, `PUT /system/swap`, `POST /system/disks/grow`, `PUT /update/auto`, `DELETE /github`, `POST /config/export` |
 | `createToken`, `revokeToken` | `POST /tokens`, `DELETE /tokens/{id}` |
 | `getRecovery`, `recoveryAction` | safe-mode server only (section 7.16) |
 
@@ -323,6 +323,14 @@ Preview environments per pull request are a later phase; the data model already 
 
 `POST /system/disk/grow` (interactive admin, password again, typed `grow`) runs one task. Each step is a typed `PrivOp::DiskGrow {mount, step}`; `priv` detects again and takes every device name from that, never from the caller: `InstallGrowpart` (apt `cloud-guest-utils` / dnf `cloud-utils-growpart`, only if the caller allowed it), `GrowPartition` (`growpart <disk> <n>`), `ResizePv` (`pvresize`), `ResizeFs` (`resize2fs`, `xfs_growfs <mount>`, `btrfs filesystem resize max <mount>`, or `lvextend -r -l +100%FREE` for LVM). Refused: any other filesystem, RAID, encryption, a volume over several disks, btrfs inside LVM, a partition that is not the last on its disk.
 - **Hostname and time zone**: `hostnamectl`, `timedatectl`.
+
+#### 7.8.2 Configuration export
+
+`POST /config/export {password, passphrase?}` (interactive admin, password again; `POST` so neither secret appears in a URL) returns one JSON document, `"format": "opsbox-config/1"`, described by `docs/schemas/config-export-v1.json`. It is built by `serve` from SQLite, the alert engine setting and a firewall read through `priv`; it never touches the system itself. Sections: services with variables and domains, template instances, compose projects, databases (engine, version, volume, pooler, linked apps; sizes and extensions are read live and not stored, so they are not exported), backup destinations (metadata) and jobs, alert rules, quiet hours and channel ids, panel domain, local-only flag and allowed addresses, update settings, the firewall rules opsbox manages, and users with their role (no password hash, no two-factor secret, no sessions, no tokens, no invitations).
+
+Secrets stay out by default. Each one is named under `secrets.needsReentry`. Only when a passphrase is given, the secrets `priv` can open again (secret variables under `deploy:var:<service>:<key>`, destination credentials under `backup:dest:<id>`, alert channel settings under `alerts:channel:<id>`) are opened one at a time, collected, and sealed as one block with a key derived by Argon2id (32 MiB, 3 passes, 1 lane, 16-byte salt) and XChaCha20-Poly1305 (24-byte nonce, associated data `opsbox-config/1:secrets`). The cost parameters are in the file; a reader refuses values above 1 GiB, 16 passes or 16 lanes. The master key never leaves `priv`, and the passphrase lives only for the request.
+
+Every `ServiceRecord` field is either exported or listed in `SERVICE_EXCLUDED` with a reason (also written into the file as `notExported`); a test reads the struct and fails when a column is in neither list. Each export is audited as `config.export` with the file name, whether secrets were included and the counts, and a wrong password is audited as denied. The file name is `opsbox-config-<host>-<date>.json`. Import is a separate prompt (16q).
 
 ### 7.9 Terminal
 

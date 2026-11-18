@@ -22,6 +22,10 @@ opsbox-metrics.workspace = true
 opsbox-proxy.workspace = true
 opsbox-update.workspace = true
 rustix = { version = "1.1", features = ["fs"] }
+argon2 = { version = "0.6", features = ["alloc"] }
+base64 = "0.23"
+chacha20poly1305 = "0.11"
+getrandom = "0.4"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query", "ws"] }
 hyper = { version = "1", features = ["server", "client", "http1"] }
 http-body-util = "0.1"
@@ -43,7 +47,6 @@ tracing = "0.1"
 ulid = "3.0"
 
 [dev-dependencies]
-base64 = "0.23"
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 hmac = "0.13"

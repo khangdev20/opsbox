@@ -185,7 +185,7 @@ export async function view({ query = {} } = {}) {
       ${diskBlock()}</div>`)}
     ${section('GitHub', renderGithubSection(pi))}
     ${section('opsbox updates', html`<div class="list-row"><span>${statusText}<br><span class="sm muted" id="ucheck">${checkedLine(u)}</span></span><div class="row">${btn('Check now', { act: 'check' })}${u.updateAvailable ? btn('Update now', { act: 'updateNow', kind: 'primary' }) : ''}${u.previousVersion ? btn(`Roll back to ${u.previousVersion}`, { act: 'rollback' }) : ''}</div></div>${u.lastOutcome ? html`<p class="sm muted">${u.lastOutcome.message}</p>` : ''}<div class="list-row"><span>Release channel${chanSource ? html` <span class="sm muted">(${chanSource})</span>` : ''}</span><select class="select" id="uch" style="width:auto"><option value="stable"${u.channel === 'stable' ? ' selected' : ''}>stable</option><option value="beta"${u.channel === 'beta' ? ' selected' : ''}>beta</option></select></div><div class="list-row"><span>Update opsbox automatically</span><div class="row">${sw('Update opsbox automatically', u.auto, 'autoup')}<select class="select" id="uwin" aria-label="Daily update window" style="width:auto">${hours.map((h) => html`<option value="${h}"${h === (u.window ?? 3) ? ' selected' : ''}>${String(h).padStart(2, '0')}:00 UTC</option>`)}</select></div></div><p class="muted sm">If a new version fails its health check after 2 minutes, opsbox rolls back to the previous one by itself.</p>`)}
-    ${section('Export and uninstall', html`${sampleBadge()}<p class="muted sm" style="max-width:620px">Export saves services and settings as a file you can import on a new server. Uninstall removes opsbox but leaves your apps and data running.</p><div class="row">${btn('Export configuration', { act: 'export', disabled: LIVE })}${btn('Uninstall opsbox', { act: 'uninstall', kind: 'danger', disabled: LIVE })}</div>`)}`;
+    ${section('Export and uninstall', html`<p class="muted sm" style="max-width:620px">Export saves your services, domains, databases (not their data), backups, alerts, firewall rules and people as a file you can import on a new server. Passwords, keys and tokens stay out of the file unless you protect them with a passphrase.</p><div class="row">${btn('Export configuration', { act: 'export' })}</div><p class="muted sm" style="max-width:620px">Uninstall removes opsbox but leaves your apps and data running.</p>${sampleBadge()}<div class="row">${btn('Uninstall opsbox', { act: 'uninstall', kind: 'danger', disabled: LIVE })}</div>`)}`;
   };
   // One block per filesystem opsbox watches (GET /system/disk). Grow shows only when there is space to take.
   const diskBlock = () => {
@@ -400,7 +400,26 @@ export async function view({ query = {} } = {}) {
         updateNow: async () => { const u = upd(); if (u.latest && await confirmDialog({ title: `Update to opsbox ${u.latest.version}?`, body: 'The panel will restart briefly. If the health check fails after 2 minutes, it rolls back automatically.', confirm: 'Update now' })) { toast('Downloading and verifying update...'); try { await api.applyOpsboxUpdate(u.latest.version); toast('Update started. Reconnecting...'); } catch (e) { toast(e.message, 'err'); } } },
         rollback: async () => { const u = upd(); if (u.previousVersion && await confirmDialog({ title: `Roll back to opsbox ${u.previousVersion}?`, body: 'The panel will restart with the previous version.', confirm: 'Roll back', danger: true })) { try { await api.rollbackOpsboxUpdate(u.previousVersion); toast('Rolling back...'); } catch (e) { toast(e.message, 'err'); } } },
         autoup: async (el) => { try { d.opsboxUpdate = await api.setOpsboxAutoUpdate({ auto: el.getAttribute('aria-checked') !== 'true' }); paint(); } catch (e) { toast(e.message, 'err'); } },
-        export: async () => { download('opsbox-config.json', await api.exportConfig(), 'application/json'); toast('Exported.'); },
+        export: async () => {
+          let file;
+          const out = await askForm({
+            title: 'Export configuration',
+            body: 'The file lists your services, domains, databases (not their data), backups, alerts, firewall rules and people. Passwords, keys and tokens are left out and listed as "needs re-entry". Type a passphrase to include the ones opsbox can read back, sealed with that passphrase.',
+            fields: [
+              { name: 'password', label: 'Account password', type: 'password' },
+              { name: 'passphrase', label: 'Passphrase for secrets (optional)', type: 'password', hint: 'Leave empty to export without secrets. At least 8 characters. opsbox does not keep it: lose it and the secrets in the file cannot be opened.' },
+              { name: 'passphrase2', label: 'Repeat the passphrase', type: 'password' },
+            ],
+            submit: 'Export',
+          }, async (o) => {
+            if ((o.passphrase || o.passphrase2) && o.passphrase !== o.passphrase2) { const e = new Error('The two passphrases are not the same.'); e.field = 'passphrase2'; throw e; }
+            file = await api.exportConfig({ password: o.password, passphrase: o.passphrase });
+          });
+          if (!out || !file) return;
+          download(file.filename, file.text, 'application/json');
+          const n = file.needsReentry.length;
+          toast(file.secretsIncluded ? `Exported with secrets sealed by your passphrase. ${n} item${n === 1 ? '' : 's'} still need${n === 1 ? 's' : ''} re-entry.` : `Exported without secrets. ${n} item${n === 1 ? '' : 's'} will need re-entry on a new server.`);
+        },
         uninstall: async () => { if (await confirmDialog({ title: 'Uninstall opsbox?', body: 'The panel is removed. Your apps and data keep running.', confirm: 'Uninstall', danger: true, typed: 'uninstall' })) toast('The demo does not uninstall anything.'); },
       });
     },

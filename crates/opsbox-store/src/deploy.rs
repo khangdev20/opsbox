@@ -2117,6 +2117,21 @@ impl Store {
         Ok(rows)
     }
 
+    /// Every compose project, whatever its project and environment (the configuration export).
+    pub fn list_all_compose_stacks(&self) -> Result<Vec<ComposeStackRecord>, StoreError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, project_id, env_id, name, owner_id, compose_yaml, project_name,
+                    service_names, depends_edges, confirmed, created_at, updated_at
+             FROM compose_stacks
+             ORDER BY created_at ASC, name ASC",
+        )?;
+        let rows = stmt
+            .query_map([], compose_stack_from_row)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     pub fn list_compose_stacks_by_owner(
         &self,
         owner_id: &str,

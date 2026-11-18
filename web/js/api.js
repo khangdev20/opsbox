@@ -49,7 +49,7 @@ const REAL = new Set([
   'getAccess', 'addKey', 'removeKey', 'lockUser',
   'getSecurity', 'toggleCheck', 'setAllowIps', 'inviteUser', 'removeUser', 'auth.inviteInfo', 'auth.claimInvite',
   'dockerStatus', 'installDocker', 'listContainers', 'listDocker', 'inspectContainer', 'containerAction', 'containerLogs',
-  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs',
+  'getSettings', 'saveSettings', 'createToken', 'revokeToken', 'setSwap', 'getDisk', 'growFs', 'exportConfig',
   'checkPanelDns', 'issuePanelCert', 'removePanelDomain', 'setPanelLocalOnly',
   'checkOpsboxUpdate', 'applyOpsboxUpdate', 'rollbackOpsboxUpdate', 'setOpsboxAutoUpdate',
   'getRecovery',
@@ -118,7 +118,7 @@ function cookie(name) {
 
 // One fetch helper for every real endpoint. Errors carry the server's own
 // sentence (docs/BACKEND_SPEC.md 6.1), which the UI shows verbatim.
-async function http(path, { method = 'GET', body } = {}) {
+async function http(path, { method = 'GET', body, onResponse } = {}) {
   let res;
   try {
     // Double-submit CSRF: the page echoes the (script-readable) cookie in a header.
@@ -136,6 +136,7 @@ async function http(path, { method = 'GET', body } = {}) {
   } catch {
     throw new Error('Cannot reach the opsbox server. Check that it is running.');
   }
+  if (onResponse) onResponse(res);
   let data = null;
   try { data = await res.json(); } catch { /* empty or non-JSON body */ }
   if (!res.ok) {
@@ -1775,7 +1776,19 @@ export async function setOpsboxAutoUpdate(v) { sample('setOpsboxAutoUpdate');
 export async function disconnectGithub() { sample('disconnectGithub');
   if (real('disconnectGithub')) return http('/github', { method: 'DELETE' });
   await lag(300); ST.github = { connected: false, installed: false }; audit('disconnect GitHub'); return { ok: true }; }
-export async function exportConfig() { sample('exportConfig'); await lag(400); audit('export configuration'); return JSON.stringify({ opsbox: '0.1.0', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel } }, null, 2); }
+// Asks again for the account password. With a passphrase the secrets that opsbox can read back
+// are sealed into the file; without one the file holds none (docs/API.md, "Configuration export").
+// Resolves to { filename, text, secretsIncluded, needsReentry } for the page to save.
+export async function exportConfig({ password = '', passphrase = '' } = {}) { sample('exportConfig');
+  if (real('exportConfig')) {
+    let disposition = '';
+    const doc = await http('/config/export', { method: 'POST', body: { password, passphrase: passphrase || undefined }, onResponse: (res) => { disposition = res.headers.get('Content-Disposition') || ''; } });
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] || `opsbox-config-${new Date().toISOString().slice(0, 10)}.json`;
+    return { filename, text: JSON.stringify(doc, null, 2), secretsIncluded: !!doc.secrets?.included, needsReentry: doc.secrets?.needsReentry || [] };
+  }
+  await lag(400); audit('export configuration');
+  const text = JSON.stringify({ format: 'opsbox-config/1', host: S.host.name, services: S.project.services.map((s) => ({ id: s.id, kind: s.kind, repo: s.repo, branch: s.branch, build: s.build, domain: s.domain })), settings: { tz: ST.tz, panel: ST.panel }, secrets: { included: false, needsReentry: [] } }, null, 2);
+  return { filename: `opsbox-config-${S.host.name}-${new Date().toISOString().slice(0, 10)}.json`, text, secretsIncluded: false, needsReentry: [] }; }
 
 // ---------------------------------------------------------------- domains
 const DOM = {

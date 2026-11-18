@@ -469,3 +469,21 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **btrfs inside LVM is refused.** The prompt names `lvextend -r`, which calls `fsadm`; `fsadm` does not reliably resize btrfs, so that combination says "grow it by hand" instead of risking a half-grown volume. btrfs on a partition or disk is supported.
 
 **`lvextend` with nothing free is success.** It exits non-zero with "matches existing size"; the step reports that the volume already uses all free space. Same for `growpart` exit 1 with `NOCHANGE`.
+
+## Prompt 16i (export configuration)
+
+**`POST`, not `GET`.** The prompt names `GET /api/v1/config/export` with re-auth, and asks for a passphrase typed in a dialog. A password and a passphrase must not travel in a URL (access logs, proxies, history), and as headers they could not carry non-ASCII characters. So it is `POST /config/export {password, passphrase?}` returning the file. The route is the only thing that changed; the document and the rules are as asked.
+
+**"Owner" is the `admin` role** (as in 16h): an interactive admin session, tokens refused, the account password asked again; a wrong password is audited as denied.
+
+**Secrets are sealed with Argon2id plus XChaCha20-Poly1305, not `age`.** Both crates are already in the tree (`opsbox-auth`, `opsbox-priv`); `age` would add a second format and dependency tree for one block. Argon2id 32 MiB, 3 passes, 1 lane, parameters written into the file so they can rise later and a reader caps them (1 GiB, 16, 16) against a crafted file. The associated data is the format name, so the block cannot be moved into another format version.
+
+**One document, one sealed block.** The file stays plain JSON that validates against the schema; only `secrets.ciphertext` is opaque. Without a passphrase the same section lists what must be typed again. Variables the owner did not mark secret are exported in the open (they are configuration, and the owner chose the flag); a secret variable with a reference (`${db.URL}`) exports the reference only, because the value is rebuilt on import.
+
+**Not exported even with a passphrase:** user passwords, two-factor secrets, sessions, API tokens, invitations, the GitHub App and deploy-key private keys, TLS certificates and account keys, scheduled jobs (root commands that may hold credentials). Each is listed in `notExported` or `needsReentry`. Database sizes and extensions are read live from the running server and are not stored, so they are not in the file.
+
+**The firewall is best effort.** `priv` reads it; if that fails the section is `null` and `unavailable` says why, instead of failing the whole export.
+
+**The schema is checked by a small validator in the test, not a crate.** `jsonschema` pulled about 28 new crates (regex engines, URI parsing) into the workspace for one test, and `cargo deny` is not available here to vet them. The test validator knows exactly the keywords the schema uses and fails on any other, so the schema cannot start using something unchecked.
+
+**Service fields are accounted for in code.** `service_json` destructures `ServiceRecord` without `..`; `SERVICE_EXPORTED` and `SERVICE_EXCLUDED` name every field; a test reads the struct source and fails if a column is in neither list or both.

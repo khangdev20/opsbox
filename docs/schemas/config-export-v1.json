@@ -1,0 +1,435 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opsbox.dev/schemas/config-export-v1.json",
+  "title": "opsbox configuration export, format opsbox-config/1",
+  "description": "Written by POST /api/v1/config/export. Never holds a password hash, a two-factor secret or a plain secret: secrets are listed under secrets.needsReentry, or sealed in secrets.ciphertext when the exporter typed a passphrase. See docs/API.md and docs/BACKEND_SPEC.md (section 7.8.2).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format", "exportedAt", "exportedBy", "opsboxVersion", "host",
+    "services", "templates", "composeProjects", "databases", "backups",
+    "alerts", "network", "updates", "firewall", "users", "notExported", "secrets"
+  ],
+  "properties": {
+    "format": { "const": "opsbox-config/1" },
+    "exportedAt": { "type": "string" },
+    "exportedBy": { "type": "string" },
+    "opsboxVersion": { "type": "string" },
+    "host": { "type": "string" },
+    "services": { "type": "array", "items": { "$ref": "#/$defs/service" } },
+    "templates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["service", "templateId", "version"],
+        "properties": {
+          "service": { "type": "string" },
+          "templateId": { "type": "string" },
+          "version": { "type": "string" }
+        }
+      }
+    },
+    "composeProjects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "owner", "projectName", "composeYaml", "services", "dependsOn", "confirmed"],
+        "properties": {
+          "name": { "type": "string" },
+          "owner": { "type": ["string", "null"] },
+          "projectName": { "type": "string" },
+          "composeYaml": { "type": "string" },
+          "services": { "type": "array", "items": { "type": "string" } },
+          "dependsOn": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["service", "dependsOn"],
+              "properties": {
+                "service": { "type": "string" },
+                "dependsOn": { "type": "string" }
+              }
+            }
+          },
+          "confirmed": { "type": "boolean" }
+        }
+      }
+    },
+    "databases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["service", "templateId", "engine", "version", "dataVolume", "pooler", "apps"],
+        "properties": {
+          "service": { "type": "string" },
+          "templateId": { "type": ["string", "null"] },
+          "engine": { "type": ["string", "null"] },
+          "version": { "type": "string" },
+          "dataVolume": { "type": ["string", "null"] },
+          "pooler": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["enabled", "mode"],
+            "properties": {
+              "enabled": { "type": "boolean" },
+              "mode": { "type": "string" }
+            }
+          },
+          "apps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["app", "database", "user", "varPrefix", "pooled"],
+              "properties": {
+                "app": { "type": ["string", "null"] },
+                "database": { "type": "string" },
+                "user": { "type": "string" },
+                "varPrefix": { "type": "string" },
+                "pooled": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "backups": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaultDestinationId", "destinations", "jobs"],
+      "properties": {
+        "defaultDestinationId": { "type": ["string", "null"] },
+        "destinations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "provider", "name", "config", "hasSecrets"],
+            "properties": {
+              "id": { "type": "string" },
+              "provider": { "type": "string" },
+              "name": { "type": "string" },
+              "config": {},
+              "hasSecrets": { "type": "boolean" }
+            }
+          }
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id", "name", "kind", "what", "service", "templateId", "method",
+              "cron", "retainDaily", "retainWeekly", "destinationId", "enabled"
+            ],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "kind": { "type": "string" },
+              "what": {},
+              "service": { "type": ["string", "null"] },
+              "templateId": { "type": ["string", "null"] },
+              "method": { "type": "string" },
+              "cron": { "type": "string" },
+              "retainDaily": { "type": "integer" },
+              "retainWeekly": { "type": "integer" },
+              "destinationId": { "type": "string" },
+              "enabled": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "alerts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rules", "quiet", "channels"],
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name", "condition", "level", "enabled", "durationSecs"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "condition": { "type": "string" },
+              "level": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "durationSecs": { "type": "integer" }
+            }
+          }
+        },
+        "quiet": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["from", "to"],
+          "properties": {
+            "from": { "type": "string" },
+            "to": { "type": "string" }
+          }
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "verified"],
+            "properties": {
+              "id": { "type": "string" },
+              "verified": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["panelDomain", "panelLocalOnly", "allowedIps"],
+      "properties": {
+        "panelDomain": { "type": ["string", "null"] },
+        "panelLocalOnly": { "type": "boolean" },
+        "allowedIps": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "updates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["channel", "auto", "window"],
+      "properties": {
+        "channel": { "type": ["string", "null"] },
+        "auto": {},
+        "window": {}
+      }
+    },
+    "firewall": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["backend", "rules"],
+      "properties": {
+        "backend": { "type": "string" },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["port", "proto", "from", "note"],
+            "properties": {
+              "port": { "type": "integer" },
+              "proto": { "type": "string" },
+              "from": { "type": "string" },
+              "note": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "users": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "role", "twoFactorEnabled"],
+        "properties": {
+          "name": { "type": "string" },
+          "role": { "enum": ["viewer", "deployer", "admin"] },
+          "twoFactorEnabled": { "type": "boolean" }
+        }
+      }
+    },
+    "notExported": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["service", "other"],
+      "properties": {
+        "service": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["field", "reason"],
+            "properties": {
+              "field": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "other": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["what", "reason"],
+            "properties": {
+              "what": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "unavailable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["section", "reason"],
+        "properties": {
+          "section": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["included", "needsReentry"],
+      "properties": {
+        "included": { "type": "boolean" },
+        "needsReentry": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "reason"],
+            "properties": {
+              "kind": {
+                "enum": ["serviceVar", "backupDestination", "alertChannel", "user", "apiTokens", "github", "deployKey"]
+              },
+              "reason": { "type": "string" },
+              "service": { "type": "string" },
+              "key": { "type": "string" },
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "repo": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "encryption": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cipher", "kdf", "memoryKib", "iterations", "parallelism", "salt", "nonce"],
+          "properties": {
+            "cipher": { "const": "xchacha20poly1305" },
+            "kdf": { "const": "argon2id" },
+            "memoryKib": { "type": "integer" },
+            "iterations": { "type": "integer" },
+            "parallelism": { "type": "integer" },
+            "salt": { "type": "string" },
+            "nonce": { "type": "string" }
+          }
+        },
+        "ciphertext": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "name", "kind", "owner", "source", "build", "port", "healthPath", "domain",
+        "autoDeploy", "limits", "graph", "note", "composeStack", "templateId", "exposure",
+        "vars", "domains"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "kind": { "enum": ["app", "db", "tool", "compose"] },
+        "owner": { "type": ["string", "null"] },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "repo", "branch", "imageRef", "deployKeyId"],
+          "properties": {
+            "kind": { "type": "string" },
+            "repo": { "type": "string" },
+            "branch": { "type": "string" },
+            "imageRef": { "type": ["string", "null"] },
+            "deployKeyId": { "type": ["string", "null"] }
+          }
+        },
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["method", "dockerfilePath", "startCmd"],
+          "properties": {
+            "method": { "type": "string" },
+            "dockerfilePath": { "type": ["string", "null"] },
+            "startCmd": { "type": ["string", "null"] }
+          }
+        },
+        "port": { "type": "integer" },
+        "healthPath": { "type": "string" },
+        "domain": { "type": ["string", "null"] },
+        "autoDeploy": { "type": "boolean" },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["memoryMb", "cpuMillis"],
+          "properties": {
+            "memoryMb": { "type": ["integer", "null"] },
+            "cpuMillis": { "type": ["integer", "null"] }
+          }
+        },
+        "graph": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" }
+          }
+        },
+        "note": { "type": ["string", "null"] },
+        "composeStack": { "type": ["string", "null"] },
+        "templateId": { "type": ["string", "null"] },
+        "exposure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["internalOnly", "publicPort"],
+          "properties": {
+            "internalOnly": { "type": "boolean" },
+            "publicPort": { "type": "boolean" }
+          }
+        },
+        "vars": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "secret", "ref", "value"],
+            "properties": {
+              "key": { "type": "string" },
+              "secret": { "type": "boolean" },
+              "ref": { "type": ["string", "null"] },
+              "value": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "domains": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["domain", "primary", "redirectTo", "forceHttps", "hsts"],
+            "properties": {
+              "domain": { "type": "string" },
+              "primary": { "type": "boolean" },
+              "redirectTo": { "type": ["string", "null"] },
+              "forceHttps": { "type": "boolean" },
+              "hsts": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

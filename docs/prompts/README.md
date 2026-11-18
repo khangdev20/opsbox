@@ -43,7 +43,7 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 16f | Notification bell (`16f-notification-bell.md`) | release prep | ✓ |
 | 16g | Capacity tab; Overview one-line summary (`16g-capacity-page.md`) | release prep | ✓ |
 | 16h | Grow filesystem (`16h-grow-filesystem.md`) | release prep | ✓ |
-| 16i | Export configuration (`16i-export-config.md`) | release prep | |
+| 16i | Export configuration (`16i-export-config.md`) | release prep | ✓ |
 | 16j | Uninstall opsbox (keep apps and data) (`16j-uninstall.md`) | release prep | |
 | 16k | User display names and real 2FA state (`16k-user-display-names.md`) | release prep | |
 | 16l | Audit log IP, filters and CSV export (`16l-audit-ip-and-csv.md`) | release prep | |
