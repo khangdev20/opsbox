@@ -1,6 +1,18 @@
 # Threat model
 
-Short, one section per area. Extend it when a prompt changes what is trusted.
+Short, one section per area. Extend it when a prompt changes what is trusted. Reporting channel and response targets: [SECURITY.md](../SECURITY.md) (summary in [docs/SECURITY.md](SECURITY.md)).
+
+## Trust boundaries (alpha)
+
+| Boundary | Trust | Notes |
+|---|---|---|
+| Browser → `serve` | Untrusted until claimed; then authenticated session + TOTP | Claim needs the one-time setup token; after claim, setup routes 404 |
+| `serve` → `priv` | Local socket; typed `PrivOp` only | `serve` never runs as root; `priv` re-validates every op |
+| Proxy → `serve` | Loopback + shared secret | Forwarded headers ignored unless both match |
+| Installer → host | Root for install only | Verifies SHA-256 + minisign before replacing the binary |
+| Watchdog / safe mode | Root recovery path | Separate port; can roll back a bad update and open emergency SSH briefly |
+
+In scope for no one yet: a public bug bounty, formal third-party audit, or hardening against a malicious admin who already owns the panel.
 
 ## Transport (prompt 16e)
 

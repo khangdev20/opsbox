@@ -1,23 +1,23 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/16s-responsive-panel.md` (responsive panel). Not committed / not pushed (per session request). Prior: `16r`.
+Last completed prompt: `docs/prompts/archive/17-alpha-release.md` (alpha release docs + landing). Not committed / not pushed (per session request). Prior: `16s`.
 
-## What works (16s)
-- **Drawer nav** under 900 px: menu button left of brand, backdrop, focus trap, Escape / route / backdrop / swipe-left / Back close; collapse toggle desktop-only. `100dvh` + `env(safe-area-inset-*)`; `viewport-fit=cover` on `index.html` / `kit.html`.
-- **Palette** icon-only 641–900 px; hidden under 640. Layout: no page sideways scroll from 320 px, 16 px padding under 700, 44×44 on `pointer:coarse`, 16 px inputs on touch.
-- **Tables**: shared `table()` card mode (`data-label`) under 700 px; sticky first column + internal scroll for Files / audit / backups / updates.
-- **Dialogs**: form dialogs bottom sheets under 640 px; confirms stay compact. Files editor fullscreen under 900; Terminal `visualViewport` + Esc/Tab/Ctrl/arrows key bar; Overview KPIs 2/row from 520, 1 below.
-- **Kit / design**: card table, drawer, sheet demos; `design/project/Mobile.dc.html` board. Check: `node tools/check-responsive-ui.mjs`.
+## What works (17)
+- **SECURITY.md** at repo root: private reporting via GitHub advisories, response targets, alpha security properties. Pointer at `docs/SECURITY.md`.
+- **Threat model**: trust-boundary summary added atop `docs/THREAT_MODEL.md`.
+- **README**: pitch, alpha notice, Ubuntu 22.04/24.04 + Debian 12, one-line install, screenshots, links to `docs/SECURITY.md` and `docs/THREAT_MODEL.md`.
+- **Landing (`site/index.html`)**: install command unchanged (`…/releases/latest/download/install.sh`); OS copy + FAQ aligned; Security / threat-model links; OpenGraph + Twitter card tags for `og.svg` (1200×630 placeholder). `site/og.svg` added.
 
 ## Partial / Found, not fixed
-- Screenshots for `docs/screenshots/16s/` not captured this session (run screenshot tooling or DevTools at 390/768).
-- Shell was unavailable this session — could not run `node tools/check-responsive-ui.mjs` or `git mv`. Archive copy is at `docs/prompts/archive/16s-responsive-panel.md`; remove live `docs/prompts/16s-responsive-panel.md` with `git mv` (or `git rm` + add) before commit.
-- Wizard sticky bars: configure deploy uses `.wiz-actions`; other multi-step wizards still use normal rows (sheets cover form dialogs).
-- Not verified on a real phone / `opsbox-vm` tunnel this session.
-- Carried over: pending commit/release for 16o–16s (commit only when asked).
+- Shell and file-delete unavailable: live `docs/prompts/17-alpha-release.md` is a stub; archive copy is at `docs/prompts/archive/17-alpha-release.md`. Owner: `git rm docs/prompts/17-alpha-release.md` then `git add docs/prompts/archive/17-alpha-release.md`.
+- `site/og.png` not written (meta tags use `site/og.svg`). Generated card: `~/.cursor/projects/Users-lenhutkhangvo-Developer-opsbox/assets/og.jpg` — convert to `site/og.png` and retarget meta tags.
+- 60-second screen recording (install → claim → deploy → domain) not produced.
+- GitHub repo social preview: owner sets in repo settings.
+- Merge `dev` → `main`, first public alpha tag/notes, pin release in README: **ask owner first** (not done).
 
 ## Next
-- Run `node tools/check-responsive-ui.mjs` (and cargo fmt/clippy/test if touching Rust).
-- Then commit (only when asked): `prompt 16s: responsive panel`. Do not push unless asked.
-- Then `17-alpha-release.md`.
-- VM check: open panel at 390 px (or phone) — drawer, card rows, sheet dialog, terminal with keyboard up; no sideways scroll. Must fail safely: open drawer, press Back — drawer closes, stay on page, no logout.
+- Owner: `git rm` live 17 stub; convert `og.jpg` → `site/og.png`; set GitHub social preview.
+- Owner: approve merge `dev` into `main`, then tag next `v0.1.0-alpha.N`, mark release notes as first public alpha, pin in README.
+- Optional: 60s demo recording for the landing / README.
+- Commit when asked: `prompt 17: alpha release`. Do not push unless asked.
+- VM check: one-line install from README on Ubuntu 22.04/24.04 or Debian 12; claim with setup token; refuse setup after claim (404).

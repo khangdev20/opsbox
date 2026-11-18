@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="opsbox: your own Railway, on any Linux server">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#17171A"/>
+      <stop offset="100%" stop-color="#1F1F23"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="48" y="48" width="1104" height="534" rx="28" fill="#1F1F23" stroke="#2E2E33" stroke-width="2"/>
+  <!-- mark -->
+  <rect x="96" y="120" width="72" height="72" rx="18" fill="#FC5801"/>
+  <path d="M118 156h28M132 142v28" stroke="#17171A" stroke-width="8" stroke-linecap="round"/>
+  <text x="188" y="168" fill="#EEEEF0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="48" font-weight="700">Ops<tspan fill="#FC5801">Box</tspan></text>
+  <text x="96" y="280" fill="#EEEEF0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="56" font-weight="650">Your own Railway,</text>
+  <text x="96" y="348" fill="#EEEEF0" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="56" font-weight="650">on any Linux server.</text>
+  <text x="96" y="420" fill="#A3A3AB" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="28">Install once. Deploy, monitor, back up — without SSH.</text>
+  <rect x="96" y="470" width="520" height="56" rx="12" fill="#111113" stroke="#2E2E33"/>
+  <text x="120" y="506" fill="#8A8A92" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20">$ curl -fsSL …/install.sh | sh</text>
+  <text x="980" y="506" fill="#FC5801" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="22" font-weight="600">Alpha</text>
+</svg>

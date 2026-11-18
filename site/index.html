@@ -9,6 +9,16 @@
 <meta property="og:title" content="opsbox: your own Railway, on any Linux server">
 <meta property="og:description" content="Install once. Deploy from GitHub, watch the machine, open a terminal, back up your data. Never SSH in again.">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://khangdev20.github.io/opsbox/">
+<meta property="og:image" content="https://khangdev20.github.io/opsbox/og.svg">
+<meta property="og:image:type" content="image/svg+xml">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="opsbox: your own Railway, on any Linux server">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="opsbox: your own Railway, on any Linux server">
+<meta name="twitter:description" content="Install once. Deploy from GitHub, watch the machine, open a terminal, back up your data. Never SSH in again.">
+<meta name="twitter:image" content="https://khangdev20.github.io/opsbox/og.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="img/logo-mark-64.png">
 <link rel="icon" type="image/png" sizes="256x256" href="img/logo-mark-256.png">
 <link rel="apple-touch-icon" href="img/logo-mark-256.png">
@@ -75,7 +85,7 @@
       <span>Small memory footprint</span>
       <span>x86_64 and arm64</span>
     </div>
-    <p class="fine">Ubuntu, Debian, Amazon Linux, Fedora and any Linux with systemd</p>
+    <p class="fine">Alpha targets: Ubuntu 22.04 / 24.04 and Debian 12 (x86_64 and arm64). Other systemd Linux may work.</p>
 
     <div class="preview-wrap">
       <figure class="preview" role="img" aria-label="The opsbox panel showing server metrics and a graph of five services">
@@ -272,7 +282,7 @@
       <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Signed releases</b><span>The installer verifies checksums and signatures before anything runs.</span></div></div>
       <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Memory-safe by design</b><span>The agent is written in Rust: no runtime to install, and a whole class of memory bugs ruled out by the compiler.</span></div></div>
       <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Least privilege</b><span>The part that talks to the network runs unprivileged; only a small local helper can change the system.</span></div></div>
-      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Open source</b><span>Read every line. Report issues privately through SECURITY.md.</span></div></div>
+      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Open source</b><span>Read every line. Report issues privately through <a href="https://github.com/khangdev20/opsbox/blob/main/SECURITY.md">SECURITY.md</a>; threats and controls in the <a href="https://github.com/khangdev20/opsbox/blob/main/docs/THREAT_MODEL.md">threat model</a>.</span></div></div>
     </div>
   </div>
 </section>
@@ -286,7 +296,7 @@
     <div class="faq">
       <details><summary>Is it really free?</summary><p>Yes. opsbox is open source under Apache-2.0. There is no paid tier and no account to create. You pay only for your own servers.</p></details>
       <details><summary>Is it ready for production?</summary><p>Not yet. opsbox is in alpha. Use it for side projects and staging first, and keep backups somewhere off the server.</p></details>
-      <details><summary>Which servers does it run on?</summary><p>Any recent Linux with systemd: Ubuntu, Debian, Amazon Linux, Fedora and similar, on x86_64 or arm64. Any cloud, or a box under your desk.</p></details>
+      <details><summary>Which servers does it run on?</summary><p>Alpha release targets: Ubuntu 22.04, Ubuntu 24.04 and Debian 12 on x86_64 or arm64 (systemd). Other recent Linux may work; they are not the release bar yet. Any cloud, or a box under your desk.</p></details>
       <details><summary>How is it different from Coolify or Dokploy?</summary><p>opsbox manages the server itself as well as your apps (updates, firewall, users, disk, files) and is locked behind a one-time setup token and 2FA from the first minute.</p></details>
       <details><summary>Can I manage more than one server?</summary><p>Each install manages the server it runs on. opsbox Desktop, planned for later, will manage many servers and spread apps across them.</p></details>
       <details><summary>What happens if opsbox itself breaks?</summary><p>Your apps keep running. A watchdog restarts or rolls back opsbox, and the command line on the server can repair it.</p></details>
@@ -316,7 +326,7 @@
   <div class="wrap">
     <div class="brand"><span class="logo" aria-label="OpsBox"><img src="img/logo-mark-128.png" alt="" width="30" height="30"><span class="wm">Ops<b>Box</b></span></span><span>Self-hosted server management. Apache-2.0.</span></div>
     <nav aria-label="Product"><b>Product</b><a href="#features">Features</a><a href="#security">Security</a><a href="#install">Install</a></nav>
-    <nav aria-label="Project"><b>Project</b><a href="https://github.com/khangdev20/opsbox">GitHub</a><a href="https://github.com/khangdev20/opsbox/tree/main/docs">Docs</a><a href="https://github.com/khangdev20/opsbox/blob/main/docs/ROADMAP.md">Roadmap</a><a href="https://github.com/khangdev20/opsbox/security">Report a vulnerability</a></nav>
+    <nav aria-label="Project"><b>Project</b><a href="https://github.com/khangdev20/opsbox">GitHub</a><a href="https://github.com/khangdev20/opsbox/tree/main/docs">Docs</a><a href="https://github.com/khangdev20/opsbox/blob/main/docs/ROADMAP.md">Roadmap</a><a href="https://github.com/khangdev20/opsbox/blob/main/docs/SECURITY.md">Security</a><a href="https://github.com/khangdev20/opsbox/security">Report a vulnerability</a></nav>
     <nav aria-label="Community"><b>Community</b><a href="https://github.com/khangdev20/opsbox/discussions">Discussions</a><a href="https://github.com/khangdev20/opsbox/releases">Changelog</a></nav>
   </div>
 </footer>

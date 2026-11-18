@@ -54,4 +54,4 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 16q | Import configuration on a new server (`16q-import-config.md`) | release prep | ✓ |
 | 16r | Default security headers on every response (`16r-security-headers.md`) | release prep | ✓ |
 | 16s | Responsive panel: phones and tablets (`16s-responsive-panel.md`) | release prep | ✓ |
-| 17 | Alpha release (`17-alpha-release.md`) | release | |
+| 17 | Alpha release (`17-alpha-release.md`) | release | ✓ |
