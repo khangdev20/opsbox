@@ -3,6 +3,7 @@
 Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 
 ## Completed
+- Fix 08: per-unit systemd restart deltas trip safe mode at five restarts in ten minutes even with healthy probes; the three-failed-probes rule remains.
 - Fix 07: stdin DB restores verify a complete dump in a private temporary file before replay; PostgreSQL replay is transactional.
 - Fix 06: import preview/apply validate the checked-in schema; per-secret task results fail on missing or unrestored secrets and skip credentialless destinations.
 - Fix 05: whole Compose YAML is omitted or passphrase-sealed on export, restored exactly on import, and missing source skips stacks and members.
@@ -18,6 +19,7 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Mapped Linux openat2 confinement races (EAGAIN) to Refused while continuing to deny the operation; reproduced the prior intermittent Internal error under parallel file tests.
 
 ## Verification
+- Fix 08: regression failed before implementation; 17 watchdog tests pass, with 2 existing sandbox socket-bind failures. Formatting/Clippy pass; live systemd and Git completion remain owner checks in QA 26.
 - Fix 07: test-first late-dump regression plus success/empty staging checks pass (6 backup tests); requested helper suite: 215 pass/2 existing setuid/sysctl environment failures; Clippy/formatting pass. Git metadata is read-only; host commit/push, CI/release and live VM checks are in QA 18.
 - Fix 06: schema, unavailable-helper and Compose HTTP regressions pass; full import suite has 3 pass/5 sandbox Unix-socket bind failures. Clippy/formatting pass. Git pull/staging are blocked by read-only metadata; owner CI/release and real-helper verification are recorded in QA 24.
 - Fix 05: test-first plaintext leak regression and helper-free HTTP export/import round trip pass; Clippy/formatting pass. Requested crate tests hit sandbox TLS binds (API 71 pass/4 fail); helper tests hit existing setuid/sysctl limits (212 pass/2 fail). See QA 24.
@@ -30,6 +32,6 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Full Linux Clippy, workspace tests, dependency audit, release builds, version stamping, and signed release artifacts are checked by GitHub Actions.
 
 ## Next
-- Run fix 04/05/06/07 Linux/VM checks and complete pending commit/push from a host terminal (Git metadata is read-only here), then CI/release; next fix is 08 (rapid watchdog crashes).
+- Run fix 04/05/06/07/08 Linux/VM checks and complete pending commit/push from a host terminal (Git metadata is read-only here), then CI/release; next fix is 09 (emergency SSH expiry).
 - Verify the alpha release's x86_64/arm64 archives, checksums, signatures, SBOM, and installer on GitHub Releases.
 - Smoke-test the table and notification views at desktop/mobile widths on an updated server.

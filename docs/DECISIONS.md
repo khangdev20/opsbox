@@ -565,3 +565,7 @@ Report each secret restoration in task logs; any missing/failed secret fails the
 ## Fix 07 — Verify database dumps before replay
 Stage stdin database dumps in an anonymous 0600 cache file; require a complete nonempty read and successful restic authentication/exit before any database replay.
 Replay PostgreSQL with --single-transaction; MySQL/MariaDB/Mongo engine-error atomicity needs temporary-database restore, validation and a controlled swap (QA 18).
+
+## Fix 08 — Count rapid systemd restarts
+Sample each unit's NRestarts; baseline the first read, timestamp counter deltas at observation, retain history across failed reads and count a reset's new total.
+Five restarts per unit in ten minutes trigger existing escalation even with healthy probes; retain three-failed-probes behavior, update grace and bounded history until expiry or explicit recovery reset.

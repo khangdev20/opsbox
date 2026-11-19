@@ -26,6 +26,30 @@ const MAX_HTTP_BYTES: u64 = 64 * 1024;
 const CRITICAL_AVAIL_BYTES: u64 = 128 * 1024 * 1024;
 const WARN_AVAIL_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Read automatic restart totals, including crashes between healthy probes.
+pub(crate) fn probe_restart_counts() -> [Option<u64>; 3] {
+    use crate::exec::{find, run};
+    use crate::policy::UnitId;
+
+    if !crate::actions::systemd_available() {
+        return [None; 3];
+    }
+    let Some(ctl) = find(&["/usr/bin/systemctl", "/bin/systemctl"]) else {
+        return [None; 3];
+    };
+    [UnitId::Priv, UnitId::Proxy, UnitId::Serve].map(|unit| {
+        let output = run(
+            &ctl,
+            &["show", unit.unit_name(), "--property=NRestarts", "--value"],
+            PROBE_TIMEOUT,
+        )?;
+        if !output.ok() {
+            return None;
+        }
+        output.stdout.trim().parse().ok()
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServiceHealth {
     Ok { version: String, millis: u128 },

@@ -10,6 +10,7 @@ use crate::slots::UpdateState;
 
 pub const FAILURE_WINDOW_SECS: i64 = 10 * 60;
 pub const FAILURE_THRESHOLD: usize = 3;
+pub const RESTART_THRESHOLD: usize = 5;
 pub const RESTART_COOLDOWN_SECS: i64 = 10;
 pub const DEGRADED_RESTART_COOLDOWN_SECS: i64 = 60;
 pub const CLEANUP_COOLDOWN_SECS: i64 = 10 * 60;
@@ -49,6 +50,8 @@ impl UnitId {
 #[derive(Debug, Clone)]
 pub struct TickInput {
     pub now: i64,
+    /// systemd NRestarts in dependency order: priv, proxy, serve.
+    pub restart_counts: [Option<u64>; 3],
     pub serve_ok: bool,
     pub priv_ok: bool,
     pub proxy_ok: bool,
@@ -74,6 +77,8 @@ pub enum PolicyAction {
 #[derive(Debug, Default)]
 struct UnitTracker {
     failures: VecDeque<i64>,
+    restarts: VecDeque<i64>,
+    last_nrestarts: Option<u64>,
     last_restart_at: Option<i64>,
 }
 
@@ -83,6 +88,32 @@ impl UnitTracker {
         while self.failures.front().is_some_and(|t| *t < cutoff) {
             self.failures.pop_front();
         }
+        while self.restarts.front().is_some_and(|t| *t < cutoff) {
+            self.restarts.pop_front();
+        }
+    }
+
+    fn observe_restarts(&mut self, now: i64, total: Option<u64>, in_grace: bool) -> bool {
+        self.prune(now);
+        if let Some(total) = total {
+            if let Some(previous) = self.last_nrestarts
+                && !in_grace
+            {
+                // A lower counter means systemd reset it; the new total still
+                // counts restarts since that reset. First observation is a baseline.
+                let delta = total.checked_sub(previous).unwrap_or(total);
+                // Only the newest threshold events can affect escalation. Bound
+                // storage/work even if many restarts happened between samples.
+                for _ in 0..delta.min(RESTART_THRESHOLD as u64) {
+                    if self.restarts.len() == RESTART_THRESHOLD {
+                        self.restarts.pop_front();
+                    }
+                    self.restarts.push_back(now);
+                }
+            }
+            self.last_nrestarts = Some(total);
+        }
+        self.restarts.len() >= RESTART_THRESHOLD
     }
 
     fn record_failure(&mut self, now: i64) -> usize {
@@ -93,6 +124,7 @@ impl UnitTracker {
 
     fn clear(&mut self) {
         self.failures.clear();
+        self.restarts.clear();
         self.last_restart_at = None;
     }
 
@@ -137,7 +169,8 @@ impl WatchdogPolicy {
         let now = input.now;
         let proxy_ok = input.proxy_ok || input.proxy_port_conflict;
         if input.proxy_port_conflict {
-            self.proxy_unit.clear();
+            self.proxy_unit.failures.clear();
+            self.proxy_unit.last_restart_at = None;
         }
         if input.proxy_port_conflict && !self.proxy_conflict_active {
             self.push_event(
@@ -146,6 +179,25 @@ impl WatchdogPolicy {
         }
         self.proxy_conflict_active = input.proxy_port_conflict;
         let all_ok = input.serve_ok && input.priv_ok && proxy_ok;
+        let in_grace = input
+            .update_state
+            .last_outcome
+            .as_ref()
+            .is_some_and(|outcome| {
+                outcome.status == "pending"
+                    && now.saturating_sub(outcome.at) < UPDATE_RESTART_GRACE_SECS
+            });
+        let mut restart_threshold_reached = false;
+        for (tracker, total) in [
+            &mut self.priv_unit,
+            &mut self.proxy_unit,
+            &mut self.serve_unit,
+        ]
+        .into_iter()
+        .zip(input.restart_counts)
+        {
+            restart_threshold_reached |= tracker.observe_restarts(now, total, in_grace);
+        }
 
         if let Some(ref outcome) = input.update_state.last_outcome
             && outcome.status == "pending"
@@ -155,7 +207,7 @@ impl WatchdogPolicy {
                 // Let `opsbox-restart` finish swapping units before counting failures.
                 return Vec::new();
             }
-            if all_ok && age >= UPDATE_VERIFY_SECS {
+            if all_ok && !restart_threshold_reached && age >= UPDATE_VERIFY_SECS {
                 self.clear_failures();
                 self.push_event(format!(
                     "Update to {} passed post-update health checks.",
@@ -168,7 +220,7 @@ impl WatchdogPolicy {
             }
         }
 
-        if all_ok {
+        if all_ok && !restart_threshold_reached {
             if self.safe_mode_active {
                 self.push_event("All opsbox services recovered; leaving safe mode alert state.");
             }
@@ -180,7 +232,7 @@ impl WatchdogPolicy {
         }
 
         let mut actions = Vec::new();
-        let mut threshold_reached = false;
+        let mut threshold_reached = restart_threshold_reached;
         let mut units_to_restart = Vec::new();
 
         // Check in dependency order: priv -> proxy -> serve.
@@ -218,7 +270,7 @@ impl WatchdogPolicy {
                 self.proxy_unit.last_restart_at = Some(now);
                 self.serve_unit.last_restart_at = Some(now);
                 self.push_event(
-                    "3 failures in 10 min with critical disk space: freeing opsbox space and restarting.",
+                    "3 failed probes or 5 restarts in 10 min with critical disk space: freeing opsbox space and restarting.",
                 );
                 return vec![PolicyAction::FreeSpaceAndRestart];
             }
@@ -227,7 +279,7 @@ impl WatchdogPolicy {
                 self.last_rollback_from = input.update_state.current_version.clone();
                 self.clear_failures();
                 self.push_event(format!(
-                    "3 failures in 10 min after update: rolling back to {target_ver}."
+                    "3 failed probes or 5 restarts in 10 min after update: rolling back to {target_ver}."
                 ));
                 return vec![PolicyAction::RollbackToPrevious {
                     to_version: target_ver,
@@ -237,7 +289,7 @@ impl WatchdogPolicy {
             if !self.safe_mode_active {
                 self.safe_mode_active = true;
                 self.push_event(
-                    "Unit failed 3 times in 10 min; entering safe mode alert state (:8444).",
+                    "Unit had 3 failed probes or 5 restarts in 10 min; entering safe mode alert state (:8444).",
                 );
             }
         }
@@ -291,6 +343,7 @@ mod tests {
     fn base_input(now: i64) -> TickInput {
         TickInput {
             now,
+            restart_counts: [None; 3],
             serve_ok: true,
             priv_ok: true,
             proxy_ok: true,
@@ -298,6 +351,71 @@ mod tests {
             disk_critical: false,
             update_state: UpdateState::default(),
             previous_slot_available: None,
+        }
+    }
+
+    #[test]
+    fn rapid_restarts_trip_safe_mode_with_healthy_probes() {
+        // Injected timestamps are the policy's fake clock. The service has
+        // recovered before every probe, including five exits between samples.
+        for unit in 0..3 {
+            for sampled_counts in [vec![40, 45], vec![40, 41, 42, 43, 44, 45]] {
+                let mut policy = WatchdogPolicy::default();
+                for (tick, count) in sampled_counts.into_iter().enumerate() {
+                    let mut input = base_input(100 + tick as i64 * 10);
+                    input.restart_counts[unit] = Some(count);
+                    assert!(policy.evaluate(&input).is_empty());
+                }
+                assert!(policy.safe_mode_active, "five restarts must trip safe mode");
+                let mut input = base_input(160);
+                input.restart_counts[unit] = Some(45);
+                policy.evaluate(&input);
+                assert!(
+                    policy.safe_mode_active,
+                    "healthy probes must retain recent crashes"
+                );
+                input.now = 761;
+                policy.evaluate(&input);
+                assert!(!policy.safe_mode_active, "old crashes must expire");
+            }
+        }
+    }
+
+    #[test]
+    fn one_restart_does_not_trip_safe_mode_or_recount_unchanged_counter() {
+        let mut policy = WatchdogPolicy::default();
+        for (now, count) in [(100, 40), (110, 41), (120, 41), (130, 41), (140, 41)] {
+            let mut input = base_input(now);
+            input.restart_counts[2] = Some(count);
+            assert!(policy.evaluate(&input).is_empty());
+            assert!(!policy.safe_mode_active);
+        }
+    }
+
+    #[test]
+    fn restart_counter_reset_and_missing_sample_keep_recent_restart_history() {
+        let mut policy = WatchdogPolicy::default();
+        for (now, count, safe) in [
+            (100, Some(40), false), // Historical count is only a baseline.
+            (110, Some(2), false),  // Two restarts after a systemd counter reset.
+            (120, None, false),     // Failed query must not reset the baseline.
+            (130, Some(5), true),   // Three more restarts, five in the window.
+        ] {
+            let mut input = base_input(now);
+            input.restart_counts[2] = count;
+            policy.evaluate(&input);
+            assert_eq!(policy.safe_mode_active, safe);
+        }
+    }
+
+    #[test]
+    fn restarts_outside_window_do_not_accumulate() {
+        let mut policy = WatchdogPolicy::default();
+        for (now, count) in [(100, 0), (110, 4), (711, 5)] {
+            let mut input = base_input(now);
+            input.restart_counts[2] = Some(count);
+            policy.evaluate(&input);
+            assert!(!policy.safe_mode_active);
         }
     }
 
@@ -474,6 +592,7 @@ mod conflict_tests {
         let mut policy = WatchdogPolicy::default();
         let mut input = TickInput {
             now: 1,
+            restart_counts: [None; 3],
             serve_ok: true,
             priv_ok: true,
             proxy_ok: false,

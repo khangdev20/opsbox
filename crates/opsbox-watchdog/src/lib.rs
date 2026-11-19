@@ -474,16 +474,17 @@ pub async fn run_with_listener(
 
         let disk_root_path = PathBuf::from("/");
         let dd = data_dir.clone();
-        let (disk_root, disk_data, fb_ssh) = tokio::task::spawn_blocking(move || {
-            let root = probes::probe_disk(&disk_root_path);
-            let data = dd
-                .as_deref()
-                .map(|p| (p.to_path_buf(), probes::probe_disk(p)));
-            let fb = actions::expire_fallback_ssh();
-            (root, data, fb)
-        })
-        .await
-        .unwrap_or_else(|_| (probes::probe_disk(Path::new("/")), None, None));
+        let (disk_root, disk_data, fb_ssh, restart_counts) =
+            tokio::task::spawn_blocking(move || {
+                let root = probes::probe_disk(&disk_root_path);
+                let data = dd
+                    .as_deref()
+                    .map(|p| (p.to_path_buf(), probes::probe_disk(p)));
+                let fb = actions::expire_fallback_ssh();
+                (root, data, fb, probes::probe_restart_counts())
+            })
+            .await
+            .unwrap_or_else(|_| (probes::probe_disk(Path::new("/")), None, None, [None; 3]));
 
         let now = now_secs();
         let disk_critical =
@@ -493,6 +494,7 @@ pub async fn run_with_listener(
 
         let actions_to_run = policy.evaluate(&TickInput {
             now,
+            restart_counts,
             serve_ok: serve_h.is_ok(),
             priv_ok: priv_h.is_ok(),
             proxy_ok: proxy_h.is_ok(),

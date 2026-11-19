@@ -24,7 +24,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 05 | Export leaks inline Compose credentials ([05-export-compose-secrets.md](archive/05-export-compose-secrets.md)) | Fixed in fix 05 |
 | 06 | Import accepts invalid documents and can hide key failures ([06-import-schema-and-key-errors.md](archive/06-import-schema-and-key-errors.md)) | Fixed in fix 06 |
 | 07 | Database restore can write before a late corruption is found ([07-restore-before-corruption.md](archive/07-restore-before-corruption.md)) | Fixed in fix 07 |
-| 08 | Rapid service crashes can evade safe mode (`08-watchdog-rapid-crashes.md`) | |
+| 08 | Rapid service crashes can evade safe mode ([08-watchdog-rapid-crashes.md](archive/08-watchdog-rapid-crashes.md)) | Fixed in fix 08 |
 | 09 | Fallback emergency SSH rule never expires (`09-nft-emergency-ssh-expiry.md`) | |
 | 10 | Requests never time out and a failed System tab stays on the skeleton (`10-api-timeout-and-mount-errors.md`) | |
 | 11 | Apps page can reload repeatedly when the domain request fails (`11-apps-domain-reload-loop.md`) | |
