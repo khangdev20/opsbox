@@ -30,6 +30,8 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 17 | Deploy a Docker image app end to end | 2026-11-19 | PARTIAL | API/helper/Docker source traced for pull/tag, labels, sealed env, health and loopback proxy mapping; generic image mounts absent, new-tag update unsupported and project network retained. Cargo unavailable; VM socket denied, so live lifecycle/TLS/rollback remain unverified. |
 | 19 | Alerts fire and notify | 2026-11-19 | PASS | Attention alerts fire for critical events (disk pressure >75%/95%, failed services, helper disconnection, backup checksum failure); notification channels (webhook, email, Slack, Telegram) seal credentials via priv, format alerts properly, and support test triggers; muting / silencing operates per target and per user without loss of global state. |
 
+| 18 | Local backup and restore round trip | 2026-11-19 | PARTIAL | Local restic backup/list/restore source and mock coverage reviewed; Cargo/restic unavailable and Multipass socket denied. Exact DB/volume round trip, live audit/key checks and tamper refusal remain; DB streaming has a late-error partial-write risk. |
+
 ## Found, not fixed
 
 ### 28 — GitHub repository features and release asset routing
@@ -559,3 +561,46 @@ No tag is needed for documentation-only changes.
 - Trigger a test message using the Test button on each channel and confirm delivery.
 - Set a low test disk threshold or stop a test container to verify end-to-end receipt of firing and recovered messages on the live channel.
 
+
+
+## QA 18 — Local backup and restore evidence (2026-11-19)
+
+- Reviewed `crates/opsbox-api/src/backups.rs` and the actual helper file `crates/opsbox-priv/src/ops/backup.rs` (the requested plural `backups.rs` does not exist), plus restic argument builders and existing tests. No product code changed; branch is `dev`; no `.codegraph/` index exists.
+- Local destination resolves to `Env.backup_dir`, normally `/var/backups/opsbox` (`opsbox-priv/src/ops/backup.rs:244`). `run_backup_with` at line 1536 initializes the encrypted repository, serializes operations per repository and invokes restic. Database dumps stream directly from Docker exec into `restic backup --stdin`; volumes and paths use filesystem backups. `list_snapshots_with` at line 1667 runs `snapshots --json`, returns empty for an uninitialized local repository, and parses IDs/tags/paths; API synchronization at `backups.rs:720` stores snapshot metadata.
+- Checks are opt-in for manual job runs (`opsbox-api/src/backups.rs:1703`); `run_check` uses a data subset, not a full read of every snapshot. The explicit check endpoint (`:2031`) accepts `readDataSubset`, updates check states and audits `backup.check`. Use `100%` for this QA's complete repository data-read check; a subset success alone does not prove the exact snapshot round trip.
+- Copy is the API restore default; replace requires exact `replace` confirmation at both layers. Helper `restore_with` (`backup.rs:2660`) takes a live safety snapshot before replacement. File/volume payloads restore to private staging first and refuse nonzero restic exits before clearing live destinations. Volume replacement pauses consumers during clear/copy and attempts to unpause afterward. Database restore streams into the target and checks restic and DB-command exit status; see the safety gap below. opsbox self-restore is copy-only and checks SQLite integrity.
+- API records successful `backup.run` and `backup.restore` (`backups.rs:1760,3454`), and `backup.run.failed` on backup failure. Restore errors return before the success audit call; no equivalent restore-failure audit is emitted by this handler. Live audit persistence was not tested.
+- Repository password derives inside the helper from the master key; the password guard (`backup.rs:403`) uses a temporary 0700 directory/0600 file, overwrites/removes the file on drop and zeroizes the in-memory secret. Restic gets `--password-file`, a cleared environment and scrubbed output. Self-backup excludes `master.key`. The intentional recovery-key export requires admin reauthentication, audit and no-store headers (`opsbox-api/src/backups.rs:2698`). These are source findings, not observed live absence of leaks.
+- Existing coverage inspected, not executed: `opsbox-priv/src/ops/backup.rs:3610` checks local self-backup/list/check/copy and password-file cleanup with mock restic; `:3800` checks path copy/replace and safety snapshots with a mocked remote backend. `opsbox-api/tests/backups_http.rs:433` uses mock Docker/restic for DB/volume/path/self orchestration, simulated checksum failures, DB copy/replace, reauthentication and alerts. DB restore asserts that a dump was received, not that five actual SQL rows were recovered. Simulated failures do not establish real restic pack-tampering detection.
+- NOT RUN: `timeout 120 cargo test -p opsbox-api --test backups_http`, `timeout 120 cargo test -p opsbox-priv ops::backup::tests`, and `timeout 120 cargo test -p opsbox-backup` all exited 127 (`cargo` unavailable). `restic` is also absent from PATH. `timeout 120 multipass info opsbox-vm` exited 2 (`multipass socket access denied`). No live database, volume or repository was created, deleted, restored or corrupted.
+
+### Found, not fixed — 18: Database restore can write before late corruption refusal
+
+`crates/opsbox-priv/src/ops/backup.rs:2316` feeds restic stdout directly into the database restore process while restic is still running; its final exit status is checked at line 2333. PostgreSQL uses `pg_restore --clean --if-exists` (`crates/opsbox-backup/src/dumps.rs:273`). Unlike the staged file/volume branches, there is no complete payload validation before writes or automatic rollback on a late restic failure. A safety snapshot is retained for replace mode, but does not make the operation atomic. This is a source-observed ordering risk; partial mutation from real corruption was not reproduced here. Addressing streaming, integrity validation and recovery exceeds a tiny QA fix.
+
+Reproduce on a disposable dev server:
+1. Back up a sufficiently large multi-object PostgreSQL fixture, change its live rows, then inject a restic dump that emits a valid initial portion followed by failure (or corrupt a later required pack in an isolated repository clone).
+2. Request replace with exact confirmation; observe the failed task and compare live objects/rows with their pre-request values. Require corruption refusal without partial changes, or an explicit, verified recovery workflow; inspect the safety snapshot and audit trail too.
+
+Suggested prompt: **Validate database restore payloads before destructive writes and cover late restic failure recovery.**
+
+### Owner checks — 18: Exact local round trip and real tampering
+
+Use only recoverable disposable `opsbox-vm` or a disposable local dev server. Wrap each shell command in `timeout 120`; keep fixture names, service IDs, job IDs and full snapshot IDs. R2/S3 checks require owner-provided configuration through the normal UI; do not put credentials in this document or command history.
+
+1. Run the three Rust test commands above with Cargo available. Snapshot the disposable VM. Create a managed PostgreSQL QA database and a separate app volume with a binary marker file. In that database run `CREATE TABLE qa18_roundtrip (id integer PRIMARY KEY, value text NOT NULL); INSERT INTO qa18_roundtrip SELECT n, 'qa18-' || n FROM generate_series(1,5) AS n;`. Save the exact ordered `SELECT id,value FROM qa18_roundtrip ORDER BY id` output and the marker's SHA-256 outside the restore targets.
+2. As Admin create two disabled backup jobs through the panel (database service and app volume), explicitly selecting destination `local`. Run each, or use `POST /api/v1/backups/jobs/{jobId}/run` with `{"runCheck":true}` using the normal session/CSRF flow. Wait for each task to finish successfully. Refresh `GET /api/v1/backups/snapshots`, record full restic IDs and verify job, kind, paths and destination. Run `POST /api/v1/backups/check` with `{"destinationId":"local","readDataSubset":"100%"}` and require success/checksum states; do not substitute a default subset check.
+3. Delete only those five QA rows and the marker. Restore both snapshots as copies through the panel or `POST /api/v1/backups/snapshots/{id}/restore` with `{"mode":"copy","copyTarget":"<unique-copy-name>"}`. Compare all five ordered rows and marker hash in the copies; confirm original targets remain empty. Then restore original targets with `{"mode":"replace","confirm":"replace"}`. Verify exact rows/hash, safety snapshot IDs, resumed app consumers and no unrelated changes. Also require refusal for missing/wrong replace confirmation.
+4. Inspect audit entries for both backup runs and successful copy/replace restores; check task results/errors, API responses, helper logs and process arguments for the test secrets/master key/repository password without exporting them into logs. Verify ephemeral password files disappear. Ordinary responses must not expose key material; separately exercise recovery-key reauth denial/no-store behavior if needed.
+5. Before corruption testing snapshot the disposable VM again. Use a dedicated QA-only local repository with no unrelated backups. Stop scheduled jobs, record a required data pack for a large QA fixture, corrupt a byte in that pack and clear the disposable restic cache so a cached copy cannot hide damage. Request a full check and copy/replace restore of the affected snapshot through opsbox. Require a readable failed task, no success audit and no partial destination changes; test the late-stream DB failure above as well. Never corrupt a shared repository or the safety snapshot's packs. Restore the VM snapshot afterward.
+6. R2/S3: with owner-configured disposable destinations, repeat connectivity, five-row/file round trip, full check, copy/replace, tamper failure and secret/audit checks using separate test repositories. Record provider results separately. Change row 18 to PASS only after the exact local round trip and corruption criteria pass; retain remote owner checks if credentials are unavailable.
+
+QA 18 Git completion: requested `timeout 120 git mv docs/prompts/qa/18-backup-and-restore-local.md docs/prompts/qa/archive/18-backup-and-restore-local.md` failed with `.git/index.lock: Operation not permitted` (exit 128). Archived with a filesystem rename instead. Git metadata is read-only here, so staging/commit/push require a host terminal with Git write access. Preserve unrelated `.agent-rules.md` and `docs/prompts/qa/gen.py`. Review and stage only QA 18 documentation and the rename on `dev`, then run:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/18-backup-and-restore-local.md docs/prompts/qa/archive/18-backup-and-restore-local.md
+timeout 120 git commit -m "qa 18: Local backup and restore round trip"
+timeout 120 git push origin dev
+```
+
+No tag is needed for documentation-only changes.
