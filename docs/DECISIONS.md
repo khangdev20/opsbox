@@ -569,3 +569,7 @@ Replay PostgreSQL with --single-transaction; MySQL/MariaDB/Mongo engine-error at
 ## Fix 08 — Count rapid systemd restarts
 Sample each unit's NRestarts; baseline the first read, timestamp counter deltas at observation, retain history across failed reads and count a reset's new total.
 Five restarts per unit in ten minutes trigger existing escalation even with healthy probes; retain three-failed-probes behavior, update grace and bounded history until expiry or explicit recovery reset.
+
+## Fix 09 — Kernel-owned nft emergency SSH expiry
+Use IPv4/IPv6 address-and-port nft sets with native one-hour element timeouts; the allowance expires independently of watchdog housekeeping or restarts.
+Create the set and accept rule atomically on first use; atomically delete/re-add an existing element to renew its deadline without accumulating accept rules.

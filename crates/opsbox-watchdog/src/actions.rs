@@ -194,7 +194,7 @@ pub async fn open_ssh_1h(priv_socket: &Path, caller_ip: &str) -> Result<i64, Str
         return priv_res;
     }
 
-    // Fallback when `opsbox-priv` is down: open SSH directly as root and track 1h expiry here.
+    // Fallback when `opsbox-priv` is down: nft owns its timeout; other backends expire here.
     let ctl = find(&["/usr/bin/systemctl", "/bin/systemctl"])
         .ok_or_else(|| "systemctl is not available on this machine.".to_owned())?;
     let started = ["ssh.service", "sshd.service"]
@@ -278,31 +278,60 @@ fn open_firewall_ssh(ip: &IpAddr, ip_str: &str, port: u16) -> Result<EmergencyBa
     if let Some(nft) = find(&["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft"])
         && run(&nft, &["list", "table", "inet", "opsbox"], CTL_TIMEOUT).is_some_and(|o| o.ok())
     {
-        let field = if ip.is_ipv4() {
-            "ip saddr"
-        } else {
-            "ip6 saddr"
-        };
-        let rule = format!(
-            "add rule inet opsbox input {field} {ip_str} tcp dport {port} accept comment \"{EMERGENCY_NOTE}\""
-        );
-        let out = crate::exec::run_with_stdin(&nft, &["-f", "-"], CTL_TIMEOUT, Some(&rule))
-            .ok_or_else(|| "nft timed out".to_owned())?;
-        if !out.ok() {
-            return Err(format!(
-                "nft refused the change: {}",
-                tail(&out.combined(), 2).join(" ")
-            ));
-        }
+        open_nft_ssh(ip, ip_str, port, |args, input| {
+            crate::exec::run_with_stdin(&nft, args, CTL_TIMEOUT, input)
+        })?;
         return Ok(EmergencyBackend::Nft);
     }
 
     Ok(EmergencyBackend::None)
 }
 
+fn open_nft_ssh(
+    ip: &IpAddr,
+    ip_str: &str,
+    port: u16,
+    mut nft: impl FnMut(&[&str], Option<&str>) -> Option<crate::exec::CmdOutput>,
+) -> Result<(), String> {
+    let (set, address_type, field) = if ip.is_ipv4() {
+        ("emergency_ssh4", "ipv4_addr", "ip saddr")
+    } else {
+        ("emergency_ssh6", "ipv6_addr", "ip6 saddr")
+    };
+    let element = format!("{{ {ip_str} . {port} }}");
+    let mut script = String::new();
+    if nft(&["list", "set", "inet", "opsbox", set], None).is_some_and(|o| o.ok()) {
+        // Delete/re-add atomically to renew an existing grant's kernel deadline.
+        if nft(&["get", "element", "inet", "opsbox", set, &element], None).is_some_and(|o| o.ok()) {
+            script.push_str(&format!("delete element inet opsbox {set} {element}\n"));
+        }
+    } else {
+        script.push_str(&format!(
+            "add set inet opsbox {set} {{ type {address_type} . inet_service; flags timeout; timeout 1h; }}\n\
+             insert rule inet opsbox input {field} . tcp dport @{set} accept comment \"{EMERGENCY_NOTE}\"\n"
+        ));
+    }
+    // Empty sets/rules may remain, but only kernel-timed elements grant access.
+    // Their lifetime is independent of housekeeping and watchdog process restarts.
+    script.push_str(&format!(
+        "add element inet opsbox {set} {{ {ip_str} . {port} timeout 1h }}\n"
+    ));
+    let out = nft(&["-f", "-"], Some(&script)).ok_or_else(|| "nft timed out".to_owned())?;
+    if !out.ok() {
+        return Err(format!(
+            "nft refused the change: {}",
+            tail(&out.combined(), 2).join(" ")
+        ));
+    }
+    Ok(())
+}
+
 pub fn expire_fallback_ssh() -> Option<i64> {
-    let now = now_secs();
-    let mut guard = FALLBACK_SSH
+    expire_fallback_ssh_at(&FALLBACK_SSH, now_secs())
+}
+
+fn expire_fallback_ssh_at(entries: &Mutex<Vec<EmergencyEntry>>, now: i64) -> Option<i64> {
+    let mut guard = entries
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut expired = Vec::new();
@@ -345,6 +374,7 @@ pub fn expire_fallback_ssh() -> Option<i64> {
                     let _ = run(&fc, &["--remove-rich-rule", &rich], CTL_TIMEOUT);
                 }
             }
+            // nft elements expire in the kernel, including while the watchdog is stopped.
             EmergencyBackend::Nft | EmergencyBackend::None => {}
         }
     }
@@ -367,5 +397,179 @@ pub fn schedule_reboot() -> Result<String, String> {
             "Failed to schedule reboot: {}",
             tail(&out.combined(), 2).join(" ")
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exec::CmdOutput;
+
+    // A kernel-owned nft set and clock survive replacement of the watchdog's state.
+    #[derive(Default)]
+    struct NftKernel {
+        now: i64,
+        set: bool,
+        timed: bool,
+        allowance: Option<(String, u16, Option<i64>)>,
+        rules: usize,
+    }
+
+    impl NftKernel {
+        fn command(&mut self, args: &[&str], input: Option<&str>) -> Option<CmdOutput> {
+            let ok = match args {
+                ["list", "set", "inet", "opsbox", _] => self.set,
+                ["get", "element", "inet", "opsbox", _, _] => self.allowed(),
+                ["-f", "-"] => {
+                    for line in input.unwrap().lines() {
+                        let words: Vec<_> = line.split_whitespace().collect();
+                        match words.as_slice() {
+                            ["add", "set", ..] => {
+                                self.set = true;
+                                self.timed = line.contains("flags timeout;");
+                                assert!(line.contains("_addr . inet_service;"));
+                            }
+                            ["delete", "element", ..] => self.allowance = None,
+                            [
+                                "add",
+                                "element",
+                                _,
+                                _,
+                                _,
+                                "{",
+                                ip,
+                                ".",
+                                port,
+                                "timeout",
+                                ttl,
+                                "}",
+                            ] => {
+                                assert!(self.set && self.timed);
+                                assert_eq!(*ttl, "1h");
+                                self.allowance = Some((
+                                    (*ip).into(),
+                                    port.parse().unwrap(),
+                                    Some(self.now + 3600),
+                                ));
+                            }
+                            ["insert" | "add", "rule", ..] => {
+                                self.rules += 1;
+                                if !line.contains('@') {
+                                    // The original literal accept rule has no kernel expiry.
+                                    let at = words.iter().position(|w| *w == "saddr").unwrap();
+                                    let port = words.iter().position(|w| *w == "dport").unwrap();
+                                    self.allowance = Some((
+                                        words[at + 1].into(),
+                                        words[port + 1].parse().unwrap(),
+                                        None,
+                                    ));
+                                }
+                            }
+                            _ => panic!("unexpected nft command: {line}"),
+                        }
+                    }
+                    true
+                }
+                _ => panic!("unexpected nft args: {args:?}"),
+            };
+            Some(CmdOutput {
+                code: Some(if ok { 0 } else { 1 }),
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+
+        fn allowed(&self) -> bool {
+            self.allowance
+                .as_ref()
+                .is_some_and(|(_, _, until)| until.is_none_or(|until| self.now < until))
+        }
+    }
+
+    #[test]
+    fn nft_emergency_ssh_expires_after_one_hour_even_after_watchdog_restart() {
+        for source in ["198.51.100.23", "2001:db8::23"] {
+            for restart in [false, true] {
+                let ip: IpAddr = source.parse().unwrap();
+                let mut kernel = NftKernel::default();
+                open_nft_ssh(&ip, source, 2222, |args, input| kernel.command(args, input)).unwrap();
+                assert!(kernel.allowed());
+                assert_eq!(
+                    kernel
+                        .allowance
+                        .as_ref()
+                        .map(|(ip, port, _)| (ip.as_str(), *port)),
+                    Some((source, 2222))
+                );
+                let mut watchdog = Mutex::new(vec![EmergencyEntry {
+                    backend: EmergencyBackend::Nft,
+                    ip: source.into(),
+                    port: 2222,
+                    until: 3600,
+                }]);
+                kernel.now = 59 * 60;
+                assert!(kernel.allowed());
+                assert_eq!(expire_fallback_ssh_at(&watchdog, kernel.now), Some(3600));
+                if restart {
+                    // A new watchdog process loses its in-memory tracking, not kernel state.
+                    watchdog = Mutex::new(Vec::new());
+                }
+                kernel.now = 61 * 60;
+                assert_eq!(expire_fallback_ssh_at(&watchdog, kernel.now), None);
+                assert!(watchdog.lock().unwrap().is_empty());
+                assert!(
+                    !kernel.allowed(),
+                    "{source}: allowance survived 61m (restart={restart})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nft_emergency_ssh_renewal_reuses_rule_and_refreshes_timeout() {
+        let source = "198.51.100.23";
+        let ip = source.parse().unwrap();
+        let mut kernel = NftKernel::default();
+        for now in [0, 1800] {
+            kernel.now = now;
+            open_nft_ssh(&ip, source, 2222, |args, input| kernel.command(args, input)).unwrap();
+            assert_eq!(kernel.rules, 1);
+        }
+        for now in [3660, 5399] {
+            kernel.now = now;
+            assert!(kernel.allowed());
+        }
+        kernel.now = 5400;
+        assert!(!kernel.allowed());
+        kernel.now = 6000;
+        open_nft_ssh(&ip, source, 2222, |args, input| kernel.command(args, input)).unwrap();
+        assert!(kernel.allowed());
+        assert_eq!(kernel.rules, 1);
+        kernel.now = 9600;
+        assert!(!kernel.allowed());
+    }
+
+    #[test]
+    fn nft_emergency_ssh_reports_timeout_and_rejection() {
+        let source = "198.51.100.23";
+        let ip = source.parse().unwrap();
+        for timed_out in [false, true] {
+            let result = open_nft_ssh(&ip, source, 22, |args, _| {
+                if args == ["-f", "-"] && timed_out {
+                    None
+                } else {
+                    Some(CmdOutput {
+                        code: Some(1),
+                        stdout: String::new(),
+                        stderr: "denied".into(),
+                    })
+                }
+            });
+            assert!(
+                result
+                    .unwrap_err()
+                    .contains(if timed_out { "timed out" } else { "denied" })
+            );
+        }
     }
 }
