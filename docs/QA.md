@@ -12,6 +12,8 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 04 | serve and priv version match after update | 2026-11-19 | PARTIAL | Source confirms Ping build version and /readyz HTTP 503 with both versions on skew; stubbed frontend mismatch alert/recovery check passed. Cargo unavailable, browser localhost bind denied, and VM access denied; live update/restart verification remains. |
 | 06 | No secret in any API response | 2026-11-19 | PASS | All secret fields (env vars, DB connection strings, webhook secret, backup credentials) masked with `••••`; reveal requires re-auth, audited, returns `no-store`, tokens denied. |
 | 07 | Login, lockout, TOTP and session revoke | 2026-11-19 | PASS | 5 failed logins locks account/IP with Retry-After; generic error message prevents user enumeration; TOTP replay rejected via totp_last_step monotonic check; session revoke & password change invalidate sessions server-side; setup claim returns 404 once claimed. |
+| 08 | Roles: deployer and viewer cannot do admin things | 2026-11-19 | PASS | Enforced across all API endpoints: viewer is read-only, deployer manages apps/containers without admin/system/terminal access, admin actions by viewer/deployer cleanly refused with 403 Forbidden. |
+| 09 | Every page: zero console errors, zero failed requests | 2026-11-19 | PARTIAL | Readable API failure messages verified; network/mock checks pass. Browser sweep blocked by VM/localhost permissions; async System mount and request deadline gaps documented. |
 | 28 | README, install page and links | 2026-11-19 | PASS | Verified links, install scripts, and screenshots; all internal links pass; releases/latest and Discussions/Pages caveats documented for owner. |
 
 ## Found, not fixed
@@ -218,3 +220,29 @@ timeout 120 git push origin dev
 ```
 
 No release tag is needed for this docs-only QA record.
+
+
+## Found, not fixed — QA 09
+
+- **Async System mount rejection:** `web/js/main.js:61` calls `page.mount(host)` without awaiting its promise. `web/js/pages/system.js:93` awaits `paint(true)`; a failed pane request at line 73 bypasses the router catch and can leave the skeleton visible. The global unhandled-rejection listener (`web/js/main.js:95`) only shows a toast; it neither handles that promise nor replaces the skeleton. Source-confirmed; browser reproduction pending.
+  Reproduce: intercept `/api/v1/updates` with HTTP 503 on a disposable panel.
+  Navigate directly to `#/system/updates`; inspect unhandled rejections and the persistent skeleton. Suggested prompt: **Await page mounts and render retryable System load errors**.
+- **No API request deadline:** `web/js/api.js:123`–139 awaits fetch without an abort signal or timeout. An isolated Node assertion confirmed an unresolved fetch remains pending after 100 ms and receives no signal; this does not measure a browser timeout. A stalled initial request can keep boot/loading pending until the browser/network terminates it. Rejected initial views also explicitly call `console.error` (`web/js/main.js:63`).
+  Reproduce: intercept `/api/v1/host` and leave it unresolved on a disposable panel.
+  Load `#/`; observe loading, then reject the request and inspect the readable message and router console error. Suggested prompt: **Bound API requests and provide recoverable page load errors**.
+
+No production code changed; route lifecycle, cancellation and retry behavior need a focused follow-up with browser verification.
+
+## Owner checks — QA 09
+
+- `timeout 120 multipass info opsbox-vm` failed with `multipass socket access denied`; HTTPS to the previously recorded `192.168.252.2:8443` failed to connect. Both `timeout 120 node tools/check-forms-ui.mjs` and `timeout 120 node tools/check-flip-ui.mjs` failed starting a local server with `listen EPERM: operation not permitted 127.0.0.1`. These are environment/test-harness failures, not observed application exceptions. No authenticated real-browser sweep or asset 404 check was completed.
+- Passed: `timeout 120 node tools/check-network-ui.mjs`, `timeout 120 node tools/check-mock-api.mjs` (163 page references, 168 real capabilities), FLIP source assertions before server startup, and isolated assertions against the actual `api.js` for rejected fetch, JSON 503 and non-JSON 502 readable messages. Reviewed shell, router, API, shared UI polling/action helpers and the requested pages. These checks do not establish zero browser errors or stable rendered layouts.
+- From a terminal with VM access, obtain the verified IP with `timeout 120 multipass info opsbox-vm`. Run a real-browser sweep (five minutes maximum) on that disposable instance, recording console errors, page errors/unhandled rejections, failed requests, HTTP 4xx/5xx, and font/icon/source-map 404s. Visit Overview, Apps, Containers (all tabs), a real test database detail (`#/databases/<id>`; there is no standalone database list route), Backups, Alerts, Files, Terminal, Cleanup, all six System tabs (Updates/Services/Capacity/Logs/Jobs/Firewall), Access (`#/security/access`), Security and Settings sections. Test Login signed out (only expected session 401 exempt), and Setup on a separate fresh disposable instance; record redirects so they do not count as page coverage.
+- Intercept each page's initial API request and refresh/action requests with connection rejection, JSON 503, non-JSON 502 and an unresolved request. Confirm a visible human-friendly message, stable layout, cleared loading/busy state and usable retry after recovery, with no uncaught exception/rejection. Keep injected failures separate from healthy-load request counts. Never disrupt a real-data server.
+- Requested `timeout 120 git mv docs/prompts/qa/09-console-and-network-errors.md docs/prompts/qa/archive/09-console-and-network-errors.md` failed because `.git/index.lock` creation is denied (`Operation not permitted`). Moved the prompt in the working tree instead. Commit/push remain blocked by Git metadata permissions. From a terminal with Git write access, preserve unrelated work and run (docs only; no release tag):
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/09-console-and-network-errors.md docs/prompts/qa/archive/09-console-and-network-errors.md
+timeout 120 git commit -m "qa 09: Every page: zero console errors, zero failed requests"
+timeout 120 git push origin dev
+```
