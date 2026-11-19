@@ -8,6 +8,7 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Redesigned Notifications with a quieter unread background, storage/security icons, unread count, clearer content/time/action hierarchy, and a detailed empty state.
 - Fixed stray commas between notification rows during refresh by returning one safely rendered HTML fragment.
 - Fixed the Docker HTTP test's assumption that a missing fixture socket means Docker binaries are absent on the CI host; production behavior is unchanged.
+- Matched the isolated loopback memory probe's listener to its HTTP readiness request; production TLS defaults are unchanged.
 
 ## Verification
 - Passed frontend DOM checks: package selection/clear/mixed state, tab persistence, selected-only mock install, notification refresh, read/read-all, snooze, keyboard navigation, focus return, text escaping, and empty state.

@@ -28,6 +28,8 @@ def main():
         config = root / 'config.toml'
         config.write_text(f'''[api]
 listen = "127.0.0.1:{port}"
+# This isolated loopback probe talks HTTP; production keeps its TLS default.
+tls = false
 [priv]
 socket = "{root}/priv.sock"
 allowed_users = []
