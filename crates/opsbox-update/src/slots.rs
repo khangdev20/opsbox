@@ -10,7 +10,8 @@ use crate::UpdateError;
 
 pub const BIN_SLOTS_DIR: &str = "/var/lib/opsbox/bin";
 pub const SYMLINK_PATH: &str = "/usr/local/bin/opsbox";
-pub const UPDATE_STATE_PATH: &str = "/var/lib/opsbox/update-state.json";
+pub const UPDATE_STATE_PATH: &str = "/var/lib/opsbox/bin/update-state.json";
+pub const LEGACY_UPDATE_STATE_PATH: &str = "/var/lib/opsbox/update-state.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotMeta {
@@ -66,10 +67,21 @@ impl SlotLayout {
     }
 
     pub fn read_state(&self) -> UpdateState {
-        fs::read_to_string(&self.state_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        if let Ok(s) = fs::read_to_string(&self.state_file)
+            && let Ok(st) = serde_json::from_str(&s)
+        {
+            return st;
+        }
+        // Fallback for legacy location before moving into slots_dir (mode 0755 root:root)
+        if self.state_file == Path::new(UPDATE_STATE_PATH) {
+            let legacy = Path::new(LEGACY_UPDATE_STATE_PATH);
+            if let Ok(s) = fs::read_to_string(legacy)
+                && let Ok(st) = serde_json::from_str(&s)
+            {
+                return st;
+            }
+        }
+        UpdateState::default()
     }
 
     pub fn write_state(&self, state: &UpdateState) -> Result<(), UpdateError> {
@@ -77,6 +89,7 @@ impl SlotLayout {
             fs::create_dir_all(parent)?;
         }
         let tmp = self.state_file.with_extension("json.tmp");
+        let _ = fs::remove_file(&tmp);
         fs::write(&tmp, serde_json::to_vec_pretty(state)?)?;
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644))?;
         fs::rename(&tmp, &self.state_file)?;

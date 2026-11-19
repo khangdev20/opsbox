@@ -79,7 +79,7 @@ impl Default for WatchdogConfig {
             runtime_dir: PathBuf::from("/run/opsbox-watchdog"),
             slots_dir: PathBuf::from("/var/lib/opsbox/bin"),
             binary_symlink: PathBuf::from("/usr/local/bin/opsbox"),
-            update_state_file: PathBuf::from("/var/lib/opsbox/update-state.json"),
+            update_state_file: PathBuf::from("/var/lib/opsbox/bin/update-state.json"),
             xfer_dir: PathBuf::from("/var/lib/opsbox/xfer"),
             cert_path: PathBuf::from("/etc/opsbox/panel-selfsigned.crt"),
             key_path: PathBuf::from("/etc/opsbox/panel-selfsigned.key"),

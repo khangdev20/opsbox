@@ -52,10 +52,21 @@ impl SlotManager {
     }
 
     pub fn read_state(&self) -> UpdateState {
-        fs::read_to_string(&self.state_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        if let Ok(s) = fs::read_to_string(&self.state_file)
+            && let Ok(st) = serde_json::from_str(&s)
+        {
+            return st;
+        }
+        // Fallback for legacy location /var/lib/opsbox/update-state.json
+        if self.state_file == Path::new("/var/lib/opsbox/bin/update-state.json") {
+            let legacy = Path::new("/var/lib/opsbox/update-state.json");
+            if let Ok(s) = fs::read_to_string(legacy)
+                && let Ok(st) = serde_json::from_str(&s)
+            {
+                return st;
+            }
+        }
+        UpdateState::default()
     }
 
     pub fn write_state(&self, state: &UpdateState) -> Result<(), String> {
@@ -63,6 +74,7 @@ impl SlotManager {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let tmp = self.state_file.with_extension("json.tmp");
+        let _ = fs::remove_file(&tmp);
         let bytes = serde_json::to_vec_pretty(state).map_err(|e| e.to_string())?;
         fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o644)).map_err(|e| e.to_string())?;

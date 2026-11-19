@@ -67,7 +67,10 @@ async fn a_scan_has_the_shape_the_page_draws() {
         }
         // Risky things are never selected by default.
         if i["warn"] == true || i["safe"] == false {
-            assert_eq!(i["on"], false, "item with warn or safe=false must not be on: {i}");
+            assert_eq!(
+                i["on"], false,
+                "item with warn or safe=false must not be on: {i}"
+            );
         }
     }
     h.shutdown().await;

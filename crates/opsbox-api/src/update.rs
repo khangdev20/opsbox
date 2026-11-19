@@ -22,6 +22,7 @@ use crate::{AppState, HttpError, RequestId};
 const KEY_CHANNEL: &str = "opsbox.update.channel";
 const KEY_AUTO: &str = "opsbox.update.auto";
 const KEY_WINDOW: &str = "opsbox.update.window";
+const KEY_AUDITED_OUTCOME: &str = "opsbox.update.last_audited_outcome";
 
 /// Shown with the one-time offer to an install that predates version tagging.
 const MIGRATION_NOTE: &str =
@@ -221,34 +222,48 @@ impl Updater {
         let layout = SlotLayout::default();
         let mut state = layout.read_state();
         if let Some(ref mut outcome) = state.last_outcome
-            && !outcome.audited
             && outcome.status != "pending"
         {
-            let action = match outcome.status.as_str() {
-                "rolled_back" => "opsbox.update.rolled_back",
-                "failed" => "opsbox.update.failed",
-                _ => "opsbox.update.verified",
-            };
-            let res = if outcome.status == "updated" {
-                AuditResult::Ok
-            } else {
-                AuditResult::Failed
-            };
-            let _ = self.store.append_audit(opsbox_store::NewAudit {
-                actor: "opsbox".to_owned(),
-                actor_kind: ActorKind::System,
-                ip: None,
-                action: action.to_owned(),
-                target: Some(outcome.to_version.clone()),
-                result: res,
-                detail: json!({
-                    "from": outcome.from_version,
-                    "to": outcome.to_version,
-                    "message": outcome.message,
-                }),
-            });
-            outcome.audited = true;
-            let _ = layout.write_state(&state);
+            let outcome_key = format!("{}:{}:{}", outcome.status, outcome.to_version, outcome.at);
+            let already_audited = outcome.audited
+                || self
+                    .store
+                    .get_setting(KEY_AUDITED_OUTCOME)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.as_str().map(|s| s == outcome_key))
+                    .unwrap_or(false);
+
+            if !already_audited {
+                let action = match outcome.status.as_str() {
+                    "rolled_back" => "opsbox.update.rolled_back",
+                    "failed" => "opsbox.update.failed",
+                    _ => "opsbox.update.verified",
+                };
+                let res = if outcome.status == "updated" {
+                    AuditResult::Ok
+                } else {
+                    AuditResult::Failed
+                };
+                let _ = self.store.append_audit(opsbox_store::NewAudit {
+                    actor: "opsbox".to_owned(),
+                    actor_kind: ActorKind::System,
+                    ip: None,
+                    action: action.to_owned(),
+                    target: Some(outcome.to_version.clone()),
+                    result: res,
+                    detail: json!({
+                        "from": outcome.from_version,
+                        "to": outcome.to_version,
+                        "message": outcome.message,
+                    }),
+                });
+                let _ = self
+                    .store
+                    .set_setting(KEY_AUDITED_OUTCOME, &json!(outcome_key));
+                outcome.audited = true;
+                let _ = layout.write_state(&state);
+            }
         }
         state.last_outcome
     }

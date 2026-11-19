@@ -38,7 +38,7 @@ pub fn run(config: Config) -> Result<()> {
         runtime_dir: config.watchdog_runtime_dir,
         slots_dir: data_dir.join("bin"),
         binary_symlink,
-        update_state_file: data_dir.join("update-state.json"),
+        update_state_file: data_dir.join("bin").join("update-state.json"),
         xfer_dir: config.xfer_dir,
         cert_path: opsbox_api::tls::DEFAULT_CERT_PATH.into(),
         key_path: opsbox_api::tls::DEFAULT_KEY_PATH.into(),
