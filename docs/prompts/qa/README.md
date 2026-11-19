@@ -46,6 +46,6 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 26 | Watchdog and safe mode (26-watchdog-safe-mode.md) | x |
 | 27 | Dependencies and lint, fast (27-dependencies-and-lint.md) | x |
 | 28 | README, install page and links (`28-docs-and-links.md`) | x |
-| 29 | Table layout: padding, scrollbar, columns and alignment (`29-table-layout.md`) | |
-| 30 | List rows: push the action to the right edge (`30-list-row-actions.md`) | |
-| 31 | Notification list: stray commas, stale alerts, restarting timestamps (`31-notification-list.md`) | |
+| 29 | Table layout: padding, scrollbar, columns and alignment (`29-table-layout.md`) | x |
+| 30 | List rows: push the action to the right edge (`30-list-row-actions.md`) | x |
+| 31 | Notification list: stray commas, stale alerts, restarting timestamps (`31-notification-list.md`) | x |

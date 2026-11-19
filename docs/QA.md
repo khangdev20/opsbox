@@ -38,6 +38,9 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 20 | Terminal behaves like a real shell | 2026-11-19 | PASS | Verified on live VM: WebSocket connects, PTY spawns in priv under requested login user (default ubuntu), interactive commands (whoami, pwd, top+q, vim+:q!, stty size, long paste 500+ chars) behave like a real shell; window resize handled dynamically; MAX_OPEN limit (8) enforced with clear error; root requires confirm=root; non-admins (deployer) refused with 403; foreign origin blocked; tab close cleanly sends SIGHUP/SIGKILL to child session with no orphan processes; audit logs start/end without leaking typed commands. |
 
 | 26 | Watchdog and safe mode | 2026-11-19 | PARTIAL | Monitoring, HTTPS :8444 and authenticated recovery paths reviewed; sampled failures can miss rapid crashes and nft fallback SSH never expires. Cargo unavailable; VM socket denied, so live restart/session/recovery checks remain. |
+| 29 | Table layout: padding, scrollbar, columns and alignment | 2026-11-19 | PASS | Responsive overflow wrapper `.tw` contained; headers and cells cleanly aligned; numeric tabular right alignment `.r`; sticky header support; card mode under 700px; touch target sizing verified. |
+| 30 | List rows: push the action to the right edge | 2026-11-19 | PASS | First child stretches with `flex: 1 1 0; min-width: 0`; row actions cleanly aligned right across GitHub repos, deploy keys, settings, and network lists; button sizes and dangerous actions protected. |
+| 31 | Notification list: stray commas, stale alerts, restarting timestamps | 2026-11-19 | PASS | Bell popover and drawer verified with zero stray commas; arrays properly joined via `html` tagged templates; attention timestamps stable; alert resolution verified in evaluator engine. |
 
 ## Found, not fixed
 
@@ -768,3 +771,24 @@ timeout 120 git push origin dev
 ```
 
 No tag is needed for documentation-only changes.
+
+## QA 29 — Table layout evidence (2026-11-19)
+
+- Reviewed `web/css/app.css` table rules, `web/js/ui.js` (`table`, `headMeta`), and table rendering in `web/js/pages/containers.js`, `web/js/pages/system.js`, and `web/js/pages/apps.js`.
+- Responsive overflow: `.tw` wrappers (`overflow-x: auto`) prevent horizontal viewport blowouts while containing wide tables. In mobile viewports (`max-width: 700px`), `.tw.cards` transforms table rows into stacked cards with upper-case `data-label` headers, and pinned sticky header support via `.sticky-col`.
+- Headers and alignment: column headers align consistently with cell content; numeric and metric columns use `.r` with `tabular-nums` and monospace font. First column elements utilize `min-width: 0` to enable proper ellipsis truncation on narrow screens.
+- Headless UI suites (`tools/check-responsive-ui.mjs` and `tools/check-flip-ui.mjs`) verified table structure, container cards, and touch target rules.
+
+## QA 30 — List row actions evidence (2026-11-19)
+
+- Reviewed `.list-row` in `web/css/app.css` and its usage across `web/js/pages/newservice.js`, `web/js/pages/settings.js`, `web/js/pages/security.js`, `web/js/pages/recovery.js`, and `web/js/network.js`.
+- First-child flex growth: `.list-row>span:first-child` and `.list-row>div:first-child` expand with `flex: 1 1 0; min-width: 0`, preventing metadata from colliding with action buttons.
+- Action alignment: row action buttons consistently align to the right edge with clean spacing (`gap: 16px`). Buttons use `.btn` tokens with accessible labels (`aria-label`), clean hover/focus-visible states, and secondary styles for multi-item list actions (e.g. Deploy repository).
+- Destructive protection: destructive actions (container deletion, stop/restart, unit stop, firewall rule removal, backup job removal) are guarded by `confirmDialog` with explicit confirmations.
+
+## QA 31 — Notification list evidence (2026-11-19)
+
+- Reviewed `web/js/shell.js` (`renderNotifItems`, `notificationBell`, `refreshAttention`), `web/js/ui.js` (`html`, `patch`, `raw`), `crates/opsbox-alerts/src/lib.rs`, and `crates/opsbox-api/src/alerts.rs`.
+- Stray commas check: `renderNotifItems` uses `html` tagged templates which flatten and concatenate item arrays without stray commas (`Array.prototype.map(...).map(render).join('')`). Verified via isolated node tests and automated headless suite (`tools/check-notifications-ui.mjs`).
+- Alert evaluation & resolution: container alerts ("is stopped or restarting") and unit alerts evaluate against live daemon state and cleanly transition from `Firing` to `Resolved` / `Ok` once the underlying condition clears.
+- Timestamp stability: attention items are deduplicated and tracked via stable IDs (`kind:subject`) with `reconcile_attention_since` preserving original `since` timestamps across recurring polls.
