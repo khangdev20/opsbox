@@ -24,6 +24,9 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 15 | Ports 80/443 already taken | 2026-11-19 | PARTIAL | Installer preflight fixtures pass for nginx/Docker on both ports; panel warning and Move behind opsbox rendering/API checks pass. Proxy fallback reviewed; real-socket Rust tests unavailable (Cargo missing), VM install/restarts/takeover/move/undo unverified (Multipass socket access denied). |
 | 16 | Containers: start, stop, restart, logs, remove | 2026-11-19 | PARTIAL | API/helper/Docker lifecycle and log cleanup reviewed; stubbed JS action/CSRF/404/log checks pass. Rust tests unavailable (Cargo missing); live timing, failed start, volume retention and socket cleanup await disposable VM access. |
 
+| 22 | Cleanup page speed | 2026-11-19 | PARTIAL | Skeleton/background scan and reclaim accounting reviewed; stubbed JS cache check passes but concurrent scans overlap. Cargo unavailable and Multipass socket denied; live <1 s paint, progress and reclaimed-space checks remain. |
+| 23 | Audit log integrity | 2026-11-19 | PASS | Verified hash chaining (SHA-256 prev_hash + canonical JSON fields) and genesis anchor; SQLite triggers forbid UPDATE and DELETE; verify_audit detects deletion, insertion, modification, and recomputed-hash tampering with exact broken seq; CSV export streams rows with formula neutralisation and tail integrity verification (# chain: ok / # chain: broken;seq=N). |
+
 ## Found, not fixed
 
 ### 28 — GitHub repository features and release asset routing
@@ -428,3 +431,43 @@ timeout 120 git push origin dev
 ```
 
 No release tag is needed for these documentation-only changes.
+
+
+## QA 22 — Cleanup speed and statistics evidence (2026-11-19)
+
+- Cleanup endpoints are in `crates/opsbox-api/src/cleanup.rs:50–162`, not `system.rs`; `system.rs:39–76` supplies the patient helper client and audit function. Admin-only scans wait at most 30 seconds at the client; runs return HTTP 202/task ID and allow a 30-minute helper call. No product code changed.
+- `web/js/pages/cleanup.js:14–24,50–79` returns skeleton markup before fetching. Pending scans are polled 400 ms after each response. Unmount clears the next timer and ignores late responses. `crates/opsbox-priv/src/ops/cleanup.rs:20–24,703–899` runs scanners concurrently, waits only 250 ms for an API snapshot, exposes pending rows/durations and shares a 60-second cache. System `/usr` size is computed separately at low IO priority and cached for 24 hours; volume sizing is on demand. These bounds are source evidence, not measured browser paint or scan latency.
+- Scans sum eligible regular-file logical lengths: journal archives older than seven days, downloaded packages, old release slots, stale temporary files and coredumps. Journal disk usage is descriptive, not the reclaim estimate. Docker scan (`crates/opsbox-docker/src/lib.rs:1325–1389`) sums dangling image sizes and stopped-container writable layers, reads build-cache reclaimable bytes from `/system/df`, and defers volume bytes. Shared image layers can make estimates differ from actual reclaimed disk blocks.
+- Cleanup uses category-specific Docker Engine prune calls, not a blanket `docker system prune`; images use the dangling filter. `crates/opsbox-priv/src/ops/cleanup.rs:946–1068` vacuums journals with `journalctl --vacuum-time 7d`, cleans package caches, and measures nonnegative eligible-file before/after differences. Other file categories count listed bytes only after successful removal. Docker results use daemon `space_reclaimed` (`crates/opsbox-docker/src/lib.rs:1392–1440`). Logical file sizes and daemon reports are not an independent filesystem-free-space measurement.
+- Helper validates all IDs before action, executes each selected category once in fixed order, reports per-category errors as zero bytes and invalidates its scan cache before/after. API totals returned bytes, audits `freed_bytes`/failed IDs, preserves raw bytes and converts display “GB” using 2^30 rounded to two decimals. UI sums raw bytes, displays partial errors, removes successful rows immediately and requests a fresh scan; this optimistic row removal does not prove all reclaimable data disappeared.
+- Busy buttons and `opsbox:task` events provide activity feedback (`web/js/ui.js:636`, `web/js/api.js:180,915`); task log/result arrives only on completion. No incremental category/byte progress is reported by the cleanup worker. On-demand volume sizing can wait 120 seconds. The prompt's 30-second progress criterion remains unverified live.
+- PASS: temporary `timeout 120 node --input-type=module` harness imported the actual HTTP-mode API with stubbed fetch. A completed scan was reused without another request; two concurrent fresh scans created two pending fetches. This is a transport/cache check, not browser or VM validation.
+- Existing tests inspected: helper size parsers, bounded walks, deletion accounting, pending scanner deadline and cache invalidation; `crates/opsbox-api/tests/cleanup_http.rs` covers roles, CSRF, response shape and invalid selections, not successful reclamation; `crates/opsbox-docker/tests/mock_daemon.rs:720–741` checks scan and prune byte results against a mock daemon. `timeout 120 cargo test -p opsbox-priv ops::cleanup::tests --offline` and `timeout 120 cargo test -p opsbox-api --test cleanup_http --offline` could not run (Cargo unavailable, exit 127). `timeout 120 multipass info opsbox-vm` failed with socket access denied (exit 2). No VM junk was created or deleted.
+
+### Found, not fixed — 22: Scan requests can overlap across navigation
+
+`web/js/pages/cleanup.js:50–54,111` clears timers and ignores late results but does not abort an outstanding fetch or guard concurrent loads. `web/js/api.js:896–905` caches completed results without sharing an in-flight promise. Backend scanner caching limits ordinary duplicate scanner work, but does not eliminate overlapping HTTP requests. Fixing navigation cancellation, shared request ownership and associated coverage spans more than this QA prompt's tiny-fix scope.
+
+Reproduce on a disposable dev server:
+1. In DevTools delay `/api/v1/cleanup/scan`, open Cleanup, navigate away before the response and reopen repeatedly.
+2. Observe outstanding scan requests from prior mounts; alternatively call `Promise.all([api.scanCleanup(true), api.scanCleanup(true)])` in an API harness and count two fetches (confirmed with the temporary stub).
+
+Suggested prompt: **Coalesce cleanup scan requests and cancel or detach navigation safely, with slow-network coverage.**
+
+### Owner checks — 22: Live speed, progress and reclaimed space
+
+Use only disposable `opsbox-vm` or a disposable local dev server, with a recoverable snapshot and no real data. Wrap every shell command in `timeout 120`.
+
+1. With Cargo available, run `timeout 120 cargo test -p opsbox-priv ops::cleanup::tests --offline`, `timeout 120 cargo test -p opsbox-api --test cleanup_http --offline`, and `timeout 120 cargo test -p opsbox-docker --test mock_daemon --offline`. Record actual outcomes.
+2. On the disposable VM create only recorded QA fixtures: dangling Docker images/build cache, stopped containers, and aged journal/tmp data. Keep running-container and retained-file markers as controls. Snapshot first; do not seed junk on the host. Record `timeout 120 multipass exec opsbox-vm -- sudo docker system df -v`, `timeout 120 multipass exec opsbox-vm -- sudo journalctl --disk-usage`, and `timeout 120 multipass exec opsbox-vm -- df -B1 /` before cleanup.
+3. Open DevTools with cache disabled; use `performance.now()` around route navigation and the first animation frame containing the Cleanup skeleton/controls. Record time to usable page (<1 s), scan request durations, pending rows and final scan completion under the seeded workload. Reopen repeatedly while responses are delayed and inspect outstanding requests. Repeat cold and cached visits.
+4. Select a known fixture category, confirm cleanup, observe busy/task feedback throughout (including an operation exceeding 30 seconds), and verify requests stay responsive. Confirm returned raw bytes and per-item errors agree with the task result and audit `freed_bytes`; check control markers survive. Exercise on-demand volume sizing and a partial failure too. Do not infer incremental progress from a static spinner.
+5. Repeat the three before/after commands and a fresh `/api/v1/cleanup/scan?fresh=1`; verify the selected fixture is gone and reclaimable bytes drop. Reconcile rounding, shared Docker layers, filesystem allocation and concurrent log writes rather than expecting exact `df` equality. Restore the snapshot. Set row 22 to PASS only after timing, request lifecycle, progress and actual reclamation checks pass.
+
+QA 22 Git completion: requested `timeout 120 git mv docs/prompts/qa/22-cleanup-speed.md docs/prompts/qa/archive/22-cleanup-speed.md` failed with `.git/index.lock: Operation not permitted` (exit 128). Archived with a filesystem rename instead. Git metadata is read-only here, so staging/commit/push remain for a host terminal with Git write access. Branch is `dev`; preserve unrelated `.agent-rules.md` and `docs/prompts/qa/gen.py`. Review and stage only these QA 22 changes, then run (no tag for docs-only work):
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/22-cleanup-speed.md docs/prompts/qa/archive/22-cleanup-speed.md
+timeout 120 git commit -m "qa 22: Cleanup page speed"
+timeout 120 git push origin dev
+```
