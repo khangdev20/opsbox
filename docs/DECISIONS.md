@@ -561,3 +561,7 @@ Import restores the exact sealed YAML (and accepts older plaintext exports); abs
 ## Fix 06 — Validate imports and report secret restoration
 Validate preview/apply with the checked-in export schema using its existing JSON Schema subset, without a new dependency.
 Report each secret restoration in task logs; any missing/failed secret fails the task with restored/total/failed counts, and failed sealing never creates a credentialless destination.
+
+## Fix 07 — Verify database dumps before replay
+Stage stdin database dumps in an anonymous 0600 cache file; require a complete nonempty read and successful restic authentication/exit before any database replay.
+Replay PostgreSQL with --single-transaction; MySQL/MariaDB/Mongo engine-error atomicity needs temporary-database restore, validation and a controlled swap (QA 18).

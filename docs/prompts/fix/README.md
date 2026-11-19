@@ -23,7 +23,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 04 | Pending firewall rollback can be lost ([04-firewall-rollback-state.md](archive/04-firewall-rollback-state.md)) | Fixed in fix 04 |
 | 05 | Export leaks inline Compose credentials ([05-export-compose-secrets.md](archive/05-export-compose-secrets.md)) | Fixed in fix 05 |
 | 06 | Import accepts invalid documents and can hide key failures ([06-import-schema-and-key-errors.md](archive/06-import-schema-and-key-errors.md)) | Fixed in fix 06 |
-| 07 | Database restore can write before a late corruption is found (`07-restore-before-corruption.md`) | |
+| 07 | Database restore can write before a late corruption is found ([07-restore-before-corruption.md](archive/07-restore-before-corruption.md)) | Fixed in fix 07 |
 | 08 | Rapid service crashes can evade safe mode (`08-watchdog-rapid-crashes.md`) | |
 | 09 | Fallback emergency SSH rule never expires (`09-nft-emergency-ssh-expiry.md`) | |
 | 10 | Requests never time out and a failed System tab stays on the skeleton (`10-api-timeout-and-mount-errors.md`) | |

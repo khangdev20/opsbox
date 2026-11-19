@@ -46,7 +46,7 @@ use opsbox_proto::{
     ResticSnapshotInfo, Secret, valid_backup_id, valid_docker_ref, valid_service_name,
 };
 use opsbox_store::ReadOnlyStore;
-use tokio::io::AsyncReadExt as _;
+use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use tokio::process::Command;
 use zeroize::Zeroizing;
 
@@ -2249,6 +2249,98 @@ async fn wait_for_db_sanity(
     Err(err(PrivErrorCode::Internal, last_detail))
 }
 
+// Keep dump completion and database replay in one place so their ordering is testable.
+async fn replay_database_dump<T, F, Fut>(
+    mut command: Command,
+    cache_dir: &Path,
+    scrub_refs: &[&str],
+    replay: F,
+) -> Result<T, PrivError>
+where
+    F: FnOnce(tokio::fs::File) -> Fut,
+    Fut: std::future::Future<Output = Result<T, PrivError>>,
+{
+    ensure_private_dir(cache_dir)?;
+    // Anonymous 0600 file: bounded memory, private plaintext, automatic cleanup on all paths.
+    let file = tempfile::tempfile_in(cache_dir).map_err(|e| {
+        err(
+            PrivErrorCode::Internal,
+            format!("Could not stage database dump: {e}"),
+        )
+    })?;
+    let mut staged = tokio::fs::File::from_std(file);
+    let mut child = command.spawn().map_err(|e| {
+        err(
+            PrivErrorCode::Internal,
+            format!("Failed to start restic dump: {e}"),
+        )
+    })?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| err(PrivErrorCode::Internal, "Missing restic dump stdout."))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| err(PrivErrorCode::Internal, "Missing restic dump stderr."))?;
+    // Restic authenticates every required blob as it is read. Do not invoke the
+    // database consumer until the complete payload AND the final exit are good.
+    let (copied, stderr, status) = tokio::time::timeout(RESTIC_RUN_TIMEOUT, async {
+        let copy = async {
+            let result = tokio::io::copy(&mut stdout, &mut staged).await;
+            drop(stdout);
+            result
+        };
+        tokio::join!(copy, read_capped(stderr), child.wait())
+    })
+    .await
+    .map_err(|_| {
+        err(
+            PrivErrorCode::Internal,
+            "restic dump timed out during database restore.",
+        )
+    })?;
+    let copied = copied.map_err(|e| {
+        err(
+            PrivErrorCode::Internal,
+            format!("Failed staging database dump: {e}"),
+        )
+    })?;
+    let status = status.map_err(|e| {
+        err(
+            PrivErrorCode::Internal,
+            format!("Failed waiting for restic dump: {e}"),
+        )
+    })?;
+    if !status.success() {
+        return Err(err(
+            PrivErrorCode::Internal,
+            restic_failure_msg(
+                "restic dump",
+                &ResticCmdOutput {
+                    code: status.code(),
+                    stdout: String::new(),
+                    stderr,
+                },
+                scrub_refs,
+            ),
+        ));
+    }
+    if copied == 0 {
+        return Err(err(
+            PrivErrorCode::Internal,
+            "restic dump produced an empty database payload.",
+        ));
+    }
+    staged.rewind().await.map_err(|e| {
+        err(
+            PrivErrorCode::Internal,
+            format!("Failed rewinding database dump: {e}"),
+        )
+    })?;
+    replay(staged).await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn restore_database_into_container(
     env: &Env,
@@ -2282,7 +2374,14 @@ async fn restore_database_into_container(
     let envs = backend.extra_env_pairs();
 
     match restore_spec.method {
-        DatabaseRestoreMethod::StdinExec { cmd, env: exec_env } => {
+        DatabaseRestoreMethod::StdinExec {
+            mut cmd,
+            env: exec_env,
+        } => {
+            if template == BackupDbKind::Postgres {
+                // pg_restore rolls back the entire replay if any SQL command fails.
+                cmd.push("--single-transaction".into());
+            }
             let _ = wait_for_db_sanity(
                 env,
                 container_id,
@@ -2293,26 +2392,10 @@ async fn restore_database_into_container(
             .await?;
 
             log.push(format!(
-                "Streaming snapshot {restic_id} ({clean_stdin}) into {service_name} ({container_id})."
+                "Verifying snapshot {restic_id} ({clean_stdin}) before replay into {service_name} ({container_id})."
             ));
 
-            let mut rcmd =
-                clean_restic_command(restic_bin, &env.backup_cache_dir, &dmp_args, &envs);
-            let mut rchild = rcmd.spawn().map_err(|e| {
-                err(
-                    PrivErrorCode::Internal,
-                    format!("Failed to start restic dump: {e}"),
-                )
-            })?;
-            let r_stdout = rchild
-                .stdout
-                .take()
-                .ok_or_else(|| err(PrivErrorCode::Internal, "Missing restic dump stdout."))?;
-            let r_stderr = rchild
-                .stderr
-                .take()
-                .ok_or_else(|| err(PrivErrorCode::Internal, "Missing restic dump stderr."))?;
-
+            let rcmd = clean_restic_command(restic_bin, &env.backup_cache_dir, &dmp_args, &envs);
             let exec_req = DockerExecRequest {
                 id: container_id.to_owned(),
                 cmd,
@@ -2321,40 +2404,18 @@ async fn restore_database_into_container(
                 user: None,
                 working_dir: None,
             };
-            let exec_fut = env
-                .docker
-                .exec_from_reader(exec_req, r_stdout, RESTIC_RUN_TIMEOUT);
-            let restic_fut = tokio::time::timeout(RESTIC_RUN_TIMEOUT, async {
-                tokio::join!(read_capped(r_stderr), rchild.wait())
-            });
-            let (exec_res, restic_res) = tokio::join!(exec_fut, restic_fut);
-            let (r_err_txt, r_status_res) = restic_res.map_err(|_| {
-                err(
-                    PrivErrorCode::Internal,
-                    "restic dump timed out during database restore.",
-                )
-            })?;
-            let r_status = r_status_res.map_err(|e| {
-                err(
-                    PrivErrorCode::Internal,
-                    format!("Failed waiting for restic dump: {e}"),
-                )
-            })?;
-            if !r_status.success() {
-                return Err(err(
-                    PrivErrorCode::Internal,
-                    restic_failure_msg(
-                        "restic dump",
-                        &ResticCmdOutput {
-                            code: r_status.code(),
-                            stdout: String::new(),
-                            stderr: scrub_secrets(&r_err_txt, &scrub_refs),
-                        },
-                        &scrub_refs,
-                    ),
-                ));
-            }
-            let exec_out = exec_res.map_err(|e| map_docker_err(e, env.docker.socket_path()))?;
+            let exec_out = replay_database_dump(
+                rcmd,
+                &env.backup_cache_dir,
+                &scrub_refs,
+                |source| async move {
+                    env.docker
+                        .exec_from_reader(exec_req, source, RESTIC_RUN_TIMEOUT)
+                        .await
+                        .map_err(|e| map_docker_err(e, env.docker.socket_path()))
+                },
+            )
+            .await?;
             if exec_out.exit_code != 0 {
                 let err_clean = scrub_secrets(exec_out.stderr.trim(), &scrub_refs);
                 return Err(err(
@@ -3614,6 +3675,83 @@ esac
             network_proc_root: "/proc".into(),
             network_systemctl: None,
         }
+    }
+
+    #[tokio::test]
+    async fn late_dump_failure_leaves_live_rows_unchanged() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::open(&tmp.path().join("live.db")).unwrap();
+        let before = serde_json::json!([[1, "live-one"], [2, "live-two"]]);
+        store.set_setting("live_rows", &before).unwrap();
+        let restic = tmp.path().join("restic");
+        fs::write(
+            &restic,
+            r#"#!/bin/sh
+printf '%s\n' '[[1,"backup-one"],[2,"backup-two"]]'
+echo 'corrupt later pack' >&2
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&restic, fs::Permissions::from_mode(0o755)).unwrap();
+        let cache = tmp.path().join("cache");
+        ensure_private_dir(&cache).unwrap();
+        let cmd = clean_restic_command(&restic, &cache, &[], &[]);
+        let live = &store;
+        let result = replay_database_dump(cmd, &cache, &[], |mut source| async move {
+            // A real SQLite row models a restore consumer that commits valid input.
+            let mut payload = String::new();
+            source.read_to_string(&mut payload).await.unwrap();
+            let rows: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            live.set_setting("live_rows", &rows).unwrap();
+            Ok(())
+        })
+        .await;
+        assert!(result.unwrap_err().message.contains("corrupt later pack"));
+        assert_eq!(store.get_setting("live_rows").unwrap(), Some(before));
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn verified_dump_is_rewound_before_replay() {
+        let tmp = TempDir::new().unwrap();
+        let cache = tmp.path().join("cache");
+        let args = vec![
+            "-c".into(),
+            "printf 'first-part\\n'; printf 'last-part\\n'".into(),
+        ];
+        let command = clean_restic_command(Path::new("/bin/sh"), &cache, &args, &[]);
+        let payload = replay_database_dump(command, &cache, &[], |mut staged| async move {
+            assert_eq!(
+                staged.metadata().await.unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let mut payload = String::new();
+            staged.read_to_string(&mut payload).await.unwrap();
+            Ok(payload)
+        })
+        .await
+        .unwrap();
+        assert_eq!(payload, "first-part\nlast-part\n");
+        assert_eq!(fs::read_dir(&cache).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn empty_dump_never_starts_replay() {
+        let tmp = TempDir::new().unwrap();
+        let args = vec!["-c".into(), ":".into()];
+        let command = clean_restic_command(Path::new("/bin/sh"), tmp.path(), &args, &[]);
+        let result = replay_database_dump::<(), _, _>(command, tmp.path(), &[], |_| async {
+            panic!("An empty dump must not start database replay");
+        })
+        .await;
+        assert!(
+            result
+                .unwrap_err()
+                .message
+                .contains("empty database payload")
+        );
+        assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0);
     }
 
     #[test]
