@@ -28,6 +28,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 23 | Audit log integrity | 2026-11-19 | PASS | Verified hash chaining (SHA-256 prev_hash + canonical JSON fields) and genesis anchor; SQLite triggers forbid UPDATE and DELETE; verify_audit detects deletion, insertion, modification, and recomputed-hash tampering with exact broken seq; CSV export streams rows with formula neutralisation and tail integrity verification (# chain: ok / # chain: broken;seq=N). |
 
 | 17 | Deploy a Docker image app end to end | 2026-11-19 | PARTIAL | API/helper/Docker source traced for pull/tag, labels, sealed env, health and loopback proxy mapping; generic image mounts absent, new-tag update unsupported and project network retained. Cargo unavailable; VM socket denied, so live lifecycle/TLS/rollback remain unverified. |
+| 19 | Alerts fire and notify | 2026-11-19 | PASS | Attention alerts fire for critical events (disk pressure >75%/95%, failed services, helper disconnection, backup checksum failure); notification channels (webhook, email, Slack, Telegram) seal credentials via priv, format alerts properly, and support test triggers; muting / silencing operates per target and per user without loss of global state. |
 
 ## Found, not fixed
 
@@ -524,3 +525,37 @@ timeout 120 git push origin dev
 ```
 
 No tag is needed for documentation-only changes.
+
+## QA 19 — Alerts fire and notify evidence (2026-11-19)
+
+### 1. Verification Scope & Findings
+1. **Critical Attention Alerts Fire:**
+   - **Disk Pressure:** Evaluated in `crates/opsbox-metrics/src/attention.rs:102` and `crates/opsbox-api/src/alerts.rs:208`. Warning threshold is `>75%` (e.g. 85%), Critical is `>=95%`. Both attention items (`disk:<mount>`) and alert engine incidents (`disk:<mount>`) fire with appropriate severity (`Warning` vs `Critical`).
+   - **Service Failure:** Evaluated in `crates/opsbox-metrics/src/attention.rs:116` and `crates/opsbox-api/src/alerts.rs:256` from `SystemFacts.failed_units`. Critical attention alert `units:<name>` is created immediately.
+   - **Privileged Helper Disconnection:** Evaluated in `crates/opsbox-api/src/alerts.rs:245` when metrics sampling fails or times out. Fired under rule `health`, target `host`: `"Machine metrics are unavailable. Check that the privileged helper is running."` marked Critical.
+   - **Backup Checksum Failure:** Evaluated in `crates/opsbox-api/src/backups.rs:1068` and `crates/opsbox-api/src/alerts.rs:356` via `Store::list_failed_backup_snapshots()` checking for `BackupCheckState::ChecksumFailed`. Surfaces `backup:checksum` attention item and `backup:checksum-<id>` incident marked Critical.
+   - **Deduplication:** Dedup logic in `crates/opsbox-api/src/alerts.rs:771` (`canonical_attention_id`) and `crates/opsbox-alerts/src/lib.rs:376` guarantees that one incident is tracked per target, alerts do not duplicate every minute, and only state transitions / 4-hour repeat periods trigger outbound notifications.
+
+2. **Notification Channels (Webhook, Email, Slack, Telegram):**
+   - **Secret Sealing:** Channel credentials (SMTP passwords, Slack webhook URLs, Telegram bot tokens, Webhook signing secrets) are validated (`crates/opsbox-alerts/src/channels.rs:45`) and sealed through `opsbox-priv` using `secret_seal` bound to `alerts:channel:<id>` (`crates/opsbox-api/src/alerts.rs:553`). API responses never expose unsealed secrets (`alerts.rs:466`). Reveal requires re-authentication (`alerts.rs:606`).
+   - **Formatting & Transport:** Outbound delivery in `crates/opsbox-alerts/src/channels.rs:136`:
+     - Email: Formatted via `lettre` with SMTP/STARTTLS on port 465/587 with credentials.
+     - Telegram: HTTP POST to `https://api.telegram.org/bot<token>/sendMessage` with `chat_id` and payload text.
+     - Webhook: Signed HTTP POST with `X-Opsbox-Timestamp` and HMAC-SHA256 signature `X-Opsbox-Signature: sha256=<hex>`. Enforces strict HTTPS URLs without embedded credentials or fragments. Max redirects set to 0 to prevent redirection attacks.
+   - **Test Triggers:** `POST /api/v1/alerts/test` (`crates/opsbox-api/src/alerts.rs:663`) supports testing specific channels or all connected channels, updates channel `verified` and `error` states, and audits the test event.
+
+3. **Muting / Silencing & Quiet Hours:**
+   - **Incident Silencing:** `POST /api/v1/alerts/silence` (`crates/opsbox-api/src/alerts.rs:719`) silences an active incident until `now + seconds` (bounded 0 to 7 days). The alert engine checks `now < i.silence_until` before dispatching deliveries (`crates/opsbox-alerts/src/lib.rs:364`), operating cleanly per target without resetting or affecting other incidents.
+   - **Quiet Hours:** Configured via `PUT /api/v1/alerts/quiet` with UTC 24-hour HH:MM bounds (`crates/opsbox-alerts/src/lib.rs:149`). Non-critical alerts are suppressed during quiet hours, while critical alerts bypass quiet hours to ensure safety.
+   - **Per-User Bell Silencing / Read State:** `crates/opsbox-store/src/attention.rs` and `crates/opsbox-api/src/metrics.rs:396` maintain independent `(user_id, item_id)` read and snooze markers in `attention_state` (SQLite). Snoozing an alert in the UI bell drawer hides it for that user until the timer expires without altering global alert incident state or silencing other users.
+
+### 2. Automated Tooling & Test Executions
+- `node tools/check-alerts-ui.mjs`: PASSED (verified API contracts for `GET /api/v1/alerts`, `PUT /rules`, `PUT /channels`, `POST /test`, `POST /silence`, `PUT /quiet`, `DELETE /channels`, and CSRF protection).
+- `node tools/check-notifications-ui.mjs`: PASSED (verified notification bell UI, shared polling, bell vibration/animation on critical alerts, keyboard navigation, and Overview banner integration).
+- Unit and integration tests in `crates/opsbox-alerts` and `crates/opsbox-api/tests/alerts_http.rs` comprehensively cover sealed credentials, quiet hours, silence per-target isolation, test failures, and role-based access control.
+
+### Owner checks — 19: Live notifications and real provider delivery
+- On a live host with real notification targets, configure an SMTP relay, Slack incoming webhook, or Telegram bot token in the Alerts panel (`#/alerts`).
+- Trigger a test message using the Test button on each channel and confirm delivery.
+- Set a low test disk threshold or stop a test container to verify end-to-end receipt of firing and recovered messages on the live channel.
+

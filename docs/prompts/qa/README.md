@@ -36,7 +36,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 16 | Containers: start, stop, restart, logs, remove (16-containers-actions.md) | x |
 | 17 | Deploy a Docker image app end to end (17-deploy-image-app.md) | x |
 | 18 | Local backup and restore round trip (`18-backup-and-restore-local.md`) | |
-| 19 | Alerts fire and notify (`19-alerts-fire.md`) | |
+| 19 | Alerts fire and notify (`19-alerts-fire.md`) | x |
 | 20 | Terminal behaves like a real shell (`20-terminal-session.md`) | |
 | 21 | Files: traversal, symlinks and big files (`21-files-safety.md`) | x |
 | 22 | Cleanup page speed (22-cleanup-speed.md) | x |
