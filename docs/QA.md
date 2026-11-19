@@ -5,6 +5,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | # | Check | Date | Result | Notes |
 |---|---|---|---|---|
+| 13 | Empty and error states on every page | 2026-11-19 | PARTIAL | Source review of all nine pages: core Apps/Containers/Backups/Alerts empty states exist; Files and System have empty-state gaps; request failures lack retries and System can retain its skeleton. VM and slow-3G checks unavailable; see QA 13 details below. |
 | 12 | Keyboard use and visible focus | 2026-11-19 | PASS | Visible focus indicators (:focus-visible) enforced across dark and light themes; Escape closes dialogs, drawer, and account/notification menus; focus trap and return-to-opener implemented; form fields have labels and errors use role="alert". |
 | 11 | Phone widths: no sideways scroll, targets big enough | 2026-11-19 | PARTIAL | Responsive source checks pass; 360/390px live layout, drawer, sheets and keyboard checks blocked by VM/local-server permissions; source shows undersized touch controls. |
 | 10 | Nothing in http mode still uses sample data | 2026-11-19 | FAIL | HTTP request failures reject without mock fallback, but shell hostname, configure repository default, and unguarded demo exports remain; live VM page checks blocked by Multipass socket access. |
@@ -273,3 +274,56 @@ timeout 120 git push origin dev
 ```
 
 No release tag is needed for this docs-only change.
+
+## Found, not fixed — 13: Empty and error states on every page
+
+Source review only; these findings are not browser observations. No application code changed: addressing the gaps spans more than the prompt's one/two-file, roughly 30-line fix limit.
+
+| Page | Empty-state evidence | Request-failure evidence |
+|---|---|---|
+| Overview | `web/js/pages/overview.js:79–98`: no containers and no activity have messages plus View all/Audit log links. | `:102–110`: required requests propagate to the router; optional failures become null, potentially showing missing containers/activity as empty data. Cleanup failure has a message but no retry. |
+| Apps | `web/js/pages/apps.js:101`: no services guides users to Deploy your first service. | `:26`: initial failure propagates to router. `:315–324,341`: failed domain loading calls paint in finally, which starts another request while domains are absent; no persistent error/retry state. |
+| Containers | `web/js/pages/containers.js:125–145`: install/start Docker guidance and zero-container Deploy a service action. Images/volumes/networks also have empty messages (`:176,186,194`). | `:77–79`: initial failures propagate to router; Docker-not-running has Start Docker and Open System services controls. |
+| Backups | `web/js/pages/backups.js:66`: zero snapshots instructs Back up now; header supplies that action for admins (`:104`). Empty schedules/destinations use bare tables with Add schedule/Add destination controls (`:36,73`). The zero-snapshot instruction also appears for non-admins who cannot use that action. | `:14`: initial failure propagates to router. |
+| Alerts | `web/js/pages/alerts.js:28,32`: no active alerts/no history explained; channels offer Connect and Send test, with expectations at `:38`. | `:22`: initial failure propagates to router; polling failures retain old content and report connection status through shared poll handling. |
+| Files | `web/js/pages/files.js:29–33`: zero entries produces an empty table at root, or only ../ elsewhere. Upload and New folder controls exist (`:57`), but no explicit empty-folder message. | `:26–27`: initial failure propagates to router; editor-load failure displays escaped error text (`:52`) without a retry. |
+| Terminal | `web/js/pages/terminal.js:119–126`: administrator restriction and no ordinary account guidance; New session is available after users load. | `:120,144`: user-list failure shows the error callout, then mount returns without binding a retry. Session connection failures can be retried with New session. |
+| System | `web/js/pages/system.js:42`: no updates explained; journal says No entries (`:52`). Zero services/jobs/firewall rules use bare tables (`:44,53,55`); jobs/rules retain Add controls. | `:69–75,91–93`: pane failure rejects async mount before replacing skeleton/binding controls. Router does not await mount (`web/js/main.js:61`), so its catch cannot render this error; global rejection only toasts. Capacity failure has helper guidance (`web/js/capacity.js:263`) without retry. |
+| Settings | Configuration page does not require apps/containers/backups/alerts/files; relevant absent integration/configuration controls are rendered independently of those collections. | `web/js/pages/settings.js:33`: main failure propagates to router. Disk errors have text (`:231`) but no retry; proxy-network errors are passed to networkCard (`:34,242`). |
+
+### Findings and reproduction
+
+1. **Missing recovery controls across pages** — `web/js/main.js:52,63`, `web/js/pages/terminal.js:120,144`, `web/js/pages/settings.js:231`.
+   - On a disposable local server, reject a page's initial data request, Terminal users request, or Settings disk request; open/reload the affected page.
+   - Observe error markup has no Retry control; module-import failure uses a raw exception in a pre block. Expected: readable context and an explicit retry that restores the page.
+   - Suggested prompt: **Add consistent page and section error states with retry actions**.
+2. **System can retain its loading skeleton after failure** — `web/js/pages/system.js:69–75,91–96`; `web/js/main.js:61`.
+   - Reject getUpdates on initial System load, or another pane request when selecting its tab.
+   - Initial mount rejects before replacing the skeleton and binding controls; a later tab failure can retain the previous pane. Expected: inline error and Retry. Confirm behavior in the browser.
+   - Suggested prompt: **Handle System pane loading failures and bind recovery controls**.
+3. **Empty collection guidance is incomplete** — `web/js/pages/files.js:29–33`, `web/js/pages/system.js:44,53,55`, `web/js/pages/backups.js:66`.
+   - Open an allowed empty folder; return zero services/jobs/firewall rules in disposable fixtures; view zero snapshots as a non-admin.
+   - Files/System render bare tables (or only the parent-folder row); Backups instructs non-admins to use a hidden action. Expected: explain absence and offer a role-appropriate next step.
+   - Suggested prompt: **Add explicit, role-aware empty states for Files, System and Backups**.
+4. **Apps domain request failure can repeatedly reload** — `web/js/pages/apps.js:315–324,341`.
+   - Select an app's Domains tab while making getDomains fail consistently.
+   - Its finally block repaints, and paint starts another load while doms is absent; Loading can persist with repeated errors. Expected: stop automatic retries and offer a deliberate Retry control. Confirm request cadence in the browser.
+   - Suggested prompt: **Stop domain-load retry loops and show a recoverable error**.
+
+## Owner checks — 13: Disposable VM and browser verification
+
+`timeout 120 multipass info opsbox-vm` failed with `info failed: multipass socket access denied`. No VM service was stopped and no live fresh-install, helper-down, or slow-3G layout checks were performed. Static skeleton/refreshing markup does not establish layout stability.
+
+From a host with Multipass access, use only `opsbox-vm` or a disposable local dev server:
+
+1. Restore a fresh-install snapshot with no deployed apps/databases/backups. Open Overview, Apps, Containers, Backups, Alerts, Files (an allowed empty folder), Terminal, every System tab, and Settings. Record empty messages and usable next actions; verify non-admin guidance too.
+2. Run `timeout 120 multipass exec opsbox-vm -- sudo systemctl stop opsbox-priv`. Reload each page, checking a readable helper banner/error, no raw JSON/undefined, no retained skeleton, and functioning recovery controls. Restore with `timeout 120 multipass exec opsbox-vm -- sudo systemctl start opsbox-priv`, including if verification fails.
+3. In browser DevTools, disable cache and select Slow 3G; visit each page/tab and check visible loading states and layout stability. Then block each page's data request to verify error/retry behavior, unblock it, and confirm recovery. Record browser observations separately from this source audit.
+
+The requested `timeout 120 git mv docs/prompts/qa/13-empty-and-error-states.md docs/prompts/qa/archive/13-empty-and-error-states.md` failed: `.git/index.lock: Operation not permitted`. The prompt was archived with a filesystem move instead. Git staging/commit/push require a host terminal with Git write access; remain on `dev`, stage only QA 13 paths below, and create no tag for this docs-only change:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/13-empty-and-error-states.md docs/prompts/qa/archive/13-empty-and-error-states.md
+timeout 120 git commit -m "qa 13: Empty and error states on every page"
+timeout 120 git push origin dev
+```
