@@ -34,6 +34,8 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | 24 | Export, uninstall, reinstall, import | 2026-11-19 | PARTIAL | Export sealing, import and keep/purge paths reviewed; raw Compose YAML can expose secrets, schema validation is incomplete, and sealing failures can report success. Cargo unavailable; VM socket denied, so live reinstall/data/login checks remain. |
 
+| 25 | Firewall cannot lock the admin out | 2026-11-19 | PARTIAL | SSH/CIDR guard and nft loopback acceptance exist; panel port is unprotected and rollback can discard failed recovery. Cargo unavailable; VM socket denied. See QA 25 findings and owner checks. |
+
 ## Found, not fixed
 
 ### 28 — GitHub repository features and release asset routing
@@ -660,6 +662,54 @@ QA 24 Git completion: requested `timeout 120 git mv docs/prompts/qa/24-export-im
 ```sh
 timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/24-export-import-uninstall.md docs/prompts/qa/archive/24-export-import-uninstall.md
 timeout 120 git commit -m "qa 24: Export, uninstall, reinstall, import"
+timeout 120 git push origin dev
+```
+
+No tag is needed for documentation-only changes.
+
+## QA 25 — Firewall lockout evidence (2026-11-19)
+
+- Reviewed `crates/opsbox-priv/src/ops/firewall.rs` and the actual API handlers in `crates/opsbox-api/src/system.rs:532` (the requested API `firewall.rs` does not exist). Branch is `dev`; no `.codegraph/` index exists. No product code changed: protecting the configured listener across API/helper protocol and making rollback reliable exceeds the tiny QA fix allowance.
+- Validation (`system.rs:571`, helper `firewall.rs:98`) rejects invalid ports, protocols, source IP/CIDR and notes. Rules are allow-only; blocking is accomplished by removing an allowance or enabling the default-drop nftables backend. Syntactic validation does not strictly reject lockout-producing changes.
+- `removal_is_risky` (`firewall.rs:140`) checks whether a TCP/any rule covers the caller and whether another allowance still covers it; unknown callers are treated cautiously, but only for protected ports. `remove` supplies only `ssh_ports()` (`:716`). API `caller_ip` (`system.rs:70`) forwards a non-loopback/non-unspecified client IP, treating tunnels/local proxies as unknown; it does not discover the actual SSH session peer. There is no general always-allow rule for the active admin remote IP.
+- nftables rendering (`firewall.rs:169`) accepts established/related connections, loopback, configured SSH ports, ICMP and WireGuard UDP 51820 before user allowances. This preserves loopback and built-in SSH within OpsBox's table, not arbitrary preexisting firewall tables. The panel listener (default 8443, `opsbox-api/src/lib.rs:166`) has no built-in allowance. UFW/firewalld paths modify existing backends rather than installing equivalent permanent loopback/SSH rules.
+- Risky SSH removal and first nft activation require a boolean confirmation and schedule a 60-second undo (`firewall.rs:672,718,729`), rather than strictly refusing them. `web/js/api.js:210` retries confirmation-required responses and offers the revert hook. Helper housekeeping runs every ten seconds (`opsbox-priv/src/server.rs:122`). Emergency SSH starts sshd, opens one source IP on the first configured SSH port for an hour (`firewall.rs:773`), and the API records `system.ssh.emergency` with IP/expiry (`system.rs:705`). These are source findings, not live verification of reachability, expiry or audit persistence.
+- Existing helper tests cover syntax, IPv4/IPv6/CIDR matching, unknown callers, alternate SSH ports and nft loopback/SSH rendering (`firewall.rs:989–1228`); API system tests cover authorization and malformed rule requests. NOT RUN: `timeout 120 cargo test -p opsbox-priv ops::firewall::tests` and `timeout 120 cargo test -p opsbox-api --test system_http firewall` exited 127 (Cargo unavailable). The API filter may omit generally named system tests; run the full system test target for owner validation. `timeout 120 multipass info opsbox-vm` exited 2 (socket access denied). No host firewall was changed.
+
+### Found, not fixed — 25: Panel port removal bypasses the lockout guard
+
+`crates/opsbox-priv/src/ops/firewall.rs:716` protects only configured SSH ports; the API does not send its configured panel port (`crates/opsbox-api/src/system.rs:635`, protocol `crates/opsbox-proto/src/privilege.rs:188`). Consequently removing the sole TCP 8443 allowance, with SSH on a different port, is classified safe and produces no undo timer. nft activation also need not include a panel allowance (`firewall.rs:678`, renderer `:169`). Established-connection acceptance may temporarily conceal lost access to new connections. This fails the requested panel/current-admin reachability guarantee.
+
+Reproduce only on a disposable VM with console access:
+1. With SSH on 22 and panel on 8443, establish a default-drop firewall with a sole panel allowance; record its rule ID and connect as Admin.
+2. Delete that allowance through `/api/v1/firewall/rules/{id}` without `confirm`; inspect the absent `revertAt`, then try a fresh panel connection and wait beyond 60 seconds. Source predicts no panel recovery; not executed here.
+
+Suggested prompt: **Protect the configured panel listener and admin reconnect path across all firewall backends.**
+
+### Found, not fixed — 25: Rollback state can be lost
+
+`crates/opsbox-priv/src/ops/firewall.rs:678,728` mutates the backend before persisting the pending undo (`:692,754`), so a save failure can leave an applied risky change without durable recovery. `janitor_tick` logs undo errors but clears `saved.pending` regardless of backend detection/undo success (`:864–892`). Later risky changes also overwrite the single pending undo (`:681,748`), potentially losing an earlier recovery point. These source-observed failure paths prevent a guaranteed auto-revert.
+
+Reproduce in a disposable failure-injection harness:
+1. Apply a confirmed risky SSH-rule removal, then force backend detection or restoration to fail at the 60-second deadline; separately inject a state-save failure after application and two overlapping risky removals.
+2. Inspect backend rules and persisted pending state: require retained/retried recovery and restoration of the original reachable state. Current control flow clears or can lose the required undo; not executed here.
+
+Suggested prompt: **Make firewall rollback durable, retry failed undo and serialize pending changes.**
+
+### Owner checks — 25: Live reachability and emergency SSH
+
+Use only disposable `opsbox-vm` or a disposable local dev server with recoverable console access; snapshot it first and wrap shell commands in `timeout 120`.
+
+1. With Cargo installed, run `timeout 120 cargo test -p opsbox-priv ops::firewall::tests`, `timeout 120 cargo test -p opsbox-api --test system_http`, and `timeout 120 cargo test -p opsbox-api system::tests`. Add regressions for panel removal/activation and durable rollback when implementing the findings.
+2. Independently exercise nftables, UFW and firewalld with panel on 8443 and a custom panel port, SSH on 22 and a custom SSH port, IPv4/IPv6 peers and an SSH tunnel/local proxy. Try removing the last matching allowance, an overlapping CIDR allowance and an unrelated rule. Require refusal or deliberate confirmation plus verified timed recovery; check fresh connections, loopback and current admin reachability rather than relying on an established connection. Verify first nft activation cannot strand the panel.
+3. For a provisional risky SSH change, do not keep it; observe restoration after the 60-second deadline plus janitor/command latency. Repeat with explicit keep confirmation and verify the intended final rules. Test helper restart, backend failure, state-save failure and overlapping changes using fault injection; restore snapshots afterward.
+4. Open emergency SSH through the panel; verify actual SSH access is restricted to the selected admin IP, uses the configured SSH port, and creates an audit entry with the IP and expiry. Verify expiration removes the emergency allowance (without assuming SSH becomes unreachable if another rule still permits it). Through a tunnel, verify the public-IP prompt. Keep row 25 PARTIAL until findings are fixed and live checks pass.
+
+QA 25 Git completion: `timeout 120 git mv docs/prompts/qa/25-firewall-lockout.md docs/prompts/qa/archive/25-firewall-lockout.md` failed with `.git/index.lock: Operation not permitted` (exit 128). Archived with a filesystem rename instead. Git metadata is read-only here, preventing staging/commit/push. Preserve unrelated `.agent-rules.md` and `docs/prompts/qa/gen.py`. In a host terminal with Git write access, review only QA 25 changes on `dev`, then run:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/25-firewall-lockout.md docs/prompts/qa/archive/25-firewall-lockout.md
+timeout 120 git commit -m "qa 25: Firewall cannot lock the admin out"
 timeout 120 git push origin dev
 ```
 

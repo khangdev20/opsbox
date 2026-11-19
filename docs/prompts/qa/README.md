@@ -42,7 +42,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 22 | Cleanup page speed (22-cleanup-speed.md) | x |
 | 23 | Audit log integrity (23-audit-chain.md) | x |
 | 24 | Export, uninstall, reinstall, import (24-export-import-uninstall.md) | x |
-| 25 | Firewall cannot lock the admin out (`25-firewall-lockout.md`) | |
+| 25 | Firewall cannot lock the admin out (25-firewall-lockout.md) | x |
 | 26 | Watchdog and safe mode (`26-watchdog-safe-mode.md`) | |
 | 27 | Dependencies and lint, fast (27-dependencies-and-lint.md) | x |
 | 28 | README, install page and links (`28-docs-and-links.md`) | x |
