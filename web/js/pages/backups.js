@@ -1,4 +1,4 @@
-import { html, st, btn, table, section, header, bindActions, confirmDialog, askForm, formDialog, download, toast, bytes, gb, iconAct } from '../ui.js';
+import { html, st, btn, table, section, header, bindActions, confirmDialog, askForm, formDialog, download, toast, bytes, gb, iconAct, empty } from '../ui.js';
 import { server } from '../store.js';
 import * as api from '../api.js';
 
@@ -47,11 +47,10 @@ export async function view() {
               : '',
           ]),
         ), isAdmin ? btn('+ Add schedule', { act: 'addjob' }) : '')}
-        ${section('Available backups', table(
+        ${section('Available backups', d.items.length ? table(
           'Backups',
           [['Taken (UTC)'], ['What'], ['Size', { align: 'r', label: 'Size' }], ['Where'], ['Check'], ['', { label: false }]],
-          d.items.length
-            ? d.items.map((k) => [
+          d.items.map((k) => [
               html`<span class="mono">${k.at}</span>`,
               html`<span class="mono">${k.what}</span>`,
               k.sizeBytes != null ? bytes(k.sizeBytes) : gb(k.size),
@@ -60,10 +59,11 @@ export async function view() {
               isAdmin
                 ? html`<span class="acts">${iconAct('testrestore', 'Test restore', 'check', { id: k.id })}${iconAct('restore', 'Restore', 'restore', { id: k.id })}</span>`
                 : '',
-            ])
-            : [[html`<span class="muted">No snapshots yet — click <b>Back up now</b> to create the first encrypted snapshot.</span>`, '', '', '', '', '']],
+            ]),
           { sticky: true, cards: false },
-        ), isAdmin ? html`<span class="row">${btn('Prune old', { act: 'prune', kind: 'link' })}${btn('Verify checksums', { act: 'check', kind: 'link' })}${btn('Run restore test', { act: 'testrestoreall', kind: 'link' })}</span>` : '')}
+        ) : isAdmin
+          ? empty('No snapshots yet. Run a backup now.', btn('Back up now', { act: 'run', data: { id: '' }, kind: 'primary' }))
+          : empty('No snapshots yet. Ask an administrator to run a backup.', btn('Refresh', { act: 'refresh' })), isAdmin ? html`<span class="row">${btn('Prune old', { act: 'prune', kind: 'link' })}${btn('Verify checksums', { act: 'check', kind: 'link' })}${btn('Run restore test', { act: 'testrestoreall', kind: 'link' })}</span>` : '')}
       </div><div>
         ${section('Destinations', table(
           'Destinations',
@@ -98,6 +98,7 @@ export async function view() {
       root = r;
       paint();
       bindActions(root, {
+        refresh: reload,
         run: async (el) => {
           const c=await api.checkCapacity({feature:'backup'});
           if(c.fit.status==='blocked') {toast([...(c.fit.reasons||[]),...(c.fit.suggestions||[])].join(' '),'err');return;}

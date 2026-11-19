@@ -581,3 +581,7 @@ Await page mounts inside router error handling; render escaped errors with Retry
 ## Fix 11 — Recover failed Apps domain loads
 Remember domain-load failures and in-flight requests per service; repainting or switching tabs/services cannot retry a failed load.
 Show the escaped failure inline with Retry; clear it for a deliberate retry or the next existing poll, and keep project polling independent.
+
+## Fix 12 — Actionable empty lists
+Use shared empty() guidance for empty folders, updates, services, scheduled jobs, filtered journal results and snapshots; reuse upload, refresh, add-job and backup actions.
+Services has no filter control, so cover its empty response and the existing unit journal filter; non-admin snapshot guidance asks an administrator and offers Refresh.

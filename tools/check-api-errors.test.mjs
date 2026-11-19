@@ -167,11 +167,11 @@ test('System replaces failed initial and later panes with an error and Retry rec
     dataset: { act, ...data }, closest() { return this; }, hasAttribute() { return false; }, getAttribute() { return null; },
   } });
   failed = false; await click('retry');
-  assert.match(body.innerHTML, /Up to date/);
+  assert.match(body.innerHTML, /Everything is up to date/);
   await click('tab', { i: '1' });
   assert.match(body.innerHTML, /Services unavailable/);
   assert.match(body.innerHTML, />Retry</);
-  assert(!body.innerHTML.includes('Up to date'));
+  assert(!body.innerHTML.includes('Everything is up to date'));
   await click('tab', { i: '2' });
   assert.match(body.innerHTML, /Capacity unavailable/);
   assert.match(body.innerHTML, />Retry</);

@@ -5,7 +5,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | # | Check | Date | Result | Notes |
 |---|---|---|---|---|
-| 13 | Empty and error states on every page | 2026-11-19 | PARTIAL | System pane errors and router view/mount Retry: Fixed in fix 10. Files/System empty-state gaps and other section retries remain; VM and slow-3G checks unavailable. See QA 13 details below. |
+| 13 | Empty and error states on every page | 2026-11-19 | PARTIAL | System pane errors and router view/mount Retry: Fixed in fix 10. Files/System/Backups guidance: Fixed in fix 12. Other section retries and empty firewall guidance remain; VM and slow-3G checks unavailable. See QA 13 details below. |
 | 12 | Keyboard use and visible focus | 2026-11-19 | PASS | Visible focus indicators (:focus-visible) enforced across dark and light themes; Escape closes dialogs, drawer, and account/notification menus; focus trap and return-to-opener implemented; form fields have labels and errors use role="alert". |
 | 11 | Phone widths: no sideways scroll, targets big enough | 2026-11-19 | PARTIAL | Responsive source checks pass; 360/390px live layout, drawer, sheets and keyboard checks blocked by VM/local-server permissions; source shows undersized touch controls. |
 | 10 | Nothing in http mode still uses sample data | 2026-11-20 | Fixed in fix 02 | Node regression checks cover failed HTTP requests, neutral hostname, missing repository, malformed GitHub settings and guarded demo exports; demo samples and real deploy-log routing pass. Live VM checks remain owner work. |
@@ -324,11 +324,11 @@ Source review only; these findings are not browser observations. No application 
 | Overview | `web/js/pages/overview.js:79–98`: no containers and no activity have messages plus View all/Audit log links. | `:102–110`: required requests propagate to the router; optional failures become null, potentially showing missing containers/activity as empty data. Cleanup failure has a message but no retry. |
 | Apps | `web/js/pages/apps.js:101`: no services guides users to Deploy your first service. | `:26`: initial failure propagates to router. Fixed in fix 11: domain-load failures persist per service with an inline error and Retry; repainting does not refetch, and the next poll can recover. |
 | Containers | `web/js/pages/containers.js:125–145`: install/start Docker guidance and zero-container Deploy a service action. Images/volumes/networks also have empty messages (`:176,186,194`). | `:77–79`: initial failures propagate to router; Docker-not-running has Start Docker and Open System services controls. |
-| Backups | `web/js/pages/backups.js:66`: zero snapshots instructs Back up now; header supplies that action for admins (`:104`). Empty schedules/destinations use bare tables with Add schedule/Add destination controls (`:36,73`). The zero-snapshot instruction also appears for non-admins who cannot use that action. | `:14`: initial failure propagates to router. |
+| Backups | Fixed in fix 12: zero snapshots uses shared empty() with Back up now for admins; other roles are asked to contact an administrator and can Refresh. Empty schedules/destinations retain Add schedule/Add destination controls. | Initial failure propagates to router. |
 | Alerts | `web/js/pages/alerts.js:28,32`: no active alerts/no history explained; channels offer Connect and Send test, with expectations at `:38`. | `:22`: initial failure propagates to router; polling failures retain old content and report connection status through shared poll handling. |
-| Files | `web/js/pages/files.js:29–33`: zero entries produces an empty table at root, or only ../ elsewhere. Upload and New folder controls exist (`:57`), but no explicit empty-folder message. | `:26–27`: initial failure propagates to router; editor-load failure displays escaped error text (`:52`) without a retry. |
+| Files | Fixed in fix 12: empty root/nested folders show shared empty() guidance and Upload a file, opening the existing file picker; breadcrumbs and New folder remain available. | Initial failure propagates to router; editor-load failure displays escaped error text without a retry. |
 | Terminal | `web/js/pages/terminal.js:119–126`: administrator restriction and no ordinary account guidance; New session is available after users load. | `:120,144`: user-list failure shows the error callout, then mount returns without binding a retry. Session connection failures can be retried with New session. |
-| System | `web/js/pages/system.js:42`: no updates explained; journal says No entries (`:52`). Zero services/jobs/firewall rules use bare tables (`:44,53,55`); jobs/rules retain Add controls. | Fixed in fix 10: pane failures replace the skeleton/previous pane with escaped error text and Retry, including Capacity. Router awaits mounts and renders Retry on rejection. |
+| System | Fixed in fix 12: no updates, services, jobs and journal filter matches show shared empty() messages with Check again, Refresh services, Add job and Clear filters. Empty firewall rules retain their original table/Add rule control. | Fixed in fix 10: pane failures replace the skeleton/previous pane with escaped error text and Retry, including Capacity. Router awaits mounts and renders Retry on rejection. |
 | Settings | Configuration page does not require apps/containers/backups/alerts/files; relevant absent integration/configuration controls are rendered independently of those collections. | `web/js/pages/settings.js:33`: main failure propagates to router. Disk errors have text (`:231`) but no retry; proxy-network errors are passed to networkCard (`:34,242`). |
 
 ### Findings and reproduction
@@ -340,16 +340,26 @@ Source review only; these findings are not browser observations. No application 
 2. **Fixed in fix 10 — System can retain its loading skeleton after failure** — `web/js/pages/system.js`; `web/js/main.js`.
    - Reject getUpdates on initial System load, or another pane request when selecting its tab.
    - Initial and later pane failures now replace loading/old content with an inline error and working Retry; async mount rejection reaches router error handling. Node/DOM regressions pass; live browser verification remains an owner check above.
-3. **Empty collection guidance is incomplete** — `web/js/pages/files.js:29–33`, `web/js/pages/system.js:44,53,55`, `web/js/pages/backups.js:66`.
-   - Open an allowed empty folder; return zero services/jobs/firewall rules in disposable fixtures; view zero snapshots as a non-admin.
-   - Files/System render bare tables (or only the parent-folder row); Backups instructs non-admins to use a hidden action. Expected: explain absence and offer a role-appropriate next step.
-   - Suggested prompt: **Add explicit, role-aware empty states for Files, System and Backups**.
+3. **Fixed in fix 12 — Empty collection guidance on Files, System and Backups** — `web/js/pages/files.js`, `web/js/pages/system.js`, `web/js/pages/backups.js`.
+   - Empty root/nested folders, pending updates, service results, jobs, unit-filtered journal results and snapshots now use empty() with a readable message and working next action. Snapshot guidance respects the user's role. No Services filter exists; its empty API response and the existing unit journal filter are covered without adding a new filter feature.
+   - Test first: all eight regressions failed on missing guidance before implementation. `timeout 120 node --experimental-vm-modules --test tools/check-empty-states.test.mjs tools/check-api-errors.test.mjs tools/check-demo-data.test.mjs tools/check-apps-domains.test.mjs` now passes all 36 tests, including upload-picker activation, refresh recovery, Add job, clearing filters and admin/non-admin snapshot actions.
+   - Network UI contracts, update status text, mock API allowlist, live-list and responsive source checks pass. Browser portions of the last two scripts fail at localhost bind with EPERM; standalone headless Chrome also exits 134 before rendering. Actual 390 px/1440 px visual checks remain owner checks. Empty firewall guidance is outside fix 12's named cases and remains open.
 4. **Fixed in fix 11 — Apps domain request failure can repeatedly reload** — `web/js/pages/apps.js`.
    - Failures and in-flight loads are tracked per service. An escaped inline error with Retry replaces Loading; repainting and switching tabs/services retain the failure without refetching. Retry or the next existing poll can recover, even if project data is unchanged.
    - Test first: an HTTP 500 stub produced six requests before the fixture's safety cap over three seconds (expected one). The regression now observes exactly one request, no unhandled rejection, and visible error/Retry. Tests also cover service/tab changes, a failed Retry, successful Retry and polling recovery.
    - Validation: `timeout 120 node --experimental-vm-modules --test tools/check-apps-domains.test.mjs` passes (4 tests), including in-flight request deduplication.
 
 ## Owner checks — 13: Disposable VM and browser verification
+
+Fix 12: at 390 px and 1440 px, open an allowed empty folder, System with zero updates/services/jobs, a unit's journal with no matches, and Backups with no snapshots as both admin and deployer. Confirm each message/action is readable without page overflow; Upload opens the picker, Check again/Refresh reloads, Add job opens its form, Clear filters restores logs, and only admins can run a backup. A capacity-blocked backup must show the refusal and never start a backup.
+
+Git pull/staging for fix 12 are blocked by read-only `.git` metadata in this environment. From a host terminal on `dev`, finish the commit and push, then wait for CI before tagging the next available alpha as documented in `docs/prompts/CONVENTIONS.md`:
+
+```sh
+timeout 120 git add web/js/pages/files.js web/js/pages/system.js web/js/pages/backups.js tools/check-empty-states.test.mjs tools/check-api-errors.test.mjs docs/DECISIONS.md docs/QA.md docs/STATUS.md docs/prompts/fix/README.md docs/prompts/fix/12-empty-states-files-system-backups.md docs/prompts/fix/archive/12-empty-states-files-system-backups.md
+timeout 120 git commit -m "fix 12: Missing empty-state guidance on Files, System and Backups"
+timeout 120 git push origin dev
+```
 
 Fix 11: the local Git pull and staging attempts failed because `.git/FETCH_HEAD` and `.git/index.lock` are read-only here. Commit/push, CI and release tagging remain pending. From a host terminal on `dev`:
 

@@ -28,7 +28,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 09 | Fallback emergency SSH rule never expires ([09-nft-emergency-ssh-expiry.md](archive/09-nft-emergency-ssh-expiry.md)) | Fixed in fix 09 |
 | 10 | Requests never time out and a failed System tab stays on the skeleton ([10-api-timeout-and-mount-errors.md](archive/10-api-timeout-and-mount-errors.md)) | Fixed in fix 10 |
 | 11 | Apps page can reload repeatedly when the domain request fails ([11-apps-domain-reload-loop.md](archive/11-apps-domain-reload-loop.md)) | Fixed in fix 11 |
-| 12 | Missing empty-state guidance on Files, System and Backups (`12-empty-states-files-system-backups.md`) | |
+| 12 | Missing empty-state guidance on Files, System and Backups ([12-empty-states-files-system-backups.md](archive/12-empty-states-files-system-backups.md)) | Fixed in fix 12 |
 | 13 | Touch targets below 44 px (`13-touch-targets-44.md`) | |
 | 14 | Cleanup scans pile up (`14-cleanup-scan-overlap.md`) | |
 | 15 | Cannot change an image service's tag (`15-image-tag-update.md`) | |

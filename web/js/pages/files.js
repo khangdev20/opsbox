@@ -1,4 +1,4 @@
-import { html, raw, esc, bytes, table, btn, header, bindActions, confirmDialog, askForm, toast, patch, dropzone } from '../ui.js';
+import { html, raw, esc, bytes, table, btn, header, bindActions, confirmDialog, askForm, toast, patch, dropzone, empty } from '../ui.js';
 import * as api from '../api.js';
 import { server } from '../store.js';
 import { loadAmd } from '../vendor-loader.js';
@@ -26,7 +26,7 @@ export async function view({ query }) {
   const load = async () => { listing = await api.listDir(dir); picked.clear(); };
   await load();
   const crumbs = () => { const parts = dir.split('/').filter(Boolean); let acc = ''; return html`<nav class="path" aria-label="Path"><a href="#" data-act="go" data-p="/">/</a>${parts.map((p, i) => { acc += '/' + p; return html`<a href="#" data-act="go" data-p="${acc}">${p}</a>${i < parts.length - 1 ? '/' : ''}`; })}</nav>`; };
-  const list = () => table('Files', [['', { label: false }], ['Name'], ['Mode'], ['Size', { align: 'r', label: 'Size' }], ['Modified']], [
+  const list = () => !listing.entries.length ? empty('This folder is empty. Upload a file or create a folder.', btn('Upload a file', { act: 'upload', kind: 'primary' })) : table('Files', [['', { label: false }], ['Name'], ['Mode'], ['Size', { align: 'r', label: 'Size' }], ['Modified']], [
     ...(dir !== '/' ? [[ '', html`<a href="#" data-act="go" data-p="${dir.split('/').slice(0, -1).join('/') || '/'}" class="mono">../</a>`, '', '', '']] : []),
     ...listing.entries.map((e) => Object.assign([html`<input type="checkbox" data-act="pick" data-p="${e.path}" aria-label="Select ${e.name}" ${raw(picked.has(e.path) ? 'checked' : '')}>`,
       e.type === 'd' ? html`<a href="#" class="mono" data-act="go" data-p="${e.path}">${e.name}/</a>` : html`<a href="#" class="mono" data-act="open" data-p="${e.path}">${e.name}</a>${api.downloadUrl(e.path) ? html` <a href="${api.downloadUrl(e.path)}" class="muted" title="Download" aria-label="Download ${e.name}" download>↓</a>` : ''}${e.warn ? html` <span class="st warn" title="Readable by everyone">▲ world-readable secrets</span>` : ''}`,
@@ -66,6 +66,7 @@ export async function view({ query }) {
         finally { e.target.value = ''; z.removeAttribute('data-busy'); z.classList.remove('has'); z.querySelector('.drop-t').innerHTML = 'Drop a file here to upload it to this folder, or <u>choose a file</u>'; z.querySelector('[data-file]').textContent = 'No file chosen'; }
       });
       bindActions(root, {
+        upload: () => root.querySelector('#up').click(),
         go: async (el) => { fresh = true; dir = el.dataset.p; open = null; await rl(); },
         open: async (el) => { open = await api.readFile(el.dataset.p); paint(); },
         close: async () => { if (dirty && !await confirmDialog({ title: 'Discard unsaved changes?', body: open.path, confirm: 'Discard', danger: true })) return; open = null; paint(); },
