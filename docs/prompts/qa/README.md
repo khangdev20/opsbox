@@ -44,7 +44,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 24 | Export, uninstall, reinstall, import (`24-export-import-uninstall.md`) | |
 | 25 | Firewall cannot lock the admin out (`25-firewall-lockout.md`) | |
 | 26 | Watchdog and safe mode (`26-watchdog-safe-mode.md`) | |
-| 27 | Dependencies and lint, fast (`27-dependencies-and-lint.md`) | |
+| 27 | Dependencies and lint, fast (27-dependencies-and-lint.md) | x |
 | 28 | README, install page and links (`28-docs-and-links.md`) | x |
 | 29 | Table layout: padding, scrollbar, columns and alignment (`29-table-layout.md`) | |
 | 30 | List rows: push the action to the right edge (`30-list-row-actions.md`) | |

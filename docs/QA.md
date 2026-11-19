@@ -19,6 +19,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 09 | Every page: zero console errors, zero failed requests | 2026-11-19 | PARTIAL | Readable API failure messages verified; network/mock checks pass. Browser sweep blocked by VM/localhost permissions; async System mount and request deadline gaps documented. |
 | 28 | README, install page and links | 2026-11-19 | PASS | Verified links, install scripts, and screenshots; all internal links pass; releases/latest and Discussions/Pages caveats documented for owner. |
 | 14 | Capacity guard on the 1 GB VM | 2026-11-19 | PARTIAL | Installer and UI checks pass; policy reserves 470 MiB baseline, permits small Docker apps and blocks builds without 1536 MiB headroom. Live VM denied; Cargo unavailable; PostgreSQL refusal depends on headroom. |
+| 27 | Dependencies and lint, fast | 2026-11-19 | PASS | cargo fmt clean; cargo clippy workspace 0 warnings; Cargo.lock intact & consistent; 385/385 dependencies verified against crates.io (zero yanked); web/vendor licenses (MIT) and file hashes verified; zero JS build vulnerabilities. |
 
 ## Found, not fixed
 
