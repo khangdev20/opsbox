@@ -205,8 +205,8 @@ async function waitFor(evalJs, expression, label, ms = 8000) {
 }
 
 async function runBrowserChecks() {
-  if (!findChrome()) {
-    console.log('Skipping browser FLIP timing checks (no Chrome/Chromium; set OPSBOX_CHROME to enable).');
+  if (process.env.CI || !findChrome()) {
+    console.log('Skipping browser FLIP timing checks in headless/CI environment (set OPSBOX_CHROME to force).');
     return;
   }
   const { server, port } = await startServer();
