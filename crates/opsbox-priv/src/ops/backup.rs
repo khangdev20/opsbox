@@ -507,7 +507,9 @@ fn clean_restic_command(
 ) -> Command {
     #[cfg(target_os = "linux")]
     let mut cmd = {
-        let mut c = if Path::new("/run/systemd/system").exists()
+        let is_root = nix::unistd::geteuid().is_root();
+        let mut c = if is_root
+            && Path::new("/run/systemd/system").exists()
             && Path::new("/usr/bin/systemd-run").exists()
         {
             let mut c = Command::new("/usr/bin/systemd-run");
@@ -520,11 +522,19 @@ fn clean_restic_command(
                 "/usr/bin/ionice",
             ]);
             c
-        } else {
+        } else if Path::new("/usr/bin/ionice").exists() {
             Command::new("/usr/bin/ionice")
+        } else {
+            Command::new(restic_bin)
         };
-        c.args(["-c", "3", "/usr/bin/nice", "-n", "19"])
-            .arg(restic_bin);
+        if is_root || Path::new("/usr/bin/ionice").exists() {
+            if Path::new("/usr/bin/nice").exists() {
+                c.args(["-c", "3", "/usr/bin/nice", "-n", "19"])
+                    .arg(restic_bin);
+            } else {
+                c.args(["-c", "3"]).arg(restic_bin);
+            }
+        }
         c
     };
     #[cfg(not(target_os = "linux"))]
