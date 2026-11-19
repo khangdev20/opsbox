@@ -24,7 +24,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 04 | serve and priv version match after update (04-version-skew.md) | x |
 | 05 | TLS, cookies and security headers (`05-transport-and-headers.md`) | |
 | 06 | No secret in any API response (`06-secrets-in-responses.md`) | x |
-| 07 | Login, lockout, TOTP and session revoke (`07-login-hardening.md`) | |
+| 07 | Login, lockout, TOTP and session revoke (`07-login-hardening.md`) | x |
 | 08 | Roles: deployer and viewer cannot do admin things (`08-permissions.md`) | |
 | 09 | Every page: zero console errors, zero failed requests (`09-console-and-network-errors.md`) | |
 | 10 | Nothing in http mode still uses sample data (`10-mock-leftovers.md`) | |

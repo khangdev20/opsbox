@@ -9,6 +9,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 03 | Helper down: messages, banner and no half-made things | 2026-11-19 | PASS | Helper down yields 503 / friendly restart message; forms preserve values with override ticked; banner clears on restart; no orphaned DB/container state; log has op, elapsed_ms, request_id. |
 | 04 | serve and priv version match after update | 2026-11-19 | PARTIAL | Source confirms Ping build version and /readyz HTTP 503 with both versions on skew; stubbed frontend mismatch alert/recovery check passed. Cargo unavailable, browser localhost bind denied, and VM access denied; live update/restart verification remains. |
 | 06 | No secret in any API response | 2026-11-19 | PASS | All secret fields (env vars, DB connection strings, webhook secret, backup credentials) masked with `••••`; reveal requires re-auth, audited, returns `no-store`, tokens denied. |
+| 07 | Login, lockout, TOTP and session revoke | 2026-11-19 | PASS | 5 failed logins locks account/IP with Retry-After; generic error message prevents user enumeration; TOTP replay rejected via totp_last_step monotonic check; session revoke & password change invalidate sessions server-side; setup claim returns 404 once claimed. |
 | 28 | README, install page and links | 2026-11-19 | PASS | Verified links, install scripts, and screenshots; all internal links pass; releases/latest and Discussions/Pages caveats documented for owner. |
 
 ## Found, not fixed
