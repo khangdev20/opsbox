@@ -388,7 +388,7 @@ export async function withBusy(el, fn) {
   setBusy(el, true);
   try { return await fn(); } finally { setBusy(el, false); }
 }
-// Head cell: [text] | [text, 'r'] | [text, { align:'r', label:'Name'|false }].
+// Head cell: [text] | [text, 'r'] | [text, { align:'r', label:'Name'|false, check:true }].
 // `label` becomes data-label for card mode under 700 px (false / '' skips that cell as a field).
 function headMeta(h) {
   const text = h?.[0] ?? '';
@@ -400,7 +400,7 @@ function headMeta(h) {
     label = opt.label !== undefined ? opt.label : (typeof text === 'string' ? text : '');
   } else label = typeof text === 'string' ? text : '';
   if (label === false || label == null) label = '';
-  return { text, align, label: String(label) };
+  return { text, align, label: String(label), check: opt?.check === true };
 }
 // `meta` on a row: { key, sig, cls, attrs }. key makes the row keyed (patch updates it in place);
 // sig is what counts as a change worth flashing (default: the whole row).
@@ -408,7 +408,7 @@ function headMeta(h) {
 // inside .tw with the first column pinned instead (never scroll the page sideways).
 export function table(caption, heads, rows, { rowAttrs, flip = false, cards = true, sticky = false } = {}) {
   const meta = heads.map(headMeta);
-  const th = meta.map((h) => html`<th class="${h.align}">${h.text}</th>`);
+  const th = meta.map((h, i) => html`<th scope="col" class="${h.align}${h.check ? ' td-check' : ''}${!h.label && !h.check && i === meta.length - 1 ? ' td-acts' : ''}">${h.text}</th>`);
   const tr = rows.map((cells, ri) => {
     const rowMeta = cells.meta || {};
     const attrs = rowAttrs ? rowAttrs(ri) : (rowMeta.attrs || '');
@@ -417,8 +417,8 @@ export function table(caption, heads, rows, { rowAttrs, flip = false, cards = tr
     return html`<tr class="${rowMeta.cls || ''}"${raw(key)}${raw(sig)} ${raw(attrs)}>${cells.map((c, i) => {
       const h = meta[i] || { align: '', label: '' };
       const lbl = h.label ? ` data-label="${esc(h.label)}"` : '';
-      const isAct = !h.label && i === cells.length - 1;
-      return html`<td class="${h.align}${isAct ? ' td-acts' : ''}"${raw(lbl)}>${c}</td>`;
+      const isAct = !h.label && !h.check && i === cells.length - 1;
+      return html`<td class="${h.align}${h.check ? ' td-check' : ''}${isAct ? ' td-acts' : ''}"${raw(lbl)}>${c}</td>`;
     })}</tr>`;
   });
   const mode = sticky ? ' scroll sticky-col' : (cards ? ' cards' : '');

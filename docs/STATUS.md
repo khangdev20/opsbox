@@ -1,23 +1,20 @@
 # Status
 
-Last completed prompt: `docs/prompts/archive/17-alpha-release.md` (alpha release docs + landing). Not committed / not pushed (per session request). Prior: `16s`.
+Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 
-## What works (17)
-- **SECURITY.md** at repo root: private reporting via GitHub advisories, response targets, alpha security properties. Pointer at `docs/SECURITY.md`.
-- **Threat model**: trust-boundary summary added atop `docs/THREAT_MODEL.md`.
-- **README**: pitch, alpha notice, Ubuntu 22.04/24.04 + Debian 12, one-line install, screenshots, links to `docs/SECURITY.md` and `docs/THREAT_MODEL.md`.
-- **Landing (`site/index.html`)**: install command unchanged (`…/releases/latest/download/install.sh`); OS copy + FAQ aligned; Security / threat-model links; OpenGraph + Twitter card tags for `og.svg` (1200×630 placeholder). `site/og.svg` added.
+## Completed
+- Redesigned shared tables with consistent cell padding, borders, compact action columns, and selected-row states.
+- Redesigned System → Updates with select-all/mixed states, selection counts, disabled empty selection, and selection preserved across tab changes.
+- Redesigned Notifications with a quieter unread background, storage/security icons, unread count, clearer content/time/action hierarchy, and a detailed empty state.
+- Fixed stray commas between notification rows during refresh by returning one safely rendered HTML fragment.
+- Fixed the Docker HTTP test's assumption that a missing fixture socket means Docker binaries are absent on the CI host; production behavior is unchanged.
 
-## Partial / Found, not fixed
-- Shell and file-delete unavailable: live `docs/prompts/17-alpha-release.md` is a stub; archive copy is at `docs/prompts/archive/17-alpha-release.md`. Owner: `git rm docs/prompts/17-alpha-release.md` then `git add docs/prompts/archive/17-alpha-release.md`.
-- `site/og.png` not written (meta tags use `site/og.svg`). Generated card: `~/.cursor/projects/Users-lenhutkhangvo-Developer-opsbox/assets/og.jpg` — convert to `site/og.png` and retarget meta tags.
-- 60-second screen recording (install → claim → deploy → domain) not produced.
-- GitHub repo social preview: owner sets in repo settings.
-- Merge `dev` → `main`, first public alpha tag/notes, pin release in README: **ask owner first** (not done).
+## Verification
+- Passed frontend DOM checks: package selection/clear/mixed state, tab persistence, selected-only mock install, notification refresh, read/read-all, snooze, keyboard navigation, focus return, text escaping, and empty state.
+- Passed JS/CSS syntax, API docs, network UI contracts, source-level live-list checks, update status text, mock API allowlist, Rust formatting, shellcheck, and installer channel checks.
+- Browser visual review was not completed: browser automation was unavailable and native browser control conflicted with an active user session.
+- Full Linux Clippy, workspace tests, dependency audit, release builds, version stamping, and signed release artifacts are checked by GitHub Actions.
 
 ## Next
-- Owner: `git rm` live 17 stub; convert `og.jpg` → `site/og.png`; set GitHub social preview.
-- Owner: approve merge `dev` into `main`, then tag next `v0.1.0-alpha.N`, mark release notes as first public alpha, pin in README.
-- Optional: 60s demo recording for the landing / README.
-- Commit when asked: `prompt 17: alpha release`. Do not push unless asked.
-- VM check: one-line install from README on Ubuntu 22.04/24.04 or Debian 12; claim with setup token; refuse setup after claim (404).
+- Verify the alpha release's x86_64/arm64 archives, checksums, signatures, SBOM, and installer on GitHub Releases.
+- Smoke-test the table and notification views at desktop/mobile widths on an updated server.

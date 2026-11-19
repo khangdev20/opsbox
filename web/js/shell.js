@@ -104,6 +104,7 @@ const paintBell = () => {
   const btn = document.getElementById('notif-btn');
   const badge = document.getElementById('notif-badge');
   const readAll = document.getElementById('notif-read-all');
+  const unreadCount = document.getElementById('notif-unread');
   const list = document.getElementById('notif-list');
   const { items, unread, critical } = attnData;
   if (btn) btn.setAttribute('aria-label', `Notifications, ${unread} unread`);
@@ -113,6 +114,7 @@ const paintBell = () => {
     badge.classList.toggle('crit', critical > 0);
   }
   if (readAll) readAll.disabled = !unread;
+  if (unreadCount) { unreadCount.hidden = !unread; unreadCount.textContent = `${unread} unread`; }
   if (list) {
     const activeItem = document.activeElement?.closest?.('.notif-item');
     const activeKey = activeItem?.getAttribute('data-key');
@@ -129,21 +131,27 @@ const SEV_ICONS = {
   warning: '<path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/>',
 };
+const NOTIF_ICONS = {
+  disk: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 14h18M7 17h.01M11 17h.01"/>',
+  security: ICONS.security,
+};
+const READ_ICON = '<path d="M3 12l4 4L17 6M12 16l3 3 7-7"/>';
 
 function renderNotifItems(items = [], demo = false) {
-  if (!items.length) return html`<div class="notif-empty muted">All clear</div>`;
-  return items.map((it) => {
+  if (!items.length) return html`<div class="notif-empty"><span class="notif-empty-icon" aria-hidden="true">${raw(svg('<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/>', 24))}</span><b>All clear</b><p>New alerts and updates will appear here.</p></div>`;
+  return html`${items.map((it) => {
     const tsMs = it.since > 1e12 ? it.since : it.since * 1000;
     const href = it.link?.[1] || '#/';
-    const linkLbl = it.link?.[0] || 'View →';
+    const linkLbl = (it.link?.[0] || 'View details').replace(/\s*[→↗]\s*$/u, '');
     return html`<div class="notif-item${it.read ? '' : ' unread'}${it.snoozed ? ' snoozed' : ''} sev-${it.severity || 'warning'}" data-key="n-${it.id}" data-id="${it.id}" data-sig="${it.severity}|${!!it.read}|${!!it.snoozed}|${it.since}|${it.text}|${href}" tabindex="-1">
-      <span class="notif-ico" aria-hidden="true">${raw(svg(SEV_ICONS[it.severity] || SEV_ICONS.warning, 16))}</span>
+      <span class="notif-ico" aria-hidden="true">${raw(svg(NOTIF_ICONS[it.kind] || SEV_ICONS[it.severity] || SEV_ICONS.warning, 18))}${it.read ? '' : html`<span class="notif-dot"></span>`}</span>
       <div class="notif-body">
-        <div class="notif-txt">${it.read ? '' : html`<span class="notif-dot" aria-label="Unread"></span>`}${it.text}</div>
-        <div class="notif-meta sm muted"><span>${it.since ? ago(tsMs) : 'just now'}</span>${it.snoozed ? html`<span>· snoozed</span>` : ''}<a class="notif-go" href="${href}">${linkLbl}</a></div>
+        <div class="notif-txt">${it.read ? '' : html`<span class="sr">Unread: </span>`}${it.severity === 'critical' ? html`<span class="sr">Critical: </span>` : ''}${it.text}</div>
+        <div class="notif-meta"><span>${it.since ? ago(tsMs) : 'just now'}</span>${it.snoozed ? html`<span class="notif-snoozed">Snoozed</span>` : ''}</div>
+        <a class="notif-go" href="${href}">${linkLbl}</a>
       </div>
       <div class="notif-acts">
-        <button type="button" class="btn icon row-act notif-more" aria-haspopup="menu" aria-expanded="false" aria-label="Notification actions"${raw(demo ? '' : ` data-nact="menu" data-id="${esc(it.id)}"`)}>⋯</button>
+        <button type="button" class="btn icon row-act notif-more" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ${it.text}"${raw(demo ? '' : ` data-nact="menu" data-id="${esc(it.id)}"`)}>${raw(svg('<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>', 16))}</button>
         <div class="notif-menu" role="menu" hidden>
           ${!it.read ? html`<button type="button" role="menuitem" tabindex="-1" class="menu-item"${raw(demo ? '' : ` data-nact="read" data-id="${esc(it.id)}"`)}>Mark read</button>` : ''}
           <button type="button" role="menuitem" tabindex="-1" class="menu-item"${raw(demo ? '' : ` data-nact="snooze" data-min="60" data-id="${esc(it.id)}"`)}>Snooze 1 h</button>
@@ -151,7 +159,7 @@ function renderNotifItems(items = [], demo = false) {
         </div>
       </div>
     </div>`;
-  });
+  })}`;
 }
 
 // `demo` (UI kit): static preview states without ids so shell listeners ignore them.
@@ -166,7 +174,7 @@ export function notificationBell({ data = { items: [], unread: 0, critical: 0 },
       <span class="notif-badge${critical > 0 ? ' crit' : ''}"${raw(demo ? '' : ' id="notif-badge"')}${raw(unread ? '' : ' hidden')} aria-hidden="true">${unread > 9 ? '9+' : unread}</span>
     </button>
     <div class="notif-pop"${raw(demo ? '' : ' id="notif-pop"')} role="dialog" ${raw(demo ? 'aria-label="Notifications"' : `aria-labelledby="${titleId}"`)} tabindex="-1"${raw(open ? '' : ' hidden')}>
-      <div class="notif-head"><h2${raw(demo ? '' : ` id="${titleId}"`)}>Notifications</h2><button type="button" class="btn link"${raw(demo ? '' : ' id="notif-read-all"')}${raw(unread ? '' : ' disabled')}>Mark all read</button></div>
+      <div class="notif-head"><div class="notif-heading"><h2${raw(demo ? '' : ` id="${titleId}"`)}>Notifications</h2><span class="notif-unread"${raw(demo ? '' : ' id="notif-unread"')}${raw(unread ? '' : ' hidden')}>${unread} unread</span></div><button type="button" class="btn link notif-read-all"${raw(demo ? '' : ' id="notif-read-all"')}${raw(unread ? '' : ' disabled')}>${raw(svg(READ_ICON, 16))}Mark all read</button></div>
       <div class="notif-list"${raw(demo ? '' : ' id="notif-list"')} data-flip>${renderNotifItems(items, demo)}</div>
     </div>
   </div>`;

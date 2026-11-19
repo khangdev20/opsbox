@@ -21,6 +21,7 @@ const PRIO = ['emerg', 'alert', 'crit', 'error', 'warning', 'notice', 'info'];
 export async function view({ path } = {}) {
   let tab = tabFromPath(path), root, jq = { unit: '', prio: 6, q: '' }, live = false, stopLive = null;
   let capSort = { by: 'name', dir: 1 }, lastCap = null, usageByName = {};
+  const selectedPackages = new Set();
 
   const loadCapacity = async () => {
     const [cap, containers] = await Promise.all([
@@ -36,11 +37,19 @@ export async function view({ path } = {}) {
   };
 
   const panes = [
-    async () => { const u = await api.getUpdates(); return html`<div class="row spread mb16"><p>${u.total} updates available · ${u.security} security · running kernel ${u.running} · checked ${u.checked}</p><span class="row">${btn('Install security updates', { act: 'inst', data: { w: 'security' }, kind: 'primary', disabled: !u.security })}${btn('Install all', { act: 'inst', data: { w: 'all' }, disabled: !u.list.length })}${btn('Install selected', { act: 'inst', data: { w: 'selected' }, disabled: !u.list.length })}</span></div>
+    async () => {
+      const u = await api.getUpdates();
+      const available = new Set(u.list.map((p) => p.pkg));
+      for (const name of selectedPackages) if (!available.has(name)) selectedPackages.delete(name);
+      return html`<div class="updates-summary"><div><h2>Package updates <span class="updates-count">${u.total}</span></h2><p>${u.security} security updates · Last checked ${u.checked}</p></div><div class="row">${btn('Install security updates', { act: 'inst', data: { w: 'security' }, kind: 'primary', disabled: !u.security })}${btn('Install all', { act: 'inst', data: { w: 'all' }, disabled: !u.list.length })}</div></div>
       ${u.rebootAt ? html`<div class="callout fail"><span class="tag">▲</span><span>A reboot is scheduled for ${clock(u.rebootAt * 1000).slice(0, 5)}. Apps stop for about a minute.</span>${btn('Cancel reboot', { act: 'cancelreboot' })}</div>` : ''}
       ${u.reboot ? html`<div class="callout"><span class="tag">▲</span><span>A new kernel is installed. Reboot to use it.</span>${btn('Reboot now', { act: 'reboot', kind: 'danger' })}</div>` : ''}
-      ${u.list.length ? table('Pending updates', [['Select', { label: false }], ['Package'], ['Installed'], ['Available'], ['Type']], u.list.map((p) => keyed([html`<input type="checkbox" name="package" value="${p.pkg}" aria-label="Select ${p.pkg}">`, html`<span class="mono">${p.pkg}</span>`, html`<span class="mono muted">${p.cur}</span>`, html`<span class="mono">${p.next}</span>`, p.sec ? st('warn', 'security') : 'regular'], `p-${p.pkg}`, p.next)), { sticky: true, cards: false }) : empty('Up to date. Nothing to install.')}
-      <div class="row mt16"><span>Install security updates automatically</span>${sw('Automatic security updates', u.auto, 'autoup')}</div>`; },
+      <section class="updates-panel" aria-label="Pending updates">
+        ${u.list.length ? html`<div class="updates-table-head"><div><h3>Available packages</h3><p id="package-selection" role="status" aria-live="polite"></p></div>${btn('Install selected', { act: 'inst', data: { w: 'selected' }, id: 'install-selected', disabled: !selectedPackages.size })}</div>
+        ${table('Pending updates', [[html`<input type="checkbox" id="packages-all" aria-label="Select all packages">`, { label: false, check: true }], ['Package'], ['Installed version'], ['Available version'], ['Type']], u.list.map((p) => keyed([html`<input type="checkbox" name="package" value="${p.pkg}" aria-label="Select ${p.pkg}"${selectedPackages.has(p.pkg) ? ' checked' : ''}>`, html`<span class="mono">${p.pkg}</span>`, html`<span class="mono">${p.cur}</span>`, html`<span class="mono">${p.next}</span>`, p.sec ? st('warn', 'security') : st('off', 'regular')], `p-${p.pkg}`, p.next)), { sticky: true, cards: false })}` : empty('Up to date. Nothing to install.')}
+        <div class="updates-footer"><span>Running kernel <span class="mono">${u.running}</span></span>${u.list.length ? html`<span>${u.list.length} packages listed</span>` : ''}</div>
+      </section>
+      <div class="updates-auto"><div><b>Automatic security updates</b><p>Install security patches automatically to keep this server protected.</p></div>${sw('Automatic security updates', u.auto, 'autoup')}</div>`; },
     async () => { const u = await api.getUnits(); return table('Services', [['Unit'], ['State'], ['Boot'], ['Mem', 'r'], ['', 'r']], u.map((x) => keyed([html`<span class="mono">${x.name}</span>`, x.state === 'active' ? st('ok', 'active') : x.state === 'failed' ? st('fail', 'failed') : st('off', 'inactive'), x.boot, x.mem ? `${x.mem} MB` : '–',
       html`<span class="row end">${x.state === 'active' ? html`${btn('Restart', { act: 'unit', data: { n: x.name, a: 'restart' }, kind: 'link' })}${btn('Stop', { act: 'unit', data: { n: x.name, a: 'stop' }, kind: 'link' })}` : btn('Start', { act: 'unit', data: { n: x.name, a: 'start' }, kind: 'link' })}${btn('Logs', { act: 'unitlog', data: { n: x.name }, kind: 'link' })}</span>`], `u-${x.name}`, x.state)), { flip: true }); },
     async () => {
@@ -64,6 +73,20 @@ export async function view({ path } = {}) {
       el.textContent = keep.concat(lines).slice(-500).join('\n') || 'No entries.'; el.scrollTop = el.scrollHeight;
     });
   };
+  // Rows fading out after an install no longer belong to the pending selection.
+  const packageInputs = () => [...root.querySelectorAll('.updates-panel tbody tr:not(.leaving) input[name=package]')];
+  const syncPackageSelection = () => {
+    const boxes = packageInputs();
+    selectedPackages.clear();
+    boxes.forEach((box) => { if (box.checked) selectedPackages.add(box.value); });
+    const n = selectedPackages.size;
+    const all = root.querySelector('#packages-all');
+    if (all) { all.checked = boxes.length > 0 && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
+    const count = root.querySelector('#package-selection');
+    if (count) count.textContent = `${n} of ${boxes.length} selected`;
+    const install = root.querySelector('#install-selected');
+    if (install) { install.disabled = n === 0; install.textContent = n ? `Install selected (${n})` : 'Install selected'; }
+  };
   // `fresh`: a different tab, so nothing enters or flashes; refreshes after an action animate in place.
   const paint = async (fresh = false) => {
     if (stopLive) { stopLive(); stopLive = null; }
@@ -73,6 +96,7 @@ export async function view({ path } = {}) {
     const h = (await panes[tab]()).toString();
     if (mine !== tab) return; // the person already moved to another tab
     patch(root.querySelector('#b'), h, fresh ? { animate: false } : undefined);
+    if (tab === 0) syncPackageSelection();
     if (tab === 2) bindMemoryMap(root.querySelector('#b'));
     if (tab === 3 && live) followJournal();
   };
@@ -92,10 +116,16 @@ export async function view({ path } = {}) {
     async mount(r) {
       root = r; await paint(true);
       root.addEventListener('input', async (e) => { if (e.target.id === 'jq') { jq.q = e.target.value; const pos = e.target.selectionStart; await paint(); const i = root.querySelector('#jq'); i.focus(); i.setSelectionRange(pos, pos); } });
-      root.addEventListener('change', async (e) => { if (e.target.id === 'jp') { jq.prio = +e.target.value; await paint(); } });
+      root.addEventListener('change', async (e) => {
+        if (e.target.id === 'packages-all') {
+          packageInputs().forEach((box) => { box.checked = e.target.checked; });
+          syncPackageSelection();
+        } else if (e.target.name === 'package') syncPackageSelection();
+        else if (e.target.id === 'jp') { jq.prio = +e.target.value; await paint(); }
+      });
       bindActions(root, {
         tab: async (el) => { tab = +el.dataset.i; await paint(true); },
-        inst: async (el) => { const selected = [...root.querySelectorAll('input[name=package]:checked')].map((x) => x.value); if (el.dataset.w === 'selected' && !selected.length) { toast('Select at least one package.', 'err'); return; } const r = await api.installUpdates(el.dataset.w, selected); toast(`Installed ${r.installed} updates.`); await paint(); },
+        inst: async (el) => { const selected = packageInputs().filter((x) => x.checked).map((x) => x.value); if (el.dataset.w === 'selected' && !selected.length) { toast('Select at least one package.', 'err'); return; } const r = await api.installUpdates(el.dataset.w, selected); toast(`Installed ${r.installed} updates.`); await paint(); },
         autoup: async (el) => { await api.setAutoUpdates(el.getAttribute('aria-checked') !== 'true'); await paint(); },
         reboot: async () => { if (await confirmDialog({ title: 'Reboot this instance?', body: 'The machine restarts in one minute (until then you can cancel). All apps stop for about a minute and come back by themselves.', confirm: 'Reboot', danger: true })) { await api.reboot(); toast('Reboot scheduled in one minute. You can cancel it here until then.'); await paint(); } },
         cancelreboot: async () => { await api.cancelReboot(); toast('Reboot cancelled.'); await paint(); },
