@@ -37,6 +37,8 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 25 | Firewall cannot lock the admin out | 2026-11-19 | PARTIAL | SSH/CIDR guard and nft loopback acceptance exist; panel port is unprotected and rollback can discard failed recovery. Cargo unavailable; VM socket denied. See QA 25 findings and owner checks. |
 | 20 | Terminal behaves like a real shell | 2026-11-19 | PASS | Verified on live VM: WebSocket connects, PTY spawns in priv under requested login user (default ubuntu), interactive commands (whoami, pwd, top+q, vim+:q!, stty size, long paste 500+ chars) behave like a real shell; window resize handled dynamically; MAX_OPEN limit (8) enforced with clear error; root requires confirm=root; non-admins (deployer) refused with 403; foreign origin blocked; tab close cleanly sends SIGHUP/SIGKILL to child session with no orphan processes; audit logs start/end without leaking typed commands. |
 
+| 26 | Watchdog and safe mode | 2026-11-19 | PARTIAL | Monitoring, HTTPS :8444 and authenticated recovery paths reviewed; sampled failures can miss rapid crashes and nft fallback SSH never expires. Cargo unavailable; VM socket denied, so live restart/session/recovery checks remain. |
+
 ## Found, not fixed
 
 ### 28 — GitHub repository features and release asset routing
@@ -711,6 +713,57 @@ QA 25 Git completion: `timeout 120 git mv docs/prompts/qa/25-firewall-lockout.md
 ```sh
 timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/25-firewall-lockout.md docs/prompts/qa/archive/25-firewall-lockout.md
 timeout 120 git commit -m "qa 25: Firewall cannot lock the admin out"
+timeout 120 git push origin dev
+```
+
+No tag is needed for documentation-only changes.
+
+## QA 26 — Watchdog and safe mode evidence (2026-11-19)
+
+- Reviewed `crates/opsbox-watchdog/`, `crates/opsbox-priv/src/ops/watchdog.rs`, watchdog CLI/config wiring and systemd units on `dev`. No `.codegraph/` index exists. No product code changed.
+- `lib.rs:352,358,438` binds the listener, starts the independent HTTPS recovery server and loops over concurrent serve/priv/proxy probes, disk checks, policy actions and status-file writes. The default delay is 10 seconds after work, not a guaranteed 10-second detection/restart deadline: serve TLS and HTTP fallback can each take 3 seconds and unit restart commands can take 20 seconds. Database integrity is checked on startup only. Proxy port conflicts are treated as healthy warnings.
+- The standalone default listener is `0.0.0.0:8444`; CLI config tracks the panel bind IP at port 8444 unless explicitly overridden (`crates/opsbox/src/config.rs:411`). Thus local-only mode also binds recovery locally. TLS loads or creates a shared certificate. These are source checks; an actual listening socket, certificate and reachability were not verified here.
+- `policy.rs:11–18,134` counts failed probes per unit in a ten-minute window. It requests dependency-ordered restarts, normally with a 10-second cooldown. At three failures it first attempts critical-disk cleanup, otherwise eligible post-update rollback, otherwise safe-mode alerting with a 60-second restart cooldown. All-healthy probes clear the alert; the recovery server remains available regardless of alert state. The units themselves use `Restart=always` and `RestartSec=2`, independently of watchdog polling.
+- `server.rs:497,690` serves the small Safe Mode page, public `/healthz`, separate session/login/recovery-code/logout endpoints, authenticated `GET /api/v1/recovery`, and authenticated same-origin/CSRF-protected `POST /api/v1/recovery/action`. Actions are `free`, `restart`, `rollback`, `ssh` and `reboot`; restart/rollback wake the monitor and reset failure tracking on success. Admin password/TOTP uses read-only panel account data; a single-use recovery code lasts 15 minutes. Safe Mode has its own in-memory sessions, so panel-session reuse is a separate normal-panel recovery check.
+- The UI renders health checks, errors, events/journal logs and recovery controls (`server.rs:999`). Policy reasons and successful restart messages are retained in the bounded event queue/status file (`policy.rs:118`, `lib.rs:273`); they are not emitted as tracing journal messages. Restart failures do emit warnings. The recovery response provides events separately, but chooses journal lines for its log field whenever any exist (`server.rs:645`). Live journal attribution and page clarity remain unverified.
+- Helper `watchdog.rs:49` reads `/run/opsbox-watchdog/status.json`, marks snapshots older than 45 seconds or a stopped watchdog as degraded/not running, and supplies fallback status when no valid JSON exists. Existing tests cover missing/stale/fresh snapshots. Watchdog tests cover probe transitions, restart/backoff/safe-mode decisions, cleanup/rollback, update verification, auth/CSRF/origin refusal, recovery-code single use and the free-space endpoint; the HTTP test does not prove successful systemd restart/rollback/reboot or real SSH expiry.
+- NOT RUN: `timeout 120 cargo test -p opsbox-watchdog` and `timeout 120 cargo test -p opsbox-priv ops::watchdog::tests` exited 127 (Cargo unavailable). `timeout 120 multipass info opsbox-vm` exited 2 (socket access denied). No processes were killed, services restarted, firewall rules changed or data corrupted.
+
+### Found, not fixed — 26: Rapid service crashes can evade safe-mode counting
+
+`crates/opsbox-watchdog/src/policy.rs:203` counts failed health samples, with no process-exit/restart-counter input (`TickInput`, `policy.rs:51`). `lib.rs:438` probes between delays; `packaging/systemd/opsbox.service:17` automatically restarts serve after 2 seconds. Consequently five rapid kills need not yield three failed samples, and the exact QA crash sequence cannot guarantee safe-mode alerting. Conversely a continuously down unit can reach the threshold without three distinct crashes. This is a source-observed gap, not a live reproduction. Tracking actual crash history and testing the systemd interaction exceeds the tiny QA allowance.
+
+Reproduce only on a disposable VM with console access:
+1. Log into the panel, keep its session cookie, then kill only the disposable serve process five times quickly, verifying a new serve PID between kills; capture timestamps and systemd restart counts.
+2. Compare those exits with watchdog samples/events/status over the next minute. Check whether the safe-mode alert appears despite probes seeing a healthy restarted service; separately hold serve unavailable across three probes to verify the current threshold.
+
+Suggested prompt: **Count actual service crashes for safe-mode escalation and test systemd recovery timing.**
+
+### Found, not fixed — 26: Fallback nftables emergency SSH allowance never expires
+
+When the helper is unavailable, `crates/opsbox-watchdog/src/actions.rs:276–297` adds an nftables SSH accept rule with no kernel timeout. `expire_fallback_ssh` removes expired entries from memory (`:309`), but its nftables branch does nothing (`:348`), leaving the allowance indefinitely despite the advertised one-hour recovery action. Entries are also in-memory only, so watchdog restart loses expiry tracking. Reliable backend removal, durable tracking and failure-injection coverage exceed this QA's tiny-fix scope.
+
+Reproduce only on a disposable VM with console access:
+1. With the OpsBox nftables table active and the helper unavailable, authenticate to Safe Mode and request `{"action":"ssh","ip":"<QA-client-IP>"}` through `/api/v1/recovery/action` with its CSRF token.
+2. Inspect the specific generated rule after its one-hour deadline plus housekeeping latency (use a controlled clock in a test harness); it remains. Repeat with a watchdog restart before expiry. Require removal of the generated allowance without deleting unrelated SSH rules.
+
+Suggested prompt: **Make Safe Mode emergency SSH expiry durable and remove nftables fallback rules.**
+
+### Owner checks — 26: Live self-healing and recovery
+
+Use only disposable `opsbox-vm` or a disposable dev server with console access and a recoverable snapshot. Wrap shell commands in `timeout 120`; do not run a long blocking wait for the hour-long check.
+
+1. Run the two Rust test commands above with Cargo installed. Confirm `opsbox-watchdog.service` is active and `timeout 120 sudo ss -ltnp` shows the configured recovery listener. Check HTTPS `/healthz` and the minimal page on port 8444; verify local-only binding and SSH-tunnel access when configured.
+2. Sign into the normal panel, record the serve PID and time, then run `timeout 120 sudo pkill -9 -f 'opsbox serve'` on that VM only. Verify the new PID, panel return and still-valid original session without a new login. Distinguish the 2-second systemd restart from watchdog-requested recovery; record measured downtime rather than assuming a fixed watchdog deadline.
+3. Repeat five rapid kills as above. Separately use a reversible disposable service failure fixture lasting across at least three failed samples to verify threshold, restart backoff and the visible degraded state on 8444. Do not corrupt the database. Inspect `timeout 120 sudo journalctl --no-pager -u opsbox -u opsbox-watchdog -n 100` and authenticated recovery events for the restart cause.
+4. Verify unauthenticated recovery GET/POST returns 401, viewer login is refused, missing/incorrect CSRF and foreign Origin are refused, admin password/TOTP works, and a recovery code works once only. Exercise safe free-space/restart recovery and confirm the normal panel returns, events explain the outcome and degraded state clears. Check rollback only with an available compatible previous slot and a disposable snapshot; ensure absent/incompatible slots fail safely. Do not reboot just to prove endpoint existence.
+5. Validate SSH restrictions and actual one-hour allowance removal on each supported backend, including helper-unavailable fallback and watchdog restart, after fixing the expiry finding. Retain PARTIAL until live self-healing/session/page checks and findings are resolved.
+
+QA 26 Git completion: `timeout 120 git mv docs/prompts/qa/26-watchdog-safe-mode.md docs/prompts/qa/archive/26-watchdog-safe-mode.md` failed with `.git/index.lock: Operation not permitted` (exit 128). Archived with a filesystem rename instead. Git metadata is read-only here, preventing staging/commit/push. Preserve unrelated `.agent-rules.md` and `docs/prompts/qa/gen.py`. On a host terminal with Git write access, review only QA 26 changes on `dev`, then run:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/26-watchdog-safe-mode.md docs/prompts/qa/archive/26-watchdog-safe-mode.md
+timeout 120 git commit -m "qa 26: Watchdog and safe mode"
 timeout 120 git push origin dev
 ```
 
