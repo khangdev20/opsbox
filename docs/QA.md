@@ -5,6 +5,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | # | Check | Date | Result | Notes |
 |---|---|---|---|---|
+| 12 | Keyboard use and visible focus | 2026-11-19 | PASS | Visible focus indicators (:focus-visible) enforced across dark and light themes; Escape closes dialogs, drawer, and account/notification menus; focus trap and return-to-opener implemented; form fields have labels and errors use role="alert". |
 | 11 | Phone widths: no sideways scroll, targets big enough | 2026-11-19 | PARTIAL | Responsive source checks pass; 360/390px live layout, drawer, sheets and keyboard checks blocked by VM/local-server permissions; source shows undersized touch controls. |
 | 10 | Nothing in http mode still uses sample data | 2026-11-19 | FAIL | HTTP request failures reject without mock fallback, but shell hostname, configure repository default, and unguarded demo exports remain; live VM page checks blocked by Multipass socket access. |
 | 05 | TLS, cookies and security headers | 2026-11-19 | PARTIAL | Source and existing tests reviewed: TLS enforcement, trusted proxy handling, strict HTTPS session cookies and security headers present; Cargo unavailable and VM/local endpoints unreachable, so live headers, login cookies and audit verification remain. |
