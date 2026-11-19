@@ -27,6 +27,8 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 22 | Cleanup page speed | 2026-11-19 | PARTIAL | Skeleton/background scan and reclaim accounting reviewed; stubbed JS cache check passes but concurrent scans overlap. Cargo unavailable and Multipass socket denied; live <1 s paint, progress and reclaimed-space checks remain. |
 | 23 | Audit log integrity | 2026-11-19 | PASS | Verified hash chaining (SHA-256 prev_hash + canonical JSON fields) and genesis anchor; SQLite triggers forbid UPDATE and DELETE; verify_audit detects deletion, insertion, modification, and recomputed-hash tampering with exact broken seq; CSV export streams rows with formula neutralisation and tail integrity verification (# chain: ok / # chain: broken;seq=N). |
 
+| 17 | Deploy a Docker image app end to end | 2026-11-19 | PARTIAL | API/helper/Docker source traced for pull/tag, labels, sealed env, health and loopback proxy mapping; generic image mounts absent, new-tag update unsupported and project network retained. Cargo unavailable; VM socket denied, so live lifecycle/TLS/rollback remain unverified. |
+
 ## Found, not fixed
 
 ### 28 — GitHub repository features and release asset routing
@@ -471,3 +473,54 @@ timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/22-clea
 timeout 120 git commit -m "qa 22: Cleanup page speed"
 timeout 120 git push origin dev
 ```
+
+
+## QA 17 — Image deployment evidence (2026-11-19)
+
+- Reviewed `crates/opsbox-api/src/deploy.rs` and `crates/opsbox-priv/src/ops/deploy.rs`, then followed Docker/proxy implementations. No product code changed. Branch is `dev`; no `.codegraph/` index exists.
+- API creation infers `docker_image` from `image` and validates the reference (`deploy.rs:940`). Explicitly set container port **80** for `nginxdemos/hello`; the API default is 3000. Set memory to 128 MB and initially omit the domain. Generic image creation has no `internalOnly` field: web containers use loopback publishing, whereas template internal-only mode has no host binding.
+- Image pipeline (`opsbox-api/src/deploy.rs:2759`) sends typed `DeployPullRequest` to the helper, which checks image capacity/reference and calls Docker pull/tag (`opsbox-priv/src/ops/deploy.rs:1158`). Docker consumes the pull stream and reports errors, then tags the source as `opsbox/<service>:<release>` (`opsbox-docker/src/lib.rs:1892,1916`). This is source verification, not an actual registry pull.
+- Helper opens sealed vars and resolves references locally (`opsbox-priv/src/ops/deploy.rs:148,177,1244`), builds `KEY=value` strings and starts the release. Docker creation (`opsbox-docker/src/lib.rs:1633,1729`) supplies `opsbox.managed`, `opsbox.project`, `opsbox.service`, `opsbox.deploy`, a project bridge network and service DNS alias, memory/CPU limits and restart policy `unless-stopped`. Generic image deploy explicitly uses empty binds (`:1651`); configurable persistent volume mounts are not supported by this request path. Template volume handling is separate. Image-declared anonymous volumes were not exercised.
+- Port mapping uses `127.0.0.1:<ephemeral>:<container-port>`, inspects the assigned host port, and probes that loopback endpoint. Helper accepts HTTP 2xx/3xx (or TCP), removes unhealthy containers and redacts captured logs (`opsbox-priv/src/ops/deploy.rs:1229`). After health success, API records the new container/port and syncs domain routes to `127.0.0.1:<host_port>` (`opsbox-api/src/deploy.rs:3083`; `panel.rs:107`). It drains/removes the previous container and retains up to five image refs. Proxy-sync failure is only warned about before old-container removal (`deploy.rs:3139`), so live proxy-failure behavior remains a risk to verify.
+- Rollback verifies the target belongs to the service and its image exists locally, then starts/checks the retained image through the same switch flow without rebuilding/pulling (`opsbox-api/src/deploy.rs:1623,2535`). It uses current service vars/settings, not a historical configuration snapshot.
+- Delete gathers recorded containers/images, invokes helper cleanup, deletes the DB service, removes certs and syncs routes (`opsbox-api/src/deploy.rs:1443`). Helper also sweeps containers by service label and removes the app directory (`opsbox-priv/src/ops/deploy.rs:1380`). Container/filesystem cleanup failures are discarded; absence of leftovers cannot be claimed from successful API completion alone.
+- Existing tests inspected: `crates/opsbox-docker/tests/mock_daemon.rs:756` covers service creation, labels/resource limits/loopback mapping/DNS alias and image operations against a mock daemon; `crates/opsbox-priv/tests/deploy.rs:141` covers helper health and unhealthy-log redaction; `crates/opsbox-api/tests/deploy_http.rs:308` covers git-source deploy, proxy switch, failed health and retained-image rollback. The latter is not an image-source creation E2E test. These tests were not executed here.
+- NOT RUN: `timeout 120 cargo test -p opsbox-api --test deploy_http`, `timeout 120 cargo test -p opsbox-priv --test deploy`, and `timeout 120 cargo test -p opsbox-docker --test mock_daemon` all exited 127 (`cargo` unavailable). `timeout 120 multipass info opsbox-vm` exited 2 (`multipass socket access denied`). No VM resources, hosts entries or certs were modified.
+
+### Found, not fixed — 17: New image tag and network cleanup gaps
+
+`crates/opsbox-api/src/deploy.rs:1237` (`UpdateServiceBody`) has no image/source field. Redeploy pulls the stored image reference at `:2760`; changing `branch` does not select a new Docker image tag. Generic image deployment also has no volume configuration (`opsbox-docker/src/lib.rs:1651`). These are API/feature changes beyond this QA prompt's tiny-fix scope.
+
+Reproduce on a disposable dev server:
+1. Create an image service with `nginxdemos/hello`, port 80, memory 128 MB; PATCH the same service with a different valid `image` tag.
+2. Fetch/redeploy the service and inspect its source/pull logs: the stored image reference remains unchanged (unknown fields are ignored by the update body). The requested explicit new-tag workflow is unsupported through this endpoint.
+
+Suggested prompt: **Support changing Docker image references and define persistent mount support with image-source integration coverage.**
+
+`crates/opsbox-priv/src/ops/deploy.rs:1380` never removes a network; `crates/opsbox-docker/src/lib.rs:1476` creates the shared `opsbox-<project>` bridge. Thus deleting the last test app leaves that network. Removing it unconditionally would break sibling services; cleanup needs a defined project-network lifecycle. Container and directory cleanup errors are also ignored at `deploy.rs:1391,1404`.
+
+Reproduce on a disposable VM:
+1. Deploy the only app in a new QA project, note its network and app directory, then delete the app in the panel.
+2. Inspect Docker networks and the directory; the project network remains by source design. Injected removal failures can additionally leave containers/files while deletion reports success; this failure injection was not run here.
+
+Suggested prompt: **Define empty-project network cleanup and report partial service deletion failures.**
+
+### Owner checks — 17: Live image deploy, TLS, redeploy and rollback
+
+Use only a recoverable disposable `opsbox-vm` snapshot or disposable local dev server. Wrap every shell command in `timeout 120`.
+
+1. Run the three Rust test commands above with Cargo and local socket access. Add image-source API integration coverage for create/pull/tag, all four labels, plain/secret env, absent binds, 128 MiB memory, actual port forwarding and delete cleanup.
+2. Create a uniquely named QA project/app from `nginxdemos/hello`, port 80, health `/`, memory 128 MB, no domain, and harmless plain/secret test vars. Record project/app/container/image/network names. Inspect Docker to confirm labels, env, mounts, memory 134217728, loopback-only port binding and alias; curl the assigned loopback port inside the VM. Confirm Running, app logs, health success and restart in the panel. Do not expect configurable volumes or a zero-host-binding internal mode from this generic path.
+3. Add `qa17.opsbox.test` to the test client's hosts file pointing to the VM. Attach it to the app and install a self-signed test certificate using the proxy's supported certificate-import procedure. Verify HTTP routing and HTTPS using the test CA/certificate; never replace production certs. Record the import procedure and browser/log results, which remain untested here.
+4. Once explicit image-tag update is supported, redeploy with a second valid published tag and distinguishable response, observe the proxy switch, then roll back to the first retained release and verify the original response. A mutable-tag fixture may test retained-image rollback meanwhile, but does not satisfy explicit new-tag selection. Also test failed health preserving the old release and proxy unavailability during switch.
+5. Delete the QA app and inspect containers, image tags, app directory, domain routes/certificates and project network. Confirm sibling apps survive; document shared-network retention until its lifecycle is implemented. Remove only recorded test leftovers and restore the snapshot and hosts entries. Change row 17 to PASS only after the requested workflow and cleanup criteria pass.
+
+QA 17 Git completion: requested `timeout 120 git mv docs/prompts/qa/17-deploy-image-app.md docs/prompts/qa/archive/17-deploy-image-app.md` failed with `.git/index.lock: Operation not permitted` (exit 128). Archived with a filesystem rename instead. Git metadata is read-only in this session, so staging/commit/push require a host terminal with Git write access. Preserve unrelated `.agent-rules.md` and `docs/prompts/qa/gen.py`. Review/stage only QA 17 documentation and the rename on `dev`, then run:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/17-deploy-image-app.md docs/prompts/qa/archive/17-deploy-image-app.md
+timeout 120 git commit -m "qa 17: Deploy a Docker image app end to end"
+timeout 120 git push origin dev
+```
+
+No tag is needed for documentation-only changes.
