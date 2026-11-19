@@ -32,6 +32,8 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | 18 | Local backup and restore round trip | 2026-11-19 | PARTIAL | Local restic backup/list/restore source and mock coverage reviewed; Cargo/restic unavailable and Multipass socket denied. Exact DB/volume round trip, live audit/key checks and tamper refusal remain; DB streaming has a late-error partial-write risk. |
 
+| 24 | Export, uninstall, reinstall, import | 2026-11-19 | PARTIAL | Export sealing, import and keep/purge paths reviewed; raw Compose YAML can expose secrets, schema validation is incomplete, and sealing failures can report success. Cargo unavailable; VM socket denied, so live reinstall/data/login checks remain. |
+
 ## Found, not fixed
 
 ### 28 — GitHub repository features and release asset routing
@@ -600,6 +602,64 @@ QA 18 Git completion: requested `timeout 120 git mv docs/prompts/qa/18-backup-an
 ```sh
 timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/18-backup-and-restore-local.md docs/prompts/qa/archive/18-backup-and-restore-local.md
 timeout 120 git commit -m "qa 18: Local backup and restore round trip"
+timeout 120 git push origin dev
+```
+
+No tag is needed for documentation-only changes.
+
+## QA 24 — Export, uninstall, reinstall, import evidence (2026-11-19)
+
+- Reviewed the actual API files `crates/opsbox-api/src/export.rs` and `import.rs` (`src/config.rs` does not exist), `crates/opsbox-api/tests/import_http.rs` (not repository-root `tests/import_http.rs`), export tests, helper secrets and `crates/opsbox-priv/src/ops/uninstall.rs`. No `.codegraph/` index exists. No product code changed.
+- Export uses version header `opsbox-config/1`, interactive Admin authentication, password reauthentication and `no-store`. Designated secret vars, backup credentials and alert credentials are omitted with reentry markers by default, or sealed using Argon2id (32 MiB, 3 passes, 1 lane), random salt/nonce and XChaCha20-Poly1305 with format-bound AAD. Nonsecret vars remain plaintext by design; passwords/TOTP, sessions, private deploy keys, certificates and application data are excluded. The entire document is not encrypted or authenticated: the AEAD protects the secrets block only. Raw Compose content is an exception to the claimed secret sanitization, below.
+- Import checks format and required section presence before scheduling writes; a wrong passphrase fails authenticated decryption before task creation. It does not require or import the source master key: decrypted values are resealed through the destination helper (`import.rs:1050,1134,1270`, `deploy.rs:377`). Helper key loading requires exactly 32 bytes and no group/other permissions (`opsbox-priv/src/secrets.rs:114,152`); missing keys are created lazily. Kept databases require their original master key to continue opening existing secrets. Failure reporting is incomplete, below.
+- Keep/purge separation is explicit in `uninstall.rs:103,213`: both remove opsbox services/timers, binary symlink and release slots, and attempt user removal. Keep retains database/audit/proxy state, config/master key and local backups; purge additionally removes state, config, local backups and restic cache. Containers are retained in both modes, with a best-effort restart-policy update to `unless-stopped`; domain downtime is warned. Keeping the state directory does not keep its binary slots. Source includes temp-root removal tests, but does not prove live container survival or successful systemctl/user removal (commands are best effort).
+- `install.sh:464` preserves existing config; documented reinstall behavior reuses kept state (`docs/DECISIONS.md`, Prompt 16j). Export excludes credentials and active-container/deploy state; a fresh import creates undeployed configuration and needs a newly claimed admin, whereas keep-data reinstall should preserve the old login and app metadata. Import alone is not a backup or demonstrated container adoption mechanism.
+- Inspected existing tests, not executed: `import_http.rs` covers unknown format, wrong passphrase, same-server non-overwrite and export/import/export to a fresh store. Its comparison normalizes IDs/owners and removes ciphertext; it does not prove live reinstall, original login or imported secret usability. `export_http.rs` covers schema conformance, designated secret absence, encryption/tampering, authorization and audit. Its Compose fixture has no inline credential. Uninstall tests exercise keep, purge and dry-run removals under a temporary root.
+- NOT RUN: `timeout 120 cargo test -p opsbox-api --test import_http`, `timeout 120 cargo test -p opsbox-api --test export_http`, and `timeout 120 cargo test -p opsbox-priv ops::uninstall::tests` exited 127 (Cargo unavailable). `timeout 120 multipass info opsbox-vm` exited 2 (socket access denied). No live uninstall, purge, reinstall or data mutation was attempted.
+
+### Found, not fixed — 24: Export leaks inline Compose credentials
+
+`crates/opsbox-api/src/templates.rs:590` stores submitted Compose YAML verbatim; `crates/opsbox-api/src/export.rs:685` places `s.compose_yaml` directly in `composeProjects[].composeYaml` regardless of passphrase. Thus inline environment passwords or credential-bearing commands remain outside the sealed block. This is a source-observed path; a live leak was not reproduced. Correctly extracting, sealing and restoring arbitrary Compose secrets exceeds the tiny-fix limit.
+
+Reproduce on a disposable dev server:
+1. Create a QA Compose stack with an inline environment credential containing a unique harmless marker, then export once without and once with a passphrase.
+2. Search both downloaded JSON files for that marker: the raw YAML field carries it in plaintext. Require sanitization or whole-content sealing and regression coverage.
+
+Suggested prompt: **Protect inline Compose credentials in configuration exports and preserve import round trips.**
+
+### Found, not fixed — 24: Import accepts schema-invalid documents and can hide key failures
+
+`crates/opsbox-api/src/import.rs:69` checks required section presence, the format, services-array type and secrets-object type only. It does not enforce `docs/schemas/config-export-v1.json`, nested field types or required metadata; planning skips malformed entries and apply supplies defaults (`:829`). Full validation is broader than a tiny QA fix.
+
+Reproduce on a disposable dev server:
+1. Export a valid config, change `composeProjects` to a number and remove `host` (leave services and secrets valid).
+2. Submit authenticated import preview: source permits these schema violations rather than rejecting them; compare with the checked-in schema. This reproduction remains unexecuted here.
+
+Suggested prompt: **Validate the complete config import schema before preview or writes.**
+
+`import.rs:1050` logs variable-sealing errors and continues; backup credential sealing at `:1134` converts errors to `None` using `.ok()`. The final task can still succeed (`:1379`), leaving unset vars or credentialless destinations. A destination key/permission failure is therefore not reliably surfaced as an import failure. Validation of a key's size/mode also cannot prove that a different valid key opens a kept database.
+
+Reproduce on a disposable test harness:
+1. Import a valid sealed config into a fresh fixture whose helper rejects SecretSeal (or uses an invalid-length/insecure-mode destination key); include secret vars and a backup destination.
+2. Inspect task status/logs and stored credentials: require explicit failed/partial reporting rather than success with missing secrets, and verify no silent loss. This failure injection was not executed here.
+
+Suggested prompt: **Propagate import sealing failures and verify recovery across distinct master keys.**
+
+### Owner checks — 24: Disposable VM round trip
+
+Use only a recoverable disposable `opsbox-vm` snapshot or disposable local dev server; wrap each shell command in `timeout 120`.
+
+1. Run the three Rust test commands above with Cargo available, plus `timeout 120 cargo test -p opsbox-priv secrets::tests`. Add regressions for the three findings, malformed schemas and destination key failures; compare decrypted imported secret values across distinct source/destination keys rather than ciphertext equality.
+2. Record managed container IDs/restart policies, app-file hashes, DB fixture rows, service settings and admin login. Export through Settings with and without a passphrase; check format, reentry markers, absence of designated and inline test secrets, wrong-passphrase/ciphertext-tamper refusal and correct secret decryption. Keep files private and do not record key material here.
+3. Review `opsbox uninstall --keep-data` plan and confirm services/timers/binary slots are removed while containers keep their IDs and remain running, volumes/files/DB rows are unchanged, and database/config/master key/local backups remain. Expect proxy domain downtime. Never run purge for this keep-data check.
+4. Reinstall via the documented install path. Verify the retained master key/config/database were reused, old admin password/TOTP works, and apps/containers/data are recognized without duplicate deployments. Preview/apply the export; confirm existing objects are skipped and settings/secrets stay usable.
+5. Separately test fresh reinstall/claim in an isolated fixture: create a new admin through the documented setup/claim flow before importing. Confirm old credentials are not restored from export, imported services start undeployed, reentry/DNS/GitHub warnings are accurate, and application data is recovered using backups where needed. Test purge only in a separate disposable snapshot and compare its removed/kept plan with actual paths. Restore snapshots afterward. Keep row 24 PARTIAL until live checks and findings are resolved.
+
+QA 24 Git completion: requested `timeout 120 git mv docs/prompts/qa/24-export-import-uninstall.md docs/prompts/qa/archive/24-export-import-uninstall.md` failed with `.git/index.lock: Operation not permitted` (exit 128). Archived using a filesystem rename instead. Git metadata is read-only in this session, preventing staging/commit/push. On a host terminal with Git write access, preserve unrelated `.agent-rules.md` and `docs/prompts/qa/gen.py`, review only QA 24 changes on `dev`, then run:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/24-export-import-uninstall.md docs/prompts/qa/archive/24-export-import-uninstall.md
+timeout 120 git commit -m "qa 24: Export, uninstall, reinstall, import"
 timeout 120 git push origin dev
 ```
 
