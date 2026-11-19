@@ -28,7 +28,7 @@ async function panel(accept) {
     },
   };
   const context = createContext({
-    document, location: { search: '?mode=http' }, URLSearchParams, console,
+    document, location: { search: '?mode=http' }, URLSearchParams, console, AbortController,
     setTimeout, clearTimeout, setInterval, clearInterval,
     fetch: async (path, options) => {
       requests.push({ path, method: options.method });

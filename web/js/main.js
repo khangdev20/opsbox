@@ -2,7 +2,7 @@
 import { applyTheme, initialTheme, session, server, listeners, applySession } from './store.js';
 import * as api from './api.js';
 import { mountShell, unmountShell, setNav, refreshStatus } from './shell.js';
-import { toast, confirmDialog, formDialog, keepOrUndoDialog, initUi, reportPoll, liveState, skeletonPage } from './ui.js';
+import { html, btn, toast, confirmDialog, formDialog, keepOrUndoDialog, initUi, reportPoll, liveState, skeletonPage } from './ui.js';
 
 applyTheme(initialTheme());
 initUi();
@@ -58,9 +58,16 @@ async function navigate() {
     if (!bare) setNav(page.nav);
     const host = document.createElement('div'); host.style.cssText = 'flex:1;display:flex;flex-direction:column'; host.innerHTML = page.html.toString(); if (!bare) host.classList.add('page-in');
     root.replaceChildren(host); document.title = `opsbox — ${page.title}`; window.scrollTo(0, 0);
-    current = page; if (page.mount) page.mount(host);
+    current = page; if (page.mount) await page.mount(host);
+    if (my !== gen) return;
     markSampleData(host, name);
-  } catch (e) { clearTimeout(sk); console.error(e); root.innerHTML = `<main><h1>Something went wrong</h1><p class="muted">${String(e.message || e).replace(/</g, '&lt;')}</p></main>`; }
+  } catch (e) {
+    clearTimeout(sk);
+    if (my !== gen) return;
+    console.error(e);
+    root.innerHTML = html`<main><h1>Something went wrong</h1><p class="muted" role="alert">${e.message || String(e)}</p>${btn('Retry', { act: 'retry' })}</main>`.toString();
+    root.querySelector('[data-act="retry"]').addEventListener('click', navigate);
+  }
   if (!bare) { ensureStream(); refreshStatus(); }
 }
 window.addEventListener('hashchange', navigate);

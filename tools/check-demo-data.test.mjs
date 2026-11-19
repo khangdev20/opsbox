@@ -32,7 +32,7 @@ async function panel(mode, respond = async () => { throw new Error('API unavaila
   const context = createContext({
     document, window: { addEventListener() {} },
     location: { search: `?mode=${mode}`, protocol: 'https:', port: '8443', host: 'real-panel.test', hash: '#/' },
-    URLSearchParams, console, setTimeout, clearTimeout,
+    URLSearchParams, console, setTimeout, clearTimeout, AbortController,
     setInterval() { return 0; }, clearInterval() {},
     WebSocket: class {
       constructor(url) { this.url = url; sockets.push(this); }

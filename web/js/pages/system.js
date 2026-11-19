@@ -25,7 +25,7 @@ export async function view({ path } = {}) {
 
   const loadCapacity = async () => {
     const [cap, containers] = await Promise.all([
-      api.getCapacity().catch(() => null),
+      api.getCapacity(),
       api.listContainers().catch(() => []),
     ]);
     lastCap = cap;
@@ -93,7 +93,13 @@ export async function view({ path } = {}) {
     setTabHash(tab);
     patch(root.querySelector('#t'), tabs(TAB_LABELS, tab).toString());
     const mine = tab;
-    const h = (await panes[tab]()).toString();
+    let h;
+    try { h = (await panes[tab]()).toString(); }
+    catch (e) {
+      if (mine !== tab) return;
+      patch(root.querySelector('#b'), html`<div role="alert">${empty(e.message || String(e), btn('Retry', { act: 'retry' }))}</div>`.toString(), { animate: false });
+      return;
+    }
     if (mine !== tab) return; // the person already moved to another tab
     patch(root.querySelector('#b'), h, fresh ? { animate: false } : undefined);
     if (tab === 0) syncPackageSelection();
@@ -124,6 +130,7 @@ export async function view({ path } = {}) {
         else if (e.target.id === 'jp') { jq.prio = +e.target.value; await paint(); }
       });
       bindActions(root, {
+        retry: () => paint(true),
         tab: async (el) => { tab = +el.dataset.i; await paint(true); },
         inst: async (el) => { const selected = packageInputs().filter((x) => x.checked).map((x) => x.value); if (el.dataset.w === 'selected' && !selected.length) { toast('Select at least one package.', 'err'); return; } const r = await api.installUpdates(el.dataset.w, selected); toast(`Installed ${r.installed} updates.`); await paint(); },
         autoup: async (el) => { await api.setAutoUpdates(el.getAttribute('aria-checked') !== 'true'); await paint(); },

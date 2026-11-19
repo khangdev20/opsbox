@@ -5,7 +5,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | # | Check | Date | Result | Notes |
 |---|---|---|---|---|
-| 13 | Empty and error states on every page | 2026-11-19 | PARTIAL | Source review of all nine pages: core Apps/Containers/Backups/Alerts empty states exist; Files and System have empty-state gaps; request failures lack retries and System can retain its skeleton. VM and slow-3G checks unavailable; see QA 13 details below. |
+| 13 | Empty and error states on every page | 2026-11-19 | PARTIAL | System pane errors and router view/mount Retry: Fixed in fix 10. Files/System empty-state gaps and other section retries remain; VM and slow-3G checks unavailable. See QA 13 details below. |
 | 12 | Keyboard use and visible focus | 2026-11-19 | PASS | Visible focus indicators (:focus-visible) enforced across dark and light themes; Escape closes dialogs, drawer, and account/notification menus; focus trap and return-to-opener implemented; form fields have labels and errors use role="alert". |
 | 11 | Phone widths: no sideways scroll, targets big enough | 2026-11-19 | PARTIAL | Responsive source checks pass; 360/390px live layout, drawer, sheets and keyboard checks blocked by VM/local-server permissions; source shows undersized touch controls. |
 | 10 | Nothing in http mode still uses sample data | 2026-11-20 | Fixed in fix 02 | Node regression checks cover failed HTTP requests, neutral hostname, missing repository, malformed GitHub settings and guarded demo exports; demo samples and real deploy-log routing pass. Live VM checks remain owner work. |
@@ -16,7 +16,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 06 | No secret in any API response | 2026-11-19 | PASS | All secret fields (env vars, DB connection strings, webhook secret, backup credentials) masked with `••••`; reveal requires re-auth, audited, returns `no-store`, tokens denied. |
 | 07 | Login, lockout, TOTP and session revoke | 2026-11-19 | PASS | 5 failed logins locks account/IP with Retry-After; generic error message prevents user enumeration; TOTP replay rejected via totp_last_step monotonic check; session revoke & password change invalidate sessions server-side; setup claim returns 404 once claimed. |
 | 08 | Roles: deployer and viewer cannot do admin things | 2026-11-19 | PASS | Enforced across all API endpoints: viewer is read-only, deployer manages apps/containers without admin/system/terminal access, admin actions by viewer/deployer cleanly refused with 403 Forbidden. |
-| 09 | Every page: zero console errors, zero failed requests | 2026-11-19 | PARTIAL | Readable API failure messages verified; network/mock checks pass. Browser sweep blocked by VM/localhost permissions; async System mount and request deadline gaps documented. |
+| 09 | Every page: zero console errors, zero failed requests | 2026-11-19 | PARTIAL | Request deadlines and async mount recovery: Fixed in fix 10 (26 Node/DOM tests pass). Browser sweep remains blocked by VM/localhost permissions. |
 | 28 | README, install page and links | 2026-11-19 | PASS | Verified links, install scripts, and screenshots; all internal links pass; releases/latest and Discussions/Pages caveats documented for owner. |
 | 14 | Capacity guard on the 1 GB VM | 2026-11-19 | PARTIAL | Installer and UI checks pass; policy reserves 470 MiB baseline, permits small Docker apps and blocks builds without 1536 MiB headroom. Live VM denied; Cargo unavailable; PostgreSQL refusal depends on headroom. |
 | 27 | Dependencies and lint, fast | 2026-11-19 | PASS | cargo fmt clean; cargo clippy workspace 0 warnings; Cargo.lock intact & consistent; 385/385 dependencies verified against crates.io (zero yanked); web/vendor licenses (MIT) and file hashes verified; zero JS build vulnerabilities. |
@@ -257,16 +257,24 @@ timeout 120 git push origin dev
 After CI passes, tag the next unused `v0.1.0-alpha.<N+1>` per `docs/prompts/CONVENTIONS.md`. On the disposable VM, block `/api/v1/host` and reload: the shell must show `This server`. Open `?mode=http#/apps/new/configure` without a repository: deployment must be unavailable until a source is selected. Open Settings with `github: true` in the intercepted response: no invented identity may appear. Finally, `?mode=mock` must still render sample host, repository and GitHub values.
 
 
-## Found, not fixed — QA 09
+## Fixed in fix 10 — QA 09: API deadlines and async mounts
 
-- **Async System mount rejection:** `web/js/main.js:61` calls `page.mount(host)` without awaiting its promise. `web/js/pages/system.js:93` awaits `paint(true)`; a failed pane request at line 73 bypasses the router catch and can leave the skeleton visible. The global unhandled-rejection listener (`web/js/main.js:95`) only shows a toast; it neither handles that promise nor replaces the skeleton. Source-confirmed; browser reproduction pending.
-  Reproduce: intercept `/api/v1/updates` with HTTP 503 on a disposable panel.
-  Navigate directly to `#/system/updates`; inspect unhandled rejections and the persistent skeleton. Suggested prompt: **Await page mounts and render retryable System load errors**.
-- **No API request deadline:** `web/js/api.js:123`–139 awaits fetch without an abort signal or timeout. An isolated Node assertion confirmed an unresolved fetch remains pending after 100 ms and receives no signal; this does not measure a browser timeout. A stalled initial request can keep boot/loading pending until the browser/network terminates it. Rejected initial views also explicitly call `console.error` (`web/js/main.js:63`).
-  Reproduce: intercept `/api/v1/host` and leave it unresolved on a disposable panel.
-  Load `#/`; observe loading, then reject the request and inspect the readable message and router console error. Suggested prompt: **Bound API requests and provide recoverable page load errors**.
+- **Async System mount rejection — Fixed in fix 10:** the router awaits mounts in its try/catch and renders the standard escaped error view with Retry. System catches initial and later pane failures, including Capacity failures, replaces loading/old content with an error, and binds Retry even after the first load fails. An older mount rejection cannot replace a newer route.
+- **No API request deadline — Fixed in fix 10:** shared HTTP requests receive an AbortController signal and fail with `The server did not answer in time. Try again.` after 30 seconds. System/update checks, cleanup scans (including fresh scans), and backup endpoints allow 120 seconds. The deadline covers body parsing and fetch implementations that ignore abort; success and error settlement clear the timer. Existing server task polling limits remain unchanged.
 
-No production code changed; route lifecycle, cancellation and retry behavior need a focused follow-up with browser verification.
+Validation (2026-11-20): tests were added and failed before the production fix. `timeout 120 node --experimental-vm-modules --test tools/check-api-errors.test.mjs tools/check-demo-data.test.mjs tools/check-firewall-guard.test.mjs` passes all 26 tests. New checks cover hung fetch/body deadlines, abort signals, slow endpoints, timer cleanup, preserved error messages, rejected async mounts, escaped error text, working router/System Retry, and failed later tabs. Existing network, capacity, update-status, alerts and mock-api checks pass. Forms, FLIP, responsive and notification checks were attempted: their browser portions fail with sandbox `listen EPERM` on 127.0.0.1; FLIP/responsive source checks pass. No routes, PrivOps or UI map changed.
+
+Owner check for fix 10: `timeout 120 multipass info opsbox-vm` reports socket access denied here. On disposable `opsbox-vm`, build from `/home/ubuntu/opsbox` with `CARGO_TARGET_DIR=~/target cargo build --release`, reinstall with `sudo sh install.sh --dev --binary ~/target/release/opsbox`, and open the panel through `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`. At 390 px, inject a stalled `/api/v1/host` response: within 30 seconds expect the readable timeout with Retry; unblock and Retry must recover. On `#/system/services`, stall `/api/v1/system/units` (or reject its request) and verify an inline error replaces the skeleton, with no unhandled rejection; restore and Retry must load the pane. Repeat Updates with `/api/v1/system/updates` and its 120-second deadline. Inject HTTP 503 into a System pane and confirm it fails safely with error/Retry, without showing successful data. Rerun the four browser checks from a host terminal with local-server access.
+
+Fix 10 Git completion: this sandbox denies `.git/FETCH_HEAD` and `.git/index.lock`; the prompt is archived by filesystem rename. From a host terminal with Git write access, review the scoped diff on `dev`, then run:
+
+```sh
+timeout 120 git add -A -- web/js/api.js web/js/main.js web/js/pages/system.js tools/check-api-errors.test.mjs tools/check-demo-data.test.mjs tools/check-firewall-guard.test.mjs docs/DECISIONS.md docs/QA.md docs/STATUS.md docs/prompts/fix/README.md docs/prompts/fix/10-api-timeout-and-mount-errors.md docs/prompts/fix/archive/10-api-timeout-and-mount-errors.md
+timeout 120 git commit -m "fix 10: Requests never time out and a failed System tab stays on the skeleton"
+timeout 120 git push origin dev
+```
+
+After CI passes, tag the next unused `v0.1.0-alpha.<N+1>` per `docs/prompts/CONVENTIONS.md`. Commit, push, CI/release and live browser verification remain owner work.
 
 ## Owner checks — QA 09
 
@@ -320,19 +328,18 @@ Source review only; these findings are not browser observations. No application 
 | Alerts | `web/js/pages/alerts.js:28,32`: no active alerts/no history explained; channels offer Connect and Send test, with expectations at `:38`. | `:22`: initial failure propagates to router; polling failures retain old content and report connection status through shared poll handling. |
 | Files | `web/js/pages/files.js:29–33`: zero entries produces an empty table at root, or only ../ elsewhere. Upload and New folder controls exist (`:57`), but no explicit empty-folder message. | `:26–27`: initial failure propagates to router; editor-load failure displays escaped error text (`:52`) without a retry. |
 | Terminal | `web/js/pages/terminal.js:119–126`: administrator restriction and no ordinary account guidance; New session is available after users load. | `:120,144`: user-list failure shows the error callout, then mount returns without binding a retry. Session connection failures can be retried with New session. |
-| System | `web/js/pages/system.js:42`: no updates explained; journal says No entries (`:52`). Zero services/jobs/firewall rules use bare tables (`:44,53,55`); jobs/rules retain Add controls. | `:69–75,91–93`: pane failure rejects async mount before replacing skeleton/binding controls. Router does not await mount (`web/js/main.js:61`), so its catch cannot render this error; global rejection only toasts. Capacity failure has helper guidance (`web/js/capacity.js:263`) without retry. |
+| System | `web/js/pages/system.js:42`: no updates explained; journal says No entries (`:52`). Zero services/jobs/firewall rules use bare tables (`:44,53,55`); jobs/rules retain Add controls. | Fixed in fix 10: pane failures replace the skeleton/previous pane with escaped error text and Retry, including Capacity. Router awaits mounts and renders Retry on rejection. |
 | Settings | Configuration page does not require apps/containers/backups/alerts/files; relevant absent integration/configuration controls are rendered independently of those collections. | `web/js/pages/settings.js:33`: main failure propagates to router. Disk errors have text (`:231`) but no retry; proxy-network errors are passed to networkCard (`:34,242`). |
 
 ### Findings and reproduction
 
 1. **Missing recovery controls across pages** — `web/js/main.js:52,63`, `web/js/pages/terminal.js:120,144`, `web/js/pages/settings.js:231`.
    - On a disposable local server, reject a page's initial data request, Terminal users request, or Settings disk request; open/reload the affected page.
-   - Observe error markup has no Retry control; module-import failure uses a raw exception in a pre block. Expected: readable context and an explicit retry that restores the page.
+   - Router view/mount Retry is Fixed in fix 10. Module-import failure still uses a raw exception in a pre block; Terminal/Settings section recovery remains open. Expected: readable context and an explicit retry that restores the page.
    - Suggested prompt: **Add consistent page and section error states with retry actions**.
-2. **System can retain its loading skeleton after failure** — `web/js/pages/system.js:69–75,91–96`; `web/js/main.js:61`.
+2. **Fixed in fix 10 — System can retain its loading skeleton after failure** — `web/js/pages/system.js`; `web/js/main.js`.
    - Reject getUpdates on initial System load, or another pane request when selecting its tab.
-   - Initial mount rejects before replacing the skeleton and binding controls; a later tab failure can retain the previous pane. Expected: inline error and Retry. Confirm behavior in the browser.
-   - Suggested prompt: **Handle System pane loading failures and bind recovery controls**.
+   - Initial and later pane failures now replace loading/old content with an inline error and working Retry; async mount rejection reaches router error handling. Node/DOM regressions pass; live browser verification remains an owner check above.
 3. **Empty collection guidance is incomplete** — `web/js/pages/files.js:29–33`, `web/js/pages/system.js:44,53,55`, `web/js/pages/backups.js:66`.
    - Open an allowed empty folder; return zero services/jobs/firewall rules in disposable fixtures; view zero snapshots as a non-admin.
    - Files/System render bare tables (or only the parent-folder row); Backups instructs non-admins to use a hidden action. Expected: explain absence and offer a role-appropriate next step.

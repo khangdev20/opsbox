@@ -573,3 +573,7 @@ Five restarts per unit in ten minutes trigger existing escalation even with heal
 ## Fix 09 — Kernel-owned nft emergency SSH expiry
 Use IPv4/IPv6 address-and-port nft sets with native one-hour element timeouts; the allowance expires independently of watchdog housekeeping or restarts.
 Create the set and accept rule atomically on first use; atomically delete/re-add an existing element to renew its deadline without accumulating accept rules.
+
+## Fix 10 — Bound API requests and recover failed mounts
+Abort shared HTTP requests after 30 seconds, or 120 seconds for update checks, cleanup scans and backups; race the complete response against the deadline and clear timers on settlement.
+Await page mounts inside router error handling; render escaped errors with Retry in the router and System panes, preserving newer navigation when an older mount fails.

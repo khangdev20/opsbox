@@ -119,13 +119,31 @@ function cookie(name) {
 
 // One fetch helper for every real endpoint. Errors carry the server's own
 // sentence (docs/BACKEND_SPEC.md 6.1), which the UI shows verbatim.
-async function http(path, { method = 'GET', body, onResponse } = {}) {
+async function http(path, options = {}) {
+  // These operations may synchronously scan disks or contact upstream servers.
+  const slow = /^(?:\/system\/updates(?:\?|$)|\/updates\/check(?:\?|$)|\/cleanup\/scan(?:\?|$)|\/backups(?:\/|\?|$))/.test(path);
+  const controller = new AbortController();
+  let timer;
+  const deadline = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error('The server did not answer in time. Try again.'));
+      controller.abort();
+    }, slow ? 120000 : 30000);
+  });
+  try {
+    // Race also bounds a stalled response body (or a fetch that ignores abort).
+    return await Promise.race([httpRequest(path, { ...options, signal: controller.signal }), deadline]);
+  } finally { clearTimeout(timer); }
+}
+
+async function httpRequest(path, { method = 'GET', body, onResponse, signal } = {}) {
   let res;
   try {
     // Double-submit CSRF: the page echoes the (script-readable) cookie in a header.
     const csrf = method === 'GET' ? '' : cookie('opsbox_csrf');
     res = await fetch('/api/v1' + path, {
       method,
+      signal,
       credentials: 'same-origin',
       headers: {
         Accept: 'application/json',
