@@ -33,6 +33,8 @@ confidence-threshold = 0.8
 deny = [{ name = "native-tls" }, { name = "openssl" }, { name = "openssl-sys" }]
 multiple-versions = "allow"
 wildcards = "deny"
+# Private workspace crates use local path dependencies; registry versions stay constrained.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
