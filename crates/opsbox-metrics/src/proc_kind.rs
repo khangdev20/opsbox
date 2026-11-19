@@ -192,14 +192,17 @@ fn extract_docker_id(path: &str) -> Option<String> {
 
 fn extract_system_unit(path: &str) -> Option<String> {
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
-    if parts.iter().any(|p| *p == "user.slice") {
+    if parts.contains(&"user.slice") {
         return None;
     }
-    if !parts.iter().any(|p| *p == "system.slice") {
+    if !parts.contains(&"system.slice") {
         return None;
     }
     // A docker scope under system.slice is a container, already handled above.
-    if parts.iter().any(|p| p.starts_with("docker-") && p.ends_with(".scope")) {
+    if parts
+        .iter()
+        .any(|p| p.starts_with("docker-") && p.ends_with(".scope"))
+    {
         return None;
     }
     let last = *parts.last()?;
@@ -345,7 +348,10 @@ mod tests {
         let a = cache.resolve(42, &docker);
         assert_eq!(a.kind, ProcKind::Container);
         assert_eq!(a.container.as_ref().unwrap().name, "web-app");
-        assert_eq!(a.container.as_ref().unwrap().service.as_deref(), Some("web"));
+        assert_eq!(
+            a.container.as_ref().unwrap().service.as_deref(),
+            Some("web")
+        );
         // Corrupt the file: a cache hit must not re-read.
         std::fs::write(pid_dir.join("cgroup"), "0::/system.slice/nginx.service\n").unwrap();
         let b = cache.resolve(42, &docker);
@@ -360,10 +366,7 @@ mod tests {
     #[test]
     fn unresolved_container_id_still_marks_kind() {
         let id = "d".repeat(64);
-        let got = resolve_text(
-            Some(&format!("0::/docker/{id}\n")),
-            &[],
-        );
+        let got = resolve_text(Some(&format!("0::/docker/{id}\n")), &[]);
         assert_eq!(got.kind, ProcKind::Container);
         assert_eq!(got.container.as_ref().unwrap().id, id[..12]);
         assert!(got.container.as_ref().unwrap().service.is_none());

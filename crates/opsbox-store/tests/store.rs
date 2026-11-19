@@ -164,7 +164,12 @@ fn users_are_unique_case_insensitively_and_roles_round_trip() {
     let store = Store::open_in_memory().unwrap();
     let u = store.create_user("Alice", Role::Deployer, "h", 10).unwrap();
     assert_eq!(
-        (u.role, u.totp_enabled, u.totp_secret.clone(), u.display_name.clone()),
+        (
+            u.role,
+            u.totp_enabled,
+            u.totp_secret.clone(),
+            u.display_name.clone()
+        ),
         (Role::Deployer, false, None, None)
     );
     assert!(store.create_user("alice", Role::Viewer, "h", 11).is_err());
@@ -178,15 +183,14 @@ fn display_name_round_trips_and_formats_audit_actor() {
     let store = Store::open_in_memory().unwrap();
     let u = store.create_user("alice", Role::Admin, "h", 1).unwrap();
     assert_eq!(u.actor_label(), "alice");
-    store.set_display_name(&u.id, Some("Alice Nguyen"), 2).unwrap();
+    store
+        .set_display_name(&u.id, Some("Alice Nguyen"), 2)
+        .unwrap();
     let u = store.user_by_id(&u.id).unwrap().unwrap();
     assert_eq!(u.display_name.as_deref(), Some("Alice Nguyen"));
     assert_eq!(u.actor_label(), "Alice Nguyen (alice)");
     store.set_display_name(&u.id, None, 3).unwrap();
-    assert_eq!(
-        store.user_by_id(&u.id).unwrap().unwrap().display_name,
-        None
-    );
+    assert_eq!(store.user_by_id(&u.id).unwrap().unwrap().display_name, None);
 }
 
 #[test]
@@ -247,7 +251,12 @@ fn migration_thirteen_adds_display_name_on_an_existing_database() {
     assert!(u.display_name.is_none());
     store.set_display_name(&u.id, Some("Alice"), 2).unwrap();
     assert_eq!(
-        store.user_by_id(&u.id).unwrap().unwrap().display_name.as_deref(),
+        store
+            .user_by_id(&u.id)
+            .unwrap()
+            .unwrap()
+            .display_name
+            .as_deref(),
         Some("Alice")
     );
 }

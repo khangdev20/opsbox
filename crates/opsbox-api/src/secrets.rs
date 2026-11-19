@@ -27,6 +27,7 @@ pub const REAUTH_TTL: Duration = Duration::from_secs(5 * 60);
 pub const MASKED_UNKNOWN: &str = "••••••••";
 
 /// Prefix used when a known plaintext is masked for display.
+#[allow(dead_code)]
 const MASK_PREFIX: &str = "••••";
 
 /// In-memory map of session id → last successful re-authentication.
@@ -58,6 +59,7 @@ impl ReauthGate {
 
 /// Mask a known plaintext: `••••` plus at most the last four characters.
 /// Short values (≤ 4 characters) are fully hidden so the mask cannot leak them.
+#[allow(dead_code)]
 pub fn mask_value(plaintext: &str) -> String {
     let chars: Vec<char> = plaintext.chars().collect();
     if chars.len() <= 4 {
@@ -69,6 +71,7 @@ pub fn mask_value(plaintext: &str) -> String {
 
 /// Display value for a secret field on list/detail endpoints.
 /// When `plaintext` is `Some`, returns `••••` + last4; otherwise the sealed placeholder.
+#[allow(dead_code)]
 pub fn masked_display(plaintext: Option<&str>) -> String {
     match plaintext {
         Some(v) => mask_value(v),
@@ -157,9 +160,7 @@ pub async fn ensure_reauth(
     if let Some(pw) = password {
         accepted = state.auth.verify_user_password(&who.user.id, pw).await?;
     }
-    if !accepted
-        && let Some(c) = code
-    {
+    if !accepted && let Some(c) = code {
         accepted = state
             .auth
             .verify_user_totp(rid, &who.user.id, c, ip)
@@ -335,11 +336,7 @@ mod tests {
     fn response_types_with_secrets_serialize_masked() {
         // Marker must never appear when serialising list/detail shapes.
         const MARKER: &str = "marker-SECRET-value-zz9Q";
-        let var_row = json!([
-            "DATABASE_URL",
-            masked_display(None),
-            true
-        ]);
+        let var_row = json!(["DATABASE_URL", masked_display(None), true]);
         let dest = json!({
             "id": "d1",
             "hasCredentials": true,
@@ -356,10 +353,14 @@ mod tests {
             "value": mask_value(MARKER),
             "masked": true,
         });
-        let blob = json!({ "vars": [var_row], "dest": dest, "channel": channel, "env": docker_env });
+        let blob =
+            json!({ "vars": [var_row], "dest": dest, "channel": channel, "env": docker_env });
         let text = blob.to_string();
         assert!(!text.contains(MARKER), "{text}");
-        assert!(text.contains(MASKED_UNKNOWN) || text.contains("••••"), "{text}");
+        assert!(
+            text.contains(MASKED_UNKNOWN) || text.contains("••••"),
+            "{text}"
+        );
         assert_eq!(docker_env["value"], json!(mask_value(MARKER)));
     }
 }

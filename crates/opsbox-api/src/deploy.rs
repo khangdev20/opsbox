@@ -156,7 +156,11 @@ impl DeployHub {
     }
 
     /// Register plaintext secrets that must never appear in deploy log lines.
-    pub(crate) fn add_scrub_secrets(stream: &DeployStream, secrets: impl IntoIterator<Item = String>) {
+    #[allow(dead_code)]
+    pub(crate) fn add_scrub_secrets(
+        stream: &DeployStream,
+        secrets: impl IntoIterator<Item = String>,
+    ) {
         let mut scrub = stream.scrub.lock().unwrap();
         for s in secrets {
             if s.len() >= 4 && !scrub.iter().any(|e| e == &s) {
@@ -1798,17 +1802,18 @@ pub(crate) async fn reveal_var(
     Path((id, key)): Path<(String, String)>,
     ApiJson(body): ApiJson<ReauthBody>,
 ) -> Result<(HeaderMap, Json<Value>), HttpError> {
-    begin_reveal(&state, &who, &rid, &client.ip, &body).await.map_err(|e| {
-        secrets::audit_reveal_denied(
-            &state,
-            &who,
-            &client.ip,
-            "service.var.reveal.denied",
-            Some(&id),
-            "reauth",
-        );
-        e
-    })?;
+    begin_reveal(&state, &who, &rid, &client.ip, &body)
+        .await
+        .inspect_err(|_| {
+            secrets::audit_reveal_denied(
+                &state,
+                &who,
+                &client.ip,
+                "service.var.reveal.denied",
+                Some(&id),
+                "reauth",
+            );
+        })?;
     let key = key.trim().to_owned();
     let svc = state
         .store

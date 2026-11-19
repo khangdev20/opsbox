@@ -11,9 +11,7 @@ use tokio::sync::Semaphore;
 use tracing::{error, warn};
 
 use crate::lockout::{self, WINDOW_SECS};
-use crate::password::{
-    HashParams, Hasher, check_display_name, check_new_password, check_username,
-};
+use crate::password::{HashParams, Hasher, check_display_name, check_new_password, check_username};
 use crate::setup_token;
 use crate::tokens::{self, csrf_token, hash_token, new_token};
 
@@ -852,6 +850,7 @@ impl Auth {
     }
 
     /// Step 2: create the admin account and start two-factor enrolment for it.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_admin(
         &self,
         request_id: &str,
@@ -1154,7 +1153,9 @@ impl Auth {
         // display name set by the admin (if any).
         let display = match display_name {
             None => None,
-            Some(raw) => Some(check_display_name(Some(raw)).map_err(|m| invalid("display_name", m))?),
+            Some(raw) => {
+                Some(check_display_name(Some(raw)).map_err(|m| invalid("display_name", m))?)
+            }
         };
         let hash = self.hash_password(password).await?;
         // Use the link up first: two people racing with the same link cannot both win.

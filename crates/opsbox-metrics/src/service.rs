@@ -299,11 +299,7 @@ impl Metrics {
 }
 
 /// Read `/proc/<pid>/cgroup` only for the top-N list; cache by PID until exit.
-fn enrich_top_procs(
-    snap: &mut Snapshot,
-    cache: &mut ProcKindCache,
-    docker: &[DockerIndexEntry],
-) {
+fn enrich_top_procs(snap: &mut Snapshot, cache: &mut ProcKindCache, docker: &[DockerIndexEntry]) {
     let live: Vec<u32> = snap.procs.iter().map(|p| p.pid).collect();
     cache.retain(&live);
     for p in &mut snap.procs {

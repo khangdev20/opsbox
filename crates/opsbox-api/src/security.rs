@@ -464,7 +464,12 @@ fn audit_filter(q: &AuditQuery, for_list: bool) -> Result<AuditFilter, HttpError
         0
     };
     Ok(AuditFilter {
-        actor: q.actor.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
+        actor: q
+            .actor
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         action_prefix: q
             .action
             .as_deref()
@@ -472,8 +477,18 @@ fn audit_filter(q: &AuditQuery, for_list: bool) -> Result<AuditFilter, HttpError
             .filter(|s| !s.is_empty())
             .map(str::to_owned),
         result,
-        from: q.from.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
-        to: q.to.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
+        from: q
+            .from
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        to: q
+            .to
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
         before_seq: if for_list { q.cursor } else { None },
         limit,
     })
@@ -568,7 +583,7 @@ pub(crate) async fn export_audit_csv(
                     format!("# chain: failed\n# entries: {count}\n")
                 }
             },
-            _ => format!("# chain: ok\n# entries: 0\n# first_hash: \n# last_hash: \n"),
+            _ => "# chain: ok\n# entries: 0\n# first_hash: \n# last_hash: \n".to_string(),
         };
         send(verify_line);
     });
@@ -583,15 +598,15 @@ pub(crate) async fn export_audit_csv(
     );
 
     let stream = unfold(rx, |mut rx| async move {
-        match rx.recv().await {
-            Some(item) => Some((item, rx)),
-            None => None,
-        }
+        rx.recv().await.map(|item| (item, rx))
     });
     let mut resp = Response::new(Body::from_stream(stream));
     *resp.status_mut() = StatusCode::OK;
     let h = resp.headers_mut();
-    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/csv; charset=utf-8"));
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     h.insert(
         "x-content-type-options",

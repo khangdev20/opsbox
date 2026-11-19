@@ -1837,12 +1837,7 @@ impl PrivClient {
         .await
     }
 
-    pub async fn uninstall(
-        &self,
-        rid: &str,
-        actor: &str,
-        purge: bool,
-    ) -> Result<(), ClientError> {
+    pub async fn uninstall(&self, rid: &str, actor: &str, purge: bool) -> Result<(), ClientError> {
         self.done(rid, actor, PrivOp::Uninstall { purge }).await
     }
 }

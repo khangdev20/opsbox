@@ -90,11 +90,22 @@ async fn processes_are_real_and_include_this_one() {
             "{p}"
         );
         if kind == "container" {
-            assert!(p["container"]["id"].as_str().is_some_and(|s| !s.is_empty()), "{p}");
-            assert!(p["container"]["name"].as_str().is_some_and(|s| !s.is_empty()), "{p}");
+            assert!(
+                p["container"]["id"].as_str().is_some_and(|s| !s.is_empty()),
+                "{p}"
+            );
+            assert!(
+                p["container"]["name"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty()),
+                "{p}"
+            );
         }
         if kind == "system" {
-            assert!(p["unit"].as_str().is_some_and(|s| s.ends_with(".service")), "{p}");
+            assert!(
+                p["unit"].as_str().is_some_and(|s| s.ends_with(".service")),
+                "{p}"
+            );
         }
     }
     assert!(procs.len() <= 8);

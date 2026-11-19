@@ -94,14 +94,12 @@ async fn every_route_returns_the_required_security_headers() {
         }
         if path.starts_with("/tools/") {
             assert!(
-                r.header("content-security-policy")
-                    .contains("unsafe-eval"),
+                r.header("content-security-policy").contains("unsafe-eval"),
                 "{path}: tools CSP should allow eval for vendor UIs"
             );
         } else {
             assert!(
-                !r.header("content-security-policy")
-                    .contains("unsafe-eval"),
+                !r.header("content-security-policy").contains("unsafe-eval"),
                 "{path}: panel CSP must not allow eval"
             );
         }
@@ -117,7 +115,12 @@ async fn not_found_and_method_errors_still_carry_security_headers() {
     let h = Harness::new(false);
     let mut b = h.browser();
     let missing = b
-        .send(Method::GET, "/api/v1/does-not-exist-16r", None, Opts::bare())
+        .send(
+            Method::GET,
+            "/api/v1/does-not-exist-16r",
+            None,
+            Opts::bare(),
+        )
         .await;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
     assert_required(&missing, "api 404");
@@ -129,9 +132,7 @@ async fn not_found_and_method_errors_still_carry_security_headers() {
     assert_eq!(ui_missing.status, StatusCode::NOT_FOUND);
     assert_required(&ui_missing, "ui 404");
 
-    let wrong = b
-        .send(Method::DELETE, "/healthz", None, Opts::bare())
-        .await;
+    let wrong = b.send(Method::DELETE, "/healthz", None, Opts::bare()).await;
     assert_eq!(wrong.status, StatusCode::METHOD_NOT_ALLOWED);
     assert_required(&wrong, "405");
 }
@@ -178,7 +179,6 @@ async fn hsts_present_only_on_https_with_a_real_domain() {
     let r_local = h_local.browser().get("/api/v1/session").await;
     assert!(r_local.header("strict-transport-security").is_empty());
 }
-
 
 #[tokio::test]
 async fn auth_is_throttled_before_body_parsing_and_health_remains_available() {

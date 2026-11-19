@@ -140,8 +140,7 @@ pub const DEFAULT_AUDIT_PAGE: u32 = 50;
 pub const MAX_AUDIT_PAGE: u32 = 200;
 
 /// CSV column header for the audit export (prompt 16l).
-pub const AUDIT_CSV_HEADER: &str =
-    "seq,ts,actor,actor_kind,ip,action,target,result,detail,hash";
+pub const AUDIT_CSV_HEADER: &str = "seq,ts,actor,actor_kind,ip,action,target,result,detail,hash";
 
 /// RFC 4180 cell escaping, with spreadsheet formula injection neutralised by
 /// prefixing a leading `'` when the value starts with `=`, `+`, `-`, or `@`.
@@ -443,6 +442,7 @@ impl Store {
 }
 
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 enum Order {
     Asc,
     Desc,
@@ -669,7 +669,10 @@ mod tests {
         };
         let row = audit_csv_row(&e);
         assert!(row.contains("'=1+1"), "{row}");
-        assert!(row.starts_with("1,2026-01-01T00:00:00Z,admin,user,"), "{row}");
+        assert!(
+            row.starts_with("1,2026-01-01T00:00:00Z,admin,user,"),
+            "{row}"
+        );
     }
 
     #[test]

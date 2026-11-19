@@ -12,8 +12,8 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use opsbox_proto::ErrorCode;
 
-use crate::transport::Transport;
 use crate::HttpError;
+use crate::transport::Transport;
 
 /// Panel UI and API: scripts from this origin only; inline styles remain (lit/html).
 pub(crate) const PANEL_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'";
@@ -32,10 +32,7 @@ pub(crate) async fn middleware(req: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_owned();
-    let https = req
-        .extensions()
-        .get::<Transport>()
-        .is_some_and(|t| t.https);
+    let https = req.extensions().get::<Transport>().is_some_and(|t| t.https);
     let api = path.starts_with("/api/");
     let tools = path == "/tools" || path.starts_with("/tools/");
 
@@ -57,13 +54,16 @@ pub(crate) async fn middleware(req: Request, next: Next) -> Response {
         }
     }
 
-    apply_headers(response.headers_mut(), Apply {
-        path: &path,
-        host: &host,
-        https,
-        api,
-        tools,
-    });
+    apply_headers(
+        response.headers_mut(),
+        Apply {
+            path: &path,
+            host: &host,
+            https,
+            api,
+            tools,
+        },
+    );
     response
 }
 
@@ -80,10 +80,7 @@ fn apply_headers(h: &mut axum::http::HeaderMap, a: Apply<'_>) {
     h.remove(header::SERVER);
 
     if a.api || wants_html_no_store(a.path, h) {
-        h.insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store"),
-        );
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
 
     h.insert(
@@ -130,10 +127,7 @@ fn wants_html_no_store(path: &str, headers: &axum::http::HeaderMap) -> bool {
     {
         return true;
     }
-    path == "/"
-        || path == "/kit"
-        || path.ends_with('/')
-        || path.ends_with(".html")
+    path == "/" || path == "/kit" || path.ends_with('/') || path.ends_with(".html")
 }
 
 /// HSTS only over HTTPS on a real DNS name. Self-signed IP mode and loopback HTTP
@@ -164,11 +158,9 @@ fn host_is_real_domain(host_header: &str) -> bool {
     // Need at least one dot so single-label names (and bare hostnames) stay out.
     let labels: Vec<&str> = host.split('.').collect();
     labels.len() >= 2
-        && labels.iter().all(|l| {
-            !l.is_empty()
-                && l.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        })
+        && labels
+            .iter()
+            .all(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
 }
 
 #[cfg(test)]
@@ -210,10 +202,7 @@ mod tests {
             h.get("permissions-policy").unwrap(),
             "camera=(), microphone=(), geolocation=()"
         );
-        assert_eq!(
-            h.get("cross-origin-opener-policy").unwrap(),
-            "same-origin"
-        );
+        assert_eq!(h.get("cross-origin-opener-policy").unwrap(), "same-origin");
         assert_eq!(h.get("content-security-policy").unwrap(), PANEL_CSP);
         assert!(h.get("strict-transport-security").is_none());
         assert!(h.get(header::SERVER).is_none());

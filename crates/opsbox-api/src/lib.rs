@@ -18,12 +18,12 @@ mod docker;
 mod domains;
 mod error;
 pub mod export;
-mod import;
 mod files;
 mod github;
 mod hardening;
 mod health;
 mod host;
+mod import;
 mod json;
 mod limits;
 mod metrics;
@@ -335,10 +335,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/system/swap", put(system::set_swap))
         .route("/api/v1/system/disk", get(system::get_disk))
         .route("/api/v1/system/disk/grow", post(system::grow_disk))
-        .route(
-            "/api/v1/system/uninstall/plan",
-            get(uninstall::plan),
-        )
+        .route("/api/v1/system/uninstall/plan", get(uninstall::plan))
         .route("/api/v1/system/uninstall", post(uninstall::exec))
         .route("/api/v1/system/hostname", put(system::set_hostname))
         .route("/api/v1/system/timezone", put(system::set_timezone))

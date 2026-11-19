@@ -10,9 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use opsbox_proto::{
-    PrivError, PrivErrorCode, PrivOp, PrivReply, UninstallAdopted, UninstallPlan,
-};
+use opsbox_proto::{PrivError, PrivErrorCode, PrivOp, PrivReply, UninstallAdopted, UninstallPlan};
 use serde::Deserialize;
 
 use super::Env;
@@ -106,17 +104,29 @@ pub fn build_plan(layout: &Layout, ctx: &PlanContext) -> UninstallPlan {
     let mut removed = vec![
         "opsbox, opsbox-priv, opsbox-proxy and opsbox-watchdog services".into(),
         "opsbox-cleanup.timer (weekly cleanup)".into(),
-        format!("{} (symlink and release slots)", layout.prefix_bin.display()),
+        format!(
+            "{} (symlink and release slots)",
+            layout.prefix_bin.display()
+        ),
         format!("system user `{SVC_USER}`"),
     ];
     for t in &ctx.extra_timers {
         removed.push(format!("timer {t}"));
     }
     if ctx.purge {
-        removed.push(format!("{} (database, audit log, apps metadata)", layout.state_dir.display()));
-        removed.push(format!("{} (config and master key)", layout.conf_dir.display()));
+        removed.push(format!(
+            "{} (database, audit log, apps metadata)",
+            layout.state_dir.display()
+        ));
+        removed.push(format!(
+            "{} (config and master key)",
+            layout.conf_dir.display()
+        ));
         removed.push(format!("{} (local backups)", layout.backup_dir.display()));
-        removed.push(format!("{} (restic cache)", layout.backup_cache_dir.display()));
+        removed.push(format!(
+            "{} (restic cache)",
+            layout.backup_cache_dir.display()
+        ));
     }
 
     let mut kept = Vec::new();
@@ -133,8 +143,14 @@ pub fn build_plan(layout: &Layout, ctx: &PlanContext) -> UninstallPlan {
             "{} (database, audit log, proxy state)",
             layout.state_dir.display()
         ));
-        kept.push(format!("{} (config.toml, master key)", layout.conf_dir.display()));
-        kept.push(format!("{} (local restic backups)", layout.backup_dir.display()));
+        kept.push(format!(
+            "{} (config.toml, master key)",
+            layout.conf_dir.display()
+        ));
+        kept.push(format!(
+            "{} (local restic backups)",
+            layout.backup_dir.display()
+        ));
     }
     if let Some(a) = &ctx.adopted
         && a.will_restore
@@ -148,14 +164,12 @@ pub fn build_plan(layout: &Layout, ctx: &PlanContext) -> UninstallPlan {
     let mut warnings = Vec::new();
     if !ctx.domains.is_empty() {
         warnings.push(
-            "These domains stop answering on ports 80/443 until another proxy takes over."
-                .into(),
+            "These domains stop answering on ports 80/443 until another proxy takes over.".into(),
         );
     }
     if ctx.purge {
         warnings.push(
-            "Purge permanently deletes /var/lib/opsbox and /etc/opsbox (and local backups)."
-                .into(),
+            "Purge permanently deletes /var/lib/opsbox and /etc/opsbox (and local backups).".into(),
         );
     }
 
@@ -305,9 +319,7 @@ fn today() -> String {
 /// Export the audit chain to `state_dir/uninstall-<date>.log` (and copy aside before purge).
 pub fn export_audit_log(layout: &Layout, purge: bool) -> io::Result<PathBuf> {
     let date = today();
-    let dest = layout
-        .state_dir
-        .join(format!("uninstall-{date}.log"));
+    let dest = layout.state_dir.join(format!("uninstall-{date}.log"));
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -460,7 +472,9 @@ fn active_adopted(conf_dir: &Path) -> Option<UninstallAdopted> {
     let dir = conf_dir.join("web-moves");
     let entries = fs::read_dir(&dir).ok()?;
     for e in entries.flatten() {
-        let Ok(raw) = fs::read(e.path()) else { continue };
+        let Ok(raw) = fs::read(e.path()) else {
+            continue;
+        };
         let Ok(r) = serde_json::from_slice::<ReceiptPublic>(&raw) else {
             continue;
         };
@@ -867,7 +881,11 @@ mod tests {
         let removed = apply_path_removals(&layout, false, &extra, false).unwrap();
         assert!(removed.iter().any(|p| p == &layout.prefix_bin));
         assert!(removed.iter().any(|p| p.ends_with("opsbox.service")));
-        assert!(removed.iter().any(|p| p.ends_with("opsbox-job-deadbeef.timer")));
+        assert!(
+            removed
+                .iter()
+                .any(|p| p.ends_with("opsbox-job-deadbeef.timer"))
+        );
         assert!(layout.state_dir.exists(), "keep-data leaves state dir");
         assert!(layout.conf_dir.exists(), "keep-data leaves conf dir");
         assert!(layout.backup_dir.exists());

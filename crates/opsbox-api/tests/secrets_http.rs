@@ -155,7 +155,10 @@ async fn list_responses_mask_secrets_and_reveal_needs_reauth_audit_and_rate_limi
             .await;
         if r.status == StatusCode::TOO_MANY_REQUESTS {
             assert_eq!(r.error_code(), "rate_limited");
-            assert!(i >= 8, "rate limit should kick in after the burst, got at {i}");
+            assert!(
+                i >= 8,
+                "rate limit should kick in after the burst, got at {i}"
+            );
             h.shutdown().await;
             return;
         }

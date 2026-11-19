@@ -20,7 +20,7 @@ use opsbox_store::{
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::export::{decrypt_secrets, DecryptError, FORMAT};
+use crate::export::{DecryptError, FORMAT, decrypt_secrets};
 use crate::json::ApiJson;
 use crate::session::{Admin, Client, deny_token};
 use crate::system::patient;
@@ -75,7 +75,9 @@ pub fn validate_document(doc: &Value) -> Result<(), HttpError> {
         Some(other) => {
             return Err(invalid(
                 "format",
-                format!("This file uses format `{other}`, which this opsbox cannot import. Expected `{FORMAT}`."),
+                format!(
+                    "This file uses format `{other}`, which this opsbox cannot import. Expected `{FORMAT}`."
+                ),
             ));
         }
         None => {
@@ -146,11 +148,7 @@ fn bool_val(v: &Value, key: &str, default: bool) -> bool {
 }
 
 /// Build the import plan against the current store. Never mutates the store.
-fn build_plan(
-    state: &AppState,
-    doc: &Value,
-    passphrase: Option<&str>,
-) -> Result<Plan, HttpError> {
+fn build_plan(state: &AppState, doc: &Value, passphrase: Option<&str>) -> Result<Plan, HttpError> {
     validate_document(doc)?;
     let mut plan = Plan::default();
 
@@ -192,12 +190,7 @@ fn build_plan(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter_map(|v| {
-            Some((
-                text(v, "service")?.to_owned(),
-                text(v, "key")?.to_owned(),
-            ))
-        })
+        .filter_map(|v| Some((text(v, "service")?.to_owned(), text(v, "key")?.to_owned())))
         .collect();
     let opened_dests: HashSet<String> = opened
         .get("backupDestinations")
@@ -697,10 +690,7 @@ async fn run_import(
         .flatten()
         .filter_map(|v| {
             Some((
-                (
-                    text(v, "service")?.to_owned(),
-                    text(v, "key")?.to_owned(),
-                ),
+                (text(v, "service")?.to_owned(), text(v, "key")?.to_owned()),
                 text(v, "value")?.to_owned(),
             ))
         })
@@ -835,7 +825,8 @@ async fn run_import(
             continue;
         }
 
-        let kind = ServiceKind::parse(text(svc, "kind").unwrap_or("app")).unwrap_or(ServiceKind::App);
+        let kind =
+            ServiceKind::parse(text(svc, "kind").unwrap_or("app")).unwrap_or(ServiceKind::App);
         let source_kind = SourceKind::parse(
             svc.pointer("/source/kind")
                 .and_then(Value::as_str)
@@ -856,7 +847,11 @@ async fn run_import(
             .pointer("/source/branch")
             .or_else(|| svc.get("branch"))
             .and_then(Value::as_str)
-            .unwrap_or(if kind == ServiceKind::Db { "16" } else { "main" });
+            .unwrap_or(if kind == ServiceKind::Db {
+                "16"
+            } else {
+                "main"
+            });
         let build_method = svc
             .pointer("/build/method")
             .and_then(Value::as_str)
@@ -881,12 +876,8 @@ async fn run_import(
         let health_path = text(svc, "healthPath").unwrap_or("/");
         let domain = text(svc, "domain").filter(|s| !s.is_empty());
         let auto_deploy = bool_val(svc, "autoDeploy", false);
-        let memory_limit_mb = svc
-            .pointer("/limits/memoryMb")
-            .and_then(Value::as_i64);
-        let cpu_limit_millis = svc
-            .pointer("/limits/cpuMillis")
-            .and_then(Value::as_i64);
+        let memory_limit_mb = svc.pointer("/limits/memoryMb").and_then(Value::as_i64);
+        let cpu_limit_millis = svc.pointer("/limits/cpuMillis").and_then(Value::as_i64);
         let graph_x = svc
             .pointer("/graph/x")
             .and_then(Value::as_i64)
@@ -1053,12 +1044,11 @@ async fn run_import(
             }
             // Missing secret: leave unset; listed under needsInput in the preview.
         }
-        if !to_store.is_empty() {
-            if let Err(e) =
+        if !to_store.is_empty()
+            && let Err(e) =
                 crate::deploy::seal_and_store_vars(state, rid, actor, &rec, &to_store, now).await
-            {
-                log.push(format!("Variables for `{name}`: {}", e.0.error.message));
-            }
+        {
+            log.push(format!("Variables for `{name}`: {}", e.0.error.message));
         }
     }
 
@@ -1122,7 +1112,10 @@ async fn run_import(
             continue;
         };
         let name = text(d, "name").unwrap_or(id);
-        if store.get_backup_destination(id).map_err(store_err)?.is_some()
+        if store
+            .get_backup_destination(id)
+            .map_err(store_err)?
+            .is_some()
             || store
                 .list_backup_destinations()
                 .map_err(store_err)?
@@ -1136,19 +1129,28 @@ async fn run_import(
         let provider = text(d, "provider").unwrap_or("s3");
         let config = d.get("config").cloned().unwrap_or(json!({}));
         let sealed = if let Some(plain) = dest_secrets.get(id) {
-            match state
+            state
                 .priv_client
-                .secret_seal(rid, Some(actor), &format!("backup:dest:{id}"), Secret::new(plain.clone()))
+                .secret_seal(
+                    rid,
+                    Some(actor),
+                    &format!("backup:dest:{id}"),
+                    Secret::new(plain.clone()),
+                )
                 .await
-            {
-                Ok(s) => Some(s),
-                Err(_) => None,
-            }
+                .ok()
         } else {
             None
         };
-        match store.create_backup_destination(id, provider, name, &config, sealed.as_deref(), None, now)
-        {
+        match store.create_backup_destination(
+            id,
+            provider,
+            name,
+            &config,
+            sealed.as_deref(),
+            None,
+            now,
+        ) {
             Ok(_) => {
                 dest_id_map.insert(id.to_owned(), id.to_owned());
                 push_created(&mut created, "backupDestinations", name);
@@ -1184,8 +1186,7 @@ async fn run_import(
         let kind = BackupTargetKind::parse(text(j, "kind").unwrap_or("database"))
             .unwrap_or(BackupTargetKind::Database);
         let what = j.get("what").cloned().unwrap_or(json!({}));
-        let service_id = text(j, "service")
-            .and_then(|n| service_ids.get(n).cloned());
+        let service_id = text(j, "service").and_then(|n| service_ids.get(n).cloned());
         let template_id = text(j, "templateId").filter(|s| !s.is_empty());
         let method = text(j, "method").unwrap_or("dump");
         let cron = text(j, "cron").unwrap_or("0 3 * * *");
@@ -1308,10 +1309,7 @@ async fn run_import(
 
     // ---- firewall (best effort; never fail the whole import)
     if let Some(rules) = doc.pointer("/firewall/rules").and_then(Value::as_array) {
-        let existing = patient(state, 20)
-            .firewall_list(rid)
-            .await
-            .ok();
+        let existing = patient(state, 20).firewall_list(rid).await.ok();
         for r in rules {
             let port = match r
                 .get("port")
@@ -1327,9 +1325,7 @@ async fn run_import(
             let label = format!("{port}/{proto} from {from}");
             let already = existing.as_ref().is_some_and(|f| {
                 f.rules.iter().any(|er| {
-                    er.port == port
-                        && er.proto.eq_ignore_ascii_case(&proto)
-                        && er.src == from
+                    er.port == port && er.proto.eq_ignore_ascii_case(&proto) && er.src == from
                 })
             });
             if already {

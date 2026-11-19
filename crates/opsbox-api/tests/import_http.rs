@@ -266,13 +266,21 @@ fn normalize(doc: &Value) -> Value {
                     "{}:{}:{}",
                     a["kind"].as_str().unwrap_or(""),
                     a["service"].as_str().unwrap_or(""),
-                    a["key"].as_str().or(a["id"].as_str()).or(a["name"].as_str()).unwrap_or("")
+                    a["key"]
+                        .as_str()
+                        .or(a["id"].as_str())
+                        .or(a["name"].as_str())
+                        .unwrap_or("")
                 );
                 let kb = format!(
                     "{}:{}:{}",
                     b["kind"].as_str().unwrap_or(""),
                     b["service"].as_str().unwrap_or(""),
-                    b["key"].as_str().or(b["id"].as_str()).or(b["name"].as_str()).unwrap_or("")
+                    b["key"]
+                        .as_str()
+                        .or(b["id"].as_str())
+                        .or(b["name"].as_str())
+                        .unwrap_or("")
                 );
                 ka.cmp(&kb)
             });
@@ -356,14 +364,19 @@ async fn existing_objects_are_never_overwritten() {
     assert!(
         plan["willCreate"]
             .as_object()
-            .map(|m| m.values().all(|v| v.as_array().map_or(true, Vec::is_empty)))
+            .map(|m| m.values().all(|v| v.as_array().is_none_or(Vec::is_empty)))
             .unwrap_or(true)
-            || plan["skipped"].as_array().map(|a| !a.is_empty()).unwrap_or(false),
+            || plan["skipped"]
+                .as_array()
+                .map(|a| !a.is_empty())
+                .unwrap_or(false),
         "expected skips for existing objects: {plan}"
     );
     let skipped = plan["skipped"].as_array().unwrap();
     assert!(
-        skipped.iter().any(|e| e["kind"] == "service" && e["name"] == "web"),
+        skipped
+            .iter()
+            .any(|e| e["kind"] == "service" && e["name"] == "web"),
         "{skipped:?}"
     );
 
@@ -469,15 +482,13 @@ async fn round_trip_export_import_export() {
     let a = normalize(&doc);
     let b = normalize(&again);
     assert_eq!(
-        a["services"], b["services"],
+        a["services"],
+        b["services"],
         "services differ\nleft: {}\nright: {}",
         serde_json::to_string_pretty(&a["services"]).unwrap(),
         serde_json::to_string_pretty(&b["services"]).unwrap()
     );
     assert_eq!(a["composeProjects"], b["composeProjects"]);
     assert_eq!(a["databases"], b["databases"]);
-    assert_eq!(
-        a["backups"]["destinations"],
-        b["backups"]["destinations"]
-    );
+    assert_eq!(a["backups"]["destinations"], b["backups"]["destinations"]);
 }

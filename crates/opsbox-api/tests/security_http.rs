@@ -535,7 +535,9 @@ async fn display_name_updates_session_and_audit_actor() {
         .map(|e| e.actor)
         .collect();
     assert!(
-        actors.iter().any(|a| a == "Boss Person (boss)" || a == "boss"),
+        actors
+            .iter()
+            .any(|a| a == "Boss Person (boss)" || a == "boss"),
         "expected display-name audit with boss as actor, got {actors:?}"
     );
     // After the name is set, a later mutation shows "Display (username)".
@@ -674,13 +676,13 @@ async fn audit_list_returns_ip_filters_and_pages_and_export_is_admin_only() {
         csv.header("content-disposition")
     );
     let text = csv.text();
-    assert!(text.starts_with(
-        "seq,ts,actor,actor_kind,ip,action,target,result,detail,hash\n"
-    ));
+    assert!(text.starts_with("seq,ts,actor,actor_kind,ip,action,target,result,detail,hash\n"));
     assert!(text.contains("# chain: ok"), "{text}");
     assert!(text.matches("\n").count() >= 120);
     // Formula-looking detail from earlier rows must be neutralised when exported unfiltered.
-    let all = admin.get("/api/v1/audit/export.csv?action=auth.probe").await;
+    let all = admin
+        .get("/api/v1/audit/export.csv?action=auth.probe")
+        .await;
     assert_eq!(all.status, StatusCode::OK, "{}", all.text());
     let all_text = all.text();
     assert!(
