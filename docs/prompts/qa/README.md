@@ -20,7 +20,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 |---|---|---|
 | 01 | Fresh install on a clean VM (`01-fresh-install.md`) | x |
 | 02 | Update and rollback between two alphas (`02-update-and-rollback.md`) | x |
-| 03 | Helper down: messages, banner and no half-made things (`03-priv-helper-failure.md`) | |
+| 03 | Helper down: messages, banner and no half-made things (`03-priv-helper-failure.md`) | x |
 | 04 | serve and priv version match after update (04-version-skew.md) | x |
 | 05 | TLS, cookies and security headers (`05-transport-and-headers.md`) | |
 | 06 | No secret in any API response (`06-secrets-in-responses.md`) | x |
