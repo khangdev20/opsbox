@@ -44,7 +44,12 @@ export async function view() {
   const paint = () => {
     if (!root || dead) return;
     patch(root.querySelector('#b'), body().toString());
-    if (d) setSwitch(root.querySelector('[data-act="auto"]'), !!d.auto);
+    if (d) {
+      setSwitch(root.querySelector('[data-act="auto"]'), !!d.auto);
+      for (const el of root.querySelectorAll('input[type="checkbox"][data-act="pick"]')) {
+        el.checked = picked.has(el.dataset.id);
+      }
+    }
   };
 
   const load = async (fresh = false) => {
@@ -56,10 +61,10 @@ export async function view() {
       d = next;
       if (firstLoad || fresh) {
         picked.clear();
-        d.items.filter((i) => !i.pending && i.on).forEach((i) => picked.add(i.id));
+        d.items.filter((i) => !i.pending && i.on && !i.warn && i.safe !== false).forEach((i) => picked.add(i.id));
       } else {
         for (const i of d.items) {
-          if (!i.pending && i.on && !picked.has(i.id)) picked.add(i.id);
+          if (!i.pending && i.on && !i.warn && i.safe !== false && !picked.has(i.id)) picked.add(i.id);
         }
       }
       paint();
@@ -93,11 +98,22 @@ export async function view() {
         },
         run: async () => {
           const sel = d.items.filter((i) => picked.has(i.id));
-          if (!await confirmDialog({ title: `Free ${bytes(sum())}?`, body: `This removes: ${sel.map((i) => i.title).join('; ')}.`, confirm: 'Clean now', danger: sel.some((i) => i.warn) })) return;
+          const hasWarn = sel.some((i) => i.warn || i.safe === false);
+          if (!await confirmDialog({
+            title: `Free ${bytes(sum())}?`,
+            body: `This removes: ${sel.map((i) => i.title).join('; ')}.`,
+            confirm: 'Clean now',
+            danger: hasWarn,
+            typed: hasWarn ? 'delete volumes' : null,
+          })) return;
           const res = await api.runCleanup([...picked]);
           const bad = (res.items || []).filter((x) => x.error);
           const got = res.bytes ?? res.freed * 2 ** 30;
-          toast(bad.length ? `Freed ${bytes(got)}. ${bad.length} could not finish: ${bad.map((x) => `${x.id}: ${x.error}`).join('; ')}` : `Freed ${bytes(got)}.`, bad.length ? 'err' : '');
+          if (got === 0 && !bad.length && sel.some((i) => i.id === 'docker-volumes')) {
+            toast('Docker only removes anonymous volumes automatically. Named volumes were kept. Review them one by one.', 'warn');
+          } else {
+            toast(bad.length ? `Freed ${bytes(got)}. ${bad.length} could not finish: ${bad.map((x) => `${x.id}: ${x.error}`).join('; ')}` : `Freed ${bytes(got)}.`, bad.length ? 'err' : '');
+          }
           // Update cleaned items in place immediately, then refresh in background.
           const okIds = new Set((res.items || []).filter((x) => !x.error).map((x) => x.id));
           d.items = d.items.filter((i) => !okIds.has(i.id));

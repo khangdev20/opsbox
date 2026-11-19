@@ -41,6 +41,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 29 | Table layout: padding, scrollbar, columns and alignment | 2026-11-19 | PASS | Responsive overflow wrapper `.tw` contained; headers and cells cleanly aligned; numeric tabular right alignment `.r`; sticky header support; card mode under 700px; touch target sizing verified. |
 | 30 | List rows: push the action to the right edge | 2026-11-19 | PASS | First child stretches with `flex: 1 1 0; min-width: 0`; row actions cleanly aligned right across GitHub repos, deploy keys, settings, and network lists; button sizes and dangerous actions protected. |
 | 31 | Notification list: stray commas, stale alerts, restarting timestamps | 2026-11-19 | PASS | Bell popover and drawer verified with zero stray commas; arrays properly joined via `html` tagged templates; attention timestamps stable; alert resolution verified in evaluator engine. |
+| 32 | Cleanup: unused Docker volumes safety | 2026-11-19 | PASS | Checkbox state driven strictly by `picked`; `warn`/`safe:false` items never preselected; typed confirmation 'delete volumes' required for warning rows; 0-byte frees warn about named volume retention; Docker 29.1.3 API 1.52 prune behavior verified on VM. |
 
 ## Found, not fixed
 
@@ -792,3 +793,19 @@ No tag is needed for documentation-only changes.
 - Stray commas check: `renderNotifItems` uses `html` tagged templates which flatten and concatenate item arrays without stray commas (`Array.prototype.map(...).map(render).join('')`). Verified via isolated node tests and automated headless suite (`tools/check-notifications-ui.mjs`).
 - Alert evaluation & resolution: container alerts ("is stopped or restarting") and unit alerts evaluate against live daemon state and cleanly transition from `Firing` to `Resolved` / `Ok` once the underlying condition clears.
 - Timestamp stability: attention items are deduplicated and tracked via stable IDs (`kind:subject`) with `reconcile_attention_since` preserving original `since` timestamps across recurring polls.
+
+## QA 32 — Cleanup: unused Docker volumes safety evidence (2026-11-19)
+
+- **VM Docker check (`opsbox-vm`)**:
+  - Docker version: Client & Server `29.1.3`, API version `1.52`.
+  - Created test volume: `docker volume create keepme; docker volume ls -f dangling=true` lists `keepme` under dangling.
+  - Default volume prune: `docker volume prune -f` (without `--all`) reclaims `0B` and leaves `keepme` intact (Docker engine 23+ API 1.42+ only prunes anonymous volumes by default).
+  - Explicit all volume prune: `docker volume prune -f --all` deletes `keepme` and reclaims space.
+- **Frontend checkbox safety (`web/js/pages/cleanup.js`)**:
+  - `picked.has(i.id)` is the single source of truth for checkbox selection. In `paint()`, DOM `.checked` is explicitly reconciled across all input elements: `el.checked = picked.has(el.dataset.id)`.
+  - In `load()`, items with `warn == true` or `safe === false` are excluded from being pre-selected on initial scan and subsequent refreshes: `d.items.filter((i) => !i.pending && i.on && !i.warn && i.safe !== false)`.
+  - For `warn` / `safe: false` items, `confirmDialog` requires typed confirmation `delete volumes` (`typed: hasWarn ? 'delete volumes' : null`) with danger styling.
+  - When running cleanup on `docker-volumes` and 0 bytes are reclaimed without errors, the UI informs the user via warning toast: `"Docker only removes anonymous volumes automatically. Named volumes were kept. Review them one by one."`.
+- **Backend assertions (`crates/opsbox-api/tests/cleanup_http.rs`)**:
+  - Updated integration test `a_scan_has_the_shape_the_page_draws` to verify that any item with `warn == true || safe == false` strictly has `on == false`.
+  - Verified tests pass cleanly via `cargo test -p opsbox-api --test cleanup_http` on `opsbox-vm`.

@@ -49,5 +49,5 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 29 | Table layout: padding, scrollbar, columns and alignment (`29-table-layout.md`) | x |
 | 30 | List rows: push the action to the right edge (`30-list-row-actions.md`) | x |
 | 31 | Notification list: stray commas, stale alerts, restarting timestamps (`31-notification-list.md`) | x |
-| 32 | Cleanup: unused Docker volumes must never be selected by accident (`32-cleanup-volumes.md`) | |
+| 32 | Cleanup: unused Docker volumes must never be selected by accident (`32-cleanup-volumes.md`) | x |
 | 33 | Cleanup: choose unused Docker volumes one by one (`33-cleanup-volume-picker.md`) | |
