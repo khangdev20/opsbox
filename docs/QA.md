@@ -48,9 +48,9 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 ### 28 — GitHub repository features and release asset routing
 
-1. **`releases/latest` returns 404 for pre-release tags on GitHub**:
-   - `https://github.com/khangdev20/opsbox/releases/latest/download/install.sh` returns HTTP 404 because GitHub does not route `/releases/latest` to pre-releases (`v0.1.0-alpha.39` is tagged `prerelease: true`).
-   - The direct tag URL `https://github.com/khangdev20/opsbox/releases/download/v0.1.0-alpha.39/install.sh` returns HTTP 200 and serves the 23 KB signed script along with all signatures and checksum assets.
+1. **Fixed in fix 01 — `releases/latest` installer routing**:
+   - GitHub excluded the alpha pre-releases from `/releases/latest`, causing the documented command to return 404 while direct tag downloads worked.
+   - `v0.1.0-alpha.*` now publishes as a normal Latest release titled `OpsBox alpha N`; workflow checks require HTTP 200 and updater tests cover alpha.43 on both channels. Live confirmation awaits the next tag.
 2. **Repository features not yet enabled on GitHub**:
    - Discussions link in `site/index.html` (`https://github.com/khangdev20/opsbox/discussions`): returns 404 (Discussions feature disabled on repository).
    - GitHub Pages URL in `site/index.html` metadata (`https://khangdev20.github.io/opsbox/`): returns 404 (Pages not enabled yet).
@@ -61,7 +61,8 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 - Enable GitHub Discussions in repo settings (Settings -> Features -> Discussions) or adjust community link in `site/index.html`.
 - Enable GitHub Pages in repo settings pointing to the `site/` folder or `gh-pages` branch if web landing is to be served at `https://khangdev20.github.io/opsbox/`.
-- Once ready for a first non-prerelease or default latest release, mark a release as Latest so `/releases/latest/download/install.sh` automatically resolves without requiring `--version` or explicit tag downloads.
+- Fix 01, after the next tag finishes: run `timeout 120 curl -fsSL -o /dev/null -w '%{http_code}\n' -L https://github.com/khangdev20/opsbox/releases/latest/download/install.sh` and require `200`. Verify the release title is `OpsBox alpha N`, is Latest, and is not a pre-release.
+- On disposable `opsbox-vm` running alpha.43, use System → Updates to check and apply the new alpha, then require `systemctl is-active opsbox opsbox-priv` and matching versions from `opsbox --version` and `/readyz`. Confirm an already-current version offers no update; repeat checking on explicit stable and beta channels.
 
 ### 01 — Fresh install: VM access required
 
@@ -102,9 +103,9 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 ### 28 — GitHub repository features and release asset routing
 
-1. **`releases/latest` returns 404 for pre-release tags on GitHub**:
-   - `https://github.com/khangdev20/opsbox/releases/latest/download/install.sh` returns HTTP 404 because GitHub does not route `/releases/latest` to pre-releases (`v0.1.0-alpha.39` is tagged `prerelease: true`).
-   - The direct tag URL `https://github.com/khangdev20/opsbox/releases/download/v0.1.0-alpha.39/install.sh` returns HTTP 200 and serves the 23 KB signed script along with all signatures and checksum assets.
+1. **Fixed in fix 01 — `releases/latest` installer routing**:
+   - GitHub excluded the alpha pre-releases from `/releases/latest`, causing the documented command to return 404 while direct tag downloads worked.
+   - `v0.1.0-alpha.*` now publishes as a normal Latest release titled `OpsBox alpha N`; workflow checks require HTTP 200 and updater tests cover alpha.43 on both channels. Live confirmation awaits the next tag.
 2. **Repository features not yet enabled on GitHub**:
    - Discussions link in `site/index.html` (`https://github.com/khangdev20/opsbox/discussions`): returns 404 (Discussions feature disabled on repository).
    - GitHub Pages URL in `site/index.html` metadata (`https://khangdev20.github.io/opsbox/`): returns 404 (Pages not enabled yet).
@@ -115,7 +116,8 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 - Enable GitHub Discussions in repo settings (Settings -> Features -> Discussions) or adjust community link in `site/index.html`.
 - Enable GitHub Pages in repo settings pointing to the `site/` folder or `gh-pages` branch if web landing is to be served at `https://khangdev20.github.io/opsbox/`.
-- Once ready for a first non-prerelease or default latest release, mark a release as Latest so `/releases/latest/download/install.sh` automatically resolves without requiring `--version` or explicit tag downloads.
+- Fix 01, after the next tag finishes: run `timeout 120 curl -fsSL -o /dev/null -w '%{http_code}\n' -L https://github.com/khangdev20/opsbox/releases/latest/download/install.sh` and require `200`. Verify the release title is `OpsBox alpha N`, is Latest, and is not a pre-release.
+- On disposable `opsbox-vm` running alpha.43, use System → Updates to check and apply the new alpha, then require `systemctl is-active opsbox opsbox-priv` and matching versions from `opsbox --version` and `/readyz`. Confirm an already-current version offers no update; repeat checking on explicit stable and beta channels.
 
 ### 01 — Fresh install: VM access required
 

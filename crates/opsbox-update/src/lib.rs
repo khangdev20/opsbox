@@ -83,7 +83,7 @@ mod tests {
         assert!(!up_to_date.update_available);
     }
 
-    /// Every published release so far is an alpha, newest first, as GitHub returns them.
+    /// Historical alphas published with GitHub's pre-release flag.
     const ALPHAS: &str = r#"[
         {"tag_name": "v0.1.0-alpha.20", "draft": false, "prerelease": true, "html_url": "https://example.com/20"},
         {"tag_name": "v0.1.0-alpha.14", "draft": false, "prerelease": true, "html_url": "https://example.com/14"},
@@ -106,6 +106,33 @@ mod tests {
         let res = select_release("0.1.0-alpha.13", Channel::Stable, ALPHAS, 100).unwrap();
         assert!(res.latest.is_none());
         assert!(!res.update_available);
+    }
+
+    #[test]
+    fn select_release_normal_alpha_updates_both_channels_from_alpha_43() {
+        let json = r#"[
+            {"tag_name": "v0.1.0-beta.1", "prerelease": true},
+            {"tag_name": "v0.1.0-alpha.44", "prerelease": false},
+            {"tag_name": "v0.1.0-alpha.43", "prerelease": true}
+        ]"#;
+        for (channel, expected) in [
+            (Channel::Stable, "0.1.0-alpha.44"),
+            (Channel::Beta, "0.1.0-beta.1"),
+        ] {
+            let res = select_release("0.1.0-alpha.43", channel, json, 100).unwrap();
+            assert!(res.update_available && !res.migration);
+            assert_eq!(res.latest.unwrap().version, expected);
+        }
+        let alphas = r#"[{"tag_name": "v0.1.0-alpha.44", "prerelease": false}]"#;
+        let res = select_release_default_channel("0.1.0-alpha.43", alphas, 100).unwrap();
+        assert!(res.update_available && !res.migration);
+        assert_eq!(res.latest.unwrap().version, "0.1.0-alpha.44");
+
+        for current in ["0.1.0-alpha.44", "0.1.0", "0.2.0"] {
+            let res = select_release(current, Channel::Stable, alphas, 100).unwrap();
+            assert!(!res.update_available && !res.migration);
+            assert_eq!(res.reason, Some(NoOfferReason::UpToDate));
+        }
     }
 
     #[test]

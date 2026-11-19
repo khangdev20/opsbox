@@ -121,12 +121,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          PRERELEASE_FLAG=""
+          TITLE="opsbox $TAG"
+          RELEASE_FLAG=""
           case "$TAG" in
-            *-alpha*|*-beta*|*-rc*) PRERELEASE_FLAG="--prerelease" ;;
+            # During the 0.1.0 alpha period, the documented /latest installer must work.
+            v0.1.0-alpha.*)
+              TITLE="OpsBox alpha ${TAG#v0.1.0-alpha.}"
+              RELEASE_FLAG="--latest"
+              ;;
+            *-alpha*|*-beta*|*-rc*) RELEASE_FLAG="--prerelease" ;;
           esac
           gh release create "$TAG" \
-            --title "opsbox $TAG" \
+            --title "$TITLE" \
             --generate-notes \
-            $PRERELEASE_FLAG \
+            $RELEASE_FLAG \
             dist/*
+
+      - name: Check latest installer URL
+        if: startsWith(github.ref_name, 'v0.1.0-alpha.') || !contains(github.ref_name, '-')
+        run: |
+          status="$(curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors --max-time 15 \
+            -o /dev/null -w '%{http_code}' \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh")"
+          if [ "$status" != "200" ]; then
+            echo "error: latest installer returned HTTP $status, expected 200" >&2
+            exit 1
+          fi

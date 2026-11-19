@@ -47,6 +47,8 @@ jobs:
         run: shellcheck --shell=sh --severity=warning install.sh tools/stamp-version.sh tools/check-installer-channel.sh
       - name: Installer keeps the update channel
         run: sh tools/check-installer-channel.sh
+      - name: Release installer routing
+        run: python3 tools/check-release-workflow.py
 
       - name: Install cargo-deny and cargo-zigbuild
         run: |

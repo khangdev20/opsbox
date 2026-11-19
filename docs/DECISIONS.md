@@ -537,3 +537,7 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 **No auto-deploy on import.** Services are created with secrets sealed when the passphrase opened them; if any secret var is still missing they are marked and left undeployed. Deploy keys and GitHub are never imported — listed under `needsInput` for the person to reconnect.
 
 **Users, panel domain and update settings are not applied.** Passwords and two-factor cannot move with the file; changing the panel domain or listen mode from an import is too easy to lock yourself out. Those stay under `needsInput` / manual settings.
+
+## Fix 01 — Install link routing
+Publish `v0.1.0-alpha.*` as normal GitHub releases titled `OpsBox alpha N`, explicitly Latest, so the documented installer URL resolves.
+During this alpha period stable accepts these alphas; beta/default alpha.43 still updates, final versions do not downgrade on stable, and other pre-releases retain their flag.
