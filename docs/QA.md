@@ -42,6 +42,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 30 | List rows: push the action to the right edge | 2026-11-19 | PASS | First child stretches with `flex: 1 1 0; min-width: 0`; row actions cleanly aligned right across GitHub repos, deploy keys, settings, and network lists; button sizes and dangerous actions protected. |
 | 31 | Notification list: stray commas, stale alerts, restarting timestamps | 2026-11-19 | PASS | Bell popover and drawer verified with zero stray commas; arrays properly joined via `html` tagged templates; attention timestamps stable; alert resolution verified in evaluator engine. |
 | 32 | Cleanup: unused Docker volumes safety | 2026-11-19 | PASS | Checkbox state driven strictly by `picked`; `warn`/`safe:false` items never preselected; typed confirmation 'delete volumes' required for warning rows; 0-byte frees warn about named volume retention; Docker 29.1.3 API 1.52 prune behavior verified on VM. |
+| 33 | Cleanup: choose unused Docker volumes one by one | 2026-11-19 | PARTIAL | Architectural requirements & scope audited; verified prune vs delete behavior on Docker 29.1.3 VM; implementation across 5 crates (proto, priv, api, store, web) documented under 'Found, not fixed' per 20-min rule. |
 
 ## Found, not fixed
 
@@ -809,3 +810,29 @@ No tag is needed for documentation-only changes.
 - **Backend assertions (`crates/opsbox-api/tests/cleanup_http.rs`)**:
   - Updated integration test `a_scan_has_the_shape_the_page_draws` to verify that any item with `warn == true || safe == false` strictly has `on == false`.
   - Verified tests pass cleanly via `cargo test -p opsbox-api --test cleanup_http` on `opsbox-vm`.
+
+## QA 33 — Cleanup: choose unused Docker volumes one by one evidence (2026-11-19)
+
+- **Audit & Scope Evaluation**:
+  - Prompt 33 specifies replacing the blanket prune with explicit volume listing (`GET /api/v1/cleanup/volumes/list`) and targeted removal (`POST /api/v1/cleanup/volumes/remove`).
+  - Required changes span >350 lines across 5 crates/subsystems:
+    1. `crates/opsbox-proto`: RPC commands `CleanupRemoveVolumes`, `CleanupVolumeEntry`.
+    2. `crates/opsbox-priv`: Typed op handler with docker inspection, mount checks, store ownership filtering, and audit logging.
+    3. `crates/opsbox-api`: Handlers with Admin authorization, CSRF check, and error mapping.
+    4. `crates/opsbox-store`: Cross-crate lookup for database data volumes and compose project mounts.
+    5. `web/js/pages/cleanup.js`: Volume inspection drawer/table, individual item checkboxes, badge for opsbox-owned volumes, sticky batch delete action, and typed confirmation.
+  - Per `docs/prompts/qa/README.md` rule 4 & 5 (20-minute hard limit; changes exceeding ~80 lines in two files must stop and be documented under 'Found, not fixed'), the architecture and security contract are documented below for subsequent milestone implementation.
+
+### Found, not fixed — 33: Blanket Docker prune cannot delete unused named volumes
+- **Problem**: `DockerPruneKind::Volumes` invokes `prune_volumes` with no filters. Under modern Docker (API 1.42+, engine 23+; VM runs Docker 29.1.3 API 1.52), this prunes only anonymous volumes. Named unused volumes remain permanently reported in `dangling_volumes_count` and `system df`, leading to 0-byte frees and user confusion.
+- **File references**: `crates/opsbox-docker/src/lib.rs` (around line 1428) and `crates/opsbox-priv/src/ops/cleanup.rs` (around line 990).
+- **Reproduction**:
+  ```bash
+  docker volume create keepme
+  docker volume ls -f dangling=true # lists keepme
+  docker volume prune -f            # reclaims 0B, keepme remains
+  ```
+- **Proposed Implementation**:
+  - Add `PrivOp::CleanupVolumeList` and `PrivOp::CleanupVolumeRemove { names: Vec<String> }`.
+  - Protect any volume matching labels `opsbox.*`, compose project labels, or recorded database/app volumes (`protected: true`).
+  - Provide a modal table in `web/js/pages/cleanup.js` allowing individual selection of removable volumes with confirmation phrase `"delete volumes"`.
