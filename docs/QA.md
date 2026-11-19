@@ -5,6 +5,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | # | Check | Date | Result | Notes |
 |---|---|---|---|---|
+| 11 | Phone widths: no sideways scroll, targets big enough | 2026-11-19 | PARTIAL | Responsive source checks pass; 360/390px live layout, drawer, sheets and keyboard checks blocked by VM/local-server permissions; source shows undersized touch controls. |
 | 10 | Nothing in http mode still uses sample data | 2026-11-19 | FAIL | HTTP request failures reject without mock fallback, but shell hostname, configure repository default, and unguarded demo exports remain; live VM page checks blocked by Multipass socket access. |
 | 05 | TLS, cookies and security headers | 2026-11-19 | PARTIAL | Source and existing tests reviewed: TLS enforcement, trusted proxy handling, strict HTTPS session cookies and security headers present; Cargo unavailable and VM/local endpoints unreachable, so live headers, login cookies and audit verification remain. |
 | 01 | Fresh install on a clean VM | 2026-11-19 | PASS | Verified with release v0.1.0-alpha.39; opsbox & opsbox-priv active, minisign verified, web HTTP 200 on port 8443. |
@@ -246,3 +247,28 @@ timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/09-cons
 timeout 120 git commit -m "qa 09: Every page: zero console errors, zero failed requests"
 timeout 120 git push origin dev
 ```
+
+## Found, not fixed — QA 11
+
+Reviewed the actual stylesheet `web/css/app.css` (`web/css/style.css` does not exist), the archived prompt 16s, sidebar drawer (`web/js/shell.js:450`–550), shared table/dialog helpers, and Terminal viewport handling. The implementation includes a drawer below 900px with backdrop/Escape/route/Back/swipe closing and focus handling; 700px layout/card-table rules and contained `.tw.scroll` wrappers; bottom sheets below 640px; safe-area padding, 16px touch input text, and Terminal `visualViewport` listeners. These are source findings, not evidence that every rendered route fits. Root `overflow-x:clip` alone does not prove content remains accessible.
+
+- **Touch controls do not consistently reach 44×44px:** `web/css/app.css:906` sets coarse-pointer checkboxes/radios to 22×22px; file selection (`web/js/pages/files.js:31`) and package selection (`web/js/pages/system.js:42`) have no enclosing label to enlarge the target. Inputs/selects retain a 40px minimum at `web/css/app.css:308`; stepper buttons are 40px wide at `:341`; `.segctl>button` retains a 32px minimum at `:374` because the coarse-pointer list at `:902` covers `.seg-radio`, not `.segctl`. Terminal key minimums of 44px at `:908` are overridden by the equally specific, later 40px rule at `:913`. Dimensions are source-derived; browser measurements remain pending.
+  Reproduce: on the disposable real-API panel, emulate a coarse-pointer phone at 390px (repeat at 360px), then open Files/System Updates, a numeric form, segmented controls and Terminal.
+  Measure visible enabled controls with `getBoundingClientRect()` and check both dimensions against 44px, including any associated label/hit area. Suggested prompt: **Complete 16s touch target sizing and verify all phone routes**.
+
+No product code changed: runtime verification is blocked, and the full control/layout audit needs a focused browser follow-up. No browser failure screenshots were captured because no test page could be loaded.
+
+## Owner checks — QA 11
+
+- `timeout 120 node tools/check-responsive-ui.mjs`: all responsive source assertions passed, then browser setup failed with `listen EPERM: operation not permitted 127.0.0.1`. The existing browser suite uses mock mode, checks overflow on Overview at 360/390/768/1024px, and samples shell touch targets; it does not establish every-route real-API coverage or keyboard behavior.
+- `timeout 120 multipass info opsbox-vm`: `multipass socket access denied`. Bounded HTTPS probes to the previously recorded `192.168.252.2:8443` and localhost port 8443 both exited 7. No authenticated real-API browser checks completed.
+- From a host terminal with VM access, obtain the current disposable VM address and sign in using real API mode. Run `timeout 120 node tools/check-responsive-ui.mjs` for the existing baseline. With Playwright touch contexts at **360×800 and 390×800**, visit every registered route (including auth states on suitable disposable snapshots and detail routes with test records). Assert `document.documentElement.scrollWidth <= innerWidth` with no tolerance; check content is not merely clipped and wide tables scroll only within their wrappers. Open/close the drawer via menu, backdrop, Escape, route change, swipe and Back; check focus return. Open a form dialog and verify a bottom sheet with reachable actions. Measure all interactive hit areas against 44×44px, including row checkboxes, inputs, steppers, segmented buttons and Terminal keys. Focus a Terminal prompt and a form input, emulate a reduced visual viewport/keyboard, and verify the prompt, fields and submit actions remain reachable. Save any failures to `docs/screenshots/qa11/` and update this result.
+- On branch `dev`, the requested `timeout 120 git mv docs/prompts/qa/11-mobile-390.md docs/prompts/qa/archive/11-mobile-390.md` failed because `.git/index.lock` creation is denied (`Operation not permitted`). The prompt was moved in the working tree instead; staging, commit and push require Git metadata write access. Preserve unrelated files and run:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/11-mobile-390.md docs/prompts/qa/archive/11-mobile-390.md
+timeout 120 git commit -m "qa 11: Phone widths: no sideways scroll, targets big enough"
+timeout 120 git push origin dev
+```
+
+No release tag is needed for this docs-only change.
