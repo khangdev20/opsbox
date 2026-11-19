@@ -34,7 +34,8 @@ export async function view({ query }) {
   let closeLogWs = null;
   let root;
   let doms = null;
-  let domLoadingFor = null;
+  const domLoading = new Set();
+  const domLoadErrors = new Map();
   let domBusy = '';
   let domErr = '';
   let lastDns = null;
@@ -151,6 +152,7 @@ export async function view({ query }) {
     return st('off', 'not issued yet');
   };
   const domainsTab = (s) => {
+    if (domLoadErrors.has(s.id)) return html`<div role="alert"><p class="form-err">Could not load domains: ${domLoadErrors.get(s.id)}</p>${btn('Retry', { act: 'retrydomains' })}</div>`;
     if (!doms || doms.service !== s.id) return html`<p class="muted">Loading…</p>`;
     const publicDoms = doms.domains || [];
     const servingDoms = publicDoms.filter((d) => !d.redirect);
@@ -313,13 +315,16 @@ export async function view({ query }) {
   };
 
   const loadDomains = async (targetSvc) => {
-    if (!targetSvc || domLoadingFor === targetSvc) return;
-    domLoadingFor = targetSvc;
+    if (!targetSvc || domLoading.has(targetSvc)) return;
+    domLoading.add(targetSvc);
+    if (domLoadErrors.delete(targetSvc)) paint();
     try {
       const d = await api.getDomains(targetSvc);
       if (sel === targetSvc) doms = d;
+    } catch (err) {
+      domLoadErrors.set(targetSvc, err.message || 'Try again.');
     } finally {
-      if (domLoadingFor === targetSvc) domLoadingFor = null;
+      domLoading.delete(targetSvc);
       paint();
     }
   };
@@ -338,7 +343,7 @@ export async function view({ query }) {
     patch(root.querySelector('#g'), graph().toString(), opts);
     entered = true;
     patch(root.querySelector('#d'), detail().toString(), opts);
-    if (tab === 2 && sel && (!doms || doms.service !== sel) && domLoadingFor !== sel) loadDomains(sel);
+    if (tab === 2 && sel && (!doms || doms.service !== sel) && !domLoading.has(sel) && !domLoadErrors.has(sel)) loadDomains(sel);
   };
   const reload = async () => { proj = await api.getProject(); sel = svc()?.id || ''; if (tab === 2 && sel) doms = await api.getDomains(sel); paint(); };
 
@@ -359,6 +364,7 @@ export async function view({ query }) {
         memory: async () => { await editMemory(svc()); await reload(); },
         select: (el) => { fresh = true; sel = el.dataset.id; tab = 0; stopWs(); logDeploy = null; logLines = []; revealedVars = {}; hideRevealed(); doms = null; domBusy = ''; domErr = ''; lastDns = null; paint(); },
         tab: (el) => { fresh = true; tab = +el.dataset.i; paint(); },
+        retrydomains: () => loadDomains(sel),
         adoptedTls: async (el) => { try { await api.adoptedTls(el.dataset.domain); toast('opsbox now handles TLS.'); await refreshDomainsAndProj(); } catch (e) { toast(e.message, 'err'); } },
         gotodomains: () => { fresh = true; tab = 2; paint(); root.querySelector('#d').scrollIntoView({ behavior: 'smooth', block: 'start' }); },
         adddom: async () => {
@@ -641,6 +647,7 @@ export async function view({ query }) {
         },
       });
       this._t = () => {
+        if (tab === 2 && domLoadErrors.has(sel)) loadDomains(sel);
         api.getProject().then((p) => {
           // A finished deploy is worth saying out loud; a changing metric is not.
           p.services.forEach((s) => {

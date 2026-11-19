@@ -3,6 +3,7 @@
 Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 
 ## Completed
+- Fix 11: failed Apps domain requests show an inline error and Retry; failures persist per service until Retry or the next poll, without a repaint loop.
 - Fix 10: shared HTTP requests have 30-second deadlines (120 seconds for known slow endpoints); awaited mounts and System pane errors show Retry instead of retaining the skeleton.
 - Fix 09: native nft address/port element timeouts expire emergency SSH after one hour even while the watchdog is stopped or restarted; renewal reuses the rule.
 - Fix 08: per-unit systemd restart deltas trip safe mode at five restarts in ten minutes even with healthy probes; the three-failed-probes rule remains.
@@ -21,6 +22,7 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Mapped Linux openat2 confinement races (EAGAIN) to Refused while continuing to deny the operation; reproduced the prior intermittent Internal error under parallel file tests.
 
 ## Verification
+- Fix 11: test-first HTTP 500 request-count regression failed before the fix; 4 Node/DOM regressions now pass, covering three-second request bounds, per-service failures, Retry, polling recovery and in-flight deduplication. Git staging/pull are blocked by read-only metadata; owner checks are in QA 13.
 - Fix 10: 26 Node/DOM tests and five existing Node checks pass; four browser checks hit sandbox localhost-bind restrictions. Live VM and Git completion remain owner checks in QA 09.
 - Fix 09: test-first controlled-clock IPv4/IPv6 expiry/restart, renewal and failure tests pass; watchdog suite 20 pass/2 sandbox socket-bind failures; formatting/Clippy pass. Live nft and Git completion remain owner checks in QA 26.
 - Fix 08: regression failed before implementation; 17 watchdog tests pass, with 2 existing sandbox socket-bind failures. Formatting/Clippy pass; live systemd and Git completion remain owner checks in QA 26.
@@ -36,6 +38,6 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Full Linux Clippy, workspace tests, dependency audit, release builds, version stamping, and signed release artifacts are checked by GitHub Actions.
 
 ## Next
-- Run fix 04/05/06/07/08/09/10 Linux/VM checks and complete pending commit/push from a host terminal (Git metadata is read-only here), then CI/release; next fix is 11 (Apps domain reload loop).
+- Run fix 04/05/06/07/08/09/10/11 Linux/VM checks and complete pending commit/push from a host terminal (Git metadata is read-only here), then CI/release; next fix is 12 (empty-state guidance).
 - Verify the alpha release's x86_64/arm64 archives, checksums, signatures, SBOM, and installer on GitHub Releases.
 - Smoke-test the table and notification views at desktop/mobile widths on an updated server.

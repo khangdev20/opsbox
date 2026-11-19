@@ -322,7 +322,7 @@ Source review only; these findings are not browser observations. No application 
 | Page | Empty-state evidence | Request-failure evidence |
 |---|---|---|
 | Overview | `web/js/pages/overview.js:79–98`: no containers and no activity have messages plus View all/Audit log links. | `:102–110`: required requests propagate to the router; optional failures become null, potentially showing missing containers/activity as empty data. Cleanup failure has a message but no retry. |
-| Apps | `web/js/pages/apps.js:101`: no services guides users to Deploy your first service. | `:26`: initial failure propagates to router. `:315–324,341`: failed domain loading calls paint in finally, which starts another request while domains are absent; no persistent error/retry state. |
+| Apps | `web/js/pages/apps.js:101`: no services guides users to Deploy your first service. | `:26`: initial failure propagates to router. Fixed in fix 11: domain-load failures persist per service with an inline error and Retry; repainting does not refetch, and the next poll can recover. |
 | Containers | `web/js/pages/containers.js:125–145`: install/start Docker guidance and zero-container Deploy a service action. Images/volumes/networks also have empty messages (`:176,186,194`). | `:77–79`: initial failures propagate to router; Docker-not-running has Start Docker and Open System services controls. |
 | Backups | `web/js/pages/backups.js:66`: zero snapshots instructs Back up now; header supplies that action for admins (`:104`). Empty schedules/destinations use bare tables with Add schedule/Add destination controls (`:36,73`). The zero-snapshot instruction also appears for non-admins who cannot use that action. | `:14`: initial failure propagates to router. |
 | Alerts | `web/js/pages/alerts.js:28,32`: no active alerts/no history explained; channels offer Connect and Send test, with expectations at `:38`. | `:22`: initial failure propagates to router; polling failures retain old content and report connection status through shared poll handling. |
@@ -344,12 +344,22 @@ Source review only; these findings are not browser observations. No application 
    - Open an allowed empty folder; return zero services/jobs/firewall rules in disposable fixtures; view zero snapshots as a non-admin.
    - Files/System render bare tables (or only the parent-folder row); Backups instructs non-admins to use a hidden action. Expected: explain absence and offer a role-appropriate next step.
    - Suggested prompt: **Add explicit, role-aware empty states for Files, System and Backups**.
-4. **Apps domain request failure can repeatedly reload** — `web/js/pages/apps.js:315–324,341`.
-   - Select an app's Domains tab while making getDomains fail consistently.
-   - Its finally block repaints, and paint starts another load while doms is absent; Loading can persist with repeated errors. Expected: stop automatic retries and offer a deliberate Retry control. Confirm request cadence in the browser.
-   - Suggested prompt: **Stop domain-load retry loops and show a recoverable error**.
+4. **Fixed in fix 11 — Apps domain request failure can repeatedly reload** — `web/js/pages/apps.js`.
+   - Failures and in-flight loads are tracked per service. An escaped inline error with Retry replaces Loading; repainting and switching tabs/services retain the failure without refetching. Retry or the next existing poll can recover, even if project data is unchanged.
+   - Test first: an HTTP 500 stub produced six requests before the fixture's safety cap over three seconds (expected one). The regression now observes exactly one request, no unhandled rejection, and visible error/Retry. Tests also cover service/tab changes, a failed Retry, successful Retry and polling recovery.
+   - Validation: `timeout 120 node --experimental-vm-modules --test tools/check-apps-domains.test.mjs` passes (4 tests), including in-flight request deduplication.
 
 ## Owner checks — 13: Disposable VM and browser verification
+
+Fix 11: the local Git pull and staging attempts failed because `.git/FETCH_HEAD` and `.git/index.lock` are read-only here. Commit/push, CI and release tagging remain pending. From a host terminal on `dev`:
+
+```sh
+timeout 120 git add web/js/pages/apps.js tools/check-apps-domains.test.mjs docs/DECISIONS.md docs/QA.md docs/STATUS.md docs/prompts/fix/README.md docs/prompts/fix/11-apps-domain-reload-loop.md docs/prompts/fix/archive/11-apps-domain-reload-loop.md
+timeout 120 git commit -m "fix 11: Apps page can reload repeatedly when the domain request fails"
+timeout 120 git push origin dev
+```
+
+After CI passes, tag the next unused alpha per `docs/prompts/CONVENTIONS.md`. To verify fix 11 on `opsbox-vm`, build in `/home/ubuntu/opsbox` with `CARGO_TARGET_DIR=~/target cargo build --release`, reinstall with `sudo sh install.sh --dev --binary ~/target/release/opsbox`, and tunnel with `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`. Open Apps → Domains at 390 px and intercept `/api/v1/services/<service>/domains` with HTTP 500: it must fail safely with readable error/Retry and at most one request per poll interval. Tab/service switches must not retry a remembered failure; Retry must send one request. Restore the endpoint and confirm Retry or the next poll recovers. Live browser/VM verification was not run here.
 
 `timeout 120 multipass info opsbox-vm` failed with `info failed: multipass socket access denied`. No VM service was stopped and no live fresh-install, helper-down, or slow-3G layout checks were performed. Static skeleton/refreshing markup does not establish layout stability.
 

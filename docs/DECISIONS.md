@@ -577,3 +577,7 @@ Create the set and accept rule atomically on first use; atomically delete/re-add
 ## Fix 10 — Bound API requests and recover failed mounts
 Abort shared HTTP requests after 30 seconds, or 120 seconds for update checks, cleanup scans and backups; race the complete response against the deadline and clear timers on settlement.
 Await page mounts inside router error handling; render escaped errors with Retry in the router and System panes, preserving newer navigation when an older mount fails.
+
+## Fix 11 — Recover failed Apps domain loads
+Remember domain-load failures and in-flight requests per service; repainting or switching tabs/services cannot retry a failed load.
+Show the escaped failure inline with Retry; clear it for a deliberate retry or the next existing poll, and keep project polling independent.
