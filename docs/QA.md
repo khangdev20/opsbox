@@ -5,6 +5,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | # | Check | Date | Result | Notes |
 |---|---|---|---|---|
+| 10 | Nothing in http mode still uses sample data | 2026-11-19 | FAIL | HTTP request failures reject without mock fallback, but shell hostname, configure repository default, and unguarded demo exports remain; live VM page checks blocked by Multipass socket access. |
 | 05 | TLS, cookies and security headers | 2026-11-19 | PARTIAL | Source and existing tests reviewed: TLS enforcement, trusted proxy handling, strict HTTPS session cookies and security headers present; Cargo unavailable and VM/local endpoints unreachable, so live headers, login cookies and audit verification remain. |
 | 01 | Fresh install on a clean VM | 2026-11-19 | PASS | Verified with release v0.1.0-alpha.39; opsbox & opsbox-priv active, minisign verified, web HTTP 200 on port 8443. |
 | 03 | Helper down: messages, banner and no half-made things | 2026-11-19 | PASS | Helper down yields 503 / friendly restart message; forms preserve values with override ticked; banner clears on restart; no orphaned DB/container state; log has op, elapsed_ms, request_id. |
@@ -179,3 +180,41 @@ timeout 120 git push origin dev
 ```
 
 No tag is needed for this docs-only change.
+
+
+## Found, not fixed — QA 10
+
+Source audit covered `web/js/`, `web/index.html`, and `crates/opsbox-api/`. No `.codegraph/` index exists. Findings span more than two product files, exceeding the QA tiny-fix limit; no product code changed.
+
+- **Sample hostname on a real panel:** `web/js/shell.js:14` initializes `hostName` to `srv-sgn-01`; `:17` keeps it on request failure, and `:558` renders it before the asynchronous hostname request finishes.
+  Reproduce: sign in on the disposable HTTP-mode panel and block `/api/v1/host` in browser DevTools.
+  Reload: the top bar retains `srv-sgn-01` instead of an unknown/error state. Suggested prompt: **Remove demo hostname from HTTP shell initialization**.
+- **Sample repository becomes a real form default:** `web/js/pages/configure.js:18` falls back to `acme/shop` without a mode guard.
+  Reproduce: open `?mode=http#/apps/new/configure` while signed in, without repository query parameters.
+  Observe `Configure acme/shop` and service name `shop`; missing source should require selection. Suggested prompt: **Reject missing deployment source in HTTP configure route**.
+- **API exports can still simulate in HTTP mode:** `web/js/api.js:801` (`buildLog`, misleadingly present in REAL) fabricates build output; `:1058` (`termExec`) returns fake host/process/filesystem data; `:1759` (`rotateOutKey`) resolves after local audit mutation without rotating a key; `:519` (`tick`) mutates simulated metrics. Node probes with `?mode=http` reproduced fabricated build output, terminal hostname `srv-sgn-01`, and rotation success without fetch. Current pages use `fetchBuildLog` for real logs, select the real terminal view, call `tick` only outside HTTP mode, and the current backend returns no outgoing keys; these are latent exported paths, not evidence those controls currently execute fake actions on a live page.
+  Reproduce: import `api.js` with location search `?mode=http`, stub fetch to reject, and call `buildLog({repo:'real/repo',build:'Dockerfile',id:'svc'},{at:0,id:'deploy'})` or `termExec('local','/home/deploy','hostname')`.
+  Call `rotateOutKey('unused')`: it resolves without a request. Suggested prompt: **Guard demo API exports and correct REAL capability coverage**.
+- **Legacy fake GitHub identity fallback:** `web/js/pages/settings.js:72` constructs `acme-co` / `opsbox-demo` / `panel.example.com` for a truthy non-object GitHub setting without a mode guard. Current `getSettings` normally supplies an object, so this is conditional compatibility code rather than observed live output.
+  Reproduce: on a disposable HTTP-mode settings page, override the settings response's `github` field to `true`.
+  Open the GitHub section and observe the invented identity. Suggested prompt: **Replace legacy GitHub sample fallback with an unknown state**.
+
+API inventory: exported functions outside REAL are `downloadUrl`, `fetchBuildLog`, `formatAuditIp`, `getHelperHealth`, `isReal`, `quiet`, `reauth`, `recoveryAction`, `resetUsage`, `rotateOutKey`, `setUiHooks`, `simulateFailure`, `startMetricsStream`, `streamContainerLogs`, `streamDeployLog`, `streamJournal`, `termExec`, `tick`, and `usageFor`. URL/log/auth/stream wrappers delegate to real capabilities; formatting, usage tracking and UI hooks are local helpers; recovery actions explicitly reject HTTP mode. `termExec` and `tick` are demo-only at their current callers but lack internal guards; `rotateOutKey` is a dormant Desktop leftover. Non-function exports include mode/usage metadata and demo constants `HOSTS` / `TEMPLATES`; live terminal bypasses HOSTS and `getTemplates` fetches the server catalog. `auth.setupStatus` uses `/api/v1/setup/status` directly despite not being in REAL.
+
+`http()` (`web/js/api.js:123`) prefixes `/api/v1`, throws on network/non-2xx errors, and never falls through to mock state. Executed Node assertions: eight representative operations (host, metrics, project, security, audit, settings, providers, build-log wrapper) rejected network failure; metrics rejected HTTP 503; demo recovery actions rejected HTTP mode; all probe request URLs began `/api/v1/`. Metrics may use a fresh frame from `/api/v1/stream/metrics`, never demo metrics. `getHelperHealth` deliberately fetches `/readyz` outside the API prefix and returns `state: ok` on reachability/parse failures; this is a health-status exception, not mock-data delegation. The API module therefore does not meet a literal all-exports/exclusively-API-prefix claim.
+
+`timeout 120 node tools/check-mock-api.mjs` passed (163 page references, 168 REAL capabilities), but its allowlist and membership-only check miss the findings above. Login demo credentials, recovery simulation controls and the demo terminal view are mode-gated. Sample badges in main/shell are capability diagnostics; UI kit simulations are explicitly labeled examples on the separate owner-only kit page. HTML input placeholders are hints, not returned user/metric values. Backend mock/fake hits were test fixtures or shape comments; metrics reads helper snapshots and returns unavailable when none arrive (`crates/opsbox-api/src/metrics.rs:166`), without a fabricated graph fallback.
+
+## Owner checks — QA 10
+
+`timeout 120 multipass info opsbox-vm` failed with `multipass socket access denied`; authenticated live page rendering remains unverified. From a host terminal with VM access, obtain its current address and use only the disposable VM/local test server. Sign in with `?mode=http`; visit Overview, Apps, Configure (including a missing-source URL), Containers, System tabs, Backups/destination form, Alerts, Cleanup, Terminal, Files, Security/Access, Settings, Templates, Database, and Recovery; check login/setup/enrollment/invitation states as applicable to the snapshot. Confirm no sample badges, invented users/audit rows/graphs, or demo hostname. Block representative API requests and disconnect metrics streaming; confirm errors/reconnecting states, not demo values. Specifically retest the findings above after fixes. No credentials were requested or recorded.
+
+Git completion: branch is `dev`. The requested `timeout 120 git mv docs/prompts/qa/10-mock-leftovers.md docs/prompts/qa/archive/10-mock-leftovers.md` failed because `.git/index.lock` creation is denied (`Operation not permitted`). Moved the prompt in the working tree instead. Commit and push remain unperformed because Git metadata is read-only in this session. From a terminal with Git write access, preserve unrelated changes and run:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/10-mock-leftovers.md docs/prompts/qa/archive/10-mock-leftovers.md
+timeout 120 git commit -m "qa 10: Nothing in http mode still uses sample data"
+timeout 120 git push origin dev
+```
+
+No release tag is needed for this docs-only QA record.

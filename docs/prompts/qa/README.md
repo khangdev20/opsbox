@@ -27,7 +27,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 07 | Login, lockout, TOTP and session revoke (`07-login-hardening.md`) | x |
 | 08 | Roles: deployer and viewer cannot do admin things (`08-permissions.md`) | |
 | 09 | Every page: zero console errors, zero failed requests (`09-console-and-network-errors.md`) | |
-| 10 | Nothing in http mode still uses sample data (`10-mock-leftovers.md`) | |
+| 10 | Nothing in http mode still uses sample data (10-mock-leftovers.md) | x |
 | 11 | Phone widths: no sideways scroll, targets big enough (`11-mobile-390.md`) | |
 | 12 | Keyboard use and visible focus (`12-keyboard-and-focus.md`) | |
 | 13 | Empty and error states on every page (`13-empty-and-error-states.md`) | |
