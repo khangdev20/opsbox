@@ -18,7 +18,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 ## Index
 | # | Check | Done |
 |---|---|---|
-| 01 | Fresh install on a clean VM (`01-fresh-install.md`) | |
+| 01 | Fresh install on a clean VM (`01-fresh-install.md`) | x |
 | 02 | Update and rollback between two alphas (`02-update-and-rollback.md`) | |
 | 03 | Helper down: messages, banner and no half-made things (`03-priv-helper-failure.md`) | |
 | 04 | serve and priv version match after update (`04-version-skew.md`) | |
@@ -45,4 +45,4 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 25 | Firewall cannot lock the admin out (`25-firewall-lockout.md`) | |
 | 26 | Watchdog and safe mode (`26-watchdog-safe-mode.md`) | |
 | 27 | Dependencies and lint, fast (`27-dependencies-and-lint.md`) | |
-| 28 | README, install page and links (`28-docs-and-links.md`) | |
+| 28 | README, install page and links (`28-docs-and-links.md`) | x |

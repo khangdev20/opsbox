@@ -33,10 +33,10 @@ The installer runs the new binary's `selftest` before changing anything, starts 
 
 Running it again with a newer binary upgrades in place: a new version file, the symlink moves, both services restart.
 
-## Install a release (once releases exist)
+## Install a release
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/khangdev20/opsbox/main/install.sh | sudo sh
+curl -fsSL https://github.com/khangdev20/opsbox/releases/latest/download/install.sh | sh
 ```
 
 The installer downloads `opsbox-<version>-<target>.tar.gz`, its `.sha256` and its `.minisig`, and checks the checksum and the minisign signature against the public key embedded in the script. It stops on any mismatch. Until a signing key is embedded it refuses to install a download at all. `--dev` skips only the signature check, never the checksum.
