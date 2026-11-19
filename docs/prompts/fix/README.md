@@ -19,7 +19,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 |---|---|---|
 | 01 | The one-line install command returns 404 ([01-install-link-404.md](archive/01-install-link-404.md)) | Fixed in fix 01 |
 | 02 | Demo values leak into the real panel ([02-demo-data-in-real-panel.md](archive/02-demo-data-in-real-panel.md)) | Fixed in fix 02 |
-| 03 | Removing the panel's firewall allowance can lock the admin out (`03-firewall-panel-port-guard.md`) | |
+| 03 | Removing the panel's firewall allowance can lock the admin out ([03-firewall-panel-port-guard.md](archive/03-firewall-panel-port-guard.md)) | Fixed in fix 03 |
 | 04 | Pending firewall rollback can be lost (`04-firewall-rollback-state.md`) | |
 | 05 | Export leaks inline Compose credentials (`05-export-compose-secrets.md`) | |
 | 06 | Import accepts invalid documents and can hide key failures (`06-import-schema-and-key-errors.md`) | |

@@ -165,17 +165,25 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         } => jobs::add(name, cron, command).map(PrivReply::JobId),
         PrivOp::JobRun { id } => jobs::run_now(id).map(|()| PrivReply::Done),
         PrivOp::JobRemove { id } => jobs::remove(id).map(|()| PrivReply::Done),
-        PrivOp::FirewallList => firewall::list().map(PrivReply::Firewall),
+        PrivOp::FirewallList => firewall::list(&env.config_path).map(PrivReply::Firewall),
         PrivOp::FirewallAdd {
             rule,
             caller_ip,
             confirm,
         } => firewall::add(rule, caller_ip.as_deref(), *confirm).map(PrivReply::FirewallChange),
         PrivOp::FirewallRemove {
+            panel_port,
             id,
             caller_ip,
             confirm,
-        } => firewall::remove(id, caller_ip.as_deref(), *confirm).map(PrivReply::FirewallChange),
+        } => firewall::remove(
+            id,
+            caller_ip.as_deref(),
+            *confirm,
+            &env.config_path,
+            *panel_port,
+        )
+        .map(PrivReply::FirewallChange),
         PrivOp::FirewallConfirm => firewall::confirm().map(|()| PrivReply::Done),
         PrivOp::SshEmergency { caller_ip } => firewall::ssh_emergency(caller_ip).map(|until| {
             PrivReply::FirewallChange(opsbox_proto::FirewallChange {

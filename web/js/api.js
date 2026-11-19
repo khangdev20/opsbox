@@ -214,7 +214,7 @@ async function changeFirewall(path, opts, confirmed = false) {
     if (r.revertAt && hooks.revert) hooks.revert(r.revertAt, () => confirmFirewall());
     return r;
   } catch (e) {
-    if (e.code === 'confirmation_required' && !confirmed && hooks.confirm && await hooks.confirm(e.message)) return changeFirewall(path, opts, true);
+    if (e.code === 'confirmation_required' && !confirmed && hooks.confirm && await hooks.confirm(e.message, undefined, 'continue')) return changeFirewall(path, opts, true);
     throw e;
   }
 }

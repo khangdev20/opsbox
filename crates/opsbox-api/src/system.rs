@@ -536,7 +536,11 @@ pub(crate) async fn get_firewall(
     Viewer(_): Viewer,
     Extension(RequestId(rid)): Extension<RequestId>,
 ) -> Result<Json<Value>, HttpError> {
-    let f = patient(&state, 60).firewall_list(&rid).await?;
+    let mut f = patient(&state, 60).firewall_list(&rid).await?;
+    if !f.protected_ports.contains(&state.listen.port()) {
+        f.protected_ports.push(state.listen.port());
+        f.protected_ports.sort_unstable();
+    }
     Ok(Json(json!({
         "backend": f.backend,
         "rules": f.rules.iter().map(|r| json!({ "id": r.id, "port": r.port.to_string(), "proto": r.proto, "src": r.src, "note": r.note })).collect::<Vec<_>>(),
@@ -639,6 +643,7 @@ pub(crate) async fn remove_rule(
             &id,
             caller_ip(&client.ip).as_deref(),
             q.confirm,
+            state.listen.port(),
         )
         .await?;
     audit(

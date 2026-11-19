@@ -401,6 +401,52 @@ fn ssh_ports() -> Vec<u16> {
     parse_ssh_ports(&texts)
 }
 
+/// Protect the configured panel and watchdog recovery listeners as well as SSH.
+/// The API also supplies its actual listener in case it was overridden at startup.
+fn protected_ports(config_path: &Path, panel_port: Option<u16>) -> Result<Vec<u16>, PrivError> {
+    #[derive(Default, Deserialize)]
+    struct Listener {
+        listen: Option<std::net::SocketAddr>,
+    }
+    #[derive(Default, Deserialize)]
+    #[serde(default)]
+    struct Config {
+        api: Listener,
+        watchdog: Listener,
+    }
+    let raw = match std::fs::read_to_string(config_path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(err(
+                PrivErrorCode::Internal,
+                format!("Cannot read firewall protected ports: {e}"),
+            ));
+        }
+    };
+    let config: Config = toml::from_str(&raw).map_err(|e| {
+        err(
+            PrivErrorCode::Invalid,
+            format!("Cannot read firewall protected ports: {e}"),
+        )
+    })?;
+    let mut ports = ssh_ports();
+    ports.push(config.api.listen.map_or(8443, |a| a.port()));
+    ports.push(config.watchdog.listen.map_or(8444, |a| a.port()));
+    if let Some(port) = panel_port {
+        if port == 0 {
+            return Err(err(
+                PrivErrorCode::Invalid,
+                "The panel port must be between 1 and 65535.",
+            ));
+        }
+        ports.push(port);
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    Ok(ports)
+}
+
 fn list_rules(b: Backend, saved: &Saved) -> Result<Vec<FirewallRule>, PrivError> {
     match b {
         Backend::Ufw => {
@@ -626,7 +672,7 @@ fn check_ok(o: Option<super::exec::Output>, what: &str) -> Result<(), PrivError>
 
 // ------------------------------------------------------------------ operations
 
-pub(super) fn list() -> Result<FirewallState, PrivError> {
+pub(super) fn list(config_path: &Path) -> Result<FirewallState, PrivError> {
     let _g = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -642,7 +688,7 @@ pub(super) fn list() -> Result<FirewallState, PrivError> {
             .filter(|u| *u > now())
             .max(),
         revert_at: saved.pending.as_ref().map(|p| p.revert_at),
-        protected_ports: ssh_ports(),
+        protected_ports: protected_ports(config_path, None)?,
     })
 }
 
@@ -698,6 +744,8 @@ pub(super) fn remove(
     id: &str,
     caller_ip: Option<&str>,
     confirm: bool,
+    config_path: &Path,
+    panel_port: Option<u16>,
 ) -> Result<FirewallChange, PrivError> {
     let ip = caller(caller_ip)?;
     let (_proto, _port, _src) =
@@ -707,25 +755,42 @@ pub(super) fn remove(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let b = detect()?;
     let mut saved = load();
-    let rules = list_rules(b, &saved)?;
+    let protected = protected_ports(config_path, panel_port)?;
+    let change = remove_with(id, ip, confirm, b, &mut saved, &protected, backend_remove)?;
+    if b == Backend::Nft || change.revert_at.is_some() {
+        save(&saved)?;
+    }
+    Ok(change)
+}
+
+// Keep the decision and undo scheduling testable without touching the host firewall.
+fn remove_with(
+    id: &str,
+    ip: Option<IpAddr>,
+    confirm: bool,
+    b: Backend,
+    saved: &mut Saved,
+    protected: &[u16],
+    apply: impl FnOnce(Backend, &FirewallRule, &mut Saved) -> Result<(), PrivError>,
+) -> Result<FirewallChange, PrivError> {
+    let rules = list_rules(b, saved)?;
     let rule = rules
         .iter()
         .find(|r| r.id == id)
         .cloned()
         .ok_or_else(|| err(PrivErrorCode::NotFound, "There is no such rule."))?;
-    let protected = ssh_ports();
-    let risky = removal_is_risky(&rule, &rules, ip, &protected);
+    let risky = removal_is_risky(&rule, &rules, ip, protected);
     if risky && !confirm {
         return Err(err(
             PrivErrorCode::ConfirmRequired,
             format!(
-                "This rule is what lets you reach port {} (SSH). Removing it could lock you out of this machine. If you go ahead, it is put back after 60 seconds unless you confirm that you can still connect.",
+                "This rule is what lets you reach protected port {}. Removing it could lock you out of this machine. If you go ahead, it is put back after 60 seconds unless you confirm that you can still connect.",
                 rule.port
             ),
         ));
     }
     let before = (saved.nft_enabled, saved.nft_rules.clone());
-    backend_remove(b, &rule, &mut saved)?;
+    apply(b, &rule, saved)?;
     let revert_at = risky.then(|| now() + REVERT_SECS);
     if let Some(at) = revert_at {
         let undo = if b == Backend::Nft {
@@ -749,9 +814,6 @@ pub(super) fn remove(
             revert_at: at,
             undo,
         });
-    }
-    if b == Backend::Nft || revert_at.is_some() {
-        save(&saved)?;
     }
     Ok(FirewallChange { revert_at })
 }
@@ -1176,6 +1238,108 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn panel_allowance_removal_requires_confirmation_and_schedules_revert() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        for (raw, actual, port, src, caller) in [
+            ("", None, 8443, "anywhere", Some(ip("203.0.113.5"))),
+            ("", None, 8444, "anywhere", None),
+            (
+                "[api]\nlisten = '0.0.0.0:9443'\n",
+                None,
+                9443,
+                "203.0.113.0/24",
+                Some(ip("203.0.113.5")),
+            ),
+            (
+                "[watchdog]\nlisten = '[::]:9444'\n",
+                None,
+                9444,
+                "2001:db8::/32",
+                Some(ip("2001:db8::5")),
+            ),
+            ("", Some(10443), 10443, "anywhere", Some(ip("203.0.113.5"))),
+        ] {
+            std::fs::write(&config, raw).unwrap();
+            let protected = protected_ports(&config, actual).unwrap();
+            let panel = rule("tcp", port, src);
+            let mut saved = Saved {
+                nft_enabled: true,
+                nft_rules: vec![panel.clone()],
+                ..Saved::default()
+            };
+            assert!(render_nft(&saved.nft_rules, &[22], &[]).contains("policy drop;"));
+            let denied = remove_with(
+                &panel.id,
+                caller,
+                false,
+                Backend::Nft,
+                &mut saved,
+                &protected,
+                |_, _, _| panic!("unconfirmed removal must not reach the backend"),
+            )
+            .unwrap_err();
+            assert_eq!(denied.code, PrivErrorCode::ConfirmRequired);
+            assert_eq!(saved.nft_rules.len(), 1);
+            assert!(saved.pending.is_none());
+
+            let before = now();
+            let change = remove_with(
+                &panel.id,
+                caller,
+                true,
+                Backend::Nft,
+                &mut saved,
+                &protected,
+                |_, rule, saved| {
+                    saved.nft_rules.retain(|r| r.id != rule.id);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            let pending = saved
+                .pending
+                .as_ref()
+                .expect("timed undo must be scheduled");
+            assert_eq!(change.revert_at, Some(pending.revert_at));
+            assert!((before + REVERT_SECS..=now() + REVERT_SECS).contains(&pending.revert_at));
+            assert!(saved.nft_rules.is_empty());
+            match &pending.undo {
+                Undo::NftRules { enabled, rules } => {
+                    assert!(*enabled);
+                    assert_eq!(rules.len(), 1);
+                    assert_eq!(rules[0].id, panel.id);
+                }
+                other => panic!("expected restoration of the panel allowance: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn protected_listener_config_is_validated_and_deduplicated() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        let defaults = protected_ports(&config, None).unwrap();
+        assert!(defaults.contains(&8443) && defaults.contains(&8444));
+        std::fs::write(
+            &config,
+            "[api]\nlisten = '[::]:9443'\n[watchdog]\nlisten = '127.0.0.1:9443'\n",
+        )
+        .unwrap();
+        let ports = protected_ports(&config, Some(9443)).unwrap();
+        assert_eq!(ports.iter().filter(|p| **p == 9443).count(), 1);
+        assert_eq!(
+            protected_ports(&config, Some(0)).unwrap_err().code,
+            PrivErrorCode::Invalid
+        );
+        std::fs::write(&config, "[api]\nlisten = 'invalid'\n").unwrap();
+        assert_eq!(
+            protected_ports(&config, None).unwrap_err().code,
+            PrivErrorCode::Invalid
+        );
+    }
+
     // ---- ruleset rendering
 
     #[test]
@@ -1284,7 +1448,9 @@ mod tests {
             PrivErrorCode::Invalid
         );
         assert_eq!(
-            remove("garbage", None, false).unwrap_err().code,
+            remove("garbage", None, false, Path::new("unused"), None)
+                .unwrap_err()
+                .code,
             PrivErrorCode::Invalid
         );
         assert_eq!(

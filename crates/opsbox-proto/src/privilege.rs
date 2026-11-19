@@ -186,6 +186,9 @@ pub enum PrivOp {
         confirm: bool,
     },
     FirewallRemove {
+        /// Actual API listener, including command-line overrides; configured ports stay protected.
+        #[serde(default)]
+        panel_port: Option<u16>,
         id: String,
         caller_ip: Option<String>,
         confirm: bool,

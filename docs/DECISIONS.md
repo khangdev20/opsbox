@@ -545,3 +545,7 @@ During this alpha period stable accepts these alphas; beta/default alpha.43 stil
 ## Fix 02 — Demo values stay in demo mode
 HTTP views use a neutral server name, require a repository, and accept only real GitHub state; demo samples remain available outside HTTP mode.
 Guard buildLog, termExec and rotateOutKey in HTTP mode; register fetchBuildLog and streamDeployLog as the real deploy-log capabilities.
+
+## Fix 03 — Protect panel and recovery firewall allowances
+Protect SSH plus configured panel/recovery listeners (8443/8444 by default); carry the actual API port in an optional helper field for startup overrides, preserving the HTTP API.
+Use the existing 60-second undo and require typing `continue`; rules are allow-only, so broader drops cannot be added/reordered here and first default-drop activation already requires confirmation.

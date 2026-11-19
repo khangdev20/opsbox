@@ -444,3 +444,85 @@ async fn the_disk_view_is_data_or_a_clear_unsupported() {
     }
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn panel_firewall_removal_forwards_actual_listener_confirmation_and_revert() {
+    use opsbox_proto::{
+        FirewallChange, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, frame,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("firewall.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let h = Harness::new_with(false, |mut state| {
+        state.priv_client = opsbox_priv::PrivClient::new(&socket);
+        state.with_listen("127.0.0.1:10443".parse().unwrap())
+    });
+    // The real helper's guard/undo is tested in opsbox-priv; this fixture checks the
+    // HTTP boundary forwards the running listener and preserves both responses.
+    let helper = tokio::spawn(async move {
+        for confirmed in [false, true] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut header = [0; 4];
+            stream.read_exact(&mut header).await.unwrap();
+            let mut body = vec![0; frame::body_len(header).unwrap()];
+            stream.read_exact(&mut body).await.unwrap();
+            let request: PrivRequest = frame::decode(&body).unwrap();
+            match request.op {
+                PrivOp::FirewallRemove {
+                    panel_port,
+                    id,
+                    confirm,
+                    ..
+                } => {
+                    assert_eq!(panel_port, Some(10443));
+                    assert_eq!(id, "tcp:10443:anywhere");
+                    assert_eq!(confirm, confirmed);
+                }
+                other => panic!("unexpected operation: {other:?}"),
+            }
+            let response = if confirmed {
+                PrivResponse::success(
+                    request.id,
+                    PrivReply::FirewallChange(FirewallChange {
+                        revert_at: Some(123456),
+                    }),
+                )
+            } else {
+                PrivResponse::failure(
+                    request.id,
+                    PrivErrorCode::ConfirmRequired,
+                    "Panel access would be lost",
+                )
+            };
+            stream
+                .write_all(&frame::encode(&response).unwrap())
+                .await
+                .unwrap();
+        }
+    });
+    let mut admin = h.signed_in("firewall-admin", Role::Admin);
+    let denied = admin
+        .send(
+            Method::DELETE,
+            "/api/v1/firewall/rules/tcp:10443:anywhere",
+            None,
+            Opts::default(),
+        )
+        .await;
+    assert_eq!(denied.status, StatusCode::CONFLICT);
+    assert_eq!(denied.error_code(), "confirmation_required");
+    let allowed = admin
+        .send(
+            Method::DELETE,
+            "/api/v1/firewall/rules/tcp:10443:anywhere?confirm=true",
+            None,
+            Opts::default(),
+        )
+        .await;
+    assert_eq!(allowed.status, StatusCode::OK);
+    assert_eq!(allowed.json()["revertAt"], 123456);
+    helper.await.unwrap();
+    h.shutdown().await;
+}

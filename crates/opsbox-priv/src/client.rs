@@ -548,8 +548,10 @@ impl PrivClient {
         id: &str,
         caller_ip: Option<&str>,
         confirm: bool,
+        panel_port: u16,
     ) -> Result<FirewallChange, ClientError> {
         let op = PrivOp::FirewallRemove {
+            panel_port: Some(panel_port),
             id: id.to_owned(),
             caller_ip: caller_ip.map(str::to_owned),
             confirm,
