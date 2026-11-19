@@ -4,6 +4,8 @@ Small, ordered prompts for building opsbox. Give an agent ONE file at a time, in
 
 When a prompt is fully done, the agent moves it to `archive/`, marks it done below and tags the next `v0.1.0-alpha.N` release (see CONVENTIONS), so every finished prompt is an installable alpha and the lowest-numbered file left in this folder is always the next one.
 
+QA prompts (small checks and tiny fixes, 20 minutes each) live in `qa/`; see `qa/README.md`.
+
 How to use:
 1. Open a new agent in `~/Developer/opsbox`.
 2. Paste: `Follow docs/prompts/CONVENTIONS.md, then do docs/prompts/NN-name.md.`

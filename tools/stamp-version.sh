@@ -24,5 +24,5 @@ awk -v v="$version" '
 ' Cargo.toml >Cargo.toml.new || { rm -f Cargo.toml.new; echo "stamp-version: no workspace version in Cargo.toml" >&2; exit 1; }
 mv Cargo.toml.new Cargo.toml
 # Refresh the workspace members' versions in Cargo.lock without touching dependencies.
-cargo update --workspace --offline >/dev/null
+cargo update --workspace >/dev/null
 echo "stamped workspace version $version"
