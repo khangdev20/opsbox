@@ -907,3 +907,137 @@ async fn missing_and_empty_arguments_are_validation_errors() {
     let _: Value = r.json();
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn qa21_traversal_symlinks_and_safety_checks() {
+    use opsbox_store::{NewService, ServiceKind, SourceKind};
+
+    let h = Harness::new(true);
+    let mut a = admin(&h).await;
+    let mut d = h.signed_in("deployer1", Role::Deployer);
+    let d1_user = h.store.user_by_name("deployer1").unwrap().unwrap();
+    let (proj, env) = h.store.ensure_default_project(10).unwrap();
+
+    fs::create_dir_all(h.root.join("apps/web")).unwrap();
+    fs::write(h.root.join("apps/web/secret.txt"), "web secret").unwrap();
+    fs::write(h.root.join("root_secret.txt"), "root secret").unwrap();
+
+    // Symlink inside app dir pointing to /etc or outside root
+    symlink("/etc", h.root.join("apps/web/etc_link")).unwrap();
+    symlink(
+        h.root.join("root_secret.txt"),
+        h.root.join("apps/web/root_secret_link"),
+    )
+    .unwrap();
+
+    h.store
+        .create_service(NewService {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "web",
+            kind: ServiceKind::App,
+            owner_id: Some(&d1_user.id),
+            source_kind: SourceKind::GitUrl,
+            repo: "https://github.com/acme/web.git",
+            branch: "main",
+            build_method: "auto",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 3000,
+            health_path: "/",
+            domain: None,
+            image_ref: None,
+            deploy_key_id: None,
+            auto_deploy: true,
+            memory_limit_mb: None,
+            cpu_limit_millis: None,
+            graph_x: 0,
+            graph_y: 0,
+            note: None,
+            now: 10,
+        })
+        .unwrap();
+
+    // 1. Try ../../etc/passwd and URL-encoded dots (%2e%2e)
+    let r1 = d.get("/api/v1/files/content?path=/../../etc/passwd").await;
+    assert_eq!(r1.status, StatusCode::FORBIDDEN);
+    assert!(
+        r1.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("outside the folders")
+    );
+
+    let r2 = d
+        .get("/api/v1/files/content?path=%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd")
+        .await;
+    assert_eq!(r2.status, StatusCode::FORBIDDEN);
+
+    // 2. Symlink inside app dir pointing to /etc and outside base dir
+    let r3 = d
+        .get(&format!(
+            "/api/v1/files/content?path={}",
+            q(&h.root.join("apps/web/etc_link/passwd"))
+        ))
+        .await;
+    assert_eq!(r3.status, StatusCode::FORBIDDEN);
+
+    let r4 = d
+        .get(&format!(
+            "/api/v1/files/content?path={}",
+            q(&h.root.join("apps/web/root_secret_link"))
+        ))
+        .await;
+    assert_eq!(r4.status, StatusCode::FORBIDDEN);
+
+    // 3. Path with null byte (%00)
+    let r5 = a
+        .get("/api/v1/files/content?path=%2fetc%2fpasswd%00test")
+        .await;
+    assert_eq!(r5.status, StatusCode::BAD_REQUEST);
+    assert!(
+        r5.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("NUL")
+    );
+
+    // 4. Weird file name upload and download (spaces, unicode, leading dash)
+    let weird_name = "-weird name 🚀.bin";
+    let test_data = b"hello weird filename world\x01\x02\x03\x04";
+    let up_res = a
+        .send_bytes(
+            Method::POST,
+            &format!(
+                "/api/v1/files/upload?dir={}&name={}",
+                q(&h.root.join("apps/web")),
+                q(Path::new(weird_name))
+            ),
+            test_data.to_vec(),
+            Opts::default(),
+        )
+        .await;
+    assert_eq!(up_res.status, StatusCode::OK, "{}", up_res.text());
+
+    // Download and verify byte-for-byte
+    let dl_res = a
+        .send(
+            Method::GET,
+            &format!(
+                "/api/v1/files/download?path={}",
+                q(&h.root.join(format!("apps/web/{weird_name}")))
+            ),
+            None,
+            Opts::bare(),
+        )
+        .await;
+    assert_eq!(dl_res.status, StatusCode::OK);
+    assert_eq!(dl_res.body, test_data);
+
+    // Audit logs checked
+    let audits = h.store.recent_audit(20).unwrap();
+    assert!(audits.iter().any(|e| e.action == "files.upload"));
+    assert!(audits.iter().any(|e| e.action == "files.download"));
+
+    h.shutdown().await;
+}
