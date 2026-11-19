@@ -67,9 +67,9 @@ export async function view({ query = {} } = {}) {
     return '';
   };
   const renderGithubSection = (pi) => {
-    const gh = d.github && typeof d.github === 'object'
+    const gh = d.github && typeof d.github === 'object' && !Array.isArray(d.github)
       ? d.github
-      : (d.github ? { connected: true, installed: true, account: 'acme-co', appSlug: 'opsbox-demo', manageUrl: 'https://github.com/settings/installations', webhookConfigured: true, webhookActive: true, webhookUrl: 'https://panel.example.com/api/v1/github/webhook' } : { connected: false, installed: false });
+      : (!LIVE && d.github ? { connected: true, installed: true, account: 'acme-co', appSlug: 'opsbox-demo', manageUrl: 'https://github.com/settings/installations', webhookConfigured: true, webhookActive: true, webhookUrl: 'https://panel.example.com/api/v1/github/webhook' } : { connected: false, installed: false });
     const keys = d.deployKeys || [];
     const selNote = gh.repositorySelection === 'all'
       ? 'all repositories'
@@ -157,7 +157,7 @@ export async function view({ query = {} } = {}) {
     ${section('Panel address', html`<div class="col gap16">
       <div class="field"><label for="sp">Panel domain</label>
         <div class="row">
-          <input class="input grow" id="sp" placeholder="panel.example.com" value="${d.panel || ''}"${busy ? ' disabled' : ''}>
+          <input class="input grow" id="sp" placeholder="Panel domain" value="${d.panel || ''}"${busy ? ' disabled' : ''}>
           ${btn('Check DNS', { act: 'checkDns', kind: dnsOk ? '' : 'primary', disabled: !!busy })}
           ${btn(certLive && pi.activeDomain === curNorm ? 'Renew certificate' : 'Issue certificate', { act: 'issueCert', kind: dnsOk ? 'primary' : '', disabled: !canIssue })}
           ${pi.activeDomain ? btn('Remove', { act: 'removeDomain', kind: 'link', disabled: !!busy }) : ''}

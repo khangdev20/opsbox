@@ -11,10 +11,10 @@ async function signOut() {
 }
 
 // Name shown in the top bar and status bar. In http mode it is the real hostname.
-let hostName = 'srv-sgn-01';
+let hostName = api.MODE === 'http' ? 'This server' : 'srv-sgn-01';
 async function loadHostName() {
   if (api.MODE !== 'http') return;
-  try { hostName = (await api.quiet(() => api.getHost())).name; } catch { return; }
+  try { hostName = (await api.quiet(() => api.getHost())).name || 'This server'; } catch { return; }
   const crumb = document.querySelector('.crumb'); if (crumb) crumb.textContent = hostName;
   refreshStatus();
 }

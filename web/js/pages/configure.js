@@ -15,7 +15,13 @@ export async function view({ query }) {
         ? 'git_url'
         : 'github';
 
-  const repo = isImage ? image : (query.repo || 'acme/shop');
+  const repo = isImage ? image : (query.repo || (api.MODE === 'http' ? '' : 'acme/shop')).trim();
+  if (api.MODE === 'http' && !isImage && !repo) {
+    return {
+      nav: 'apps', title: 'Configure',
+      html: html`<main class="narrow">${header('Choose a repository', 'Select a deployment source before configuring your app.')}<a class="btn primary" href="#/apps/new">Choose a repository</a></main>`,
+    };
+  }
   const build = query.build || (isImage ? 'Docker image' : 'auto');
   const branch = query.branch || 'main';
   const rawName = (isImage ? image.split(':')[0].split('/').pop() : repo.replace(/\.git$/, '').split('/').filter(Boolean).pop()) || 'app';

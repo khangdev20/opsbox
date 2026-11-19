@@ -55,7 +55,7 @@ const REAL = new Set([
   'getRecovery',
   'getGithubStatus', 'startGithubManifest', 'completeGithubManifest', 'syncGithubInstallation', 'syncGithubWebhook',
   'disconnectGithub', 'getRepos', 'inspectPublicRepo', 'listDeployKeys', 'createDeployKey', 'deleteDeployKey',
-  'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'buildLog', 'addVar', 'removeVar', 'revealVar', 'removeService',
+  'getProject', 'createService', 'updateService', 'redeploy', 'rollback', 'fetchBuildLog', 'streamDeployLog', 'addVar', 'removeVar', 'revealVar', 'removeService',
   'connectDatabase', 'disconnectDatabase', 'rotateDatabase', 'setServiceExposure',
   'getDatabase', 'rotateAppLogin', 'removeAppLogin', 'setAppPooled', 'setExtension', 'setPooler', 'upgradeDatabase', 'revealConnectionString',
   'revealAlertChannel', 'revealGithubWebhookSecret', 'revealBackupDestination',
@@ -81,7 +81,7 @@ export const PAGE_USES = {
   access: ['addKey', 'getAccess', 'lockUser', 'openSsh', 'removeKey'],
   alerts: ['disconnectChannel', 'connectChannel', 'getAlerts', 'revealAlertChannel', 'setQuiet', 'setRule', 'silenceAlert', 'testAlert'],
   databases: ['addTemplate', 'getDatabase', 'getProject', 'removeAppLogin', 'revealConnectionString', 'rotateAppLogin', 'setAppPooled', 'setExtension', 'setPooler', 'upgradeDatabase'],
-  apps: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addDomain', 'addVar', 'buildLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'revealVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
+  apps: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'addDomain', 'addVar', 'fetchBuildLog', 'streamDeployLog', 'checkDns', 'connectDatabase', 'disconnectDatabase', 'getDomains', 'getProject', 'issueDomainCert', 'makePrimary', 'redeploy', 'removeDomain', 'removeService', 'removeVar', 'revealVar', 'rollback', 'rotateDatabase', 'setServiceExposure', 'updateDomain', 'updateService'],
   backupdest: ['getProviders', 'saveDestination', 'testDestination', 'downloadRecoveryKey'],
   backups: ['getCapacity', 'checkCapacity', 'addCapacitySwap', 'getBackups', 'runBackup', 'createBackupJob', 'updateBackupJob', 'deleteBackupJob', 'pruneBackups', 'checkBackups', 'restoreBackup', 'testSavedDestination', 'deleteDestination', 'setDefaultDestination', 'downloadRecoveryKey', 'revealBackupDestination', 'testBackupRestore'],
   cleanup: ['runCleanup', 'scanCleanup', 'setAutoCleanup'],
@@ -799,6 +799,7 @@ export async function rollback(svc, deployId) {
   audit(`rollback ${svc} to ${deployId}`); return { ok: true };
 }
 export function buildLog(svc, deploy) { sample('buildLog');
+  if (MODE === 'http') throw new Error('The demo build log needs a real server. Open the live deploy log.');
   const t = deploy.at; const L = (s, m) => `${hhmmss(t + s * 1000)} ${m}`;
   const lines = [L(0, `clone    ${svc.repo}@${deploy.id}`), L(1, `detect   ${svc.build}`), L(1, 'build    FROM node:22-alpine'), L(19, 'build    npm ci · 412 packages'), L(42, 'build    npm run build · ok'),
     L(47, `push     ${svc.id}:${deploy.id} (118 MB)`), L(48, 'deploy   start new version, wait for /healthz'), L(51, 'health   200 OK after 3 s'), L(51, 'switch   traffic moved, zero downtime'), L(52, 'done     stopped previous version')];
@@ -807,12 +808,12 @@ export function buildLog(svc, deploy) { sample('buildLog');
   return lines;
 }
 export async function fetchBuildLog(svc, deploy) {
-  sample('buildLog');
-  if (real('buildLog')) return http(`/deploys/${encodeURIComponent(deploy.id)}/log`);
+  sample('fetchBuildLog');
+  if (real('fetchBuildLog')) return http(`/deploys/${encodeURIComponent(deploy.id)}/log`);
   return { id: deploy.id, status: deploy.status, error: deploy.error || null, lines: buildLog(svc, deploy).map((line) => ({ line })) };
 }
 export function streamDeployLog(deployId, onLine, onDone, onError) {
-  if (MODE !== 'http' || !REAL.has('buildLog')) return () => {};
+  if (!real('streamDeployLog')) return () => {};
   const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/api/v1/stream/deploys/${encodeURIComponent(deployId)}`);
   ws.onmessage = (e) => {
     try {
@@ -1056,6 +1057,7 @@ export const HOSTS = [
   { id: 'edge', name: 'edge-hn-02', sub: 'ubuntu@203.0.113.40:2222', user: 'ubuntu' },
 ];
 export async function termExec(host, cwd, line) { sample('termExec');
+  if (MODE === 'http') throw new Error('The terminal needs a real server. Open the live terminal.');
   await sleep(40);
   const [cmd, ...args] = line.trim().split(/\s+/); const m = S.metrics;
   const dir = (a) => join(cwd, a || '~'.replace('~', '/home/deploy'));
@@ -1756,7 +1758,9 @@ export async function lockUser(name, lock) { sample('lockUser');
   if (lock && name === 'deploy') throw new Error('deploy runs your apps. Locking it would stop deployments.');
   u.locked = lock; audit(`${lock ? 'lock' : 'unlock'} user ${name}`);
 }
-export async function rotateOutKey(id) { sample('rotateOutKey'); await lag(500); audit('rotate outgoing key'); }
+export async function rotateOutKey(id) { sample('rotateOutKey');
+  if (MODE === 'http') throw new Error('Rotating an outgoing key needs a real server implementation.');
+  await lag(500); audit('rotate outgoing key'); }
 
 // ---------------------------------------------------------------- settings
 const ST = {

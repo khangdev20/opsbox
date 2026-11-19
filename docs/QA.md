@@ -8,7 +8,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 13 | Empty and error states on every page | 2026-11-19 | PARTIAL | Source review of all nine pages: core Apps/Containers/Backups/Alerts empty states exist; Files and System have empty-state gaps; request failures lack retries and System can retain its skeleton. VM and slow-3G checks unavailable; see QA 13 details below. |
 | 12 | Keyboard use and visible focus | 2026-11-19 | PASS | Visible focus indicators (:focus-visible) enforced across dark and light themes; Escape closes dialogs, drawer, and account/notification menus; focus trap and return-to-opener implemented; form fields have labels and errors use role="alert". |
 | 11 | Phone widths: no sideways scroll, targets big enough | 2026-11-19 | PARTIAL | Responsive source checks pass; 360/390px live layout, drawer, sheets and keyboard checks blocked by VM/local-server permissions; source shows undersized touch controls. |
-| 10 | Nothing in http mode still uses sample data | 2026-11-19 | FAIL | HTTP request failures reject without mock fallback, but shell hostname, configure repository default, and unguarded demo exports remain; live VM page checks blocked by Multipass socket access. |
+| 10 | Nothing in http mode still uses sample data | 2026-11-20 | Fixed in fix 02 | Node regression checks cover failed HTTP requests, neutral hostname, missing repository, malformed GitHub settings and guarded demo exports; demo samples and real deploy-log routing pass. Live VM checks remain owner work. |
 | 05 | TLS, cookies and security headers | 2026-11-19 | PARTIAL | Source and existing tests reviewed: TLS enforcement, trusted proxy handling, strict HTTPS session cookies and security headers present; Cargo unavailable and VM/local endpoints unreachable, so live headers, login cookies and audit verification remain. |
 | 01 | Fresh install on a clean VM | 2026-11-19 | PASS | Verified with release v0.1.0-alpha.39; opsbox & opsbox-priv active, minisign verified, web HTTP 200 on port 8443. |
 | 03 | Helper down: messages, banner and no half-made things | 2026-11-19 | PASS | Helper down yields 503 / friendly restart message; forms preserve values with override ticked; banner clears on restart; no orphaned DB/container state; log has op, elapsed_ms, request_id. |
@@ -214,7 +214,11 @@ timeout 120 git push origin dev
 No tag is needed for this docs-only change.
 
 
-## Found, not fixed — QA 10
+## Fixed in fix 02 — QA 10
+
+`timeout 120 node --experimental-vm-modules --test tools/check-demo-data.test.mjs` reproduced 11 failing assertions before the fix and passes all 15 checks after it. HTTP rendering excludes `srv-sgn-01`, `acme/shop`, `acme-co`, `opsbox-demo` and `panel.example.com`; missing repositories require selection, malformed GitHub state shows Not connected, and the three mock exports reject with a clear "needs a real server" error. Demo rendering and operations still work; real deploy-log fetch and streaming keep their endpoints. Existing mock API, network UI and update-status checks also pass.
+
+The findings below record the original reproduction; their hostname, repository, GitHub and mock-export defects are now fixed. The separate demo `tick` caller remains mode-gated as described, outside fix 02's scope. Live checks remain under Owner checks.
 
 Source audit covered `web/js/`, `web/index.html`, and `crates/opsbox-api/`. No `.codegraph/` index exists. Findings span more than two product files, exceeding the QA tiny-fix limit; no product code changed.
 
@@ -241,15 +245,16 @@ API inventory: exported functions outside REAL are `downloadUrl`, `fetchBuildLog
 
 `timeout 120 multipass info opsbox-vm` failed with `multipass socket access denied`; authenticated live page rendering remains unverified. From a host terminal with VM access, obtain its current address and use only the disposable VM/local test server. Sign in with `?mode=http`; visit Overview, Apps, Configure (including a missing-source URL), Containers, System tabs, Backups/destination form, Alerts, Cleanup, Terminal, Files, Security/Access, Settings, Templates, Database, and Recovery; check login/setup/enrollment/invitation states as applicable to the snapshot. Confirm no sample badges, invented users/audit rows/graphs, or demo hostname. Block representative API requests and disconnect metrics streaming; confirm errors/reconnecting states, not demo values. Specifically retest the findings above after fixes. No credentials were requested or recorded.
 
-Git completion: branch is `dev`. The requested `timeout 120 git mv docs/prompts/qa/10-mock-leftovers.md docs/prompts/qa/archive/10-mock-leftovers.md` failed because `.git/index.lock` creation is denied (`Operation not permitted`). Moved the prompt in the working tree instead. Commit and push remain unperformed because Git metadata is read-only in this session. From a terminal with Git write access, preserve unrelated changes and run:
+Fix 02 Git completion: branch is `dev`. Staging failed because `.git/index.lock` creation is denied (`Operation not permitted`); Git metadata is read-only in this session. The fix prompt is archived in the working tree, but commit, push, CI and release tagging remain owner work. From a terminal with Git write access, preserve unrelated changes and run:
 
 ```sh
-timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/10-mock-leftovers.md docs/prompts/qa/archive/10-mock-leftovers.md
-timeout 120 git commit -m "qa 10: Nothing in http mode still uses sample data"
+timeout 120 node --experimental-vm-modules --test tools/check-demo-data.test.mjs
+timeout 120 git add -A -- web/js/shell.js web/js/pages/configure.js web/js/pages/settings.js web/js/api.js tools/check-demo-data.test.mjs docs/DECISIONS.md docs/QA.md docs/prompts/fix/README.md docs/prompts/fix/02-demo-data-in-real-panel.md docs/prompts/fix/archive/02-demo-data-in-real-panel.md
+timeout 120 git commit -m "fix 02: Demo values leak into the real panel"
 timeout 120 git push origin dev
 ```
 
-No release tag is needed for this docs-only QA record.
+After CI passes, tag the next unused `v0.1.0-alpha.<N+1>` per `docs/prompts/CONVENTIONS.md`. On the disposable VM, block `/api/v1/host` and reload: the shell must show `This server`. Open `?mode=http#/apps/new/configure` without a repository: deployment must be unavailable until a source is selected. Open Settings with `github: true` in the intercepted response: no invented identity may appear. Finally, `?mode=mock` must still render sample host, repository and GitHub values.
 
 
 ## Found, not fixed — QA 09

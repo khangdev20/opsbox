@@ -541,3 +541,7 @@ Firewalld restricted-source rules use a single rich-rule argv value with an expl
 ## Fix 01 — Install link routing
 Publish `v0.1.0-alpha.*` as normal GitHub releases titled `OpsBox alpha N`, explicitly Latest, so the documented installer URL resolves.
 During this alpha period stable accepts these alphas; beta/default alpha.43 still updates, final versions do not downgrade on stable, and other pre-releases retain their flag.
+
+## Fix 02 — Demo values stay in demo mode
+HTTP views use a neutral server name, require a repository, and accept only real GitHub state; demo samples remain available outside HTTP mode.
+Guard buildLog, termExec and rotateOutKey in HTTP mode; register fetchBuildLog and streamDeployLog as the real deploy-log capabilities.
