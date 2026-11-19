@@ -5,6 +5,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 
 | # | Check | Date | Result | Notes |
 |---|---|---|---|---|
+| 05 | TLS, cookies and security headers | 2026-11-19 | PARTIAL | Source and existing tests reviewed: TLS enforcement, trusted proxy handling, strict HTTPS session cookies and security headers present; Cargo unavailable and VM/local endpoints unreachable, so live headers, login cookies and audit verification remain. |
 | 01 | Fresh install on a clean VM | 2026-11-19 | PASS | Verified with release v0.1.0-alpha.39; opsbox & opsbox-priv active, minisign verified, web HTTP 200 on port 8443. |
 | 03 | Helper down: messages, banner and no half-made things | 2026-11-19 | PASS | Helper down yields 503 / friendly restart message; forms preserve values with override ticked; banner clears on restart; no orphaned DB/container state; log has op, elapsed_ms, request_id. |
 | 04 | serve and priv version match after update | 2026-11-19 | PARTIAL | Source confirms Ping build version and /readyz HTTP 503 with both versions on skew; stubbed frontend mismatch alert/recovery check passed. Cargo unavailable, browser localhost bind denied, and VM access denied; live update/restart verification remains. |
@@ -137,3 +138,44 @@ timeout 120 multipass exec opsbox-vm -- systemctl show opsbox opsbox-priv -p Exe
 On a disposable snapshot after an update, confirm both processes restarted at the update time and readiness is HTTP 200 with `privileged_helper: "ok"`. Compare the CLI's serve/helper versions. In a throwaway slot run the previous helper build, confirm HTTP 503 with both versions at `/readyz`, and open the panel to verify the warning banner. Restore the matching helper and confirm readiness and banner recovery. Do not change a server with real data.
 
 Git completion: on branch `dev`, the requested `git mv` failed because this session cannot create `.git/index.lock` (`Operation not permitted`). The prompt was moved into the archive in the working tree instead; commit and push remain unperformed. From a terminal with Git write access, stage only these QA 04 changes (preserve any concurrent QA edits), commit `qa 04: serve and priv version match after update`, and push `origin dev`. No tag is needed for this docs-only work.
+
+
+## Owner checks — QA 05
+
+Source review (2026-11-19; no product code changes):
+
+- `crates/opsbox-api/src/hardening.rs:76` sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, `Cross-Origin-Opener-Policy: same-origin`, and CSP; removes `Server`; forces `Cache-Control: no-store` on API and HTML responses. Panel CSP limits scripts to self; only `/tools` has the vendor policy allowing inline scripts/eval. HSTS is `max-age=31536000` only for HTTPS DNS hosts, deliberately absent for IP/loopback hosts (`hardening.rs:135`). Transport runs before hardening (`src/lib.rs:722`).
+- `crates/opsbox-api/src/session.rs:82` and `:100` issue HTTPS session cookies as `__Host-opsbox_session`, `Secure`, `HttpOnly`, `SameSite=Strict`, `Path=/`, without `Domain`. The CSRF cookie is intentionally readable by JavaScript, with Secure/Strict attributes. Loopback HTTP uses the plain session name without Secure; there is no SecureCookies::Never mode. Login uses `session_cookies(client.https, ...)` (`src/auth.rs:87`).
+- `crates/opsbox/src/config.rs:464` rejects non-loopback HTTP; `cmd/serve.rs:128` selects the TLS listener. `crates/opsbox-api/src/tls.rs:179` offers only TLS 1.3/1.2, with ALPN h2/http/1.1. `src/transport.rs:97` trusts forwarded addresses/scheme only from loopback with the matching proxy secret; otherwise it strips forwarding headers and uses the TCP peer for audit/rate limits.
+- Reviewed `tests/security_http.rs` (trusted proxy allowlist path and strict/HttpOnly enrollment cookie), `tests/transport_http.rs` (forged headers retain real peer in audit and real HTTP cookie scheme, trusted proxy behavior), `tests/hardening_http.rs` (representative route table, error headers, API/HTML no-store, conditional HSTS), and the cookie/transport/TLS unit tests. The requested `crates/opsbox-api/tests/transport_security.rs` does not exist; the transport/header coverage for prompts 16e/16r is in the files above. This is a source review, not a passing test execution.
+
+Executed checks and limits:
+
+- `timeout 120 cargo test -p opsbox-api --test security_http --test transport_http --test hardening_http` exited 127: Cargo is not installed/available on PATH.
+- `timeout 120 multipass info opsbox-vm` exited 2: multipass socket access denied; current VM state/IP could not be established.
+- `timeout 120 sh scripts/check-transport.sh https://192.168.252.2:8443` exited 1: TLS handshake and HTTP fetches failed; login was skipped because credentials were not supplied. Its missing-header/cacheability failures, and apparent HTTP-refusal/no-HSTS passes, are not evidence about the server because no response was received.
+- Bounded `curl -skI` probes of VM HTTPS `/`, `/api/v1/session`, `/api/v1/attention`, VM HTTP `/`, and localhost HTTPS/HTTP port 8443 all exited 7. No reachable local server was found. Runtime headers, successful login cookies, authenticated JSON caching, plain-HTTP enforcement, and forged-header audit behavior remain unverified.
+
+From an owner terminal with Cargo and Multipass access, use only the disposable VM/local test instance. Wrap each command in `timeout 120`:
+
+```sh
+timeout 120 cargo test -p opsbox-api --test security_http --test transport_http --test hardening_http
+timeout 120 cargo test -p opsbox-api --lib session::tests::
+timeout 120 cargo test -p opsbox-api --lib transport::tests::
+timeout 120 cargo test -p opsbox-api --lib hardening::tests::
+timeout 120 cargo test -p opsbox-api --lib tls::tests::
+timeout 120 cargo test -p opsbox plain_http_
+timeout 120 multipass info opsbox-vm
+```
+
+Use the verified VM address for `timeout 120 sh scripts/check-transport.sh https://<vm>:8443`. Rerun with `OPSBOX_USER`, `OPSBOX_PASSWORD`, and a fresh `OPSBOX_CODE` supplied securely in the environment; do not record tokens/cookies. Confirm the session cookie has all attributes above and no Domain. Check `curl -skI` on `/`, `/api/v1/session`, and a disposable authenticated API response for the documented headers and no-store. Verify HTTP on the non-loopback panel port refuses or redirects. On a configured test panel DNS domain, repeat the script and confirm HSTS and the port-80 HTTPS redirect; expect HSTS absent on the self-signed VM IP. Send a disposable setup/auth request directly from outside the proxy with forged `X-Forwarded-For`, `X-Forwarded-Proto`, and a wrong proxy secret; verify its audit entry retains the actual client IP. Rerun the named transport tests for the controlled assertion without needing setup on an already-claimed VM.
+
+Git completion: branch is `dev`. `timeout 120 git mv docs/prompts/qa/05-transport-and-headers.md docs/prompts/qa/archive/05-transport-and-headers.md` failed because `.git/index.lock` cannot be created (Operation not permitted). The file was moved in the working tree instead. Commit/push remain blocked by Git metadata write access. From a terminal with that access, stage only this QA work (preserve other existing changes), then run:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/05-transport-and-headers.md docs/prompts/qa/archive/05-transport-and-headers.md
+timeout 120 git commit -m "qa 05: TLS, cookies and security headers"
+timeout 120 git push origin dev
+```
+
+No tag is needed for this docs-only change.

@@ -22,7 +22,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 02 | Update and rollback between two alphas (`02-update-and-rollback.md`) | x |
 | 03 | Helper down: messages, banner and no half-made things (`03-priv-helper-failure.md`) | x |
 | 04 | serve and priv version match after update (04-version-skew.md) | x |
-| 05 | TLS, cookies and security headers (`05-transport-and-headers.md`) | |
+| 05 | TLS, cookies and security headers (05-transport-and-headers.md) | x |
 | 06 | No secret in any API response (`06-secrets-in-responses.md`) | x |
 | 07 | Login, lockout, TOTP and session revoke (`07-login-hardening.md`) | x |
 | 08 | Roles: deployer and viewer cannot do admin things (`08-permissions.md`) | |
