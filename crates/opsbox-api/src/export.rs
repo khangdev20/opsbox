@@ -346,6 +346,7 @@ fn service_json(svc: &ServiceRecord, owner: Option<&str>, stack: Option<&str>) -
 #[derive(Default)]
 struct Collected {
     service_vars: Vec<Value>,
+    compose_projects: Vec<Value>,
     backup_destinations: Vec<Value>,
     alert_channels: Vec<Value>,
     needs_reentry: Vec<Value>,
@@ -515,7 +516,7 @@ async fn build(
     // ---- compose projects
     let compose: Vec<Value> = stacks
         .iter()
-        .map(|s| compose_json(s, owner_of(&s.owner_id)))
+        .map(|s| compose_json(s, owner_of(&s.owner_id), keep_secrets, &mut col))
         .collect();
 
     // ---- backups
@@ -682,12 +683,29 @@ async fn build(
     Ok((doc, col))
 }
 
-fn compose_json(s: &ComposeStackRecord, owner: Option<String>) -> Value {
+fn compose_json(
+    s: &ComposeStackRecord,
+    owner: Option<String>,
+    keep_secrets: bool,
+    col: &mut Collected,
+) -> Value {
+    // Credentials can occur anywhere in Compose, including commands and extension fields.
+    // Seal the original bytes rather than trying to recognize every possible secret.
+    if keep_secrets && !s.compose_yaml.is_empty() {
+        col.compose_projects
+            .push(json!({ "name": s.name, "composeYaml": s.compose_yaml }));
+    } else {
+        col.needs_reentry.push(json!({
+            "kind": "composeProject",
+            "name": s.name,
+            "reason": "Compose YAML may contain credentials. Re-enter it before deploying.",
+        }));
+    }
     json!({
         "name": s.name,
         "owner": owner,
         "projectName": s.project_name,
-        "composeYaml": s.compose_yaml,
+        "composeYaml": "",
         "services": s.service_names,
         "dependsOn": s.depends_edges.iter().map(|(a, b)| json!({ "service": a, "dependsOn": b })).collect::<Vec<_>>(),
         "confirmed": s.confirmed,
@@ -772,6 +790,7 @@ fn finish(
         Some(p) => {
             let payload = serde_json::to_vec(&json!({
                 "serviceVars": col.service_vars,
+                "composeProjects": col.compose_projects,
                 "backupDestinations": col.backup_destinations,
                 "alertChannels": col.alert_channels,
             }))
@@ -867,7 +886,7 @@ pub(crate) async fn export(
     let doc = built.and_then(|(doc, col)| {
         let counts = json!({
             "services": doc["services"].as_array().map_or(0, Vec::len),
-            "secrets": col.service_vars.len() + col.backup_destinations.len() + col.alert_channels.len(),
+            "secrets": col.service_vars.len() + col.compose_projects.len() + col.backup_destinations.len() + col.alert_channels.len(),
         });
         let doc = finish(doc, col, passphrase, Kdf::default())?;
         Ok((doc, counts))
@@ -906,4 +925,62 @@ pub(crate) async fn export(
         h.insert(header::CONTENT_DISPOSITION, v);
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_compose_credentials_never_leave_in_plaintext() {
+        let store = opsbox_store::Store::open_in_memory().unwrap();
+        let (project, env) = store.ensure_default_project(0).unwrap();
+        let yaml = "services:\n  blog:\n    image: ghost\n    environment:\n      PASSWORD: QA_SECRET_MARKER_123\n";
+        let stack = store
+            .upsert_compose_stack(opsbox_store::UpsertComposeStack {
+                project_id: &project.id,
+                env_id: &env.id,
+                name: "blog",
+                owner_id: None,
+                compose_yaml: yaml,
+                project_name: "blog",
+                service_names: &["blog".to_owned()],
+                depends_edges: &[],
+                confirmed: true,
+                now: 0,
+            })
+            .unwrap();
+        for passphrase in [None, Some("test passphrase")] {
+            let mut col = Collected::default();
+            let doc = json!({"composeProjects": [compose_json(&stack, None, passphrase.is_some(), &mut col)]});
+            let doc = finish(
+                doc,
+                col,
+                passphrase,
+                Kdf {
+                    memory_kib: 8,
+                    iterations: 1,
+                    parallelism: 1,
+                },
+            )
+            .unwrap();
+            assert!(
+                !doc.to_string().contains("QA_SECRET_MARKER_123"),
+                "Compose credential leaked (passphrase: {})",
+                passphrase.is_some()
+            );
+            if let Some(passphrase) = passphrase {
+                let opened = decrypt_secrets(&doc, passphrase).unwrap();
+                assert_eq!(opened["composeProjects"][0]["composeYaml"], yaml);
+            } else {
+                assert!(
+                    doc["secrets"]["needsReentry"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|e| e["kind"] == "composeProject" && e["name"] == "blog")
+                );
+            }
+        }
+    }
 }

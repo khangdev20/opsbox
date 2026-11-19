@@ -21,7 +21,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 02 | Demo values leak into the real panel ([02-demo-data-in-real-panel.md](archive/02-demo-data-in-real-panel.md)) | Fixed in fix 02 |
 | 03 | Removing the panel's firewall allowance can lock the admin out ([03-firewall-panel-port-guard.md](archive/03-firewall-panel-port-guard.md)) | Fixed in fix 03 |
 | 04 | Pending firewall rollback can be lost ([04-firewall-rollback-state.md](archive/04-firewall-rollback-state.md)) | Fixed in fix 04 |
-| 05 | Export leaks inline Compose credentials (`05-export-compose-secrets.md`) | |
+| 05 | Export leaks inline Compose credentials ([05-export-compose-secrets.md](archive/05-export-compose-secrets.md)) | Fixed in fix 05 |
 | 06 | Import accepts invalid documents and can hide key failures (`06-import-schema-and-key-errors.md`) | |
 | 07 | Database restore can write before a late corruption is found (`07-restore-before-corruption.md`) | |
 | 08 | Rapid service crashes can evade safe mode (`08-watchdog-rapid-crashes.md`) | |

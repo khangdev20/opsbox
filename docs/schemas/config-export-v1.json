@@ -300,7 +300,7 @@
             "required": ["kind", "reason"],
             "properties": {
               "kind": {
-                "enum": ["serviceVar", "backupDestination", "alertChannel", "user", "apiTokens", "github", "deployKey"]
+                "enum": ["serviceVar", "composeProject", "backupDestination", "alertChannel", "user", "apiTokens", "github", "deployKey"]
               },
               "reason": { "type": "string" },
               "service": { "type": "string" },

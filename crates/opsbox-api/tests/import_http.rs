@@ -15,6 +15,8 @@ const PASSPHRASE: &str = "correct horse passphrase";
 const SECRET_VAR: &str = "VAR-SECRET-7f3a9c";
 const PUBLIC_VAR: &str = "plain-value-visible";
 const DEST_SECRET: &str = "DEST-SECRET-key-91bd";
+const COMPOSE_SECRET: &str = "QA_SECRET_MARKER_123";
+const COMPOSE_YAML: &str = "services:\n  blog:\n    image: ghost\n    environment:\n      DATABASE_PASSWORD: QA_SECRET_MARKER_123\n    command: [ghost, --token, QA_SECRET_MARKER_123]\nsecrets:\n  inline:\n    environment: BLOG_TOKEN\n";
 
 struct Fixture {
     h: Harness,
@@ -106,7 +108,7 @@ async fn fixture() -> Fixture {
             env_id: &env.id,
             name: "blog",
             owner_id: Some(&user.id),
-            compose_yaml: "services:\n  blog:\n    image: ghost\n",
+            compose_yaml: COMPOSE_YAML,
             project_name: "blog",
             service_names: &["blog".to_owned()],
             depends_edges: &[],
@@ -407,7 +409,33 @@ async fn existing_objects_are_never_overwritten() {
 #[tokio::test]
 async fn round_trip_export_import_export() {
     let mut src = fixture().await;
+    let plain = export_doc(&mut src, None).await;
+    assert!(
+        !plain.to_string().contains(COMPOSE_SECRET),
+        "plaintext export leaked Compose credential"
+    );
+    assert_eq!(plain["composeProjects"][0]["composeYaml"], "");
+    assert!(
+        plain["secrets"]["needsReentry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "composeProject" && e["name"] == "blog")
+    );
     let doc = export_doc(&mut src, Some(PASSPHRASE)).await;
+    assert!(
+        !doc.to_string().contains(COMPOSE_SECRET),
+        "encrypted export leaked Compose credential"
+    );
+    let opened = opsbox_api::export::decrypt_secrets(&doc, PASSPHRASE).unwrap();
+    assert_eq!(opened["composeProjects"][0]["composeYaml"], COMPOSE_YAML);
+    assert!(
+        !doc["secrets"]["needsReentry"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "composeProject")
+    );
 
     // Fresh empty store (admin only).
     let dst = Harness::new(true);
@@ -468,7 +496,11 @@ async fn round_trip_export_import_export() {
         .collect();
     assert!(names.contains(&"web".into()), "{names:?}");
     assert!(names.contains(&"main-db".into()), "{names:?}");
-    assert!(dst.store.get_compose_stack("blog").unwrap().is_some());
+    let stack = dst.store.get_compose_stack("blog").unwrap().unwrap();
+    assert_eq!(stack.compose_yaml, COMPOSE_YAML);
+    assert_eq!(stack.project_name, "blog");
+    assert_eq!(stack.service_names, ["blog"]);
+    assert!(stack.confirmed);
     assert!(
         dst.store
             .get_backup_destination("s3-main")
@@ -491,4 +523,89 @@ async fn round_trip_export_import_export() {
     assert_eq!(a["composeProjects"], b["composeProjects"]);
     assert_eq!(a["databases"], b["databases"]);
     assert_eq!(a["backups"]["destinations"], b["backups"]["destinations"]);
+}
+
+/// Compose YAML sealing and restoration do not require a running privileged helper.
+/// Keep this regression runnable even where the sandbox disallows Unix socket binds.
+async fn compose_only_fixture() -> Fixture {
+    let h = Harness::new(false);
+    let admin = h.signed_in("alice", Role::Admin);
+    let user = h.store.user_by_name("alice").unwrap().unwrap();
+    let hash = opsbox_auth::password::Hasher::new(opsbox_auth::password::HashParams {
+        memory_kib: 8,
+        iterations: 1,
+        parallelism: 1,
+    })
+    .hash(PASSWORD)
+    .unwrap();
+    h.store.set_password_hash(&user.id, &hash, 0).unwrap();
+    Fixture { h, admin }
+}
+
+#[tokio::test]
+async fn compose_exports_round_trip_without_helper() {
+    let mut src = compose_only_fixture().await;
+    let (proj, env) = src.h.store.ensure_default_project(1).unwrap();
+    src.h
+        .store
+        .upsert_compose_stack(opsbox_store::UpsertComposeStack {
+            project_id: &proj.id,
+            env_id: &env.id,
+            name: "blog",
+            owner_id: None,
+            compose_yaml: COMPOSE_YAML,
+            project_name: "opsbox-blog",
+            service_names: &["blog".to_owned()],
+            depends_edges: &[],
+            confirmed: true,
+            now: 1,
+        })
+        .unwrap();
+    for passphrase in [None, Some(PASSPHRASE)] {
+        let doc = export_doc(&mut src, passphrase).await;
+        assert!(!doc.to_string().contains(COMPOSE_SECRET));
+        assert_eq!(doc["composeProjects"][0]["composeYaml"], "");
+        let mut dst = compose_only_fixture().await;
+        let body = json!({"password": PASSWORD, "passphrase": passphrase, "document": doc});
+        let preview = dst
+            .admin
+            .post("/api/v1/config/import/preview", body.clone())
+            .await;
+        assert_eq!(preview.status, StatusCode::OK, "{}", preview.text());
+        if passphrase.is_none() {
+            assert!(
+                preview.json()["needsInput"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["kind"] == "composeProject" && e["name"] == "blog")
+            );
+            assert!(
+                preview.json()["willCreate"]
+                    .get("composeProjects")
+                    .is_none()
+            );
+        }
+        let apply = dst.admin.post("/api/v1/config/import/apply", body).await;
+        assert_eq!(apply.status, StatusCode::ACCEPTED, "{}", apply.text());
+        let task = wait_task(&mut dst.admin, apply.json()["task"].as_str().unwrap()).await;
+        assert_eq!(task["status"], "ok", "{task}");
+        let stack = dst.h.store.get_compose_stack("blog").unwrap();
+        if passphrase.is_some() {
+            let stack = stack.unwrap();
+            assert_eq!(stack.compose_yaml, COMPOSE_YAML);
+            assert_eq!(stack.project_name, "opsbox-blog");
+            assert_eq!(stack.service_names, ["blog"]);
+            assert!(stack.confirmed);
+            let again = export_doc(&mut dst, passphrase).await;
+            assert!(!again.to_string().contains(COMPOSE_SECRET));
+            let opened = opsbox_api::export::decrypt_secrets(&again, PASSPHRASE).unwrap();
+            assert_eq!(opened["composeProjects"][0]["composeYaml"], COMPOSE_YAML);
+        } else {
+            assert!(
+                stack.is_none(),
+                "missing YAML must not create a broken stack"
+            );
+        }
+    }
 }

@@ -143,6 +143,19 @@ fn text<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
+/// New exports seal whole Compose documents; older exports carried YAML in the open.
+fn compose_yaml<'a>(project: &'a Value, opened: &'a Value) -> Option<&'a str> {
+    opened
+        .get("composeProjects")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|c| text(c, "name") == text(project, "name"))
+        .and_then(|c| text(c, "composeYaml"))
+        .or_else(|| text(project, "composeYaml"))
+        .filter(|yaml| !yaml.is_empty())
+}
+
 fn bool_val(v: &Value, key: &str, default: bool) -> bool {
     v.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
@@ -243,6 +256,7 @@ fn build_plan(state: &AppState, doc: &Value, passphrase: Option<&str>) -> Result
     let existing_channel_ids: HashSet<String> = engine.channels.keys().cloned().collect();
 
     // ---- compose projects
+    let mut missing_compose = HashSet::new();
     for c in doc
         .get("composeProjects")
         .and_then(Value::as_array)
@@ -258,6 +272,27 @@ fn build_plan(state: &AppState, doc: &Value, passphrase: Option<&str>) -> Result
                 "composeProject",
                 name,
                 "A compose project with this name already exists.",
+            );
+        } else if compose_yaml(c, &opened).is_none() {
+            missing_compose.insert(name);
+            if !plan
+                .needs_input
+                .iter()
+                .any(|e| text(e, "kind") == Some("composeProject") && text(e, "name") == Some(name))
+            {
+                push_need(
+                    &mut plan,
+                    json!({
+                        "kind": "composeProject", "name": name,
+                        "reason": "Re-enter the Compose YAML before importing this project.",
+                    }),
+                );
+            }
+            push_skip(
+                &mut plan,
+                "composeProject",
+                name,
+                "Compose YAML is missing.",
             );
         } else {
             push_create(&mut plan, "composeProjects", name);
@@ -281,6 +316,15 @@ fn build_plan(state: &AppState, doc: &Value, passphrase: Option<&str>) -> Result
                 "service",
                 name,
                 "A service with this name already exists.",
+            );
+            continue;
+        }
+        if text(svc, "composeStack").is_some_and(|stack| missing_compose.contains(stack)) {
+            push_skip(
+                &mut plan,
+                "service",
+                name,
+                "The project's Compose YAML is missing.",
             );
             continue;
         }
@@ -737,6 +781,7 @@ async fn run_import(
 
     // ---- compose projects
     let mut stack_ids: HashMap<String, String> = HashMap::new();
+    let mut missing_compose = HashSet::new();
     for c in doc
         .get("composeProjects")
         .and_then(Value::as_array)
@@ -770,7 +815,14 @@ async fn run_import(
                 ))
             })
             .collect();
-        let yaml = text(c, "composeYaml").unwrap_or("");
+        let Some(yaml) = compose_yaml(c, &opened) else {
+            missing_compose.insert(name);
+            skipped.push(json!({ "kind": "composeProject", "name": name, "reason": "Compose YAML is missing." }));
+            log.push(format!(
+                "Skipped compose project `{name}`: re-enter the Compose YAML."
+            ));
+            continue;
+        };
         let project_name = text(c, "projectName").unwrap_or(name);
         let created_stack = store
             .create_compose_stack_if_absent(UpsertComposeStack {
@@ -825,6 +877,10 @@ async fn run_import(
             continue;
         }
 
+        if text(svc, "composeStack").is_some_and(|stack| missing_compose.contains(stack)) {
+            skipped.push(json!({ "kind": "service", "name": name, "reason": "The project's Compose YAML is missing." }));
+            continue;
+        }
         let kind =
             ServiceKind::parse(text(svc, "kind").unwrap_or("app")).unwrap_or(ServiceKind::App);
         let source_kind = SourceKind::parse(

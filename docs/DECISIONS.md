@@ -553,3 +553,7 @@ Use the existing 60-second undo and require typing `continue`; rules are allow-o
 ## Fix 04 — Durable firewall rollback
 Persist and flush undo before risky mutation; refuse another risky change while it is pending, and retain the original backend for restoration.
 Clear undo after verified restore (or timely explicit Keep); retain failed detection/restoration and retry after 10/20/40/60 seconds, capped at 60 seconds across restarts.
+
+## Fix 05 — Seal Compose source in configuration exports
+Treat whole Compose YAML as secret: omit it by default with a composeProject re-entry entry, or carry it only inside the existing passphrase-sealed payload.
+Import restores the exact sealed YAML (and accepts older plaintext exports); absent YAML skips the stack and its members until the owner re-enters it.
