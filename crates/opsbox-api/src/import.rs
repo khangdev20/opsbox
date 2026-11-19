@@ -6,7 +6,7 @@
 //! has sealed secrets, a passphrase opens them; a wrong passphrase fails cleanly with no
 //! partial write. Services missing secrets are created but not deployed.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use axum::Json;
@@ -58,14 +58,14 @@ fn store_err(_: opsbox_store::StoreError) -> HttpError {
     HttpError::internal()
 }
 
-fn invalid(field: &'static str, msg: impl Into<String>) -> HttpError {
+fn invalid(field: &str, msg: impl Into<String>) -> HttpError {
     HttpError(
         opsbox_proto::ApiError::new(ErrorCode::Validation, msg.into()).with_field(field),
         None,
     )
 }
 
-/// Refuse anything that is not `opsbox-config/1` with the required top-level shape.
+/// Refuse anything that does not conform to the checked-in export schema.
 pub fn validate_document(doc: &Value) -> Result<(), HttpError> {
     let Some(obj) = doc.as_object() else {
         return Err(invalid("document", "The file must be a JSON object."));
@@ -87,32 +87,94 @@ pub fn validate_document(doc: &Value) -> Result<(), HttpError> {
             ));
         }
     }
-    for key in [
-        "services",
-        "templates",
-        "composeProjects",
-        "databases",
-        "backups",
-        "alerts",
-        "network",
-        "updates",
-        "firewall",
-        "users",
-        "notExported",
-        "secrets",
-    ] {
-        if !obj.contains_key(key) {
-            return Err(invalid(
-                "document",
-                format!("This file is missing `{key}` and is not a valid {FORMAT} export."),
-            ));
+    let schema: Value =
+        serde_json::from_str(include_str!("../../../docs/schemas/config-export-v1.json"))
+            .expect("checked-in export schema is valid JSON");
+    validate_schema(doc, &schema, &schema, "")
+}
+
+/// The small JSON Schema subset used by the checked-in export schema. Keeping the
+/// schema as the source of truth also validates nested fields and nullable types.
+fn validate_schema(
+    value: &Value,
+    schema: &Value,
+    root: &Value,
+    path: &str,
+) -> Result<(), HttpError> {
+    let field = if path.is_empty() { "document" } else { path };
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        let target = root
+            .pointer(reference.strip_prefix('#').expect("local schema reference"))
+            .expect("export schema reference exists");
+        return validate_schema(value, target, root, path);
+    }
+    let matches_type = |kind: &str| match kind {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.is_i64() || value.is_u64(),
+        "null" => value.is_null(),
+        _ => false,
+    };
+    if let Some(types) = schema.get("type") {
+        let valid = types.as_str().map(&matches_type).unwrap_or_else(|| {
+            types
+                .as_array()
+                .is_some_and(|types| types.iter().filter_map(Value::as_str).any(&matches_type))
+        });
+        if !valid {
+            return Err(invalid(field, format!("`{field}` must have type {types}.")));
         }
     }
-    if !obj.get("services").map(Value::is_array).unwrap_or(false) {
-        return Err(invalid("services", "services must be an array."));
+    if let Some(expected) = schema.get("const")
+        && value != expected
+    {
+        return Err(invalid(field, format!("`{field}` must be {expected}.")));
     }
-    if !obj.get("secrets").map(Value::is_object).unwrap_or(false) {
-        return Err(invalid("secrets", "secrets must be an object."));
+    if let Some(choices) = schema.get("enum").and_then(Value::as_array)
+        && !choices.contains(value)
+    {
+        return Err(invalid(
+            field,
+            format!("`{field}` must be one of {}.", schema["enum"]),
+        ));
+    }
+    if let Some(object) = value.as_object() {
+        let child_path = |key: &str| {
+            if path.is_empty() {
+                key.to_owned()
+            } else {
+                format!("{path}.{key}")
+            }
+        };
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for key in required.iter().filter_map(Value::as_str) {
+                if !object.contains_key(key) {
+                    let missing = child_path(key);
+                    return Err(invalid(
+                        &missing,
+                        format!("This file is missing required field `{missing}`."),
+                    ));
+                }
+            }
+        }
+        for (key, child) in object {
+            let child_path = child_path(key);
+            if let Some(property) = schema.get("properties").and_then(|p| p.get(key)) {
+                validate_schema(child, property, root, &child_path)?;
+            } else if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+                return Err(invalid(
+                    &child_path,
+                    format!("Unknown field `{child_path}`."),
+                ));
+            }
+        }
+    }
+    if let (Some(items), Some(values)) = (schema.get("items"), value.as_array()) {
+        for (i, child) in values.iter().enumerate() {
+            validate_schema(child, items, root, &format!("{path}[{i}]"))?;
+        }
     }
     Ok(())
 }
@@ -722,6 +784,8 @@ async fn run_import(
     let mut log = Vec::new();
     let mut created = Map::new();
     let mut skipped = Vec::new();
+    // Pending entries remain failed if an earlier per-item operation prevents restoration.
+    let mut secret_results: BTreeMap<String, bool> = BTreeMap::new();
     let store = Arc::clone(&state.store);
     let now = crate::deploy::now_secs();
     let (proj, env) = store.ensure_default_project(now).map_err(store_err)?;
@@ -796,6 +860,8 @@ async fn run_import(
             stack_ids.insert(name.to_owned(), existing.id);
             continue;
         }
+        let secret_label = format!("composeProject {name}");
+        secret_results.insert(secret_label.clone(), false);
         let service_names: Vec<String> = c
             .get("services")
             .and_then(Value::as_array)
@@ -840,6 +906,7 @@ async fn run_import(
             .map_err(store_err)?;
         match created_stack {
             Some(rec) => {
+                secret_results.insert(secret_label, true);
                 stack_ids.insert(name.to_owned(), rec.id);
                 push_created(&mut created, "composeProjects", name);
                 log.push(format!("Created compose project `{name}`."));
@@ -875,6 +942,17 @@ async fn run_import(
             skipped.push(json!({ "kind": "service", "name": name }));
             service_ids.insert(name.to_owned(), existing.id);
             continue;
+        }
+
+        for var in svc
+            .get("vars")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(key) = text(var, "key") {
+                secret_results.insert(format!("serviceVar {name}.{key}"), false);
+            }
         }
 
         if text(svc, "composeStack").is_some_and(|stack| missing_compose.contains(stack)) {
@@ -1100,11 +1178,20 @@ async fn run_import(
             }
             // Missing secret: leave unset; listed under needsInput in the preview.
         }
-        if !to_store.is_empty()
-            && let Err(e) =
-                crate::deploy::seal_and_store_vars(state, rid, actor, &rec, &to_store, now).await
-        {
-            log.push(format!("Variables for `{name}`: {}", e.0.error.message));
+        // Seal separately: a failure for one key must not hide the remaining results.
+        for var in to_store {
+            let label = format!("serviceVar {name}.{}", var.0);
+            let restored = crate::deploy::seal_and_store_vars(
+                state,
+                rid,
+                actor,
+                &rec,
+                std::slice::from_ref(&var),
+                now,
+            )
+            .await
+            .is_ok();
+            secret_results.insert(label, restored);
         }
     }
 
@@ -1184,8 +1271,13 @@ async fn run_import(
         }
         let provider = text(d, "provider").unwrap_or("s3");
         let config = d.get("config").cloned().unwrap_or(json!({}));
+        let label = format!("backupDestination {id}");
+        let needs_secret = bool_val(d, "hasSecrets", false) || dest_secrets.contains_key(id);
+        if needs_secret {
+            secret_results.insert(label.clone(), false);
+        }
         let sealed = if let Some(plain) = dest_secrets.get(id) {
-            state
+            match state
                 .priv_client
                 .secret_seal(
                     rid,
@@ -1194,7 +1286,13 @@ async fn run_import(
                     Secret::new(plain.clone()),
                 )
                 .await
-                .ok()
+            {
+                Ok(sealed) => Some(sealed),
+                Err(_) => continue,
+            }
+        } else if needs_secret {
+            // Do not create a destination that silently lacks its credentials.
+            continue;
         } else {
             None
         };
@@ -1209,6 +1307,9 @@ async fn run_import(
         ) {
             Ok(_) => {
                 dest_id_map.insert(id.to_owned(), id.to_owned());
+                if needs_secret {
+                    secret_results.insert(label, true);
+                }
                 push_created(&mut created, "backupDestinations", name);
                 log.push(format!("Created backup destination `{name}`."));
                 state.tasks.progress(TASK_KIND, log.clone());
@@ -1316,6 +1417,18 @@ async fn run_import(
             push_created(&mut created, "alertRules", name);
             dirty = true;
         }
+        for channel in doc
+            .pointer("/alerts/channels")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(id) = text(channel, "id")
+                && !engine.channels.contains_key(id)
+            {
+                secret_results.insert(format!("alertChannel {id}"), false);
+            }
+        }
         for (id, plain) in &channel_secrets {
             if engine.channels.contains_key(id) {
                 skipped.push(json!({ "kind": "alertChannel", "name": id }));
@@ -1351,6 +1464,7 @@ async fn run_import(
                     error: None,
                 },
             );
+            secret_results.insert(format!("alertChannel {id}"), true);
             push_created(&mut created, "alertChannels", id.clone());
             dirty = true;
         }
@@ -1421,6 +1535,38 @@ async fn run_import(
         log.push(format!(
             "Services that still need secrets (not deployed): {}.",
             needs_secret.join(", ")
+        ));
+    }
+    let failed: Vec<&str> = secret_results
+        .iter()
+        .filter(|(_, restored)| !**restored)
+        .map(|(label, _)| label.as_str())
+        .collect();
+    for (label, restored) in &secret_results {
+        log.push(format!(
+            "{} {label}.",
+            if *restored {
+                "Restored"
+            } else {
+                "Not restored:"
+            }
+        ));
+    }
+    let summary = format!(
+        "Restored {} of {} secrets, {} failed.",
+        secret_results.len() - failed.len(),
+        secret_results.len(),
+        failed.len(),
+    );
+    log.push(summary.clone());
+    state.tasks.progress(TASK_KIND, log.clone());
+    if !failed.is_empty() {
+        return Err(HttpError::new(
+            ErrorCode::Internal,
+            format!(
+                "{summary} Not restored: {}. Review the imported configuration and re-enter these secrets.",
+                failed.join(", ")
+            ),
         ));
     }
     log.push("Import finished. Existing objects were left unchanged.".into());

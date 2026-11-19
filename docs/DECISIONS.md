@@ -557,3 +557,7 @@ Clear undo after verified restore (or timely explicit Keep); retain failed detec
 ## Fix 05 — Seal Compose source in configuration exports
 Treat whole Compose YAML as secret: omit it by default with a composeProject re-entry entry, or carry it only inside the existing passphrase-sealed payload.
 Import restores the exact sealed YAML (and accepts older plaintext exports); absent YAML skips the stack and its members until the owner re-enters it.
+
+## Fix 06 — Validate imports and report secret restoration
+Validate preview/apply with the checked-in export schema using its existing JSON Schema subset, without a new dependency.
+Report each secret restoration in task logs; any missing/failed secret fails the task with restored/total/failed counts, and failed sealing never creates a credentialless destination.

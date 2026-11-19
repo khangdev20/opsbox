@@ -589,9 +589,35 @@ async fn compose_exports_round_trip_without_helper() {
         let apply = dst.admin.post("/api/v1/config/import/apply", body).await;
         assert_eq!(apply.status, StatusCode::ACCEPTED, "{}", apply.text());
         let task = wait_task(&mut dst.admin, apply.json()["task"].as_str().unwrap()).await;
-        assert_eq!(task["status"], "ok", "{task}");
+        assert_eq!(
+            task["status"],
+            if passphrase.is_some() { "ok" } else { "failed" },
+            "{task}"
+        );
+        if passphrase.is_none() {
+            assert!(
+                task["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Restored 0 of 1 secrets, 1 failed"),
+                "{task}"
+            );
+            assert!(
+                task["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("composeProject blog"),
+                "{task}"
+            );
+        }
         let stack = dst.h.store.get_compose_stack("blog").unwrap();
         if passphrase.is_some() {
+            assert!(
+                task["log"]
+                    .to_string()
+                    .contains("Restored 1 of 1 secrets, 0 failed"),
+                "{task}"
+            );
             let stack = stack.unwrap();
             assert_eq!(stack.compose_yaml, COMPOSE_YAML);
             assert_eq!(stack.project_name, "opsbox-blog");
@@ -608,4 +634,158 @@ async fn compose_exports_round_trip_without_helper() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn schema_violations_name_the_field_before_preview_or_apply() {
+    let mut f = compose_only_fixture().await;
+    let doc = export_doc(&mut f, None).await;
+    let mut cases = Vec::new();
+    let mut bad = doc.clone();
+    bad["composeProjects"] = json!(42);
+    cases.push((bad, "composeProjects"));
+    let mut bad = doc.clone();
+    bad.as_object_mut().unwrap().remove("host");
+    cases.push((bad, "host"));
+    let mut bad = doc.clone();
+    bad["network"]["allowedIps"] = json!([42]);
+    cases.push((bad, "network.allowedIps[0]"));
+    let mut bad = doc.clone();
+    bad["users"][0]["role"] = json!("root");
+    cases.push((bad, "users[0].role"));
+    let mut bad = doc.clone();
+    bad["backups"]["unexpected"] = json!(true);
+    cases.push((bad, "backups.unexpected"));
+    let mut bad = doc.clone();
+    bad["services"] = json!([42]);
+    cases.push((bad, "services[0]"));
+    let mut bad = doc.clone();
+    bad["services"] = json!([{}]);
+    cases.push((bad, "services[0].id"));
+    let mut bad = doc;
+    bad["secrets"]["included"] = json!("yes");
+    cases.push((bad, "secrets.included"));
+    for (document, field) in cases {
+        for route in ["preview", "apply"] {
+            let r = f
+                .admin
+                .post(
+                    &format!("/api/v1/config/import/{route}"),
+                    json!({"password": PASSWORD, "document": document}),
+                )
+                .await;
+            assert_eq!(r.status, StatusCode::BAD_REQUEST, "{field}: {}", r.text());
+            let error = r.json();
+            assert_eq!(error["error"]["field"], field, "{error}");
+            assert!(
+                error["error"]["message"].as_str().unwrap().contains(field),
+                "{error}"
+            );
+        }
+    }
+    assert!(f.h.store.list_all_services().unwrap().is_empty());
+}
+
+async fn secret_failure_is_reported(with_helper: bool) {
+    let mut src = compose_only_fixture().await;
+    let mut doc = export_doc(&mut src, None).await;
+    doc["services"] = json!([{
+        "id": "source-web", "name": "web", "kind": "app", "owner": null,
+        "source": {"kind": "docker_image", "repo": "", "branch": "latest", "imageRef": "nginx:latest", "deployKeyId": null},
+        "build": {"method": "Docker image", "dockerfilePath": null, "startCmd": null},
+        "port": 80, "healthPath": "/", "domain": null, "autoDeploy": false,
+        "limits": {"memoryMb": null, "cpuMillis": null}, "graph": {"x": 0, "y": 0},
+        "note": null, "composeStack": null, "templateId": null,
+        "exposure": {"internalOnly": true, "publicPort": false},
+        "vars": [{"key": "TOKEN", "secret": true, "ref": null, "value": null}], "domains": []
+    }]);
+    doc["backups"]["destinations"] = json!([{
+        "id": "s3-main", "provider": "s3", "name": "Offsite", "config": {}, "hasSecrets": true
+    }]);
+    doc["alerts"]["channels"] = json!([{"id": "email", "verified": true}]);
+    let payload = json!({
+        "serviceVars": [{"service": "web", "key": "TOKEN", "value": SECRET_VAR}],
+        "backupDestinations": [{"id": "s3-main", "secrets": DEST_SECRET}],
+        "alertChannels": [{"id": "email", "config": {"password": DEST_SECRET}}]
+    });
+    let mut sealed = opsbox_api::export::seal_secrets(
+        PASSPHRASE,
+        &serde_json::to_vec(&payload).unwrap(),
+        opsbox_api::export::Kdf {
+            memory_kib: 8,
+            iterations: 1,
+            parallelism: 1,
+        },
+    )
+    .unwrap();
+    sealed["included"] = json!(true);
+    sealed["needsReentry"] = json!([]);
+    doc["secrets"] = sealed;
+    let h = Harness::new(with_helper);
+    if with_helper {
+        // The real helper refuses SecretSeal because the destination key is invalid.
+        std::fs::write(h.root.join("master.key"), b"bad-key").unwrap();
+        let rejected = h
+            .state
+            .priv_client
+            .secret_seal("test", Some("test"), "test", Secret::new("probe"))
+            .await;
+        assert!(rejected.is_err());
+    }
+    let mut dst = Fixture {
+        admin: h.signed_in("bob", Role::Admin),
+        h,
+    };
+    let user = dst.h.store.user_by_name("bob").unwrap().unwrap();
+    let hash = opsbox_auth::password::Hasher::new(opsbox_auth::password::HashParams {
+        memory_kib: 8,
+        iterations: 1,
+        parallelism: 1,
+    })
+    .hash(PASSWORD)
+    .unwrap();
+    dst.h.store.set_password_hash(&user.id, &hash, 0).unwrap();
+    let r = dst
+        .admin
+        .post(
+            "/api/v1/config/import/apply",
+            json!({
+                "password": PASSWORD, "passphrase": PASSPHRASE, "document": doc
+            }),
+        )
+        .await;
+    assert_eq!(r.status, StatusCode::ACCEPTED, "{}", r.text());
+    let task = wait_task(&mut dst.admin, r.json()["task"].as_str().unwrap()).await;
+    assert_eq!(task["status"], "failed", "{task}");
+    let message = task["error"].as_str().unwrap();
+    assert!(
+        message.contains("Restored 0 of 3 secrets, 3 failed"),
+        "{task}"
+    );
+    for item in ["web.TOKEN", "s3-main", "email"] {
+        assert!(message.contains(item), "missing {item}: {task}");
+        assert!(
+            task["log"].to_string().contains(item),
+            "missing item log {item}: {task}"
+        );
+    }
+    assert!(!task.to_string().contains(SECRET_VAR));
+    assert!(!task.to_string().contains(DEST_SECRET));
+    assert!(
+        dst.h
+            .store
+            .get_backup_destination("s3-main")
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn helper_rejecting_secret_seal_fails_import_with_item_results() {
+    secret_failure_is_reported(true).await;
+}
+
+#[tokio::test]
+async fn unavailable_helper_fails_import_with_item_results() {
+    secret_failure_is_reported(false).await;
 }
