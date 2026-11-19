@@ -10,8 +10,10 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Fixed the Docker HTTP test's assumption that a missing fixture socket means Docker binaries are absent on the CI host; production behavior is unchanged.
 - Matched the isolated loopback memory probe's listener to its HTTP readiness request; production TLS defaults are unchanged.
 - Updated CI's cargo-deny to 0.21.0 for CVSS 4.0 advisories; allowed versionless local paths in private workspace crates while keeping registry wildcards denied.
+- Mapped Linux openat2 confinement races (EAGAIN) to Refused while continuing to deny the operation; reproduced the prior intermittent Internal error under parallel file tests.
 
 ## Verification
+- Linux VM: all 208 opsbox-priv tests passed in 20 consecutive parallel runs after the confinement-race fix; Clippy passed. The memory probe measured 14.37 MiB idle RSS against a 40 MiB limit. Current cargo-deny audit passed.
 - Passed frontend DOM checks: package selection/clear/mixed state, tab persistence, selected-only mock install, notification refresh, read/read-all, snooze, keyboard navigation, focus return, text escaping, and empty state.
 - Passed JS/CSS syntax, API docs, network UI contracts, source-level live-list checks, update status text, mock API allowlist, Rust formatting, shellcheck, and installer channel checks.
 - Browser visual review was not completed: browser automation was unavailable and native browser control conflicted with an active user session.

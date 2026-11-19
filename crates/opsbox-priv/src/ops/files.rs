@@ -622,6 +622,12 @@ impl RootCtx {
             // Fall back to component walk when openat2 is unavailable (< 5.6) or encounters an
             // intra-jail absolute symlink (EXDEV).
             Err(Errno::NOSYS | Errno::XDEV) => None,
+            // RESOLVE_BENEATH returns EAGAIN when a concurrent rename prevents the
+            // kernel from proving that `..` stays inside the root. Fail closed.
+            Err(Errno::AGAIN) => Some(Err(err(
+                PrivErrorCode::Refused,
+                "The path changed while opening it. Try again.",
+            ))),
             Err(Errno::NOENT) => Some(Err(err(
                 PrivErrorCode::NotFound,
                 "No such file or directory.",
@@ -2363,10 +2369,11 @@ mod tests {
             s(&root.join("rel_dev_null")),
             "/tmp/../dev/null".to_owned(),
         ] {
+            let read_error = read(&p, None).unwrap_err();
             assert_eq!(
-                read(&p, None).unwrap_err().code,
+                read_error.code,
                 PrivErrorCode::Refused,
-                "read {p}"
+                "read {p}: {read_error:?}"
             );
             assert_eq!(
                 write(&p, "x", None, None).unwrap_err().code,
@@ -2378,10 +2385,11 @@ mod tests {
                 PrivErrorCode::Refused,
                 "chmod {p}"
             );
+            let download_error = stage_download(&p, None, &d).unwrap_err();
             assert_eq!(
-                stage_download(&p, None, &d).unwrap_err().code,
+                download_error.code,
                 PrivErrorCode::Refused,
-                "stage_download {p}"
+                "stage_download {p}: {download_error:?}"
             );
         }
         for p in [s(&root.join("to_dev/null")), "/tmp/../dev/null".to_owned()] {
