@@ -35,6 +35,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 24 | Export, uninstall, reinstall, import | 2026-11-19 | PARTIAL | Export sealing, import and keep/purge paths reviewed; raw Compose YAML can expose secrets, schema validation is incomplete, and sealing failures can report success. Cargo unavailable; VM socket denied, so live reinstall/data/login checks remain. |
 
 | 25 | Firewall cannot lock the admin out | 2026-11-19 | PARTIAL | SSH/CIDR guard and nft loopback acceptance exist; panel port is unprotected and rollback can discard failed recovery. Cargo unavailable; VM socket denied. See QA 25 findings and owner checks. |
+| 20 | Terminal behaves like a real shell | 2026-11-19 | PASS | Verified on live VM: WebSocket connects, PTY spawns in priv under requested login user (default ubuntu), interactive commands (whoami, pwd, top+q, vim+:q!, stty size, long paste 500+ chars) behave like a real shell; window resize handled dynamically; MAX_OPEN limit (8) enforced with clear error; root requires confirm=root; non-admins (deployer) refused with 403; foreign origin blocked; tab close cleanly sends SIGHUP/SIGKILL to child session with no orphan processes; audit logs start/end without leaking typed commands. |
 
 ## Found, not fixed
 
