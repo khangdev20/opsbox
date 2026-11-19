@@ -267,6 +267,12 @@ struct Pending {
     revert_at: i64,
     /// What to do to undo the change.
     undo: Undo,
+    #[serde(default)]
+    retry_at: i64,
+    #[serde(default)]
+    retry_delay: i64,
+    #[serde(default)]
+    backend: Option<Backend>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -307,6 +313,20 @@ fn save(s: &Saved) -> Result<(), PrivError> {
         STATE_FILE,
         &serde_json::to_string_pretty(s).unwrap_or_default(),
     )?;
+    let sync_error = |e| {
+        err(
+            PrivErrorCode::Internal,
+            format!("Cannot persist firewall state: {e}"),
+        )
+    };
+    std::fs::File::open(STATE_FILE)
+        .and_then(|f| f.sync_all())
+        .map_err(sync_error)?;
+    if let Some(parent) = Path::new(STATE_FILE).parent() {
+        std::fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(sync_error)?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -315,9 +335,80 @@ fn save(s: &Saved) -> Result<(), PrivError> {
     Ok(())
 }
 
+fn require_no_pending(saved: &Saved) -> Result<(), PrivError> {
+    if saved.pending.is_some() {
+        return Err(err(
+            PrivErrorCode::Conflict,
+            "A firewall rollback is pending. Confirm the existing change or wait for it to be restored before making another risky change.",
+        ));
+    }
+    Ok(())
+}
+
+// Shared by activation and removal so tests can inject persistence/backend failures.
+fn apply_change(
+    saved: &mut Saved,
+    undo: Option<Undo>,
+    backend: Backend,
+    apply: impl FnOnce(&mut Saved) -> Result<(), PrivError>,
+    mut persist: impl FnMut(&Saved) -> Result<(), PrivError>,
+) -> Result<FirewallChange, PrivError> {
+    let revert_at = undo.as_ref().map(|_| now() + REVERT_SECS);
+    if let Some(undo) = undo {
+        require_no_pending(saved)?;
+        saved.pending = Some(Pending {
+            revert_at: revert_at.unwrap(),
+            undo,
+            backend: Some(backend),
+            ..Pending::default()
+        });
+        // A failure here must prevent the backend mutation. Keep this record even if
+        // applying or saving the resulting rules later fails (including partial applies).
+        persist(saved)?;
+    }
+    apply(saved)?;
+    if backend == Backend::Nft {
+        persist(saved)?;
+    }
+    Ok(FirewallChange { revert_at })
+}
+
+fn rollback_with(
+    saved: &mut Saved,
+    t: i64,
+    restore: impl FnOnce(&Undo, &mut Saved) -> Result<(), PrivError>,
+) -> bool {
+    let Some(mut p) = saved
+        .pending
+        .clone()
+        .filter(|p| p.revert_at.max(p.retry_at) <= t)
+    else {
+        return false;
+    };
+    tracing::warn!("firewall change was not confirmed in time: undoing it");
+    let mut restored = saved.clone();
+    let attempt_started = std::time::Instant::now();
+    match restore(&p.undo, &mut restored) {
+        Ok(()) => {
+            restored.pending = None;
+            *saved = restored;
+        }
+        Err(e) => {
+            tracing::error!(error = %e.message, "could not undo the firewall change; retrying");
+            p.retry_delay = p.retry_delay.saturating_mul(2).clamp(10, 60);
+            // Backend commands can take longer than the delay; back off from the
+            // failed attempt's end rather than from the beginning of this tick.
+            let elapsed = i64::try_from(attempt_started.elapsed().as_secs()).unwrap_or(i64::MAX);
+            p.retry_at = t.saturating_add(elapsed).saturating_add(p.retry_delay);
+            saved.pending = Some(p);
+        }
+    }
+    true
+}
+
 // ------------------------------------------------------------------ backends
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 enum Backend {
     Ufw,
     Firewalld,
@@ -452,6 +543,12 @@ fn list_rules(b: Backend, saved: &Saved) -> Result<Vec<FirewallRule>, PrivError>
         Backend::Ufw => {
             let o = run(&tool(&["/usr/sbin/ufw", "/sbin/ufw"])?, &["status"], T)
                 .ok_or_else(|| err(PrivErrorCode::Internal, "ufw did not answer"))?;
+            if !o.ok() {
+                return Err(err(
+                    PrivErrorCode::Internal,
+                    "Could not read back ufw rules.",
+                ));
+            }
             Ok(parse_ufw_status(&o.stdout)
                 .into_iter()
                 .filter(|r| r.note != EMERGENCY_NOTE)
@@ -470,6 +567,12 @@ fn list_rules(b: Backend, saved: &Saved) -> Result<Vec<FirewallRule>, PrivError>
                 T,
             )
             .ok_or_else(|| err(PrivErrorCode::Internal, "firewalld did not answer"))?;
+            if !o.ok() || !rich.ok() {
+                return Err(err(
+                    PrivErrorCode::Internal,
+                    "Could not read back firewalld rules.",
+                ));
+            }
             Ok(o.stdout
                 .split_whitespace()
                 .filter_map(|t| {
@@ -498,14 +601,16 @@ fn apply_nft(saved: &Saved) -> Result<(), PrivError> {
     let nft = tool(&["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft"])?;
     if !saved.nft_enabled {
         // Switching off: remove our table (add first so deleting a missing table is not an error).
-        run_with(
-            &nft,
-            &["-f", "-"],
-            T,
-            Some("add table inet opsbox\ndelete table inet opsbox\n"),
-            &[],
+        return check_ok(
+            run_with(
+                &nft,
+                &["-f", "-"],
+                T,
+                Some("add table inet opsbox\ndelete table inet opsbox\n"),
+                &[],
+            ),
+            "nft",
         );
-        return Ok(());
     }
     let script = render_nft(&saved.nft_rules, &ssh_ports(), &saved.emergency);
     // Check the whole ruleset first, so a mistake can never half-apply.
@@ -670,6 +775,59 @@ fn check_ok(o: Option<super::exec::Output>, what: &str) -> Result<(), PrivError>
     }
 }
 
+// nft replaces the entire table atomically; command success plus kernel table
+// readback verifies activation/deactivation. Other backends need rule readback.
+fn verify_restore(b: Backend, undo: &Undo, saved: &Saved) -> Result<(), PrivError> {
+    let verified = match undo {
+        Undo::NftRules { enabled, .. } => {
+            let nft = tool(&["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft"])?;
+            let o = run(&nft, &["-j", "list", "tables"], T).ok_or_else(|| {
+                err(
+                    PrivErrorCode::Internal,
+                    "nft did not answer during restore verification",
+                )
+            })?;
+            if !o.ok() {
+                return Err(err(
+                    PrivErrorCode::Internal,
+                    "Could not verify restored nft table.",
+                ));
+            }
+            let json: serde_json::Value = serde_json::from_str(&o.stdout).map_err(|_| {
+                err(
+                    PrivErrorCode::Internal,
+                    "Invalid nft restore verification response.",
+                )
+            })?;
+            let tables = json["nftables"].as_array().ok_or_else(|| {
+                err(
+                    PrivErrorCode::Internal,
+                    "Missing nft restore verification response.",
+                )
+            })?;
+            let present = tables.iter().any(|entry| {
+                entry["table"]["family"] == "inet" && entry["table"]["name"] == "opsbox"
+            });
+            present == *enabled
+        }
+        Undo::Add(r) => list_rules(b, saved)?.iter().any(|actual| {
+            actual.port == r.port
+                && actual.src == r.src
+                && (actual.proto == r.proto || actual.proto == "any")
+        }),
+        Undo::Remove(id) => !list_rules(b, saved)?.iter().any(|r| &r.id == id),
+        Undo::Nothing => true,
+    };
+    if verified {
+        Ok(())
+    } else {
+        Err(err(
+            PrivErrorCode::Internal,
+            "Firewall restore could not be verified.",
+        ))
+    }
+}
+
 // ------------------------------------------------------------------ operations
 
 pub(super) fn list(config_path: &Path) -> Result<FirewallState, PrivError> {
@@ -715,29 +873,20 @@ pub(super) fn add(
     let before = (saved.nft_enabled, saved.nft_rules.clone());
     // Turning the nftables firewall on for the first time blocks everything not allowed.
     let enabling = b == Backend::Nft && !saved.nft_enabled;
+    if enabling {
+        require_no_pending(&saved)?;
+    }
     if enabling && !confirm {
         return Err(err(
             PrivErrorCode::ConfirmRequired,
             "This turns the firewall on: everything that is not allowed is blocked. SSH and opsbox's private network stay open. If something goes wrong it switches itself off after 60 seconds unless you confirm. Continue?",
         ));
     }
-    backend_add(b, rule, &mut saved)?;
-    let revert_at = enabling.then(|| now() + REVERT_SECS);
-    if let Some(at) = revert_at {
-        saved.pending = Some(Pending {
-            revert_at: at,
-            undo: Undo::NftRules {
-                enabled: before.0,
-                rules: before.1,
-            },
-        });
-    }
-    // nftables rules live in our own state file; for ufw and firewalld only a pending
-    // undo needs remembering.
-    if b == Backend::Nft || revert_at.is_some() {
-        save(&saved)?;
-    }
-    Ok(FirewallChange { revert_at })
+    let undo = enabling.then_some(Undo::NftRules {
+        enabled: before.0,
+        rules: before.1,
+    });
+    apply_change(&mut saved, undo, b, |s| backend_add(b, rule, s), save)
 }
 
 pub(super) fn remove(
@@ -756,14 +905,20 @@ pub(super) fn remove(
     let b = detect()?;
     let mut saved = load();
     let protected = protected_ports(config_path, panel_port)?;
-    let change = remove_with(id, ip, confirm, b, &mut saved, &protected, backend_remove)?;
-    if b == Backend::Nft || change.revert_at.is_some() {
-        save(&saved)?;
-    }
-    Ok(change)
+    remove_with(
+        id,
+        ip,
+        confirm,
+        b,
+        &mut saved,
+        &protected,
+        backend_remove,
+        save,
+    )
 }
 
 // Keep the decision and undo scheduling testable without touching the host firewall.
+#[allow(clippy::too_many_arguments)] // Backend and persistence are injected for failure tests.
 fn remove_with(
     id: &str,
     ip: Option<IpAddr>,
@@ -772,6 +927,7 @@ fn remove_with(
     saved: &mut Saved,
     protected: &[u16],
     apply: impl FnOnce(Backend, &FirewallRule, &mut Saved) -> Result<(), PrivError>,
+    persist: impl FnMut(&Saved) -> Result<(), PrivError>,
 ) -> Result<FirewallChange, PrivError> {
     let rules = list_rules(b, saved)?;
     let rule = rules
@@ -780,6 +936,9 @@ fn remove_with(
         .cloned()
         .ok_or_else(|| err(PrivErrorCode::NotFound, "There is no such rule."))?;
     let risky = removal_is_risky(&rule, &rules, ip, protected);
+    if risky {
+        require_no_pending(saved)?;
+    }
     if risky && !confirm {
         return Err(err(
             PrivErrorCode::ConfirmRequired,
@@ -790,10 +949,8 @@ fn remove_with(
         ));
     }
     let before = (saved.nft_enabled, saved.nft_rules.clone());
-    apply(b, &rule, saved)?;
-    let revert_at = risky.then(|| now() + REVERT_SECS);
-    if let Some(at) = revert_at {
-        let undo = if b == Backend::Nft {
+    let undo = risky.then(|| {
+        if b == Backend::Nft {
             Undo::NftRules {
                 enabled: before.0,
                 rules: before.1,
@@ -809,13 +966,9 @@ fn remove_with(
                 src: rule.src.clone(),
                 note: rule.note.clone(),
             })
-        };
-        saved.pending = Some(Pending {
-            revert_at: at,
-            undo,
-        });
-    }
-    Ok(FirewallChange { revert_at })
+        }
+    });
+    apply_change(saved, undo, b, |s| apply(b, &rule, s), persist)
 }
 
 pub(super) fn confirm() -> Result<(), PrivError> {
@@ -823,6 +976,12 @@ pub(super) fn confirm() -> Result<(), PrivError> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut saved = load();
+    if saved.pending.as_ref().is_some_and(|p| p.revert_at <= now()) {
+        return Err(err(
+            PrivErrorCode::Conflict,
+            "Firewall rollback is pending; wait for restoration before making another change.",
+        ));
+    }
     if saved.pending.take().is_none() {
         return Err(err(
             PrivErrorCode::NotFound,
@@ -919,40 +1078,39 @@ pub fn janitor_tick() {
     let mut saved = load();
     let mut changed = false;
     let t = now();
-    if let Some(p) = saved.pending.clone()
-        && p.revert_at <= t
-    {
-        tracing::warn!("firewall change was not confirmed in time: undoing it");
-        if let Ok(b) = detect() {
-            let result = match p.undo {
-                Undo::Add(r) => backend_add(b, &r, &mut saved),
-                Undo::Remove(id) => parse_rule_id(&id).map_or(Ok(()), |(proto, port, src)| {
-                    backend_remove(
-                        b,
-                        &FirewallRule {
-                            id,
-                            port,
-                            proto,
-                            src,
-                            note: String::new(),
-                        },
-                        &mut saved,
-                    )
-                }),
-                Undo::NftRules { enabled, rules } => {
-                    saved.nft_enabled = enabled;
-                    saved.nft_rules = rules;
-                    apply_nft(&saved)
-                }
-                Undo::Nothing => Ok(()),
-            };
-            if let Err(e) = result {
-                tracing::error!(error = %e.message, "could not undo the firewall change");
-            }
+    let pending_backend = saved.pending.as_ref().and_then(|p| p.backend);
+    changed |= rollback_with(&mut saved, t, |undo, saved| {
+        let b = detect()?;
+        if pending_backend.is_some_and(|expected| expected != b) {
+            return Err(err(
+                PrivErrorCode::Internal,
+                "The original firewall backend is unavailable; rollback will retry.",
+            ));
         }
-        saved.pending = None;
-        changed = true;
-    }
+        match undo {
+            Undo::Add(r) => backend_add(b, r, saved),
+            Undo::Remove(id) => parse_rule_id(id).map_or(Ok(()), |(proto, port, src)| {
+                backend_remove(
+                    b,
+                    &FirewallRule {
+                        id: id.clone(),
+                        port,
+                        proto,
+                        src,
+                        note: String::new(),
+                    },
+                    saved,
+                )
+            }),
+            Undo::NftRules { enabled, rules } => {
+                saved.nft_enabled = *enabled;
+                saved.nft_rules = rules.clone();
+                apply_nft(saved)
+            }
+            Undo::Nothing => Ok(()),
+        }?;
+        verify_restore(b, undo, saved)
+    });
     let expired: Vec<Emergency> = saved
         .emergency
         .iter()
@@ -1000,8 +1158,8 @@ pub fn janitor_tick() {
         }
         changed = true;
     }
-    if changed {
-        let _ = save(&saved);
+    if changed && let Err(e) = save(&saved) {
+        tracing::error!(error = %e.message, "could not save firewall rollback state");
     }
 }
 
@@ -1015,6 +1173,178 @@ pub fn restore_on_start() {
 
 #[cfg(test)]
 mod tests {
+    fn injected_failure() -> PrivError {
+        err(PrivErrorCode::Internal, "injected failure")
+    }
+
+    #[test]
+    fn state_save_failure_never_applies_a_risky_change() {
+        let mut saved = Saved::default();
+        let mut applied = false;
+        let result = apply_change(
+            &mut saved,
+            Some(Undo::NftRules {
+                enabled: false,
+                rules: vec![],
+            }),
+            Backend::Nft,
+            |_| {
+                applied = true;
+                Ok(())
+            },
+            |_| Err(injected_failure()),
+        );
+        assert!(result.is_err());
+        assert!(!applied, "must persist undo before changing the firewall");
+    }
+
+    #[test]
+    fn post_apply_save_failure_keeps_durable_original_undo() {
+        let durable = std::cell::RefCell::new(String::new());
+        let mut writes = 0;
+        let mut saved = Saved::default();
+        let result = apply_change(
+            &mut saved,
+            Some(Undo::NftRules {
+                enabled: false,
+                rules: vec![],
+            }),
+            Backend::Nft,
+            |s| {
+                let disk: Saved = serde_json::from_str(&durable.borrow()).unwrap();
+                assert!(matches!(
+                    disk.pending.unwrap().undo,
+                    Undo::NftRules { enabled: false, .. }
+                ));
+                s.nft_enabled = true;
+                Ok(())
+            },
+            |s| {
+                writes += 1;
+                if writes == 2 {
+                    return Err(injected_failure());
+                }
+                *durable.borrow_mut() = serde_json::to_string(s).unwrap();
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(
+            saved.nft_enabled,
+            "backend applied before the final save failed"
+        );
+        let mut reloaded: Saved = serde_json::from_str(&durable.borrow()).unwrap();
+        let deadline = reloaded.pending.as_ref().unwrap().revert_at;
+        assert!(rollback_with(&mut reloaded, deadline, |undo, s| {
+            let Undo::NftRules { enabled, rules } = undo else {
+                panic!("lost original undo")
+            };
+            s.nft_enabled = *enabled;
+            s.nft_rules = rules.clone();
+            Ok(())
+        }));
+        assert!(!reloaded.nft_enabled && reloaded.pending.is_none());
+    }
+
+    #[test]
+    fn failed_restore_keeps_undo_and_retries_after_backoff() {
+        let original = rule("tcp", 8443, "anywhere");
+        let mut saved = Saved {
+            nft_enabled: true,
+            pending: Some(Pending {
+                revert_at: 100,
+                undo: Undo::NftRules {
+                    enabled: true,
+                    rules: vec![original.clone()],
+                },
+                ..Pending::default()
+            }),
+            ..Saved::default()
+        };
+        let original_undo = serde_json::to_value(&saved.pending.as_ref().unwrap().undo).unwrap();
+        assert!(rollback_with(&mut saved, 100, |_, s| {
+            s.nft_rules.push(original.clone()); // failed apply/verification must not commit metadata
+            Err(injected_failure())
+        }));
+        let retained = saved
+            .pending
+            .as_ref()
+            .expect("failed restore must retain undo");
+        assert_eq!(serde_json::to_value(&retained.undo).unwrap(), original_undo);
+        assert_eq!(retained.revert_at, 100);
+        assert_eq!(retained.retry_at, 110);
+        assert!(saved.nft_rules.is_empty());
+        // Persist/reload just as the janitor and the next tick do.
+        saved = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(!rollback_with(&mut saved, 109, |_, _| panic!(
+            "retry must back off"
+        )));
+        assert!(rollback_with(&mut saved, 110, |undo, s| {
+            let Undo::NftRules { enabled, rules } = undo else {
+                panic!("lost undo")
+            };
+            s.nft_enabled = *enabled;
+            s.nft_rules = rules.clone();
+            Ok(())
+        }));
+        assert!(saved.pending.is_none());
+        assert_eq!(saved.nft_rules[0].id, original.id);
+    }
+
+    #[test]
+    fn repeated_restore_failures_back_off_and_legacy_records_still_load() {
+        let mut saved: Saved = serde_json::from_str(r#"{"pending":{"revert_at":100,"undo":"Nothing"},"nft_enabled":false,"nft_rules":[],"emergency":[]}"#).unwrap();
+        let mut t = 100;
+        for delay in [10, 20, 40, 60, 60] {
+            assert!(rollback_with(&mut saved, t, |_, _| Err(injected_failure())));
+            assert_eq!(saved.pending.as_ref().unwrap().retry_at, t + delay);
+            t += delay;
+        }
+    }
+
+    #[test]
+    fn second_risky_removal_is_refused_without_overwriting_undo() {
+        let panel = rule("tcp", 8443, "anywhere");
+        let recovery = rule("tcp", 8444, "anywhere");
+        let mut saved = Saved {
+            nft_enabled: true,
+            nft_rules: vec![panel.clone(), recovery.clone()],
+            ..Saved::default()
+        };
+        remove_with(
+            &panel.id,
+            None,
+            true,
+            Backend::Nft,
+            &mut saved,
+            &[8443, 8444],
+            |_, r, s| {
+                s.nft_rules.retain(|x| x.id != r.id);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+        let original = serde_json::to_value(&saved.pending).unwrap();
+        for confirm in [false, true] {
+            let error = remove_with(
+                &recovery.id,
+                None,
+                confirm,
+                Backend::Nft,
+                &mut saved,
+                &[8443, 8444],
+                |_, _, _| panic!("pending rollback must block a second risky apply"),
+                |_| panic!("pending undo must not be overwritten"),
+            )
+            .unwrap_err();
+            assert_eq!(error.code, PrivErrorCode::Conflict);
+            assert!(error.message.contains("pending"));
+            assert_eq!(serde_json::to_value(&saved.pending).unwrap(), original);
+            assert_eq!(saved.nft_rules.len(), 1);
+        }
+    }
+
     #[test]
     fn restricted_firewalld_commands_round_trip() {
         for src in ["192.0.2.10", "192.0.2.0/24", "2001:db8::/64"] {
@@ -1278,6 +1608,7 @@ mod tests {
                 &mut saved,
                 &protected,
                 |_, _, _| panic!("unconfirmed removal must not reach the backend"),
+                |_| Ok(()),
             )
             .unwrap_err();
             assert_eq!(denied.code, PrivErrorCode::ConfirmRequired);
@@ -1296,6 +1627,7 @@ mod tests {
                     saved.nft_rules.retain(|r| r.id != rule.id);
                     Ok(())
                 },
+                |_| Ok(()),
             )
             .unwrap();
             let pending = saved

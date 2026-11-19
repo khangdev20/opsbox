@@ -549,3 +549,7 @@ Guard buildLog, termExec and rotateOutKey in HTTP mode; register fetchBuildLog a
 ## Fix 03 — Protect panel and recovery firewall allowances
 Protect SSH plus configured panel/recovery listeners (8443/8444 by default); carry the actual API port in an optional helper field for startup overrides, preserving the HTTP API.
 Use the existing 60-second undo and require typing `continue`; rules are allow-only, so broader drops cannot be added/reordered here and first default-drop activation already requires confirmation.
+
+## Fix 04 — Durable firewall rollback
+Persist and flush undo before risky mutation; refuse another risky change while it is pending, and retain the original backend for restoration.
+Clear undo after verified restore (or timely explicit Keep); retain failed detection/restoration and retry after 10/20/40/60 seconds, capped at 60 seconds across restarts.
