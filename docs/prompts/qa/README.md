@@ -31,7 +31,7 @@ Order does not matter much; start with 01 to 08. Run them against the Multipass 
 | 11 | Phone widths: no sideways scroll, targets big enough (11-mobile-390.md) | x |
 | 12 | Keyboard use and visible focus (`12-keyboard-and-focus.md`) | x |
 | 13 | Empty and error states on every page (13-empty-and-error-states.md) | x |
-| 14 | Capacity guard on the 1 GB VM (`14-capacity-1gb.md`) | |
+| 14 | Capacity guard on the 1 GB VM (14-capacity-1gb.md) | x |
 | 15 | Ports 80/443 already taken (`15-proxy-port-conflict.md`) | |
 | 16 | Containers: start, stop, restart, logs, remove (`16-containers-actions.md`) | |
 | 17 | Deploy a Docker image app end to end (`17-deploy-image-app.md`) | |

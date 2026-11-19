@@ -18,6 +18,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 08 | Roles: deployer and viewer cannot do admin things | 2026-11-19 | PASS | Enforced across all API endpoints: viewer is read-only, deployer manages apps/containers without admin/system/terminal access, admin actions by viewer/deployer cleanly refused with 403 Forbidden. |
 | 09 | Every page: zero console errors, zero failed requests | 2026-11-19 | PARTIAL | Readable API failure messages verified; network/mock checks pass. Browser sweep blocked by VM/localhost permissions; async System mount and request deadline gaps documented. |
 | 28 | README, install page and links | 2026-11-19 | PASS | Verified links, install scripts, and screenshots; all internal links pass; releases/latest and Discussions/Pages caveats documented for owner. |
+| 14 | Capacity guard on the 1 GB VM | 2026-11-19 | PARTIAL | Installer and UI checks pass; policy reserves 470 MiB baseline, permits small Docker apps and blocks builds without 1536 MiB headroom. Live VM denied; Cargo unavailable; PostgreSQL refusal depends on headroom. |
 
 ## Found, not fixed
 
@@ -325,5 +326,47 @@ The requested `timeout 120 git mv docs/prompts/qa/13-empty-and-error-states.md d
 ```sh
 timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/13-empty-and-error-states.md docs/prompts/qa/archive/13-empty-and-error-states.md
 timeout 120 git commit -m "qa 13: Empty and error states on every page"
+timeout 120 git push origin dev
+```
+
+
+## QA 14 — Capacity guard evidence (2026-11-19)
+
+- Reviewed `crates/opsbox-capacity/src/{lib,requirements}.rs`, API admission/override wiring, privileged host profiling and swap helper, PostgreSQL template defaults, UI override controls, builder limits, and `install.sh:149–185`. No product code changed.
+- Baseline: OS `max(192, RAM/10)` MiB + opsbox 128 MiB + Docker 150 MiB when installed. This totals 470 MiB on both 956 and 1024 MiB machines, leaving 486 / 554 MiB before workload reservations. Admission also caps headroom by live `MemAvailable` minus the OS reserve, credits only half of free swap for apps/builds, and never credits swap for databases. Baseline sufficiency under real load remains unmeasured.
+- Docker requires 768 MiB total RAM; apps default to 128 MiB with 256 MiB recommended. Builds require 1536 MiB allocatable and recommend 2048 MiB; insufficient headroom blocks admission with a suggestion to build in GitHub Actions. Buildx uses a container builder limited to `memory=1536m,memory-swap=1536m`. An Owner can explicitly override admission; this does not guarantee freedom from OOM.
+- Pressure blocks new workloads immediately below the OS available-memory reserve, or after memory PSI `some avg60` exceeds 20% for 120 seconds. Workloads require cgroup v2. Reservation refusals suggest stopping/removing the largest workload by name and memory amount.
+- At 956 MiB without swap, three 128 MiB reservations leave 102 MiB and block a fourth default app; at 1024 MiB, three leave 170 MiB, so a fourth can fit and a fifth is blocked. These are source-derived calculations, not live container results. Adding 2048 MiB entirely free swap increases app/build allocatable by 1024 MiB, leaving database capacity unchanged. The helper offers 2 GiB only with more than 20 GiB free disk; otherwise it offers 1 GiB and enforces disk reserves.
+- PASS: `timeout 120 sh tools/check-capacity-install.sh`; `timeout 120 node tools/check-capacity-ui.mjs`. A separate temporary `MemTotal: 978944 kB` fixture using `OPSBOX_TEST_PREFLIGHT=1`, `OPSBOX_TEST_MEMINFO`, and `sh install.sh --dev --dry-run` exited 0 and printed `956 MB RAM, no swap` and `Docker apps OK, builds on server not recommended`; no host installation occurred.
+- NOT RUN: `timeout 120 cargo test -p opsbox-capacity --offline` exited 127 (`cargo` unavailable). Existing admission and HTTP tests were inspected, not executed. `timeout 120 multipass info opsbox-vm` exited 2 (`multipass socket access denied`); no live Capacity page, memory comparison, override deployment, swap mutation, or container saturation was verified.
+
+### Found, not fixed — 14: PostgreSQL refusal is conditional
+
+`crates/opsbox-deploy/templates/postgres.toml:1` sets a 256 MiB minimum and 512 MiB recommendation; `crates/opsbox-api/src/capacity.rs:134` defaults to that minimum. `crates/opsbox-capacity/src/lib.rs:213` checks database physical headroom. Thus an idle 956 MiB Docker VM with sufficient available memory admits the default PostgreSQL as Tight rather than Blocked. The QA prompt's unconditional refusal expectation is not established by the policy. No policy change was made without a measured failure.
+
+Reproduce on the disposable VM:
+1. With Docker installed, no workload reservations, and at least 448 MiB MemAvailable, open System > Capacity and add PostgreSQL at its default 256 MiB limit: expect Tight admission.
+2. Request a 512 MiB PostgreSQL limit on the 956 MiB host, or reserve enough memory to leave less than 256 MiB physical headroom: expect Blocked, then exercise the explicit Owner override.
+
+Suggested prompt: **Clarify PostgreSQL admission expectations on a 1 GB host and validate measured baseline headroom.**
+
+### Owner checks — 14: Live VM and Rust verification
+
+From a host terminal with Multipass access, use only disposable `opsbox-vm`; wrap each command in `timeout 120`:
+
+```sh
+timeout 120 multipass info opsbox-vm
+timeout 120 multipass exec opsbox-vm -- free -m
+timeout 120 cargo test -p opsbox-capacity --offline
+timeout 120 cargo test -p opsbox-api --test capacity_http --offline
+```
+
+Open System > Capacity and reconcile RAM, fixed reserves, workload limits, and free allocation against `free -m` (allocation is reserved capacity, not current usage). Confirm a small image app fits and a local build is refused. Use a 512 MiB PostgreSQL request or existing reservations to force refusal; verify the readable reason, disabled submission without both the checkbox and exact sentence `I understand this server may run out of memory`, successful Owner override creation, and updated memory map. With more than 20 GiB disk free and no existing swap, add the offered 2 GiB swap through the helper; verify app/build allocation grows by half the free swap and database headroom does not grow. Start 128 MiB image containers until admission refuses another; verify the suggestion names a workload to free, then remove test workloads and restore the VM snapshot.
+
+`timeout 120 git mv docs/prompts/qa/14-capacity-1gb.md docs/prompts/qa/archive/14-capacity-1gb.md` failed because `.git/index.lock` creation is denied. The file was moved in the working tree instead; staging/commit/push cannot proceed under the same Git write restriction. On `dev`, stage only these QA 14 changes (review any other edits to shared docs first), then commit and push; no tag for docs-only work:
+
+```sh
+timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/14-capacity-1gb.md docs/prompts/qa/archive/14-capacity-1gb.md
+timeout 120 git commit -m "qa 14: Capacity guard on the 1 GB VM"
 timeout 120 git push origin dev
 ```
