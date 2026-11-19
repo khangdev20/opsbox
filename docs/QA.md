@@ -20,6 +20,7 @@ Target environment: `opsbox-vm` (Ubuntu 24.04 LTS via Multipass, 192.168.252.2) 
 | 28 | README, install page and links | 2026-11-19 | PASS | Verified links, install scripts, and screenshots; all internal links pass; releases/latest and Discussions/Pages caveats documented for owner. |
 | 14 | Capacity guard on the 1 GB VM | 2026-11-19 | PARTIAL | Installer and UI checks pass; policy reserves 470 MiB baseline, permits small Docker apps and blocks builds without 1536 MiB headroom. Live VM denied; Cargo unavailable; PostgreSQL refusal depends on headroom. |
 | 27 | Dependencies and lint, fast | 2026-11-19 | PASS | cargo fmt clean; cargo clippy workspace 0 warnings; Cargo.lock intact & consistent; 385/385 dependencies verified against crates.io (zero yanked); web/vendor licenses (MIT) and file hashes verified; zero JS build vulnerabilities. |
+| 15 | Ports 80/443 already taken | 2026-11-19 | PARTIAL | Installer preflight fixtures pass for nginx/Docker on both ports; panel warning and Move behind opsbox rendering/API checks pass. Proxy fallback reviewed; real-socket Rust tests unavailable (Cargo missing), VM install/restarts/takeover/move/undo unverified (Multipass socket access denied). |
 
 ## Found, not fixed
 
@@ -371,3 +372,25 @@ timeout 120 git add docs/QA.md docs/prompts/qa/README.md docs/prompts/qa/14-capa
 timeout 120 git commit -m "qa 14: Capacity guard on the 1 GB VM"
 timeout 120 git push origin dev
 ```
+
+
+### 15 — Owner checks: live port conflicts and reversible actions
+
+Local checks on 2026-11-19:
+
+- `timeout 120 node tools/check-network-ui.mjs` passed network action visibility, escaping, CSRF, adoption API mapping and task polling assertions. Additional temporary fixtures verified the conflict banner contains `8080`, `8445`, `Web ports are busy`, and `Move behind opsbox` for both Docker and nginx holders. This verifies generated markup, not a live browser session.
+- Extracted the actual `check_proxy_ports` function from `install.sh:98` into a temporary shell harness. Mock `ss`/`docker` output for nginx, docker-proxy (including container name), and free ports passed: both busy ports warn with 8080/8445 and panel guidance, and all three cases exit 0. Full installation was not executed.
+- Source review: `crates/opsbox-proxy/src/server.rs:129` binds both listeners through fallback; `:797` handles address-in-use/permission-denied, and `:816` tries preferred ports followed by 8080–8099 / 8445–8464. `crates/opsbox-watchdog/src/policy.rs:138` treats a reported port conflict as healthy. Existing `crates/opsbox-proxy/tests/port_conflict.rs:21` covers occupied primary HTTP/HTTPS, an occupied HTTP fallback, forwarding, conflict status and promotion without dropping an in-flight request; it uses ephemeral primary ports.
+- `timeout 120 cargo test -p opsbox-proxy --test port_conflict -- --nocapture` could not run: `timeout: exec(cargo): No such file or directory` (exit 127). `timeout 120 multipass list` failed with `multipass socket access denied`. No live fallback, service restart stability or reversible site migration is claimed; no code defect was established.
+
+From a host terminal with Multipass access, use only the disposable `opsbox-vm`, with a recoverable snapshot and no real sites. Wrap every command in `timeout 120`:
+
+1. Confirm the VM and toolchain are available. Run `timeout 120 cargo test -p opsbox-proxy --test port_conflict -- --nocapture` locally and `timeout 120 cargo test -p opsbox-api --test network_http` for takeover/undo HTTP integration coverage.
+2. On a clean VM, start `timeout 120 multipass exec opsbox-vm -- sudo docker run -d --name qa15-web -p 80:80 -p 443:443 nginx`. If either port already belongs to a VM service, identify it and restore the clean snapshot rather than replacing an unknown listener. Keep the container ID for cleanup. Check HTTP and HTTPS against a fixture with working TLS if HTTPS site reachability is to be asserted (stock nginx does not serve TLS merely because port 443 is published).
+3. Install opsbox using the documented installer from the VM; confirm both conflict warnings and successful completion. Inspect `ss -ltnp`, `opsbox status`, `systemctl is-active opsbox opsbox-priv opsbox-proxy`, and `systemctl show opsbox opsbox-proxy -p NRestarts -p MainPID`. Verify proxy listeners on 8080/8445 (or next free ports). Repeat the status checks after at least 35 seconds and confirm stable restart counts. Verify the original fixture site still answers while opsbox uses fallback.
+4. Open the panel overview and Settings → Network. Confirm the warning, holder identity, actual fallback ports and **Move behind opsbox** guidance. Exercise takeover and Undo, verifying promotion and restoration of the old service/restart policy. Takeover intentionally stops the old site; the UI warns of this. Verify site reachability again after Undo.
+5. Exercise **Move behind opsbox**, inspect its proposed private ports, confirm, and check the original site through opsbox on public ports. Use **Undo move** and confirm the old site again answers on its original ports. Repeat with a disposable nginx systemd fixture. Record actual browser results and service restart counts.
+6. Remove only test resources created for this check and restore the VM snapshot. Update row 15 to PASS only after live checks succeed.
+
+
+QA 15 Git completion: the requested `timeout 120 git mv docs/prompts/qa/15-proxy-port-conflict.md docs/prompts/qa/archive/15-proxy-port-conflict.md` failed with `Unable to create .git/index.lock: Operation not permitted` (exit 128). The prompt was archived with a filesystem rename instead. Git metadata is read-only in this session, so staging, commit and push remain for the owner. Existing unrelated README row 27 changes and the staged QA 27 rename were preserved. On `dev`, stage only the QA 15 row/owner notes and README row 15 (use selective staging), plus this prompt rename; commit only those paths as `qa 15: Ports 80/443 already taken` and push `origin dev`. No tag is needed for these documentation-only changes.
