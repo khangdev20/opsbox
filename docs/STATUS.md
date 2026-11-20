@@ -1,7 +1,7 @@
 # Status
 
 Last prompt completed: **Fix 31 — Use the width of large screens**.
-Next release: `v0.1.0-alpha.47` once CI passes on the pushed commit.
+Released: `v0.1.0-alpha.47` (CI green; signed musl archives, SBOM and `install.sh` on the GitHub release).
 
 ## Completed
 - Full-width pages (`main`) now use `width: min(100%, 1680px)` with `clamp(16px, 2.5vw, 40px)` side padding instead of the 1180 px cap.
@@ -10,8 +10,9 @@ Next release: `v0.1.0-alpha.47` once CI passes on the pushed commit.
 
 ## Verification
 - `timeout 120 node tools/check-responsive-ui.mjs` passes the source and Chrome browser checks.
-- `timeout 120 python3 scripts/gen-index.py --check` passes; no generated map changed.
-- No Rust or API changes; workspace tests and the release build run in CI on the pushed commit.
+- `cargo test --workspace --locked` passes locally; CI is green on `0d91f2f` (format, clippy, tests, release build, musl targets, cargo-deny, installer checks).
+- `timeout 120 python3 scripts/gen-index.py --check` passes; no generated map is stale.
+- Release workflow `v0.1.0-alpha.47` published both signed musl archives, `install.sh` and the SBOM.
 
 ## Limits and next prompt
 - Prior fixes' Linux owner checks in `docs/QA.md` still need the `opsbox-vm`; none were run here.
