@@ -20,19 +20,21 @@ export async function view({ query = {} } = {}) {
   const renderRepoList = () => {
     const rows = repoRows();
     if (!rows.length) return html`<p class="muted">${q.trim() ? 'No repository matches.' : 'No repositories are accessible to this GitHub App installation yet.'}</p>`;
-    return rows.map((r) => html`<div class="list-row">
-      <div>
-        <div class="mono">${r.name}</div>
+    return rows.map((r) => html`<div class="list-row repo-row">
+      <div class="repo-row-text">
+        <div class="mono repo-row-name" title="${r.name}">${r.name}</div>
         <div class="sm muted">${r.vis} · ${r.lang || '–'} · pushed ${r.pushed} · detected: ${r.build}</div>
       </div>
-      <a class="btn primary" href="#/apps/new/configure?repo=${encodeURIComponent(r.name)}&build=${encodeURIComponent(r.build)}&branch=${encodeURIComponent(r.defaultBranch || 'main')}&source=github_app">Deploy</a>
+      ${String(r.build || '').toLowerCase() === 'nothing to build'
+        ? html`<a class="btn repo-row-action" href="#/apps/new/configure?repo=${encodeURIComponent(r.name)}&branch=${encodeURIComponent(r.defaultBranch || 'main')}&source=github_app">Choose build</a>`
+        : html`<a class="btn primary repo-row-action" href="#/apps/new/configure?repo=${encodeURIComponent(r.name)}&build=${encodeURIComponent(r.build)}&branch=${encodeURIComponent(r.defaultBranch || 'main')}&source=github_app">Deploy</a>`}
     </div>`);
   };
 
   const renderGithubTab = () => {
     if (!gh.connected) {
       return section('Connect GitHub or use a fallback', html`<div class="col gap16">
-        <div class="row spread">
+        <div class="row spread new-service-toolbar">
           <div>
             <div class="row" style="gap:8px">${st('off', 'GitHub not connected')}</div>
             <p class="sm muted mt6">Connect a private GitHub App in Settings to browse repositories and receive automatic push webhooks.</p>
@@ -49,7 +51,7 @@ export async function view({ query = {} } = {}) {
     }
     if (!gh.installed) {
       return section('Choose repositories on GitHub', html`<div class="col gap16">
-        <div class="row spread">
+        <div class="row spread new-service-toolbar">
           <div>
             <div class="row" style="gap:8px">${st('warn', 'Awaiting repository access')}<b>${gh.appSlug}</b></div>
             <p class="sm muted mt6">Your GitHub App is created, but not installed on any account or repository yet.</p>
@@ -62,7 +64,7 @@ export async function view({ query = {} } = {}) {
       </div>`);
     }
     return html`<div class="col gap16">
-      <div class="row spread" style="margin:4px 0">
+      <div class="row spread new-service-toolbar" style="margin:4px 0">
         <div class="row" style="gap:10px">
           ${st('ok', `GitHub connected as ${gh.account || gh.owner}`)}
           ${gh.manageUrl ? html`<a class="btn link" href="${gh.manageUrl}" target="_blank" rel="noopener">Manage access ↗</a>` : ''}
@@ -77,13 +79,13 @@ export async function view({ query = {} } = {}) {
   };
 
   const renderDeployKeyTab = () => html`<div class="col gap24">
-    ${section('Deploy key for a single private repo', html`<div class="col gap16">
+    ${section('Deploy key for a single private repo', html`<div class="new-service-form-grid">
       <p class="sm muted">Generate a dedicated Ed25519 SSH deploy key for one private repository. The private key stays encrypted with the server master key and never leaves this host.</p>
-      <div class="row">
+      <div class="new-service-form-controls">
         <input class="input grow" id="dk-repo" placeholder="owner/private-repo or git@github.com:owner/private-repo.git" value="${dkRepo}"${busy ? ' disabled' : ''}>
         ${btn(busy ? 'Generating…' : 'Generate deploy key', { act: 'genKey', kind: 'primary', disabled: busy })}
+        ${dkErr ? html`<p class="form-err" role="alert">${dkErr}</p>` : ''}
       </div>
-      ${dkErr ? html`<p class="form-err" role="alert">${dkErr}</p>` : ''}
     </div>`)}
     ${keys.length ? keys.map((k) => section(k.repo, html`<div class="col gap12">
       <div class="row spread">
@@ -100,14 +102,14 @@ export async function view({ query = {} } = {}) {
   </div>`;
 
   const renderPublicUrlTab = () => html`<div class="col gap24">
-    ${section('Public repository URL', html`<div class="col gap16">
+    ${section('Public repository URL', html`<div class="new-service-form-grid">
       <p class="sm muted">Deploy any public HTTPS Git repository without connecting a GitHub account. For GitHub repositories, opsbox detects the default branch and build method automatically.</p>
-      <div class="row">
+      <div class="new-service-form-controls">
         <input class="input grow" id="pub-url" placeholder="https://github.com/owner/repo" value="${pubUrl}"${busy ? ' disabled' : ''}>
         ${btn(busy ? 'Checking…' : 'Check repository', { act: 'checkPub', kind: 'primary', disabled: busy })}
+        ${pubErr ? html`<p class="form-err" role="alert">${pubErr}</p>` : ''}
       </div>
-      ${pubErr ? html`<p class="form-err" role="alert">${pubErr}</p>` : ''}
-      ${pubInfo ? html`<div class="list-row" style="border-top:1px solid var(--ls);border-bottom:0;padding-top:12px">
+      ${pubInfo ? html`<div class="list-row new-service-form-wide" style="border-top:1px solid var(--ls);border-bottom:0;padding-top:12px">
         <div>
           <div class="mono">${pubInfo.repo}</div>
           <div class="sm muted">${pubInfo.vis} · ${pubInfo.lang || 'Git'} · branch ${pubInfo.defaultBranch} · detected: ${pubInfo.build}</div>
@@ -120,9 +122,9 @@ export async function view({ query = {} } = {}) {
   let imgRef = '';
 
   const renderDockerImageTab = () => html`<div class="col gap24">
-    ${section('Prebuilt Docker image', html`<div class="col gap16">
+    ${section('Prebuilt Docker image', html`<div class="new-service-form-grid">
       <p class="sm muted">Deploy any public registry image (Docker Hub, GHCR, Quay) directly without a build step.</p>
-      <div class="row">
+      <div class="new-service-form-controls">
         <input class="input grow mono" id="img-ref" placeholder="nginx:1.27-alpine or ghcr.io/owner/app:latest" value="${imgRef}">
         ${btn('Continue to configure →', { act: 'goImage', kind: 'primary' })}
       </div>
@@ -151,7 +153,7 @@ export async function view({ query = {} } = {}) {
 
   return {
     nav: 'apps', title: 'New service',
-    html: html`<main class="narrow">${header('New service', 'Pick a repository or fallback source. opsbox detects how to build it.')}
+    html: html`<main>${header('New service', 'Pick a repository or fallback source. opsbox detects how to build it.')}
       <div class="tabs" role="tablist">${['GitHub', 'Deploy key', 'Public repo URL', 'Docker image', 'Templates'].map((t, i) => html`<button type="button" role="tab" aria-selected="${String(i === tab)}" data-t="${i}">${t}</button>`)}</div>
       <div id="body"></div></main>`,
     mount(r) {

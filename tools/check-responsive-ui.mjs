@@ -30,7 +30,7 @@ const MIME = {
 };
 
 async function checkSources() {
-  const [index, kitHtml, css, shell, ui, term, files, kitJs, cleanupJs] = await Promise.all([
+  const [index, kitHtml, css, shell, ui, term, files, kitJs, cleanupJs, newServiceJs] = await Promise.all([
     readFile(join(WEB_DIR, 'index.html'), 'utf8'),
     readFile(join(WEB_DIR, 'kit.html'), 'utf8'),
     readFile(join(WEB_DIR, 'css/app.css'), 'utf8'),
@@ -40,6 +40,7 @@ async function checkSources() {
     readFile(join(WEB_DIR, 'js/pages/files.js'), 'utf8'),
     readFile(join(WEB_DIR, 'js/kit.js'), 'utf8'),
     readFile(join(WEB_DIR, 'js/pages/cleanup.js'), 'utf8'),
+    readFile(join(WEB_DIR, 'js/pages/newservice.js'), 'utf8'),
   ]);
 
   assert(index.includes('viewport-fit=cover'), 'index.html needs viewport-fit=cover');
@@ -66,6 +67,17 @@ async function checkSources() {
   assert(/main\{[^}]*width:min\(100%,1680px\)[^}]*padding:40px clamp\(16px,2\.5vw,40px\) 64px/.test(css), 'main uses a fluid 1680px cap with responsive side padding');
   assert(/main\.narrow #b\{[^}]*max-width:880px/.test(css), 'Settings forms keep a readable inner width');
   assert(/html: html`<main>/.test(cleanupJs), 'Cleanup must use the full-width main container');
+  assert(/html: html`<main>/.test(newServiceJs), 'New service must use the full-width main container');
+  assert(newServiceJs.includes('repo-row') && css.includes('.repo-row{display:grid'), 'New service repository rows use a grid');
+  assert(css.includes('grid-template-columns:minmax(0,1fr) auto') && css.includes('.repo-row-action{justify-self:end;min-width:120px;min-height:44px}'), 'repository grid has a right-aligned, 44px action');
+  assert(css.includes('gap:12px 16px;padding:12px 0'), 'repository rows have 12px vertical padding');
+  assert(css.includes('.repo-row{grid-template-columns:minmax(0,1fr)}') && css.includes('.repo-row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'), 'repository rows stack on phones and truncate names');
+  assert(newServiceJs.includes('title="${r.name}"') && newServiceJs.includes('Choose build') && newServiceJs.includes("'nothing to build'"), 'repository names retain their title and missing builds need a choice');
+  assert((newServiceJs.match(/class="new-service-form-grid"/g) || []).length === 3, 'all three source forms use the wide form grid');
+  assert((newServiceJs.match(/class="new-service-form-controls"/g) || []).length === 3, 'source form fields and actions share a grid cell');
+  assert(/\.new-service-form-grid\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/.test(css), 'source forms use two wide columns');
+  assert(/\.new-service-form-controls \.input\{[^}]*max-width:560px/.test(css), 'source form fields have a readable width cap');
+  assert(newServiceJs.includes('new-service-toolbar') && css.includes('.new-service-toolbar>:last-child{margin-left:auto}'), 'New service header actions stay right aligned');
 
   assert(term.includes('visualViewport') && term.includes('term-keys'), 'terminal visualViewport + key bar');
   assert(files.includes('files-page') && files.includes('editing'), 'files page toggles fullscreen editor class');
@@ -281,6 +293,97 @@ async function runBrowserChecks() {
       await setViewport(browser, w, w <= 768 ? 800 : 900);
       const scroll = await browser.evalJs(`({ sw: document.documentElement.scrollWidth, iw: window.innerWidth })`);
       assert(scroll.sw <= scroll.iw + 1, `cleanup horizontal page scroll at ${w}px: scrollWidth=${scroll.sw} innerWidth=${scroll.iw}`);
+    }
+
+    await setViewport(browser, 1920, 900);
+    await browser.send('Page.navigate', { url: `${base}/index.html?mode=mock#/apps/new` });
+    await waitFor(browser.evalJs, `!!document.querySelector('#l .repo-row')`, 'new service repositories mounted');
+    const newServiceWidth = await browser.evalJs(`document.querySelector('.content main').getBoundingClientRect().width`);
+    assert(newServiceWidth >= 1400, `new service content width at 1920px: ${newServiceWidth}`);
+    assert(Math.abs(newServiceWidth - overviewWidth1920) <= 24, `new service/overview widths: ${newServiceWidth}/${overviewWidth1920}`);
+    await browser.send('Page.navigate', { url: `${base}/index.html?mode=mock#/apps/new/templates` });
+    await waitFor(browser.evalJs, `!!document.querySelector('.content main .cols #fm')`, 'templates mounted');
+    const templatesWidth = await browser.evalJs(`document.querySelector('.content main .cols').getBoundingClientRect().width`);
+    assert(templatesWidth >= 1400, `Templates content width at 1920px: ${templatesWidth}`);
+    for (const w of [390, 768, 1024]) {
+      await setViewport(browser, w, w === 390 ? 800 : 900);
+      const scroll = await browser.evalJs(`({ sw: document.documentElement.scrollWidth, iw: innerWidth })`);
+      assert(scroll.sw <= scroll.iw + 1, `Templates horizontal scroll at ${w}px: ${scroll.sw}/${scroll.iw}`);
+    }
+    await setViewport(browser, 1920, 900);
+    await browser.send('Page.navigate', { url: `${base}/index.html?mode=mock#/apps/new` });
+    await waitFor(browser.evalJs, `!!document.querySelector('#l .repo-row')`, 'new service repositories remounted');
+    for (const [i, label] of ['GitHub', 'Deploy key', 'Public repo URL', 'Docker image'].entries()) {
+      await browser.evalJs(`document.querySelector('[data-t="${i}"]').click()`);
+      const area = await browser.evalJs(`(() => {
+        const main = document.querySelector('.content main').getBoundingClientRect();
+        const body = document.querySelector('#body').getBoundingClientRect();
+        const grid = document.querySelector('#body .new-service-form-grid');
+        const controls = grid?.querySelector('.new-service-form-controls');
+        const input = controls?.querySelector('.input');
+        const action = controls?.querySelector('.btn');
+        return { mainWidth: main.width, width: body.width, gridWidth: grid?.getBoundingClientRect().width,
+          columns: grid && getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+          inputWidth: input?.getBoundingClientRect().width, actionRight: action?.getBoundingClientRect().right,
+          controlsRight: controls?.getBoundingClientRect().right };
+      })()`);
+      assert(area.width >= 1400, `${label} content width at 1920px: ${area.width}`);
+      assert(Math.abs(area.width - templatesWidth) <= 24, `${label}/Templates content widths: ${area.width}/${templatesWidth}`);
+      assert(Math.abs(area.mainWidth - newServiceWidth) <= 24, `${label}/GitHub main widths: ${area.mainWidth}/${newServiceWidth}`);
+      if (i > 0) {
+        assert(area.gridWidth >= 1400 && area.columns === 2, `${label} form does not use two wide columns: ${JSON.stringify(area)}`);
+        assert(area.inputWidth <= 561, `${label} field width: ${area.inputWidth}`);
+        assert(Math.abs(area.actionRight - area.controlsRight) <= 1, `${label} action is not at its form column edge`);
+      }
+      for (const w of [390, 768, 1024]) {
+        await setViewport(browser, w, w === 390 ? 800 : 900);
+        const mobile = await browser.evalJs(`({ sw: document.documentElement.scrollWidth, iw: innerWidth,
+          actionHeight: document.querySelector('#body .new-service-form-controls .btn')?.getBoundingClientRect().height })`);
+        assert(mobile.sw <= mobile.iw + 1, `${label} horizontal scroll at ${w}px: ${mobile.sw}/${mobile.iw}`);
+        if (w === 390 && i > 0) assert(mobile.actionHeight >= 44, `${label} action height at 390px: ${mobile.actionHeight}`);
+      }
+      await setViewport(browser, 1920, 900);
+    }
+    await browser.evalJs(`document.querySelector('[data-t="0"]').click()`);
+    for (const w of [1440, 390]) {
+      await setViewport(browser, w, w === 390 ? 800 : 900);
+      const layout = await browser.evalJs(`(() => {
+        const searchRight = document.querySelector('#q').getBoundingClientRect().right;
+        const rows = [...document.querySelectorAll('#l .repo-row')].map((row) => {
+          const text = row.querySelector('.repo-row-text').getBoundingClientRect();
+          const action = row.querySelector('.repo-row-action');
+          const button = action.getBoundingClientRect();
+          const style = getComputedStyle(row);
+          return { name: row.querySelector('.repo-row-name')?.textContent.trim(), title: row.querySelector('.repo-row-name')?.title,
+            noBuild: /nothing to build/i.test(row.textContent), enabledDeploy: !!row.querySelector('a[href*="/configure"], button:not(:disabled)') && action.textContent.trim() === 'Deploy',
+            action: action.textContent.trim(), right: button.right, top: button.top, textBottom: text.bottom,
+            height: button.height, padTop: parseFloat(style.paddingTop), padBottom: parseFloat(style.paddingBottom) };
+        });
+        const toolbar = document.querySelector('#body .new-service-toolbar');
+        return { searchRight, rows, scrollWidth: document.documentElement.scrollWidth, viewport: innerWidth,
+          toolbarRight: toolbar?.getBoundingClientRect().right,
+          cancelRight: toolbar?.querySelector('a[href="#/apps"]')?.getBoundingClientRect().right };
+      })()`);
+      assert(layout.rows.length > 0, `no repository rows at ${w}px`);
+      assert(Math.abs(layout.toolbarRight - layout.cancelRight) <= 1, `GitHub Cancel does not align to toolbar right at ${w}px`);
+      for (const row of layout.rows) {
+        assert(Math.abs(row.right - layout.searchRight) <= 1, `${row.name} action/search right edges at ${w}px: ${row.right}/${layout.searchRight}`);
+        assert(row.padTop >= 12 && row.padBottom >= 12, `${row.name} row padding at ${w}px: ${row.padTop}/${row.padBottom}`);
+        assert.equal(row.title, row.name, `${row.name} full name title at ${w}px`);
+        if (row.noBuild) {
+          assert(!row.enabledDeploy && row.action === 'Choose build', `${row.name} must offer Choose build instead of enabled Deploy`);
+        }
+        if (w === 390) {
+          assert(row.top >= row.textBottom, `${row.name} action must sit under text at 390px`);
+          assert(row.height >= 44, `${row.name} action height at 390px: ${row.height}`);
+        }
+      }
+      assert(layout.scrollWidth <= layout.viewport + 1, `new service horizontal scroll at ${w}px: ${layout.scrollWidth}/${layout.viewport}`);
+    }
+    for (const w of [768, 1024]) {
+      await setViewport(browser, w, 900);
+      const scroll = await browser.evalJs(`({ sw: document.documentElement.scrollWidth, iw: innerWidth })`);
+      assert(scroll.sw <= scroll.iw + 1, `new service horizontal scroll at ${w}px: ${scroll.sw}/${scroll.iw}`);
     }
 
     await setViewport(browser, 390);

@@ -1,23 +1,23 @@
 # Status
 
-Last prompt completed: **Fix 32 — Cleanup page width**.
-Released: `v0.1.0-alpha.48` (CI green; signed musl archives, SBOM and `install.sh` on the GitHub release).
+Last prompt completed: **Fix 33 — New service layout**.
+Released: `v0.1.0-alpha.48` (fix 32). Next release: `v0.1.0-alpha.49` once CI passes.
 
 ## Completed
 - Full-width pages (`main`) use `width: min(100%, 1680px)` with `clamp(16px, 2.5vw, 40px)` side padding instead of the 1180 px cap.
 - Settings and other `.narrow` pages keep an 880 px left-aligned inner block; the Security checks column is capped at 880 px; dialogs keep their compact width.
 - Cleanup no longer uses `main.narrow`: the page matches Overview's width and the "Weekly auto-clean" switch aligns with the list edge; 390/768/1024 are unchanged.
-- Extended `tools/check-responsive-ui.mjs` with 1440/1920/2560 width assertions, Cleanup geometry, and the existing no-scroll checks.
+- New service uses the wide container for all five tabs; source forms sit in a two-column grid with readable 560 px fields; repository rows are a grid with a straight right-aligned action, 12 px padding, name ellipsis/title and "Choose build" when nothing is detected.
+- Extended `tools/check-responsive-ui.mjs` with 1440/1920/2560 width assertions, Cleanup geometry, all New service tabs and the existing no-scroll checks.
 
 ## Verification
-- `timeout 120 node tools/check-responsive-ui.mjs` passes the source and Chrome browser checks.
+- `timeout 120 node tools/check-responsive-ui.mjs` passes the source and Chrome browser checks, including every New service tab at 1920 and 1440/390 row geometry.
 - `timeout 120 python3 scripts/gen-index.py --check` passes; no generated map is stale.
 - CI runs the workspace tests, release build, musl targets, cargo-deny and installer checks on the pushed commit.
-- Release workflow `v0.1.0-alpha.48` published both signed musl archives, `install.sh` and the SBOM.
 
 ## Limits and next prompt
 - Prior fixes' Linux owner checks in `docs/QA.md` still need the `opsbox-vm`; none were run here.
-- Fix prompts 01–32 are complete in the working tree.
+- Fix prompts 01–33 are complete in the working tree.
 
 ## Found, not fixed
 - The Security width rule uses `main:has(> .hdr a[href="#/security/access"])`, coupled to the header link; a header or page change can silently drop the 880 px cap.
