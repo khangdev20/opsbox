@@ -663,3 +663,7 @@ Check policy before blocking dispatch and all streaming intercepts; return typed
 ## Fix 28 — Authenticate updates inside the root helper
 Send the signed release archive plus SHA-256/minisign proof from both panel and CLI; priv pins its descriptor, reads once, verifies with the embedded key, and extracts only the regular binary for the requested version/target. Missing proof fails closed.
 Copy authenticated bytes into an exclusively created helper-owned 0700 temporary file, close its writable descriptor, then use that same private copy for selftest and slot installation; automatic cleanup and the existing rollback/health-check flow remain intact.
+
+## Fix 29 — Use kernel credentials for helper audit identity
+Record peer_uid and optional pid from Unix-socket peer credentials in every ordinary/streaming priv_request span; kernel identity describes the connecting process/account.
+Label the unchanged PrivRequest.actor string claimed_actor (or - when absent): advisory attribution only, never authenticated panel-user identity or authorization proof.

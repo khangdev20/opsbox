@@ -1146,3 +1146,21 @@ Owner checks — disposable Multipass opsbox-vm with a recoverable snapshot:
 3. Using the snapshot between trials, verify a normal rollback with sudo opsbox rollback and the existing unhealthy-update automatic rollback path. Confirm the prior signed slot and schema checks still work. Test an upgrade from the preceding alpha as well: its old helper installs the new binary, after which the new helper requires archive proof for subsequent updates. Do not use a real production host for failure injection.
 
 No commit, push, tag or installation was attempted for fix 28.
+
+## Fix 29 — Helper audit identity comes from peer credentials
+
+**Fixed in fix 29** (live Linux journal check pending).
+
+All four `priv_request` tracing spans (ordinary requests, PTY, Docker log follow and deploy build) now include `peer_uid` and optional `pid` from the kernel credentials already verified at connection acceptance. The unchanged wire field `PrivRequest.actor` is logged as `claimed_actor`, with `-` when absent. It is advisory attribution, not authenticated panel-user identity. No authorization, payload or protocol changes were made.
+
+Strict TDD: `server::tests::request_spans_log_peer_credentials_and_claimed_actor` first failed on Ping: the span had `actor="alice"` and `uid=501`, but lacked `peer_uid`. After the change it passes eight real socket-pair cases: all four request paths with `actor: "alice"` and with no actor. It captures structured span fields, compares UID/PID to real kernel peer credentials (also the current process PID on Linux), checks request ID/operation and rejects the old `actor` field. Streaming fixtures fail safely before opening a shell or contacting Docker/Git.
+
+Validation: requested `cargo test -p opsbox-priv` ran 240 library tests: 237 passed, including both server connection tests, and three pre-existing environment failures remained (filesystem socket binding denied, temporary setuid bits stripped, uptime sysctl denied). Cargo stopped before integration suites. Focused all-target helper Clippy with warnings denied and index regeneration/freshness checks pass; final formatting/release results are in docs/STATUS.md. Commands use `timeout 120` and the local stable Rust toolchain on PATH.
+
+Owner checks — disposable Multipass `opsbox-vm`:
+
+1. From `/home/ubuntu/opsbox`, run `timeout 120 cargo test -p opsbox-priv`; the complete suite and the new audit regression must pass on Linux, including its real PID comparison.
+2. Build with `CARGO_TARGET_DIR=~/target cargo build --release` and install with `sudo sh install.sh --dev --binary ~/target/release/opsbox`. Send a read-only Ping through `/run/opsbox/priv.sock` as the `opsbox` service account with a unique request ID and `actor: "alice"`; record that client's UID/PID. Inspect `sudo journalctl -u opsbox-priv --since '5 minutes ago'` and require the matching request's `peer_uid`, `pid` and `claimed_actor="alice"`, never a trusted `actor` field. Repeat without actor and require `claimed_actor="-"`.
+3. Reuse Fix 27's harmless proxy PTY probe with `actor: "alice"`: it must still return Forbidden and open no terminal; its denial warning must retain the real UID/PID. Tunnel panel access with `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`.
+
+No commit, push, tag or installation was attempted for fix 29.

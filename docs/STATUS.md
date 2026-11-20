@@ -1,27 +1,23 @@
 # Status
 
-Last prompt completed: **Fix 28 — Verify updates inside the root helper**.
+Last prompt completed: **Fix 29 — Helper audit identity from peer credentials**.
 No commit, push, tag or installation attempted; changes remain on `dev`, as requested.
 
 ## Completed
-- Require signed-archive SHA-256/minisign proof in SelfUpdateInstall; update both panel and CLI callers together.
-- Read the descriptor-pinned xfer archive once, verify with the embedded public key, then extract the requested version/target's regular binary.
-- Execute selftest and install from one helper-owned 0700 temporary copy; close its writable fd before execution and clean it up automatically.
-- Preserve slot state, schema checks, restart scheduling and rollback.
-- Add marker-script refusals and private-copy/rollback regressions; update decisions/QA, archive fix 28 and regenerate navigation maps.
+- Add kernel peer_uid and optional pid to all four priv_request spans: ordinary requests, PTY, Docker log follow and deploy builds.
+- Label the caller-supplied actor as claimed_actor; preserve PrivRequest and authorization behavior.
+- Add socket-pair regression coverage for all four paths with alice and absent actor; compare structured fields with real kernel credentials.
+- Document advisory actor/authoritative kernel identity, record the three-line decision, update QA and archive Fix 29.
 
 ## Verification
-- TDD: replaying the old validation/selftest sequence failed both marker tests because the untrusted scripts ran.
-- All three focused helper regressions and all 21 opsbox-update tests pass, including staging replacement, permissions, installation and rollback.
-- cargo check --workspace passes, including both update callers.
-- Full helper suite: 236 pass, three existing environment failures (socket bind denied, stripped setuid, denied uptime sysctl).
-- Full API suite: 72 pass, four TLS socket-bind denials. Both full suites stop before integration tests; Linux owner steps are in docs/QA.md.
-- Formatting and all-target Clippy for changed crates with warnings denied pass; whitespace and generated-index freshness checks pass.
-- Release build passes (1m26s), with the existing rust-objcopy/libLLVM debug-stripping warning.
+- Strict TDD: the new test first failed on missing peer_uid with the old actor=alice/uid span; all eight cases now pass.
+- Full helper suite: 237 pass, three existing environment failures (socket bind denied, stripped setuid, denied uptime sysctl); Cargo stops before integration suites.
+- All-target helper Clippy with warnings denied and generated-index regeneration/freshness checks pass.
+- Formatting and whitespace checks pass. Release build passes (1m22s), with the existing rust-objcopy/libLLVM debug-stripping warning.
 
 ## Limits and next prompt
-- Live Linux signed updates through panel/CLI, previous-alpha upgrade, and systemd health-check rollback remain owner work.
-- Next: Fix 29 — derive audit actors from peer credentials.
+- Complete Linux helper tests and installed-service journal checks remain owner work; exact steps are in docs/QA.md.
+- Next: Fix 30 — Make the security docs say what is true.
 
 ## Found, not fixed
 - Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. This broader ancestor-deletion gap needs a separate fix; do not try it on an installed host.
@@ -36,4 +32,4 @@ No commit, push, tag or installation attempted; changes remain on `dev`, as requ
 
 
 ## Next
-- Fix 29 — Derive audit actors from peer credentials.
+- Fix 30 — Make the security docs say what is true.

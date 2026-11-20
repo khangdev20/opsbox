@@ -14,6 +14,10 @@ Short, one section per area. Extend it when a prompt changes what is trusted. Re
 
 In scope for no one yet: a public bug bounty, formal third-party audit, or hardening against a malicious admin who already owns the panel.
 
+## Helper audit identity (fix 29)
+
+`PrivRequest.actor` is caller-supplied advisory text, not authenticated identity or proof of a panel user. Request tracing labels it `claimed_actor` (or `-` when absent). Kernel Unix-socket peer credentials are authoritative for the connecting process: `peer_uid` and `pid` accompany ordinary requests, PTY sessions, Docker log streams and deploy builds. PID is optional on platforms where the kernel API does not provide it. These credentials identify the local process/account, not the human using the panel; a compromised caller can forge its claimed actor but cannot replace the kernel identity in these fields.
+
 ## Transport (prompt 16e)
 
 What we defend against: someone on the network reading or changing traffic, a cookie that leaks or is planted, and a client that lies about where it came from.

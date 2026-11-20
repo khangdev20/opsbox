@@ -328,18 +328,18 @@ async fn handle_connection(
             continue;
         }
         if let PrivOp::PtyOpen { user, cols, rows } = &request.op {
-            open_terminal(stream, &request, user, *cols, *rows).await;
+            open_terminal(stream, &request, user, *cols, *rows, uid, pid).await;
             return;
         }
         if let PrivOp::DockerLogsFollow { id, tail } = &request.op {
-            follow_docker_logs(stream, env, &request, id, *tail).await;
+            follow_docker_logs(stream, env, &request, id, *tail, uid, pid).await;
             return;
         }
         if let PrivOp::DeployBuild(req) = &request.op {
-            run_deploy_build(stream, env, &request, req).await;
+            run_deploy_build(stream, env, &request, req, uid, pid).await;
             return;
         }
-        let response = process(request, uid, env).await;
+        let response = process(request, uid, pid, env).await;
         if write_frame(&mut stream, &response).await.is_err() {
             return;
         }
@@ -382,8 +382,17 @@ async fn open_terminal(
     user: &str,
     cols: u16,
     rows: u16,
+    uid: u32,
+    pid: Option<i32>,
 ) {
-    let span = info_span!("priv_request", request_id = %request.id, op = "pty_open", actor = request.actor.as_deref().unwrap_or("-"));
+    let span = info_span!(
+        "priv_request",
+        request_id = %request.id,
+        op = "pty_open",
+        claimed_actor = request.actor.as_deref().unwrap_or("-"),
+        peer_uid = uid,
+        ?pid
+    );
     async {
         let session = ops::terminal::open(user, cols, rows);
         let response = match &session {
@@ -422,12 +431,16 @@ async fn follow_docker_logs(
     request: &PrivRequest,
     id: &str,
     tail: u32,
+    uid: u32,
+    pid: Option<i32>,
 ) {
     let span = info_span!(
         "priv_request",
         request_id = %request.id,
         op = "docker_logs_follow",
-        actor = request.actor.as_deref().unwrap_or("-")
+        claimed_actor = request.actor.as_deref().unwrap_or("-"),
+        peer_uid = uid,
+        ?pid
     );
     ops::docker::follow_logs_with(&env.docker, &mut stream, request, id, tail)
         .instrument(span)
@@ -440,6 +453,8 @@ async fn run_deploy_build(
     env: &Arc<Env>,
     request: &PrivRequest,
     req: &opsbox_proto::DeployBuildRequest,
+    uid: u32,
+    pid: Option<i32>,
 ) {
     let span = info_span!(
         "priv_request",
@@ -447,7 +462,9 @@ async fn run_deploy_build(
         op = "deploy_build",
         service = %req.service,
         deploy_id = %req.deploy_id,
-        actor = request.actor.as_deref().unwrap_or("-")
+        claimed_actor = request.actor.as_deref().unwrap_or("-"),
+        peer_uid = uid,
+        ?pid
     );
     ops::deploy::handle_deploy_build_stream(env, &mut stream, request, req)
         .instrument(span)
@@ -455,13 +472,14 @@ async fn run_deploy_build(
 }
 
 /// Run one request.
-async fn process(request: PrivRequest, uid: u32, env: &Arc<Env>) -> PrivResponse {
+async fn process(request: PrivRequest, uid: u32, pid: Option<i32>, env: &Arc<Env>) -> PrivResponse {
     let span = info_span!(
         "priv_request",
         request_id = %request.id,
         op = request.op.name(),
-        actor = request.actor.as_deref().unwrap_or("-"),
-        uid
+        claimed_actor = request.actor.as_deref().unwrap_or("-"),
+        peer_uid = uid,
+        ?pid
     );
     let op = request.op.clone();
     let env = Arc::clone(env);
@@ -511,34 +529,147 @@ async fn reject(stream: &mut UnixStream, message: &str) {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn request_spans_log_peer_credentials_and_claimed_actor() {
+        use std::collections::BTreeMap;
+        use std::sync::Mutex;
+        use tracing::{
+            Event, Metadata, Subscriber,
+            field::{Field, Visit},
+            instrument::WithSubscriber,
+            span::{Attributes, Id, Record},
+        };
+
+        type Fields = BTreeMap<String, String>;
+        struct Capture(Arc<Mutex<Vec<Fields>>>);
+        struct Visitor(Fields);
+        impl Visit for Visitor {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                self.0.insert(field.name().into(), format!("{value:?}"));
+            }
+        }
+        impl Subscriber for Capture {
+            fn enabled(&self, _: &Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, attrs: &Attributes<'_>) -> Id {
+                let mut spans = self.0.lock().unwrap();
+                if attrs.metadata().name() == "priv_request" {
+                    let mut visitor = Visitor(Fields::new());
+                    attrs.record(&mut visitor);
+                    spans.push(visitor.0);
+                }
+                Id::from_u64(spans.len() as u64 + 1)
+            }
+            fn record(&self, _: &Id, _: &Record<'_>) {}
+            fn record_follows_from(&self, _: &Id, _: &Id) {}
+            fn enter(&self, _: &Id) {}
+            fn exit(&self, _: &Id) {}
+            fn event(&self, _: &Event<'_>) {}
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let env = test_env(dir.path());
+        for op in [
+            serde_json::json!({"type":"ping"}),
+            serde_json::json!({"type":"pty_open","args":{"user":"no-such-user-fix29","cols":80,"rows":24}}),
+            serde_json::json!({"type":"docker_logs_follow","args":{"id":"","tail":1}}),
+            serde_json::json!({"type":"deploy_build","args":{
+                "service":"", "deploy_id":"test", "source_kind":"git_url", "repo_url":"invalid",
+                "branch":"main", "build_method":"dockerfile", "port":8080,
+                "image_tag":"test", "vars":[], "timeout_secs":1
+            }}),
+        ] {
+            let op: PrivOp = serde_json::from_value(op).unwrap();
+            // Streaming requests fail validation without opening a shell or contacting Docker/Git.
+            for actor in [Some("alice"), None] {
+                let (mut client, helper) = UnixStream::pair().unwrap();
+                let peer = helper.peer_cred().unwrap();
+                assert_eq!(peer.uid(), nix::unistd::getuid().as_raw());
+                #[cfg(target_os = "linux")]
+                assert_eq!(peer.pid(), Some(std::process::id() as i32));
+                let captured = Arc::new(Mutex::new(Vec::new()));
+                let server_env = Arc::clone(&env);
+                let uid = peer.uid();
+                let task = tokio::spawn(
+                    async move {
+                        handle_connection(helper, Caller::Serve, &[uid], &server_env).await;
+                    }
+                    .with_subscriber(Capture(Arc::clone(&captured))),
+                );
+                let request = PrivRequest {
+                    id: "audit-29".into(),
+                    actor: actor.map(str::to_owned),
+                    op: op.clone(),
+                };
+                write_frame(&mut client, &request).await.unwrap();
+                let body = tokio::time::timeout(Duration::from_secs(5), read_body(&mut client))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let response: PrivResponse = frame::decode(&body).unwrap();
+                assert_eq!(response.id, request.id);
+                assert_eq!(
+                    matches!(response.result, PrivResult::Success { .. }),
+                    matches!(op, PrivOp::Ping)
+                );
+                drop(client);
+                task.await.unwrap();
+                let spans = captured.lock().unwrap();
+                assert_eq!(spans.len(), 1, "{}: {spans:?}", op.name());
+                let fields = &spans[0];
+                for (name, expected) in [
+                    ("request_id", request.id.clone()),
+                    ("op", format!("{:?}", op.name())),
+                    ("peer_uid", peer.uid().to_string()),
+                    ("pid", format!("{:?}", peer.pid())),
+                    ("claimed_actor", format!("{:?}", actor.unwrap_or("-"))),
+                ] {
+                    assert_eq!(
+                        fields.get(name),
+                        Some(&expected),
+                        "{} missing/wrong {name}: {fields:?}",
+                        op.name()
+                    );
+                }
+                assert!(!fields.contains_key("actor"), "{fields:?}");
+            }
+        }
+    }
+
+    fn test_env(root: &Path) -> Arc<Env> {
+        let cfg = PrivConfig::new(root.join("unused.sock"), vec![]);
+        Arc::new(Env {
+            capacity: Default::default(),
+            capacity_profile: None,
+            capacity_image_size_mb: None,
+            secrets: Secrets::new(root.join("master.key")),
+            master_key: root.join("master.key"),
+            config_path: root.join("config.toml"),
+            files: Dirs {
+                xfer: root.join("xfer"),
+                trash: root.join("trash"),
+            },
+            apps_dir: root.join("apps"),
+            db_path: root.join("db"),
+            backup_dir: root.join("backup"),
+            backup_cache_dir: root.join("cache"),
+            restic_bin: None,
+            docker: opsbox_docker::DockerClient::new(&cfg.docker_socket),
+            docker_bin: None,
+            allow_test_git: false,
+            network_proc_root: root.into(),
+            network_systemctl: None,
+        })
+    }
+
     // Socket pairs exercise real peer credentials and framing without requiring
     // permission to bind a filesystem socket in the development sandbox.
     #[tokio::test]
     async fn connection_policy_precedes_dispatch_and_all_streams() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = PrivConfig::new(dir.path().join("unused.sock"), vec![]);
-        let env = Arc::new(Env {
-            capacity: Default::default(),
-            capacity_profile: None,
-            capacity_image_size_mb: None,
-            secrets: Secrets::new(dir.path().join("master.key")),
-            master_key: dir.path().join("master.key"),
-            config_path: dir.path().join("config.toml"),
-            files: Dirs {
-                xfer: dir.path().join("xfer"),
-                trash: dir.path().join("trash"),
-            },
-            apps_dir: dir.path().join("apps"),
-            db_path: dir.path().join("db"),
-            backup_dir: dir.path().join("backup"),
-            backup_cache_dir: dir.path().join("cache"),
-            restic_bin: None,
-            docker: opsbox_docker::DockerClient::new(&cfg.docker_socket),
-            docker_bin: None,
-            allow_test_git: false,
-            network_proc_root: dir.path().into(),
-            network_systemctl: None,
-        });
+        let env = test_env(dir.path());
         let (mut client, helper) = UnixStream::pair().unwrap();
         let uid = helper.peer_cred().unwrap().uid();
         let task = tokio::spawn(async move {
