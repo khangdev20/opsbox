@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Prompt 16s: responsive panel checks.
 // - Static: viewport-fit, drawer, card tables, bottom sheets, terminal key bar, KPI breakpoints.
-// - Browser (Chrome/Chromium): at 360/390/768/1024 assert no page sideways scroll; drawer
+// - Browser (Chrome/Chromium): at 360/390/768/1024 assert no page sideways scroll;
+//   at 1440/1920/2560 assert the main page uses available width; drawer
 //   opens/closes via button, Escape, route; dialogs are sheets under 640; touch targets ≥ 44
 //   on a coarse pointer viewport.
 // Set OPSBOX_CHROME or have Google Chrome / Playwright Chromium installed for the browser part.
@@ -61,6 +62,8 @@ async function checkSources() {
   assert(css.includes('font-size:16px'), '16px inputs on touch to avoid iOS zoom');
   assert(css.includes('.term-keys') && css.includes('files-page.editing'), 'terminal key bar + files fullscreen CSS');
   assert(css.includes('grid-template-columns:1fr') && css.includes('repeat(2,minmax(0,1fr))'), 'KPI 1/2 column breakpoints');
+  assert(/main\{[^}]*width:min\(100%,1680px\)[^}]*padding:40px clamp\(16px,2\.5vw,40px\) 64px/.test(css), 'main uses a fluid 1680px cap with responsive side padding');
+  assert(/main\.narrow #b\{[^}]*max-width:880px/.test(css), 'Settings forms keep a readable inner width');
 
   assert(term.includes('visualViewport') && term.includes('term-keys'), 'terminal visualViewport + key bar');
   assert(files.includes('files-page') && files.includes('editing'), 'files page toggles fullscreen editor class');
@@ -242,6 +245,19 @@ async function runBrowserChecks() {
       else assert.equal(scroll.drawerBtn, false, `menu button hidden at ${w}px`);
     }
 
+    for (const w of [1440, 1920, 2560]) {
+      await setViewport(browser, w, 900);
+      const page = await browser.evalJs(`(() => {
+        const main = document.querySelector('.content main');
+        return { width: main?.getBoundingClientRect().width, scrollWidth: document.documentElement.scrollWidth, viewport: window.innerWidth };
+      })()`);
+      assert(page.width, `main page container missing at ${w}px`);
+      assert(page.scrollWidth <= page.viewport + 1, `horizontal page scroll at ${w}px`);
+      if (w === 1440) assert(page.width >= 1100 && page.width <= 1440, `main width at 1440px: ${page.width}`);
+      if (w === 1920) assert(page.width >= 1400, `main width at 1920px: ${page.width}`);
+      if (w === 2560) assert(page.width <= 1800, `main width at 2560px: ${page.width}`);
+    }
+
     await setViewport(browser, 390);
     const drawer = await browser.evalJs(`(async () => {
       const btn = document.getElementById('nav-btn');
@@ -323,7 +339,7 @@ async function runBrowserChecks() {
     await browser.send('Page.navigate', { url: `${base}/kit.html` });
     await waitFor(browser.evalJs, `!!document.querySelector('.kit-card-table') && !!document.querySelector('.kit-sheet-demo') && !!document.querySelector('.kit-drawer')`, 'kit responsive demos');
 
-    console.log('responsive browser checks (scroll, drawer, sheets, 44px targets, kit) passed.');
+    console.log('responsive browser checks (scroll, wide layout, drawer, sheets, 44px targets, kit) passed.');
   } finally {
     await browser.close();
     server.close();

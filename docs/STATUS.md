@@ -1,34 +1,29 @@
 # Status
 
-Last prompt completed: **Fix 30 — Honest alpha security documentation (docs only)**.
-No commit, push, tag or installation attempted; changes remain on `dev`, as requested.
+Last prompt completed: **Fix 31 — Use the width of large screens**.
+Next release: `v0.1.0-alpha.47` once CI passes on the pushed commit.
 
 ## Completed
-- Add Alpha status to THREAT_MODEL.md and SECURITY.md: panel UID compromise remains host-root compromise; fixes 26/27 restrict the separate proxy UID/socket/operations.
-- Align README/site text on trusted deployers (fix 19), sensitive Full tokens with root-equivalent exclusions (fix 20), and the separate, opt-in Safe Mode source allowlist (fix 21).
-- Keep private GitHub advisory reporting; document latest-alpha-only support and distinguish current source from installed releases.
-- Record the three-line decision, update QA/fix index and archive Fix 30. No runtime, layout or style changes.
+- Full-width pages (`main`) now use `width: min(100%, 1680px)` with `clamp(16px, 2.5vw, 40px)` side padding instead of the 1180 px cap.
+- Settings and other `.narrow` pages keep an 880 px left-aligned inner block; the Security checks column is capped at 880 px; dialogs keep their compact width.
+- Extended `tools/check-responsive-ui.mjs` with 1440/1920/2560 width assertions alongside the existing 390/768/1024 no-scroll checks.
 
 ## Verification
-- Manual source/document review covers helper caller authorization, peer credentials, Compose restrictions, token scope/denials and watchdog defaults.
-- Generated-index regeneration makes no changes; `timeout 120 python3 scripts/gen-index.py --check` passes.
-- `timeout 120 git diff --check` passes; misleading privilege/automatic-lockdown claims removed. No runtime tests or release build needed for prose-only changes.
+- `timeout 120 node tools/check-responsive-ui.mjs` passes the source and Chrome browser checks.
+- `timeout 120 python3 scripts/gen-index.py --check` passes; no generated map changed.
+- No Rust or API changes; workspace tests and the release build run in CI on the pushed commit.
 
 ## Limits and next prompt
-- Complete Linux helper tests, installed-service journal checks and prior fixes' live owner checks remain; exact steps are in docs/QA.md.
-- Fix prompts 01–30 are complete in the working tree; pending Linux owner checks and prior CI/release work are next.
+- Prior fixes' Linux owner checks in `docs/QA.md` still need the `opsbox-vm`; none were run here.
+- Fix prompts 01–31 are complete in the working tree.
 
 ## Found, not fixed
-- Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. This broader ancestor-deletion gap needs a separate fix; do not try it on an installed host.
+- The Security width rule uses `main:has(> .hdr a[href="#/security/access"])`, coupled to the header link; a header or page change can silently drop the 880 px cap.
+- Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. Do not try it on an installed host.
 - This environment strips setuid bits from temporary files, preventing the existing mode-display test from passing; rerun the complete file tests on Linux.
-- Local rust-objcopy cannot load libLLVM.dylib for debug stripping; release compilation emits the pre-existing warning.
 - Prior Fix 19/20 helper lifecycle, Fix 21 Safe Mode filtering/TLS isolation, and Fix 22 Linux activation/credential-consumer checks remain owner follow-ups.
-- Existing installed job files retain their old modes until separately reviewed/recreated (Fix 22 secures newly written files).
 - Historical database-create failure still needs QA 03 VM request/journal/kernel evidence; no OOM, timeout or panic cause is claimed.
-- Prior Fix 24 live installation/upgrade, root ownership and managed-directory checks remain owner follow-ups.
-- Prior CI/release work remains pending; prior runtime target remains `v0.1.0-alpha.43`.
 - Navigation maps/lookup remain lexical rather than Rust/JavaScript type resolution.
 
-
 ## Next
-- Run the pending Linux owner checks in docs/QA.md before the public alpha post; no new numbered fix prompt is queued.
+- Run the pending Linux owner checks in `docs/QA.md` before the public alpha post; no new numbered fix prompt is queued.
