@@ -58,3 +58,4 @@ Prerequisites in opsbox: unattended install with a claim token file, busy-host i
 
 ## Before trusting it with company data
 Independent security review, SECURITY.md, threat model, signed releases.
+- Require authenticated admin proof from the API for root-grade helper operations; Fix 27 restricts Proxy by operation, while Serve still has the full typed operation set.

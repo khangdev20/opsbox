@@ -509,6 +509,7 @@ async fn proxy_and_panel_socket_uids_are_separate() {
         let panel_path = dir.path().join("priv.sock");
         let proxy_path = dir.path().join("priv-proxy.sock");
         let mut cfg = PrivConfig::new(&panel_path, vec![panel_uid]);
+        cfg.master_key_path = dir.path().join("master.key");
         cfg.proxy_socket = Some(opsbox_priv::ProxySocketConfig {
             path: proxy_path.clone(),
             uid: proxy_uid,
@@ -526,9 +527,14 @@ async fn proxy_and_panel_socket_uids_are_separate() {
         for (path, accepted) in [(&panel_path, !proxy_is_self), (&proxy_path, proxy_is_self)] {
             let mut stream = UnixStream::connect(path).await.unwrap();
             if accepted {
-                let req =
-                    frame::encode(&serde_json::json!({"id":"separate", "op":{"type":"ping"}}))
-                        .unwrap();
+                let op = if proxy_is_self {
+                    serde_json::json!({"type":"secret_seal", "args":{
+                        "context":"proxy:cert:test.example.com", "plaintext":"test-key"
+                    }})
+                } else {
+                    serde_json::json!({"type":"ping"})
+                };
+                let req = frame::encode(&serde_json::json!({"id":"separate", "op":op})).unwrap();
                 stream.write_all(&req).await.unwrap();
                 assert!(matches!(
                     read_response(&mut stream).await.unwrap().result,
@@ -549,6 +555,83 @@ async fn proxy_and_panel_socket_uids_are_separate() {
         assert!(!panel_path.exists());
         assert!(!proxy_path.exists());
     }
+}
+
+#[tokio::test]
+async fn proxy_socket_refuses_root_ops_and_other_secrets_before_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let uid = own_uid(dir.path());
+    let panel_path = dir.path().join("priv.sock");
+    let proxy_path = dir.path().join("priv-proxy.sock");
+    let mut cfg = PrivConfig::new(&panel_path, vec![uid.wrapping_add(1)]);
+    cfg.master_key_path = dir.path().join("master.key");
+    cfg.proxy_socket = Some(opsbox_priv::ProxySocketConfig {
+        path: proxy_path.clone(),
+        uid,
+        group: None,
+    });
+    let server = PrivServer::bind(cfg).unwrap();
+    let (stop, rx) = oneshot::channel();
+    let task = tokio::spawn(server.run(async {
+        let _ = rx.await;
+    }));
+    let written = dir.path().join("must-not-exist");
+    let mut stream = UnixStream::connect(&proxy_path).await.unwrap();
+    for op in [
+        serde_json::json!({"type":"ping"}),
+        serde_json::json!({"type":"job_add","args":{"name":"test","cron":"invalid","command":"true"}}),
+        serde_json::json!({"type":"pty_open","args":{"user":"no-such-user-fix27","cols":80,"rows":24}}),
+        serde_json::json!({"type":"reboot","args":{"delay_min":999999}}),
+        serde_json::json!({"type":"firewall_remove","args":{"id":"","confirm":false}}),
+        serde_json::json!({"type":"file_write","args":{"path":written,"content":"forbidden"}}),
+        serde_json::json!({"type":"docker_logs_follow","args":{"id":"","tail":1}}),
+        serde_json::json!({"type":"deploy_build","args":{
+            "service":"test", "deploy_id":"test", "source_kind":"git_url", "repo_url":"invalid",
+            "branch":"main", "build_method":"dockerfile", "port":8080,
+            "image_tag":"test", "vars":[], "timeout_secs":1
+        }}),
+        serde_json::json!({"type":"secret_seal","args":{"context":"deploy:key","plaintext":"test"}}),
+        serde_json::json!({"type":"secret_open","args":{"context":"backup:dest:test","sealed":"invalid"}}),
+    ] {
+        // Deserialize first so malformed fixtures cannot masquerade as policy denials.
+        let op: opsbox_proto::PrivOp = serde_json::from_value(op).unwrap();
+        let request = opsbox_proto::PrivRequest {
+            id: op.name().into(),
+            actor: Some("root".into()),
+            op,
+        };
+        stream
+            .write_all(&frame::encode(&request).unwrap())
+            .await
+            .unwrap();
+        let response = read_response(&mut stream)
+            .await
+            .expect("denial keeps connection usable");
+        assert_eq!(response.id, request.id);
+        assert_eq!(
+            failure_code(&response),
+            PrivErrorCode::Forbidden,
+            "{}",
+            request.op.name()
+        );
+    }
+    assert!(!written.exists());
+    // An allowed request on the same connection still works after every refusal.
+    let request = serde_json::json!({"id":"allowed","op":{"type":"secret_seal","args":{
+        "context":"proxy:cert:test.example.com","plaintext":"test-key"
+    }}});
+    stream
+        .write_all(&frame::encode(&request).unwrap())
+        .await
+        .unwrap();
+    assert!(matches!(
+        read_response(&mut stream).await.unwrap().result,
+        PrivResult::Success {
+            reply: PrivReply::Sealed { .. }
+        }
+    ));
+    stop.send(()).unwrap();
+    task.await.unwrap();
 }
 
 #[tokio::test]

@@ -15,6 +15,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use tracing::{Instrument, debug, info, info_span, warn};
 
+use crate::authorization::{Caller, authorize};
 use crate::config::PrivConfig;
 use crate::io::{ReadError, read_body, write_frame};
 use crate::ops;
@@ -191,7 +192,7 @@ impl PrivServer {
             tokio::select! {
                 () = &mut shutdown => break,
                 accepted = self.listener.accept() => {
-                    spawn_connection(accepted, "panel", &allowed, &permits, &env);
+                    spawn_connection(accepted, Caller::Serve, &allowed, &permits, &env);
                 },
                 accepted = async {
                     match &self.proxy_listener {
@@ -199,7 +200,7 @@ impl PrivServer {
                         None => std::future::pending().await,
                     }
                 } => {
-                    spawn_connection(accepted, "proxy", &proxy_allowed, &permits, &env);
+                    spawn_connection(accepted, Caller::Proxy, &proxy_allowed, &permits, &env);
                 },
             }
         }
@@ -217,11 +218,15 @@ impl PrivServer {
 
 fn spawn_connection(
     accepted: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
-    origin: &'static str,
+    caller: Caller,
     allowed: &Arc<[u32]>,
     permits: &Arc<Semaphore>,
     env: &Arc<Env>,
 ) {
+    let origin = match caller {
+        Caller::Serve => "panel",
+        Caller::Proxy => "proxy",
+    };
     match accepted {
         Ok((stream, _)) => {
             let allowed = Arc::clone(allowed);
@@ -231,7 +236,7 @@ fn spawn_connection(
                 let Ok(_permit) = permits.acquire_owned().await else {
                     return;
                 };
-                handle_connection(stream, &allowed, &env)
+                handle_connection(stream, caller, &allowed, &env)
                     .instrument(info_span!("priv_connection", socket_origin = origin))
                     .await;
             });
@@ -256,7 +261,12 @@ fn remove_stale_socket(path: &Path) -> Result<(), ServerError> {
     })
 }
 
-async fn handle_connection(mut stream: UnixStream, allowed: &[u32], env: &Arc<Env>) {
+async fn handle_connection(
+    mut stream: UnixStream,
+    caller: Caller,
+    allowed: &[u32],
+    env: &Arc<Env>,
+) {
     // The kernel reports who is on the other end (SO_PEERCRED on Linux). This is
     // checked before anything the peer sent is read or parsed.
     let peer = match stream.peer_cred() {
@@ -311,6 +321,12 @@ async fn handle_connection(mut stream: UnixStream, allowed: &[u32], env: &Arc<En
                 continue;
             }
         };
+        if let Err(response) = authorize(caller, &request, uid, pid) {
+            if write_frame(&mut stream, &*response).await.is_err() {
+                return;
+            }
+            continue;
+        }
         if let PrivOp::PtyOpen { user, cols, rows } = &request.op {
             open_terminal(stream, &request, user, *cols, *rows).await;
             return;
@@ -489,4 +505,103 @@ async fn reject(stream: &mut UnixStream, message: &str) {
         while matches!(stream.read(&mut sink).await, Ok(n) if n > 0) {}
     })
     .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Socket pairs exercise real peer credentials and framing without requiring
+    // permission to bind a filesystem socket in the development sandbox.
+    #[tokio::test]
+    async fn connection_policy_precedes_dispatch_and_all_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = PrivConfig::new(dir.path().join("unused.sock"), vec![]);
+        let env = Arc::new(Env {
+            capacity: Default::default(),
+            capacity_profile: None,
+            capacity_image_size_mb: None,
+            secrets: Secrets::new(dir.path().join("master.key")),
+            master_key: dir.path().join("master.key"),
+            config_path: dir.path().join("config.toml"),
+            files: Dirs {
+                xfer: dir.path().join("xfer"),
+                trash: dir.path().join("trash"),
+            },
+            apps_dir: dir.path().join("apps"),
+            db_path: dir.path().join("db"),
+            backup_dir: dir.path().join("backup"),
+            backup_cache_dir: dir.path().join("cache"),
+            restic_bin: None,
+            docker: opsbox_docker::DockerClient::new(&cfg.docker_socket),
+            docker_bin: None,
+            allow_test_git: false,
+            network_proc_root: dir.path().into(),
+            network_systemctl: None,
+        });
+        let (mut client, helper) = UnixStream::pair().unwrap();
+        let uid = helper.peer_cred().unwrap().uid();
+        let task = tokio::spawn(async move {
+            handle_connection(helper, Caller::Proxy, &[uid], &env).await;
+        });
+        let written = dir.path().join("must-not-exist");
+        for op in [
+            serde_json::json!({"type":"ping"}),
+            serde_json::json!({"type":"job_add","args":{"name":"test","cron":"invalid","command":"true"}}),
+            serde_json::json!({"type":"pty_open","args":{"user":"no-such-user-fix27","cols":80,"rows":24}}),
+            serde_json::json!({"type":"reboot","args":{"delay_min":999999}}),
+            serde_json::json!({"type":"firewall_remove","args":{"id":"","confirm":false}}),
+            serde_json::json!({"type":"file_write","args":{"path":written,"content":"forbidden"}}),
+            serde_json::json!({"type":"docker_logs_follow","args":{"id":"","tail":1}}),
+            serde_json::json!({"type":"deploy_build","args":{
+                "service":"test", "deploy_id":"test", "source_kind":"git_url", "repo_url":"invalid",
+                "branch":"main", "build_method":"dockerfile", "port":8080,
+                "image_tag":"test", "vars":[], "timeout_secs":1
+            }}),
+            serde_json::json!({"type":"secret_open","args":{"context":"deploy:key","sealed":"invalid"}}),
+        ] {
+            let op: PrivOp = serde_json::from_value(op).unwrap();
+            let request = PrivRequest {
+                id: op.name().into(),
+                actor: Some("root".into()),
+                op,
+            };
+            write_frame(&mut client, &request).await.unwrap();
+            let body = tokio::time::timeout(Duration::from_secs(5), read_body(&mut client))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let response: PrivResponse = frame::decode(&body).unwrap();
+            assert_eq!(response.id, request.id);
+            assert!(
+                matches!(response.result, PrivResult::Failure { error } if error.code == PrivErrorCode::Forbidden),
+                "{}",
+                request.op.name()
+            );
+        }
+        assert!(!written.exists());
+        for op in [
+            PrivOp::PortHolders { ports: vec![] },
+            PrivOp::SecretSeal {
+                context: "proxy:cert:test.example.com".into(),
+                plaintext: opsbox_proto::Secret::new("key"),
+            },
+        ] {
+            let request = PrivRequest {
+                id: "allowed".into(),
+                actor: None,
+                op,
+            };
+            write_frame(&mut client, &request).await.unwrap();
+            let body = read_body(&mut client).await.unwrap().unwrap();
+            let response: PrivResponse = frame::decode(&body).unwrap();
+            assert!(
+                matches!(response.result, PrivResult::Success { .. }),
+                "{response:?}"
+            );
+        }
+        drop(client);
+        task.await.unwrap();
+    }
 }

@@ -1,27 +1,28 @@
 # Status
 
-Last prompt done: **Fix 26 — Give the proxy its own system user and socket**.
+Last prompt completed: **Fix 27 — Helper operation authorization by caller**.
 No commit, push, tag or installation attempted; changes remain on `dev`, as requested.
 
 ## Completed
-- Run proxy as opsbox-proxy:opsbox-proxy; add a separate root:opsbox-proxy 0660 helper socket at /run/opsbox/priv-proxy.sock, configurable in [priv].
-- Match kernel peer UID to the accepting listener before parsing; reject shared UID/path configurations and retain socket origin in tracing; clean up both sockets on shutdown.
-- Share idempotent installer/root-helper-startup migration for accounts and encrypted state; refresh the installed proxy unit on binary-only updates from older helpers.
-- Keep private proxy state and root sticky parent traversal without sharing the panel group; retain authenticated panel access to the proxy control socket.
-- Add socket/UID, service-user, migration and configuration regressions; update decisions/QA/config docs, archive fix 26 and regenerate maps.
+- Carry Caller::Serve/Proxy from Fix 26's UID-checked listeners into each connection.
+- Exhaustively match PrivOp with no catch-all: Proxy gets only PortHolders and SecretSeal/SecretOpen for proxy: contexts. Every new variant requires an explicit decision.
+- Check policy before blocking dispatch and PTY/log/build streams; preserve request IDs and return typed Forbidden on every denied request.
+- Emit structured priv_op_forbidden warnings with kernel UID/PID, role and operation, without payloads or the caller-supplied actor.
+- Keep Serve authorized for now; record future API admin proof for root-grade operations in ROADMAP.
+- Add five regressions plus filesystem-listener coverage; update decisions/QA, archive fix 27 and regenerate navigation maps.
 
 ## Verification
-- Strict TDD failures observed before implementation for service identity, new socket API, migration block and CLI socket routing.
-- All 18 configuration tests, four service-unit tests, migration harness and shared-UID refusal pass.
-- New two-socket integration test compiles but cannot bind in this sandbox; Linux owner run remains required.
-- Requested cargo check --workspace passes. Full priv tests: 228 pass, three existing environment failures (socket denial, stripped setuid, denied uptime sysctl). Full proxy tests: nine pass, four existing socket-denial failures. Cargo stops before integration suites.
-- Focused all-target Clippy with warnings denied, formatting and shell syntax pass.
-- Final release build passes (1m21s), with the existing rust-objcopy/libLLVM debug-stripping warning. Index regeneration/freshness, shell syntax and whitespace checks pass.
-- Exact fresh/reinstall/binary-update, ownership, ACME and cross-socket refusal checks are in docs/QA.md. Rollback to pre-dual-socket binaries needs matching service/state restoration.
+- Tests written first failed on missing policy APIs; replaying UID-only admission caused all three policy/response tests and the real-connection regression to fail assertions.
+- Five new tests pass, including kernel credentials/framing through a socket pair, all streaming denials, no scratch write, successful allowlisted operations after refusals, and denial-log fields/redaction.
+- Full requested helper suite: 233 pass, three existing environment failures (socket bind denied, stripped setuid, denied uptime sysctl). Cargo stops before integration suites.
+- Explicit proxy socket integration run: shared-UID refusal passes; both listener tests cannot bind in this sandbox. Linux owner checks are in docs/QA.md.
+- Formatting, all-target helper Clippy with warnings denied and whitespace checks pass.
+- Release build passes (1m22s), with the existing rust-objcopy/libLLVM debug-stripping warning. Generated index regenerated; freshness check passes.
 
 ## Limits and next prompt
-- Per-operation authorization on the proxy helper connection is Fix 27; this change separates identities and listeners.
-- Next: Fix 27 — helper operation authorization by caller role.
+- Serve retains its full typed operation set; root-grade operations need future API admin proof. Audit actor provenance remains Fix 29.
+- Live Linux listener, journal, ACME and panel regression checks remain owner work.
+- Next: Fix 28 — verify staged update signatures inside the root helper.
 
 ## Found, not fixed
 - Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. This broader ancestor-deletion gap needs a separate fix; do not try it on an installed host.
@@ -35,4 +36,4 @@ No commit, push, tag or installation attempted; changes remain on `dev`, as requ
 - Navigation maps/lookup remain lexical rather than Rust/JavaScript type resolution.
 
 ## Next
-- Fix 27 — Authorize helper operations by caller role.
+- Fix 28 — Verify staged update signatures in the root helper.

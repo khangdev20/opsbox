@@ -7,7 +7,10 @@
 //! Trust model: file permissions on the socket are the first gate, the kernel's
 //! peer credentials (`SO_PEERCRED` on Linux) are the second. The server checks the
 //! connecting process's user id against an allow-list *before reading a byte*.
+//! After decoding, an exhaustive caller policy limits the proxy to port holders
+//! and `proxy:` secrets before dispatching any operation, including streams.
 
+mod authorization;
 mod client;
 mod config;
 mod io;

@@ -43,7 +43,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 24 | SECURITY: apps/, xfer/, trash/ are created at runtime inside a group-writable dir ([24-install-root-owned-dirs.md](archive/24-install-root-owned-dirs.md)) | Fixed in fix 24 (live owner checks pending) |
 | 25 | SECURITY: The internet-facing proxy can write the database ([25-proxy-readwrite-paths.md](archive/25-proxy-readwrite-paths.md)) | Fixed in fix 25 (live owner checks pending) |
 | 26 | SECURITY: Give the proxy its own system user ([26-proxy-own-uid.md](archive/26-proxy-own-uid.md)) | Fixed in fix 26 (live owner checks pending) |
-| 27 | SECURITY: The helper authorises by UID only, not by operation (`27-priv-op-allowlist-by-uid.md`) | |
+| 27 | SECURITY: The helper authorises by UID only, not by operation ([27-priv-op-allowlist-by-uid.md](archive/27-priv-op-allowlist-by-uid.md)) | Fixed in fix 27 (live owner checks pending) |
 | 28 | SECURITY: The root helper runs a staged binary without checking its signature (`28-priv-verify-update.md`) | |
 | 29 | SECURITY: Audit log trusts the caller's own actor string (`29-audit-actor-from-peercred.md`) | |
 | 30 | SECURITY: Make the security docs say what is true (`30-threat-model-honest-alpha.md`) | |
