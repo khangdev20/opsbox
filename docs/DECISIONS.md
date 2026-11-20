@@ -617,3 +617,7 @@ Count nonblank code lines after masking comments, literals and test-only items; 
 ## Prompt 18b — Task navigation maps
 Extend the lexical stdlib generator with nested routes and direct API call links, PrivOp dispatch/client wiring, in-memory SQLite migration reconstruction and actual UI/API/CSS references; exclude temporary rebuild tables and retain the original creation migration.
 Treat API.md drift as informational, list generic-call-only variants as lacking dedicated clients, and classify mode-independent UI utilities as REAL without HTTP endpoints so the mock backlog represents unwired operations.
+
+## Prompt 18c — Agent entry point and lookup
+Keep hand-written AGENTS.md as the shared agent entry point (CLAUDE.md delegates); reuse the index generator's lexical masks/ignore rules for a stdlib lookup accelerated by rg, with qualified definitions, name-candidate instance usages, at most 39 definitions and 20 usages.
+Run the read-only freshness check immediately after CI checkout with explicit regeneration advice and run both Python suites; use a local temporary route to verify refusal, since this session forbids commits/pushes, and leave existing generated maps unchanged when already fresh.

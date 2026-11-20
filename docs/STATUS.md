@@ -1,38 +1,27 @@
 # Status
 
-Last prompt done: **18b — Project index: routes, privileged operations, database and UI maps**.
-Tooling/documentation only; no release tag. Prior runtime target remains `v0.1.0-alpha.43`, pending CI/release completion.
+Last prompt done: **18c — Project index: AGENTS.md, lookup and CI freshness**.
+`python3 scripts/gen-index.py` refreshes the maps; `python3 scripts/where.py <symbol>` prints definitions and up to 20 usages.
+`python3 scripts/gen-index.py --check` refuses stale maps without writes; CI runs it before Rust setup/builds and explains how to regenerate.
 
 ## Completed
-- Extended the Python 3 standard-library generator with `routes.md`, `privops.md`, `store.md` and `ui.md`; linked them from `docs/INDEX.md` alongside the 18a crate/symbol maps.
-- Routes include nested prefixes, methods, WebSocket upgrades, signature extractors, token refusals, capacity patterns, API call links and informational API.md drift.
-- PrivOp rows include typed/inline requests, grouped dispatch, streaming interception, client delegation/timeouts and variants without dedicated wiring.
-- Store reconstruction uses in-memory SQLite migrations, including ALTERs, table rebuilds, explicit/implicit indexes, creation migrations, Store methods/delegation and literal settings reads.
-- UI maps cover actual page references, router hashes, global/vendor CSS, exported API functions/auth methods, normalized endpoints, mock backlog and shared helpers. Mode-independent local utilities are REAL with no HTTP endpoint.
-- Marked 18b done and archived its prompt. No commit, push or release action attempted, as requested.
-
-## Acceptance example — add a field to the database create form
-Read only the generated index files for this trace; no repository source search was used.
-1. `ui.md` Pages: `web/js/pages/templates.js`, exported `view`, hash `#/apps/new/templates` (optional trailing slash), CSS `web/css/app.css`, calls `api.addTemplate`.
-2. `ui.md` API layer: `addTemplate` in `web/js/api.js` sends `POST /api/v1/templates/{id}/instances`.
-3. `routes.md` templates: this URL reaches `templates::create_template_instance` in `crates/opsbox-api/src/templates.rs`, with `Deployer` and `Client` extractors; API call links name `CreateTemplateInstanceBody` and `Store::create_service_with_exposure`.
-4. Follow the same call links through `deploy::enqueue_deploy` to `deploy::run_deploy_pipeline` in `crates/opsbox-api/src/deploy.rs`, which calls `PrivClient::template_start`.
-5. `privops.md`: `template_start` sends `PrivOp::TemplateStart(crate::deploy::TemplateStartRequest)`, with a 300-second timeout; helper handler `templates_compose::start_template_with` is in `crates/opsbox-priv/src/ops/templates_compose.rs`.
-6. `store.md`: `create_service_with_exposure` in `crates/opsbox-store/src/deploy.rs` touches `services`, created by `crates/opsbox-store/migrations/0006_deploy_pipeline.sql`; the row lists current column types/indexes. A persisted field needs a new migration and this Store path as well as the form, API body mapping and typed helper request when relevant.
+- Added the 80-line hand-written `AGENTS.md`: privilege split, read order, fast commands, change-location table, house rules, database-create trace and after-change/pre-push checks. `CLAUDE.md` contains only `@AGENTS.md`.
+- Added stdlib Rust/JS lookup with definitions first, literal substrings, qualified impl/module lookup, at most 59 output lines, rg acceleration and a Python re fallback respecting repository ignore rules. Instance-method usages are lexical candidates.
+- CI now checks index freshness immediately after checkout and runs both index tooling test scripts.
+- Marked 18c done and archived its prompt. No commit, push, throwaway remote branch or release action attempted, as requested. No runtime change or release tag; prior runtime target remains `v0.1.0-alpha.43`, pending CI/release completion.
 
 ## Verification
-- All 17 tests pass: `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-gen-index.py`; new regressions cover each map, nesting, auth/WS, grouped/stream dispatch, timeouts, SQL ALTER/rebuild/rename, settings, JS templates/regex, CSS and freshness.
-- Two repository generations preserved bytes and mtimes, taking 1.067 and 1.082 seconds; `python3 scripts/gen-index.py --check` passes.
-- A temporary real router entry made `--check` exit 1 without writing; regenerating passed, then the entry was removed, regenerated and checked successfully. Source restored exactly.
-- `docs/index/` totals 323,393 bytes; `docs/INDEX.md` is 7,919 bytes. Generated output has no source line numbers.
-- Source spot checks: routes readyz/template-create/upload/metrics-stream/tools-gateway; PrivOps Ping/TemplateStart/BackupRun/PtyOpen/ProxyNetwork; store settings/users/services/database_settings/backup_jobs; UI templates/database/files/terminal/system plus addTemplate/scanCleanup/runBackup/streamDeployLog/auth.login API rows. Corrected temporary rebuild-table leakage and vendor CSS paths.
-- `git diff --check` passes. Cargo fmt, Clippy and workspace tests were attempted but Cargo is unavailable. Git pull on dev was blocked by read-only `.git/FETCH_HEAD`.
+- All 23 Python tests pass: `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-gen-index.py` (17), then `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-where.py` (6).
+- Repository lookups for a qualified pub fn, struct/enum and JS export work; six CLI measurements, including broad substrings, took 0.067–0.333 seconds. Tests cover line numbers, signatures, bounds, ignores, symlinks, comments/literals, fallback parity, missing names and invalid arguments.
+- Regeneration preserves the existing generated maps; `python3 scripts/gen-index.py --check` passes. The exact CI shell step rejected a temporary real route without regeneration, printed “Run `python3 scripts/gen-index.py` and commit the result.” and preserved index bytes/mtimes. Restored source byte-for-byte and rechecked successfully.
+- Cold navigation trace used six documentation reads (AGENTS, INDEX, UI, routes, privops, store), without source search: `api.addTemplate` → POST template instances → `templates::create_template_instance` → Store `create_service_with_exposure` → `services` (migration 0006); deploy pipeline → `PrivClient::template_start` → `PrivOp::TemplateStart` in `crates/opsbox-proto/src/privilege.rs` → `templates_compose::start_template_with`.
+- `git diff --check` passes. Cargo fmt, Clippy and workspace tests were attempted but Cargo is unavailable. Pull on `dev` was blocked by read-only `.git/FETCH_HEAD`; hosted CI and VM checks remain unrun.
 
 ## Found, not fixed
-- Maps are lexical navigation, not Rust/JavaScript type resolution: method-name links can be candidates; arbitrary router expressions fail explicitly. Computed settings keys and table names are omitted; metrics_* SQL selected by formatting has no literal table-to-method association. API drift compares explicit method/path mentions, leaving prose shorthand unexpanded.
+- Navigation maps and lookup are lexical, not Rust/JavaScript type resolution. Arbitrary router expressions fail explicitly; computed settings/table names and dynamically formatted SQL associations remain outside the maps.
 - Historical database-create failure still requires QA 03 VM request/journal/kernel evidence; no runtime OOM, timeout or panic cause is claimed.
 - Prior Linux/VM, browser smoke tests and pending Git/CI/release work remain owner follow-ups (QA 03/04/09/11/13/17/18/22/24/25/26).
 
 ## Next
-- **18c**: agent instructions, lookup and CI freshness checking.
-- Run the Python checks and pending Rust/VM verification on `opsbox-vm`; stale index output must be refused by `--check` without writes.
+- No remaining 18-series implementation prompt; continue focused QA from `docs/prompts/qa/README.md`.
+- On `opsbox-vm`, run the Python checks, pending Rust checks and installation verification; stale index output must be refused by `--check` without writes.

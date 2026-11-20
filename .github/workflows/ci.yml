@@ -16,6 +16,16 @@ jobs:
     steps:
       # Third-party actions are pinned to commit SHAs (the comment names the release).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check project index freshness
+        run: |
+          python3 scripts/gen-index.py --check || {
+            echo '::error::Run `python3 scripts/gen-index.py` and commit the result.'
+            exit 1
+          }
+      - name: Project index tooling tests
+        run: |
+          python3 scripts/test-gen-index.py
+          python3 scripts/test-where.py
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable branch
         with:
           toolchain: stable
