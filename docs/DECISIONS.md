@@ -593,3 +593,7 @@ Stretch selection hit areas over Files/Updates rows on coarse pointers, unpinnin
 ## Fix 14 — Share and cancel Cleanup scans
 Share one in-flight HTTP scan, including fresh scans; clone results per caller and retain the existing completed-result cache.
 Unmount aborts the scan and releases its deadline/slot; aborted responses cannot update the cache, and dead pages cannot apply results or start scans.
+
+## Fix 15 — Update image-source app references
+PATCH accepts image (and create's image_ref/imageRef aliases), trims and validates with create's validator, then persists image_ref for generic image-source apps.
+Settings shows the configured image with an editor and Redeploy hint; deploy admission and retained-release rollback keep their existing paths.

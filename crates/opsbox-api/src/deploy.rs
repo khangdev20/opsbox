@@ -1235,6 +1235,8 @@ pub(crate) async fn get_service(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateServiceBody {
+    #[serde(alias = "image_ref", alias = "imageRef")]
+    image: Option<String>,
     branch: Option<String>,
     #[serde(alias = "buildMethod", alias = "build_method")]
     build: Option<String>,
@@ -1270,6 +1272,24 @@ pub(crate) async fn update_service(
     if !service_writable(&who, &svc) {
         return Err(forbidden("You cannot modify this service."));
     }
+
+    let image = if let Some(image) = body.image.as_deref() {
+        if svc.source_kind != SourceKind::DockerImage
+            || svc.kind != ServiceKind::App
+            || svc.template_id.is_some()
+            || svc.compose_stack_id.is_some()
+        {
+            return Err(invalid(
+                "image",
+                "Only image-source apps can change their image here.",
+            ));
+        }
+        let (_, image) =
+            validate_git_source_inputs(&state, SourceKind::DockerImage, image.trim(), None)?;
+        image
+    } else {
+        None
+    };
 
     if let Some(ref b) = body.branch
         && !valid_git_branch(b.trim())
@@ -1385,6 +1405,7 @@ pub(crate) async fn update_service(
         .update_service(
             &svc.id,
             UpdateService {
+                image_ref: image.as_deref().map(Some),
                 branch: body.branch.as_deref().map(str::trim),
                 build_method: body.build.as_deref().map(str::trim),
                 dockerfile_path: body

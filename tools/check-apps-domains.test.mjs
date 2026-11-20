@@ -10,13 +10,13 @@ const source = (path) => readFile(new URL(`../web/js/${path}`, import.meta.url),
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const flush = () => new Promise(setImmediate);
 
-async function panel({ delay = 10, requestLimit = Infinity } = {}) {
+async function panel({ delay = 10, requestLimit = Infinity, imageService = false } = {}) {
   const events = new Map(), detail = { innerHTML: '' }, graph = { innerHTML: '' };
   const root = {
     querySelector: (s) => s === '#d' ? detail : s === '#g' ? graph : null,
     addEventListener: (name, fn) => events.set(name, fn), contains: () => true,
   };
-  const requests = [], listeners = new Set();
+  const requests = [], listeners = new Set(), edits = [], forms = [];
   let failing = true;
   const context = createContext({ URLSearchParams, AbortController,
     location: { search: '?mode=http' }, document: { cookie: '' },
@@ -47,19 +47,27 @@ async function panel({ delay = 10, requestLimit = Infinity } = {}) {
   const ui = await load('ui.js'), api = await load('api.js');
   const project = { name: 'test', env: 'test', services: ['web', 'api'].map((id, x) => ({
     id, x: x * 300, y: 0, kind: 'app', state: 'active', port: 3000, vars: [], deploys: [],
+    ...(imageService ? { sourceKind: 'docker_image', imageRef: 'nginx:1.26', repo: 'nginx:1.26' } : {}),
   })) };
   const apps = await load('pages/apps.js', {
-    '../api.js': { ...api, getProject: async () => project },
-    '../ui.js': { ...ui, patch: (node, markup) => { node.innerHTML = markup; } },
+    '../api.js': { ...api, getProject: async () => project,
+      updateService: async (id, body) => {
+        edits.push({ id, body });
+        project.services.find((s) => s.id === id).imageRef = body.image;
+        return {};
+      } },
+    '../ui.js': { ...ui, patch: (node, markup) => { node.innerHTML = markup; },
+      askForm: async (form, submit) => { forms.push(form); return submit({ image: ' nginx:1.27-alpine ' }); },
+      toast() {} },
     '../network.js': { adoptedDomains: () => '' },
-    '../capacity.js': { editMemory() {}, withCapacityOverride() {} },
+    '../capacity.js': { editMemory() {}, withCapacityOverride: (fn, body) => fn(body) },
     '../store.js': { listeners },
     '../secrets.js': { withReveal() {}, copyPlain() {}, hideRevealed() {} },
   });
   const page = await apps.view({ query: { tab: 'domains' } });
   page.mount(root);
   return {
-    page, requests, detail, listeners, recover: () => { failing = false; },
+    page, requests, detail, listeners, edits, forms, recover: () => { failing = false; },
     async click(act, data = {}) {
       await events.get('click')({ target: { dataset: { act, ...data },
         closest() { return this; }, hasAttribute: () => false, getAttribute: () => null } });
@@ -79,6 +87,20 @@ if (process.argv.includes('--probe')) {
   p.page.unmount();
   console.log(JSON.stringify({ requests: p.requests, markup: p.detail.innerHTML, rejections }));
 } else {
+  test('image settings show the reference and save a new image with a Redeploy hint', async () => {
+    const p = await panel({ imageService: true });
+    try {
+      await p.click('tab', { i: '3' });
+      assert.match(p.detail.innerHTML, /data-act="editImage"/);
+      assert.match(p.detail.innerHTML, /Redeploy/);
+      await p.click('editImage');
+      assert.equal(p.forms[0].fields[0].value, 'nginx:1.26');
+      assert.match(p.forms[0].fields[0].hint, /Redeploy/);
+      assert.deepEqual(JSON.parse(JSON.stringify(p.edits)), [{ id: 'web', body: { image: 'nginx:1.27-alpine' } }]);
+      assert.match(p.detail.innerHTML, /nginx:1.27-alpine/);
+    } finally { p.page.unmount(); }
+  });
+
   test('HTTP 500 makes one domain request over 3 seconds and shows escaped error with Retry', async () => {
     const { stdout } = await promisify(execFile)(process.execPath,
       ['--experimental-vm-modules', import.meta.filename, '--probe'], { timeout: 10000 });

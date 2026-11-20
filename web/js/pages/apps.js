@@ -248,6 +248,7 @@ export async function view({ query }) {
     })) : html`<p class="muted">No variables yet.</p>`}<div class="row mt12">${btn('Add variable', { act: 'addvar' })}${!isDb && dbsInProj.length ? btn('Connect database', { act: 'conndb' }) : ''}</div>`;
     const settingsBody = () => html`<dl class="sm" style="display:grid;grid-template-columns:140px 1fr;gap:8px">
         <dt class="muted">Source</dt><dd class="mono">${s.templateId ? `template:${s.templateId}` : s.composeStack ? `compose:${s.composeStack}` : (s.sourceKind || 'github')} · ${s.repo}</dd>
+        ${s.sourceKind === 'docker_image' && !isDb && !s.templateId && !s.composeStack ? html`<dt class="muted">Image</dt><dd><span class="mono">${s.imageRef || s.repo}</span> ${btn('Change image…', { act: 'editImage', kind: 'link' })}<p class="sm muted mt6">Redeploy after saving to pull and run the new image.</p></dd>` : ''}
         <dt class="muted">Branch / Version</dt><dd class="mono">${s.branch || '—'}</dd>
         <dt class="muted">Build</dt><dd>${s.build || '—'}</dd>
         <dt class="muted">Health check</dt><dd class="mono">${s.healthPath || '/'}</dd>
@@ -622,6 +623,20 @@ export async function view({ query }) {
               const r = await withReveal(() => api.revealVar(sel, el.dataset.k).then((x) => x.value), () => {});
               if (r) await copyPlain(r);
             } catch (e) { toast(e.message || 'Could not copy.', 'err'); }
+          }
+        },
+        editImage: async () => {
+          const s = svc();
+          if (!s) return;
+          const out = await askForm({
+            title: `Change image for ${sel}`,
+            fields: [{ name: 'image', label: 'Docker image', value: s.imageRef || s.repo,
+              hint: 'Redeploy after saving to pull and run the new image.' }],
+            submit: 'Save',
+          }, (o) => withCapacityOverride((b) => api.updateService(sel, b), { image: o.image.trim() }));
+          if (out !== null) {
+            toast('Image saved. Redeploy to apply it.');
+            await reload();
           }
         },
         toggleAuto: async () => {

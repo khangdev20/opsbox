@@ -191,6 +191,7 @@ struct MockDockerState {
     containers: HashMap<String, (String, u16)>, // cid -> (image, port)
     stopped: Vec<String>,
     removed_images: Vec<String>,
+    pulled_images: Vec<String>,
 }
 
 async fn http_get_host(addr: std::net::SocketAddr, host: &str, path: &str) -> (u16, String) {
@@ -366,6 +367,13 @@ exit 0
                 };
                 let path = strip_api_prefix(target.split('?').next().unwrap_or(&target));
                 match (method.as_str(), path) {
+                    ("POST", "/images/create") => {
+                        st.lock().unwrap().pulled_images.push(target.clone());
+                        write_http_json(&mut stream, 200, "OK", &json!({"status": "pulled"})).await;
+                    }
+                    ("POST", p) if p.starts_with("/images/") && p.ends_with("/tag") => {
+                        write_http_empty(&mut stream, 201, "Created").await;
+                    }
                     ("GET", "/version") => {
                         write_http_json(
                             &mut stream,
@@ -1037,6 +1045,107 @@ exit 0
     assert_eq!(st_del, StatusCode::OK);
     let (ps_gone, _) = http_get_host(proxy_http_addr, "app.example.com", "/").await;
     assert_eq!(ps_gone, 404);
+
+    // Image-source create -> PATCH tag -> pull the new tag -> retained-image rollback.
+    {
+        let mut docker = docker_state.lock().unwrap();
+        docker.ordered_ports = vec![p1, p2];
+        docker.build_port_cursor = 0;
+    }
+    let (status, created) = req_json(
+        &api_addr,
+        Method::POST,
+        "/api/v1/services",
+        (&cookie_a, false),
+        Some(
+            json!({"name": "image-app", "image": "nginx:1.26", "port": 3000,
+            "domain": "image.example.com", "memoryLimitMb": 128}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let task = wait_task_done(
+        &api_addr,
+        (&cookie_a, false),
+        created["task"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(task["status"], "ok", "{task}");
+    let first_deploy = created["deployId"].as_str().unwrap();
+    let (status, updated) = req_json(
+        &api_addr,
+        Method::PATCH,
+        "/api/v1/services/image-app",
+        (&cookie_a, false),
+        Some(json!({"image": "nginx:1.27"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{updated}");
+    assert_eq!(updated["imageRef"], "nginx:1.27");
+    let (status, deployed) = req_json(
+        &api_addr,
+        Method::POST,
+        "/api/v1/services/image-app/deploys",
+        (&cookie_a, false),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{deployed}");
+    let task = wait_task_done(
+        &api_addr,
+        (&cookie_a, false),
+        deployed["task"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(task["status"], "ok", "{task}");
+    assert_eq!(
+        http_get_host(proxy_http_addr, "image.example.com", "/").await,
+        (200, "version-2".into())
+    );
+    let pulls_before_rollback = docker_state.lock().unwrap().pulled_images.clone();
+    assert_eq!(pulls_before_rollback.len(), 2, "{pulls_before_rollback:?}");
+    assert!(
+        pulls_before_rollback[0].contains("1.26"),
+        "{pulls_before_rollback:?}"
+    );
+    assert!(
+        pulls_before_rollback[1].contains("1.27"),
+        "{pulls_before_rollback:?}"
+    );
+    let (status, rolled_back) = req_json(
+        &api_addr,
+        Method::POST,
+        &format!("/api/v1/services/image-app/deploys/{first_deploy}/rollback"),
+        (&cookie_a, false),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{rolled_back}");
+    let task = wait_task_done(
+        &api_addr,
+        (&cookie_a, false),
+        rolled_back["task"].as_str().unwrap(),
+    )
+    .await;
+    assert_eq!(task["status"], "ok", "{task}");
+    assert_eq!(
+        http_get_host(proxy_http_addr, "image.example.com", "/").await,
+        (200, "version-1".into())
+    );
+    assert_eq!(
+        docker_state.lock().unwrap().pulled_images,
+        pulls_before_rollback,
+        "rollback must use the retained release without pulling"
+    );
+    assert_eq!(
+        store
+            .get_service("image-app")
+            .unwrap()
+            .unwrap()
+            .image_ref
+            .as_deref(),
+        Some("nginx:1.27")
+    );
 
     api_task.abort();
     let _ = proxy_stop.send(());
