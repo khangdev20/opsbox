@@ -146,11 +146,27 @@ timeout 120 git push origin dev
 ```
 
 
-## Found, not fixed — QA 04
+## Fixed — QA 04
 
-- The archived QA 04 prompt uses `/health/ready`, but the readiness route is `/readyz` (`crates/opsbox-api/src/lib.rs:306`); no `/health/ready` alias was found. Reproduce against the disposable VM with `curl -sk -w '\n%{http_code}\n' https://127.0.0.1:8443/health/ready`, then repeat for `/readyz`. Suggested prompt: **Align QA readiness URLs with the registered route**.
+- Fixed in fix 17: `/readyz` remains canonical; `/health/ready` now calls the same readiness handler, with the same IP allowlist exemption and `Cache-Control: no-store`. Both return readiness JSON (200/503) instead of a missing route. API documentation and its generated route inventory include the alias.
 
 ## Owner checks — QA 04
+
+Fix 17 search audit (`rg -n --hidden --glob '!.git' 'health/ready'`, before edits):
+
+- `docs/prompts/fix/17-readyz-doc-mismatch.md:1,6,9,10`: title, problem, search instruction and alias option (now archived under `docs/prompts/fix/archive/`).
+- `docs/prompts/fix/README.md:36`: fix index title (now marked done and linked to the archive).
+- `docs/QA.md:151`: route-mismatch finding (fixed above).
+- `docs/prompts/archive/03f-form-state-and-helper-errors.md:24,25,33`: version comparison, helper banner and mismatch-test instructions.
+- `docs/prompts/qa/archive/04-version-skew.md:6,8`: readiness curl and version-skew check.
+
+Archived 03f and QA 04 prompts remain unchanged; the alias makes their URLs valid, and no tooling references to 03f were found.
+
+Fix 17 TDD: the helper-down regression first failed with 404 and the pre-setup/IP-allowlist regression first failed with 403 for the alias; both now pass for both URLs, checking readiness JSON and (for helper-down) no-store headers. The two helper-backed success/version-skew tests cover both URLs but cannot run here because binding `priv.sock` is denied (`Operation not permitted`). Crate check, all-target Clippy, formatting, generated API inventory and whitespace checks pass.
+
+Owner: run `timeout 120 cargo test -p opsbox-api --test http readyz_ -- --nocapture` on a host permitting Unix socket binds. On the disposable VM, run `timeout 120 curl -sk -w '\n%{http_code}\n' https://127.0.0.1:8443/readyz` and repeat with `/health/ready`; require equivalent JSON and 200 with matching healthy dependencies, or 503 when the helper is stopped/mismatched. No commit or push was attempted for fix 17, as requested.
+
+Prior QA 04 investigation (before fix 17):
 
 Source review: `crates/opsbox-priv/src/lib.rs` shares `opsbox_version::VERSION`; `server.rs::process` dispatches Ping through `ops/mod.rs` to `ops/ping.rs`, returning that build version. `crates/opsbox-api/src/health.rs::readyz` compares the returned helper version with `state.version`; skew logs a warning and returns HTTP 503, `not_ready`, `privileged_helper: "version mismatch"`, and `checks.versions.{serve,helper}`. The existing tests in `crates/opsbox-api/tests/http.rs` cover matching versions and simulated skew. `web/js/api.js::getHelperHealth` consumes the 503 response; `web/js/shell.js::refreshHelperBanner` renders a persistent `role="alert"` warning with both versions and a helper restart command, polled immediately and every 10 seconds. This satisfies the warning-banner path without requiring an Attention item.
 

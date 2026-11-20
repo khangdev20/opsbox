@@ -68,12 +68,16 @@ async fn readyz_reports_ready_when_database_and_helper_answer() {
         s.version = opsbox_priv::VERSION;
         s
     });
-    let resp = h.get("/readyz").await;
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        json(resp).await,
-        serde_json::json!({"status": "ready", "checks": {"database": "ok", "privileged_helper": "ok"}})
-    );
+    for path in ["/readyz", "/health/ready"] {
+        let resp = h.get(path).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{path}");
+        assert_eq!(header_str(&resp, "cache-control"), "no-store", "{path}");
+        assert_eq!(
+            json(resp).await,
+            serde_json::json!({"status": "ready", "checks": {"database": "ok", "privileged_helper": "ok"}}),
+            "{path}"
+        );
+    }
     h.shutdown().await;
 }
 
@@ -81,29 +85,56 @@ async fn readyz_reports_ready_when_database_and_helper_answer() {
 async fn readyz_is_503_with_both_versions_when_the_helper_is_a_different_build() {
     // The harness serves 9.9.9-test; the real helper on the socket reports its own build.
     let h = Harness::new(true);
-    let resp = h.get("/readyz").await;
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = json(resp).await;
-    assert_eq!(body["status"], "not_ready");
-    assert_eq!(body["checks"]["database"], "ok");
-    assert_eq!(body["checks"]["privileged_helper"], "version mismatch");
-    assert_eq!(
-        body["checks"]["versions"],
-        serde_json::json!({"serve": "9.9.9-test", "helper": opsbox_priv::VERSION})
-    );
+    for path in ["/readyz", "/health/ready"] {
+        let resp = h.get(path).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = json(resp).await;
+        assert_eq!(body["status"], "not_ready");
+        assert_eq!(body["checks"]["database"], "ok");
+        assert_eq!(body["checks"]["privileged_helper"], "version mismatch");
+        assert_eq!(
+            body["checks"]["versions"],
+            serde_json::json!({"serve": "9.9.9-test", "helper": opsbox_priv::VERSION})
+        );
+    }
     h.shutdown().await;
 }
 
 #[tokio::test]
 async fn readyz_is_503_when_the_helper_is_down() {
     let h = Harness::new(false);
-    let resp = h.get("/readyz").await;
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = json(resp).await;
-    assert_eq!(body["status"], "not_ready");
-    assert_eq!(body["checks"]["database"], "ok");
-    assert_eq!(body["checks"]["privileged_helper"], "failing");
-    assert!(body["checks"].get("versions").is_none());
+    for path in ["/readyz", "/health/ready"] {
+        let resp = h.get(path).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(header_str(&resp, "cache-control"), "no-store", "{path}");
+        let body = json(resp).await;
+        assert_eq!(body["status"], "not_ready");
+        assert_eq!(body["checks"]["database"], "ok");
+        assert_eq!(body["checks"]["privileged_helper"], "failing");
+        assert!(body["checks"].get("versions").is_none());
+    }
+}
+
+#[tokio::test]
+async fn readyz_and_alias_bypass_setup_and_ip_allowlist() {
+    let h = Harness::new_unclaimed_with(false, |s| {
+        s.store
+            .set_setting("security.allow_ips", &serde_json::json!(["203.0.113.0/24"]))
+            .unwrap();
+        opsbox_api::AppState::new(
+            s.store.clone(),
+            s.priv_client.clone(),
+            s.version,
+            opsbox_api::SecureCookies::Auto,
+            opsbox_auth::AuthConfig::default(),
+        )
+    });
+    assert_eq!(h.state.allow_list_text(), "203.0.113.0/24");
+    for path in ["/readyz", "/health/ready"] {
+        let resp = h.get(path).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(json(resp).await["checks"]["privileged_helper"], "failing");
+    }
 }
 
 // ---------------------------------------------------------------- request ids

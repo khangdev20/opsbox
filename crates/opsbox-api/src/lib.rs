@@ -304,6 +304,7 @@ pub fn router(state: AppState) -> Router {
     let ordinary = Router::new()
         .route("/healthz", get(health::healthz))
         .route("/readyz", get(health::readyz))
+        .route("/health/ready", get(health::readyz))
         .route("/api/v1/host", get(host::get_host))
         .route("/api/v1/capacity", get(capacity::get))
         .route("/api/v1/capacity/check", get(capacity::check))
@@ -738,6 +739,7 @@ async fn setup_guard(
     let path = req.uri().path();
     let allowed_unclaimed = path == "/healthz"
         || path == "/readyz"
+        || path == "/health/ready"
         || path.starts_with("/api/v1/setup/")
         || !path.starts_with("/api/");
     if !allowed_unclaimed && auth.setup_required().unwrap_or(false) {
@@ -761,6 +763,7 @@ async fn allow_guard(
     let path = req.uri().path();
     if path == "/healthz"
         || path == "/readyz"
+        || path == "/health/ready"
         || path == "/api/v1/github/webhook"
         || allow.get().is_empty()
     {

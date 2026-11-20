@@ -1,4 +1,5 @@
 //! `/healthz` (is the process alive) and `/readyz` (are its dependencies usable).
+//! `/health/ready` is a compatibility alias for `/readyz`.
 
 use std::time::Duration;
 

@@ -601,3 +601,7 @@ Settings shows the configured image with an editor and Redeploy hint; deploy adm
 ## Fix 16 — Fail service deletion on incomplete cleanup
 Pass the validated project name to the helper; remove recorded/discovered service containers, prune retained images, remove only an empty project network, then remove the app directory; preserve volumes because this endpoint has no volume-removal opt-in.
 Return the first cleanup error and keep the database record until the helper succeeds; missing containers, networks and directories remain safe to retry, and Docker rejects network-removal races with new attachments.
+
+## Fix 17 — Readiness URL compatibility
+Keep /readyz canonical and serve /health/ready with the same readiness handler, preserving existing probe and archived QA URLs.
+Give both URLs the health probe IP-allowlist exemption and no-store responses; test dependency success, failure, version skew and pre-setup access.

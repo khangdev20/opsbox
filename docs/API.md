@@ -4,6 +4,10 @@ The agent serves JSON at `/api/v1` and embeds the UI at `/`. Use `?mode=http` fo
 
 The inventory below is generated from the actual axum router. Run `python3 tools/generate-api.py` after a route change; CI checks it. Links lead to each handler's request structures and response shaping. Shared system/privilege data types live in [opsbox-proto](../crates/opsbox-proto/src/lib.rs). A full OpenAPI schema is deferred: many UI response types are still `serde_json::Value`, so adding `utoipa` now would describe incomplete schemas.
 
+## Health and readiness
+
+`GET /healthz` is a dependency-free liveness check. `GET /readyz` is the canonical readiness endpoint; `GET /health/ready` is a compatibility alias served by the same handler. Both readiness URLs are public, remain accessible before setup and outside the panel IP allowlist, and return JSON with `Cache-Control: no-store`: HTTP 200 (`status: "ready"`) when the database, same-version privileged helper and required panel proxy are usable, or HTTP 503 (`status: "not_ready"`) with per-dependency `checks` otherwise. Helper version mismatches include `checks.versions.serve` and `checks.versions.helper`.
+
 ## Authentication and roles
 
 - `GET /session` is public and returns `authenticated`, `enrollRequired`, `setupRequired`, and when signed in `{user, displayName, role, totp: {enabled, method}}` (`method` is `"app"` when two-factor is on, otherwise `null`).
@@ -383,6 +387,7 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `POST` | `/api/v1/users/invites` | [users::invite](../crates/opsbox-api/src/users.rs) |
 | `DELETE` | `/api/v1/users/{name}` | [users::remove](../crates/opsbox-api/src/users.rs) |
 | `PATCH` | `/api/v1/users/{name}` | [users::update](../crates/opsbox-api/src/users.rs) |
+| `GET` | `/health/ready` | [health::readyz](../crates/opsbox-api/src/health.rs) |
 | `GET` | `/healthz` | [health::healthz](../crates/opsbox-api/src/health.rs) |
 | `GET` | `/readyz` | [health::readyz](../crates/opsbox-api/src/health.rs) |
 | `GET` | `/tools/{service}` | [tools::root](../crates/opsbox-api/src/tools.rs) |
