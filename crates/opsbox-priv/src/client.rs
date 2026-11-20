@@ -1845,3 +1845,88 @@ impl PrivClient {
         self.done(rid, actor, PrivOp::Uninstall { purge }).await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::UnixListener;
+
+    /// Exercise the real client/framing without Docker or a root helper. A cold
+    /// database/image pull must survive the deadline that still bounds a ping.
+    #[tokio::test]
+    async fn database_start_and_image_pull_outlive_the_default_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("priv.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let mut replies = tokio::task::JoinSet::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                replies.spawn(async move {
+                    let body = read_body(&mut stream).await.unwrap().unwrap();
+                    let request: PrivRequest = frame::decode(&body).unwrap();
+                    let reply = match request.op {
+                        PrivOp::Ping => PrivReply::Pong {
+                            version: "test".into(),
+                        },
+                        PrivOp::TemplateStart(_) => PrivReply::DeployStarted(DeployStartResult {
+                            container_id: "postgres-test".into(),
+                            host_port: 0,
+                        }),
+                        PrivOp::DeployPullImage(_) => PrivReply::Done,
+                        other => panic!("unexpected operation: {other:?}"),
+                    };
+                    tokio::time::sleep(CALL_TIMEOUT + Duration::from_secs(1)).await;
+                    // Ping has timed out and closed its connection by now.
+                    let _ = write_frame(
+                        &mut stream,
+                        &PrivResponse {
+                            id: request.id,
+                            result: PrivResult::Success { reply },
+                        },
+                    )
+                    .await;
+                });
+            }
+            while let Some(result) = replies.join_next().await {
+                result.unwrap();
+            }
+        });
+        let client = PrivClient::new(socket);
+        let (ping, database, pull) = tokio::join!(
+            client.ping("ping"),
+            client.template_start(
+                "database",
+                "admin",
+                TemplateStartRequest {
+                    project: "default".into(),
+                    service: "postgres-test".into(),
+                    deploy_id: "test-deploy".into(),
+                    template_id: "postgres".into(),
+                    version: "17".into(),
+                    image_ref: "postgres:17".into(),
+                    internal_only: true,
+                    public_port: false,
+                    confirm_public_port: false,
+                    vars: vec![],
+                    ref_sources: vec![],
+                    memory_limit_mb: Some(256),
+                    cpu_limit_millis: None,
+                    data_volume: None,
+                },
+            ),
+            client.deploy_pull_image(
+                "pull",
+                "admin",
+                DeployPullRequest {
+                    source_image: "postgres:17".into(),
+                    target_tag: "opsbox/postgres:test".into(),
+                },
+            ),
+        );
+        assert!(matches!(ping, Err(ClientError::Timeout)), "{ping:?}");
+        assert_eq!(database.unwrap().container_id, "postgres-test");
+        pull.unwrap();
+        server.await.unwrap();
+    }
+}

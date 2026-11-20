@@ -605,3 +605,7 @@ Return the first cleanup error and keep the database record until the helper suc
 ## Fix 17 — Readiness URL compatibility
 Keep /readyz canonical and serve /health/ready with the same readiness handler, preserving existing probe and archived QA URLs.
 Give both URLs the health probe IP-allowlist exemption and no-store responses; test dependency success, failure, version skew and pre-setup access.
+
+## Fix 18 — Preserve evidence in helper diagnosis
+The old Connect/Timeout mapping explains the misleading database-create message; startup/image pull already use 300 seconds and the helper already has OOMScoreAdjust=-900, so retain production settings.
+Add delayed-helper timeout coverage; require VM request/journal/kernel evidence before classifying the historical trigger as OOM, timeout, version skew or panic (QA 03).

@@ -3,6 +3,7 @@
 Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 
 ## Completed
+- Fix 18: audited database-create calls and history; the old Connect/Timeout mapping caused the misleading message. Startup/pull already use 300 seconds and helper OOM protection exists, so production settings remain unchanged; historical runtime trigger awaits VM evidence (QA 03).
 - Fix 17: `/readyz` stays canonical; `/health/ready` uses the same readiness handler, IP allowlist exemption and no-store responses, with both URLs documented and regression-tested.
 - Fix 16: service deletion reports the first cleanup failure and preserves the database record for retry; removes an empty project network and the app directory after container cleanup, retaining attached sibling networks and persistent volumes.
 - Fix 15: image-source app PATCH validates and saves the configured image reference; Settings offers Change image with a Redeploy hint, preserving retained releases for rollback.
@@ -28,6 +29,7 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Mapped Linux openat2 confinement races (EAGAIN) to Refused while continuing to deny the operation; reproduced the prior intermittent Internal error under parallel file tests.
 
 ## Verification
+- Fix 18: delayed-helper regression compiles but sandbox Unix socket binds block execution. Five error-mapping tests, the service-unit test, formatting and all-target helper Clippy pass; exact live diagnosis steps are recorded in QA 03; no timeout/OOM runtime cause is claimed without VM logs. No commit or push was attempted.
 - Fix 17: test-first regressions reproduced alias 404 and allowlist 403; both now pass for both URLs with readiness JSON. Helper-backed 200/version-skew cases compile but sandbox Unix socket binds block execution; owner rerun and VM probes are in QA 04. Crate check, all-target Clippy, formatting, API inventory and whitespace checks pass. No commit or push was attempted, as requested.
 - Fix 16: both test-first fake-Docker regressions and all four helper deploy unit tests pass, plus 30 Docker/protocol tests; all-target Clippy, formatting and whitespace checks pass. HTTP cleanup/failure/record-preservation/retry regressions compile but sandbox Unix socket binds block execution. Owner HTTP and live VM checks are in QA 17. No commit or push was attempted, as requested.
 - Fix 15: both test-first Rust PATCH regressions and all five related Node/DOM tests pass; crate check/all-target Clippy, formatting, JS syntax and whitespace checks pass. Pull/new-tag/rollback coverage was added to deploy_http, whose local socket bind is denied by the sandbox; owner rerun and live checks are in QA 17. No commit or push was attempted, as requested.
@@ -50,6 +52,6 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Full Linux Clippy, workspace tests, dependency audit, release builds, version stamping, and signed release artifacts are checked by GitHub Actions.
 
 ## Next
-- Run fix 04/05/06/07/08/09/10/11/12/13/14/15/16 Linux/VM checks and complete pending Git/CI/release work from a host terminal; next fix is 18 (database-create helper diagnosis). Fix 17 helper-backed readiness/VM checks remain in QA 04; fix 15/16/17 commit/push was excluded by request.
+- Run fix 04/05/06/07/08/09/10/11/12/13/14/15/16 Linux/VM checks and complete pending Git/CI/release work from a host terminal; fix 18 source audit is recorded, but runtime database-create diagnosis still requires the QA 03 VM checks. Fix 17 helper-backed readiness/VM checks remain in QA 04; fix 15/16/17 commit/push was excluded by request.
 - Verify the alpha release's x86_64/arm64 archives, checksums, signatures, SBOM, and installer on GitHub Releases.
 - Smoke-test the table and notification views at desktop/mobile widths on an updated server.
