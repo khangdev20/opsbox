@@ -7,7 +7,8 @@ pub use release::{
     CACHE_TTL_SECS, Channel, CheckResult, DEFAULT_REPO, HttpFetcher, HttpReply, NoOfferReason,
     ReleaseChecker, ReleaseFetcher, ReleaseInfo, check_latest, check_latest_default_channel,
     current_target, default_channel, download_and_verify, download_and_verify_for_target,
-    select_release, select_release_default_channel, verify_minisign, verify_sha256,
+    download_for_install, extract_release_binary, select_release, select_release_default_channel,
+    verify_minisign, verify_sha256,
 };
 pub use slots::{
     BIN_SLOTS_DIR, SYMLINK_PATH, SlotLayout, SlotMeta, UPDATE_STATE_PATH, UpdateOutcome,
@@ -591,6 +592,11 @@ mod tests {
             tar.finish().unwrap();
         }
         let bytes = fs::read(&tar_gz_path).unwrap();
+        assert_eq!(
+            extract_release_binary(&bytes, "0.1.0", "x86_64-unknown-linux-musl").unwrap(),
+            b"binary"
+        );
+        assert!(extract_release_binary(&bytes, "0.2.0", "x86_64-unknown-linux-musl").is_err());
         let sha: String = Sha256::digest(&bytes)
             .iter()
             .map(|b| format!("{b:02x}"))

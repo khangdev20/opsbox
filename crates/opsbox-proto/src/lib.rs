@@ -67,7 +67,7 @@ pub use files::{DirListing, FileContent, FileEntry, FileKind, Staged};
 pub use metrics::{CpuTimes, DiskIo, DiskUsage, MemInfo, NetIf, RawProc, RawSample, SystemFacts};
 pub use privilege::{
     HostInfo, PrivError, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult,
-    Secret,
+    Secret, UpdateVerification,
 };
 pub use pty::{MAX_PTY_DIM, MAX_PTY_PAYLOAD, PtyFrame, PtyFrameError, SystemUser, clamp_size};
 pub use role::Role;

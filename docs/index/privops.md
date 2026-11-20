@@ -94,7 +94,7 @@ Protocol: `crates/opsbox-proto/src/privilege.rs`. Client: `crates/opsbox-priv/sr
 | SecretSeal | inline { context: String, plaintext: Secret, } | sealed::seal | crates/opsbox-priv/src/ops/sealed.rs | secret_seal |
 | SecurityFix | inline { id: String, apps_dir: String, } | security::fix | crates/opsbox-priv/src/ops/security.rs | security_fix |
 | SecurityScan | inline { apps_dir: String, } | security::scan | crates/opsbox-priv/src/ops/security.rs | security_scan |
-| SelfUpdateInstall | inline { staging: String, version: String, target_schema: u32, } | update::install | crates/opsbox-priv/src/ops/update.rs | self_update_install |
+| SelfUpdateInstall | inline { staging: String, verification: UpdateVerification, version: String, target_schema: u32, } | update::install | crates/opsbox-priv/src/ops/update.rs | self_update_install |
 | SelfUpdateRollback | inline { to_version: Option<String>, } | update::rollback | crates/opsbox-priv/src/ops/update.rs | self_update_rollback |
 | SettingsGet | unit | hostset::settings | crates/opsbox-priv/src/ops/hostset.rs | settings_get |
 | SshEmergency | inline { caller_ip: String, } | firewall::ssh_emergency | crates/opsbox-priv/src/ops/firewall.rs | ssh_emergency |

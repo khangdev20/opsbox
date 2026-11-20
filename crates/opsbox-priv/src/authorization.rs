@@ -198,6 +198,10 @@ mod tests {
             },
             PrivOp::SelfUpdateInstall {
                 staging: "/tmp/update".into(),
+                verification: opsbox_proto::UpdateVerification {
+                    sha256: String::new(),
+                    minisign: String::new(),
+                },
                 version: "test".into(),
                 target_schema: 1,
             },

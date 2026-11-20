@@ -323,8 +323,8 @@ impl Updater {
         let clean = version.trim_start_matches('v').to_owned();
         let xfer = self.xfer_dir.clone();
         let ver_clone = clean.clone();
-        let staged = tokio::task::spawn_blocking(move || {
-            opsbox_update::download_and_verify(&ver_clone, &xfer, None)
+        let (staged, sha256, minisign) = tokio::task::spawn_blocking(move || {
+            opsbox_update::download_for_install(&ver_clone, &xfer)
         })
         .await
         .map_err(|_| HttpError::internal())?
@@ -345,6 +345,7 @@ impl Updater {
                 &staged_str,
                 &clean,
                 opsbox_store::LATEST_VERSION,
+                opsbox_proto::UpdateVerification { sha256, minisign },
             )
             .await?;
 

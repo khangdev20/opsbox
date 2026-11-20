@@ -565,6 +565,62 @@ pub fn verify_minisign(
         .map_err(|e| UpdateError::Signature(format!("signature verification failed: {e}")))
 }
 
+/// Extract only a regular binary from an already authenticated release archive.
+pub fn extract_release_binary(
+    bytes: &[u8],
+    version: &str,
+    target: &str,
+) -> Result<Vec<u8>, UpdateError> {
+    let version = version.trim_start_matches('v');
+    Version::parse(version).map_err(|_| UpdateError::InvalidVersion(version.to_owned()))?;
+    let expected = format!("opsbox-{version}-{target}/opsbox");
+    let mut archive = Archive::new(GzDecoder::new(bytes));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if entry.path()? == Path::new(&expected) && entry.header().entry_type().is_file() {
+            let mut binary = Vec::new();
+            entry.read_to_end(&mut binary)?;
+            return Ok(binary);
+        }
+    }
+    Err(UpdateError::Archive(format!(
+        "archive did not contain {expected}"
+    )))
+}
+
+/// Download the signed archive for the root helper; do not execute caller-writable files.
+pub fn download_for_install(
+    version: &str,
+    staging_dir: &Path,
+) -> Result<(PathBuf, String, String), UpdateError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let clean = version.trim_start_matches('v');
+    Version::parse(clean).map_err(|_| UpdateError::InvalidVersion(clean.to_owned()))?;
+    let pkg = format!("opsbox-{clean}-{}", current_target()?);
+    let base = release_download_base(clean);
+    let bytes = http_get_bytes(&format!("{base}/{pkg}.tar.gz"))?;
+    let sha = http_get_text(&format!("{base}/{pkg}.tar.gz.sha256"))?;
+    let sig = http_get_text(&format!("{base}/{pkg}.tar.gz.minisig"))?;
+    verify_sha256(&bytes, &sha)?;
+    verify_minisign(&bytes, &sig, MINISIGN_PUBKEY)?;
+    if !fs::symlink_metadata(staging_dir)?.file_type().is_dir() {
+        return Err(std::io::Error::other("The transfer folder must be a real directory.").into());
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = staging_dir.join(format!("opsbox-update-{clean}-{nonce}.tar.gz"));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    Ok((path, sha, sig))
+}
+
 /// Download `opsbox-<version>-<target>.tar.gz`, verify SHA-256 + minisign signature,
 /// extract the `opsbox` binary into `staging_dir`, and run `selftest` on it.
 pub fn download_and_verify(

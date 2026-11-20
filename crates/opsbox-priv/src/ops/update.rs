@@ -1,5 +1,7 @@
 //! Privileged self-update and rollback operations (spec 7.15).
 
+use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Command;
 
@@ -24,10 +26,10 @@ fn now_secs() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
 }
 
-fn verify_staged_binary(
+fn open_staged_archive(
     staging: &str,
     xfer_dir: &Path,
-) -> Result<(std::os::fd::OwnedFd, String), PrivError> {
+) -> Result<(std::os::fd::OwnedFd, String, std::fs::File), PrivError> {
     let lexical = files::normalize_lexical(staging)?;
     let xfer_fd = super::managed_dirs::open_dir(xfer_dir, true)?;
     let xfer_st = fstat(&xfer_fd).map_err(|_| {
@@ -44,7 +46,7 @@ fn verify_staged_binary(
         .ok_or_else(|| {
             err(
                 PrivErrorCode::Refused,
-                "That is not a staged update binary.",
+                "That is not a staged update archive.",
             )
         })?;
     let parent = lexical.parent().unwrap_or(Path::new("/"));
@@ -69,7 +71,7 @@ fn verify_staged_binary(
     if (parent_st.st_dev, parent_st.st_ino) != (xfer_st.st_dev, xfer_st.st_ino) {
         return Err(err(
             PrivErrorCode::Refused,
-            "Update binary must be staged inside the transfer folder.",
+            "Update archive must be staged inside the transfer folder.",
         ));
     }
     let fd = openat(
@@ -81,7 +83,7 @@ fn verify_staged_binary(
     .map_err(|e| {
         err(
             PrivErrorCode::NotFound,
-            format!("Cannot open staged binary: {e}"),
+            format!("Cannot open staged archive: {e}"),
         )
     })?;
     let st = fstat(&fd).map_err(|e| err(PrivErrorCode::Internal, e.to_string()))?;
@@ -91,7 +93,63 @@ fn verify_staged_binary(
             "Staged update is not a regular file.",
         ));
     }
-    Ok((xfer_fd, name))
+    Ok((xfer_fd, name, std::fs::File::from(fd)))
+}
+
+fn prepare_update(
+    staging: &str,
+    xfer: &Path,
+    version: &str,
+    sha256: &str,
+    minisign: &str,
+) -> Result<(std::os::fd::OwnedFd, String, tempfile::TempPath), PrivError> {
+    let (xfer_fd, name, mut file) = open_staged_archive(staging, xfer)?;
+    // Pin the opened inode and authenticate exactly these bytes. Never reopen xfer by path.
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|e| err(PrivErrorCode::Internal, e.to_string()))?;
+    opsbox_update::verify_sha256(&bytes, sha256)
+        .map_err(|e| err(PrivErrorCode::Refused, e.to_string()))?;
+    opsbox_update::verify_minisign(&bytes, minisign, opsbox_update::MINISIGN_PUBKEY)
+        .map_err(|e| err(PrivErrorCode::Refused, e.to_string()))?;
+    let binary = opsbox_update::extract_release_binary(
+        &bytes,
+        version,
+        opsbox_update::current_target().map_err(|e| err(PrivErrorCode::Refused, e.to_string()))?,
+    )
+    .map_err(|e| err(PrivErrorCode::Refused, e.to_string()))?;
+    let staged = private_binary(&binary)?;
+    let selftest = Command::new(&staged)
+        .arg("selftest")
+        .output()
+        .map_err(|e| err(PrivErrorCode::Internal, format!("Cannot run selftest: {e}")))?;
+    if !selftest.status.success() {
+        return Err(err(
+            PrivErrorCode::Invalid,
+            format!(
+                "New binary failed self-test: {}",
+                String::from_utf8_lossy(&selftest.stderr).trim()
+            ),
+        ));
+    }
+    Ok((xfer_fd, name, staged))
+}
+
+fn private_binary(bytes: &[u8]) -> Result<tempfile::TempPath, PrivError> {
+    let io_err = |e: std::io::Error| err(PrivErrorCode::Internal, e.to_string());
+    // tempfile uses exclusive creation. The helper's uid is root in production;
+    // 0700 excludes the panel even when it knows this unpredictable temp path.
+    let mut file = tempfile::Builder::new()
+        .prefix("opsbox-verified-")
+        .tempfile()
+        .map_err(io_err)?;
+    file.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o700))
+        .map_err(io_err)?;
+    file.write_all(bytes).map_err(io_err)?;
+    file.as_file().sync_all().map_err(io_err)?;
+    // Close the writable fd before exec (Linux ETXTBSY), retain automatic cleanup.
+    Ok(file.into_temp_path())
 }
 
 fn schedule_unit_restart() -> Result<(), PrivError> {
@@ -171,26 +229,19 @@ pub(super) fn install(
     staging: &str,
     version: &str,
     target_schema: u32,
+    verification: &opsbox_proto::UpdateVerification,
     apps_dir: &Path,
     dirs: &files::Dirs,
 ) -> Result<(), PrivError> {
     super::managed_dirs::prepare(apps_dir, &dirs.xfer, &dirs.trash)?;
-    let (xfer_fd, staged_name) = verify_staged_binary(staging, &dirs.xfer)?;
-    let staged_path = Path::new(staging);
-
-    let selftest = Command::new(staged_path)
-        .arg("selftest")
-        .output()
-        .map_err(|e| err(PrivErrorCode::Internal, format!("Cannot run selftest: {e}")))?;
-    if !selftest.status.success() {
-        return Err(err(
-            PrivErrorCode::Invalid,
-            format!(
-                "New binary failed self-test: {}",
-                String::from_utf8_lossy(&selftest.stderr).trim()
-            ),
-        ));
-    }
+    let (xfer_fd, staged_name, staged) = prepare_update(
+        staging,
+        &dirs.xfer,
+        version,
+        &verification.sha256,
+        &verification.minisign,
+    )?;
+    let staged_path: &Path = staged.as_ref();
 
     let layout = SlotLayout::default();
     let current_ver = crate::VERSION;
@@ -271,4 +322,98 @@ pub(super) fn rollback(to_version: Option<&str>) -> Result<(), PrivError> {
 
     schedule_unit_restart()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn verified_copy_survives_staging_replacement_and_keeps_rollback() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("staged");
+        let trusted = b"#!/bin/sh\n[ \"$1\" = selftest ]\n";
+        std::fs::write(&staged, trusted).unwrap();
+        let copy = private_binary(&std::fs::read(&staged).unwrap()).unwrap();
+        std::fs::write(&staged, b"replaced by caller").unwrap();
+        let meta = std::fs::metadata(&copy).unwrap();
+        assert_eq!(meta.uid(), nix::unistd::geteuid().as_raw());
+        assert_eq!(meta.mode() & 0o7777, 0o700);
+        assert!(
+            Command::new(&copy)
+                .arg("selftest")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let layout = SlotLayout {
+            slots_dir: tmp.path().join("slots"),
+            symlink: tmp.path().join("opsbox"),
+            state_file: tmp.path().join("state.json"),
+        };
+        std::fs::write(&layout.symlink, b"old binary").unwrap();
+        layout
+            .install_and_switch(&copy, "0.1.0", 1, "0.2.0", 1)
+            .unwrap();
+        assert_eq!(std::fs::read(&layout.symlink).unwrap(), trusted);
+        layout.rollback_slot(None, 1).unwrap();
+        assert_eq!(std::fs::read(&layout.symlink).unwrap(), b"old binary");
+        let path = copy.to_path_buf();
+        drop(copy);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn unsigned_update_never_runs_selftest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let staged = root.join("unsigned.bin");
+        let marker = root.join("selftest-ran");
+        let script = format!("#!/bin/sh\nprintf ran > '{}'\nexit 0\n", marker.display());
+        std::fs::write(&staged, &script).unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let checksum = Sha256::digest(script.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let result = prepare_update(staged.to_str().unwrap(), &root, "0.1.0", &checksum, "");
+        assert!(!marker.exists(), "unsigned update executed selftest");
+        let error = result.unwrap_err();
+        assert_eq!(error.code, PrivErrorCode::Refused);
+        assert!(error.message.contains("signature verification failed"));
+    }
+
+    #[test]
+    fn modified_update_never_runs_selftest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let staged = root.join("modified.bin");
+        let marker = root.join("selftest-ran");
+        std::fs::write(
+            &staged,
+            format!("#!/bin/sh\nprintf ran > '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let checksum = Sha256::digest(b"original signed bytes")
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let result = prepare_update(
+            staged.to_str().unwrap(),
+            &root,
+            "0.1.0",
+            &checksum,
+            "invalid signature",
+        );
+        assert!(!marker.exists(), "modified update executed selftest");
+        let error = result.unwrap_err();
+        assert_eq!(error.code, PrivErrorCode::Refused);
+        assert!(error.message.contains("checksum verification failed"));
+    }
 }

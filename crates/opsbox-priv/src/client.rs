@@ -731,6 +731,7 @@ impl PrivClient {
         staging: &str,
         version: &str,
         target_schema: u32,
+        verification: opsbox_proto::UpdateVerification,
     ) -> Result<(), ClientError> {
         self.expect(
             rid,
@@ -739,6 +740,7 @@ impl PrivClient {
                 staging: staging.to_owned(),
                 version: version.to_owned(),
                 target_schema,
+                verification,
             },
             |r| match r {
                 PrivReply::Done => Ok(()),

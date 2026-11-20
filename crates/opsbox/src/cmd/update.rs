@@ -79,8 +79,9 @@ pub fn run_update(config: &Config, channel: Option<&str>, version: Option<&str>)
     };
 
     println!("Downloading and verifying opsbox {target_ver}...");
-    let staged = opsbox_update::download_and_verify(&target_ver, &config.xfer_dir, None)
-        .context("download or signature verification failed")?;
+    let (staged, sha256, minisign) =
+        opsbox_update::download_for_install(&target_ver, &config.xfer_dir)
+            .context("download or signature verification failed")?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -94,6 +95,7 @@ pub fn run_update(config: &Config, channel: Option<&str>, version: Option<&str>)
                 &staged.to_string_lossy(),
                 &target_ver,
                 opsbox_store::LATEST_VERSION,
+                opsbox_proto::UpdateVerification { sha256, minisign },
             )
             .await
     })

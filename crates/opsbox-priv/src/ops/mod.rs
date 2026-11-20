@@ -242,10 +242,18 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::SettingsGet => Ok(PrivReply::Settings(hostset::settings())),
         PrivOp::SelfUpdateInstall {
             staging,
+            verification,
             version,
             target_schema,
-        } => update::install(staging, version, *target_schema, &env.apps_dir, &env.files)
-            .map(|()| PrivReply::Done),
+        } => update::install(
+            staging,
+            version,
+            *target_schema,
+            verification,
+            &env.apps_dir,
+            &env.files,
+        )
+        .map(|()| PrivReply::Done),
         PrivOp::SelfUpdateRollback { to_version } => {
             update::rollback(to_version.as_deref()).map(|()| PrivReply::Done)
         }

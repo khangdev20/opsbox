@@ -5,6 +5,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Untrusted release proof, checked again with the helper's embedded public key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateVerification {
+    pub sha256: String,
+    pub minisign: String,
+}
+
 /// A string that must never reach a log: `Debug` prints `[redacted]`. Serializes as a
 /// plain string.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,9 +289,10 @@ pub enum PrivOp {
     },
     /// The time zone (and the zones available) and the swap in use.
     SettingsGet,
-    /// Install a verified staged opsbox binary into a version slot, switch symlink, and restart.
+    /// Verify and install a staged signed opsbox archive into a version slot, switch symlink, and restart.
     SelfUpdateInstall {
         staging: String,
+        verification: UpdateVerification,
         version: String,
         target_schema: u32,
     },

@@ -659,3 +659,7 @@ Use a root-owned sticky 1771 state parent to permit traversal to proxy state wit
 ## Fix 27 — Authorize helper operations by caller
 Derive Caller::Serve/Proxy from the separate listener and verify its kernel peer UID before reading; exhaustively match every PrivOp, allowing Proxy only PortHolders and SecretSeal/SecretOpen with proxy: contexts.
 Check policy before blocking dispatch and all streaming intercepts; return typed Forbidden with the request ID and emit a priv_op_forbidden warning carrying role, UID/PID and operation without payloads or the caller-supplied actor. Serve remains allowed; root-grade operations need API admin proof in future.
+
+## Fix 28 — Authenticate updates inside the root helper
+Send the signed release archive plus SHA-256/minisign proof from both panel and CLI; priv pins its descriptor, reads once, verifies with the embedded key, and extracts only the regular binary for the requested version/target. Missing proof fails closed.
+Copy authenticated bytes into an exclusively created helper-owned 0700 temporary file, close its writable descriptor, then use that same private copy for selftest and slot installation; automatic cleanup and the existing rollback/health-check flow remain intact.

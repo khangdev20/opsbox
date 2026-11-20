@@ -193,7 +193,7 @@ crates/opsbox-proto/src/lib.rs: use doctor::{CheckStatus, DoctorCheck, DoctorRep
 crates/opsbox-proto/src/lib.rs: use files::{DirListing, FileContent, FileEntry, FileKind, Staged}
 crates/opsbox-proto/src/lib.rs: use metrics::{CpuTimes, DiskIo, DiskUsage, MemInfo, NetIf, RawProc, RawSample, SystemFacts}
 crates/opsbox-proto/src/lib.rs: use network::{ AdoptedDomain, AdoptedRoutes, ListenerAction, PortContainer, PortHolder, PortTakeover, PortTarget, ProxyNetwork, WebDiff, WebMove, WebPlan, }
-crates/opsbox-proto/src/lib.rs: use privilege::{ HostInfo, PrivError, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, Secret, }
+crates/opsbox-proto/src/lib.rs: use privilege::{ HostInfo, PrivError, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, Secret, UpdateVerification, }
 crates/opsbox-proto/src/lib.rs: use pty::{MAX_PTY_DIM, MAX_PTY_PAYLOAD, PtyFrame, PtyFrameError, SystemUser, clamp_size}
 crates/opsbox-proto/src/lib.rs: use role::Role
 crates/opsbox-proto/src/lib.rs: use security::{HostSettings, SecurityScan}
@@ -235,6 +235,7 @@ crates/opsbox-proto/src/privilege.rs: struct PrivError
 crates/opsbox-proto/src/privilege.rs: struct PrivRequest  A request frame. `id` correlates the response and the logs on both sides; `serve`
 crates/opsbox-proto/src/privilege.rs: struct PrivResponse  A response frame. `id` echoes the request id (empty when the request was too
 crates/opsbox-proto/src/privilege.rs: struct Secret  A string that must never reach a log: `Debug` prints `[redacted]`. Serializes as a
+crates/opsbox-proto/src/privilege.rs: struct UpdateVerification  Untrusted release proof, checked again with the helper's embedded public key.
 crates/opsbox-proto/src/pty.rs: const MAX_PTY_DIM  Largest terminal size accepted, in either direction.
 crates/opsbox-proto/src/pty.rs: const MAX_PTY_PAYLOAD  Largest payload of a single stream frame. Terminal output is cut into pieces of this
 crates/opsbox-proto/src/pty.rs: enum PtyFrame  One message on a PTY stream.

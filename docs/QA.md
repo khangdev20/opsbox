@@ -1129,3 +1129,20 @@ Owner checks — disposable Multipass opsbox-vm with a recoverable snapshot:
 3. Inspect sudo journalctl -u opsbox-priv --since '5 minutes ago' for priv_op_forbidden, Proxy, the proxy's actual UID/PID, fix27-owner, pty_open and Forbidden, with no secret payload or trusted actor claim. Issue/renew an ACME staging certificate for a controlled domain, restart the proxy, and verify persisted encrypted certificates reload. Confirm ordinary panel Admin jobs/files/terminal still work. Tunnel with ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>.
 
 No commit, push, tag or installation was attempted for fix 27.
+
+## Fix 28 — Root helper verifies staged updates
+
+**Fixed in fix 28** (live signed-update and rollback owner checks pending).
+
+The helper previously validated only a staged file's location/type, then executed its mutable pathname as root. SelfUpdateInstall now requires SHA-256 and minisign proof for the release archive. Both panel and CLI stage that archive without running it; priv opens it descriptor-relative inside xfer, reads it once, checks SHA-256 and the embedded minisign key, and extracts only the regular binary at the requested version/target path. The public key cannot be supplied by the caller. The extracted bytes go to an exclusively created helper-owned 0700 temporary file; its writable descriptor closes before selftest, and slot installation reads that same private copy. Temporary files clean up on success/error. Existing rollback and health-check scheduling remain in place. No dependencies were added.
+
+Strict TDD: marker scripts with no signature and with changed bytes were written first. Replaying the original validation/selftest sequence made both fail because selftest created the marker. With the fix, both return Refused at the expected signature/checksum check and neither marker exists. A third regression verifies effective-UID ownership, exact 0700 mode, successful selftest after caller staging replacement, installation of the original bytes, rollback to the prior slot and temporary-file cleanup. Archive tests cover expected version/target extraction and refusal of a different version.
+
+Validation: cargo check --workspace passes. All three focused helper regressions and all 21 opsbox-update tests pass. Requested cargo test -p opsbox-priv reaches 236 passing library tests and three existing environment failures (socket bind denied, setuid bit stripped, uptime sysctl denied). Requested cargo test -p opsbox-api reaches 72 passing library tests and four socket-bind denials in TLS tests. Both full runs stop before integration suites. Formatting, Clippy, release-build and generated-index results are recorded in STATUS.md. Commands use timeout 120 and the local stable Rust toolchain on PATH.
+
+Owner checks — disposable Multipass opsbox-vm with a recoverable snapshot:
+1. From /home/ubuntu/opsbox, run timeout 120 cargo check --workspace, timeout 120 cargo test -p opsbox-priv, timeout 120 cargo test -p opsbox-api and timeout 120 cargo test -p opsbox-update. All must pass on Linux. The unsigned/modified marker tests must return Refused without creating a marker.
+2. Build with CARGO_TARGET_DIR=~/target cargo build --release and install with sudo sh install.sh --dev --binary ~/target/release/opsbox. Tunnel the UI with ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>. Use a genuine signed release matching the server architecture: check both panel update and opsbox update --version <signed-version>, successful selftest, restart and healthy current slot. Verify that staged archives are removed after success and no opsbox-verified-* temporary file remains.
+3. Using the snapshot between trials, verify a normal rollback with sudo opsbox rollback and the existing unhealthy-update automatic rollback path. Confirm the prior signed slot and schema checks still work. Test an upgrade from the preceding alpha as well: its old helper installs the new binary, after which the new helper requires archive proof for subsequent updates. Do not use a real production host for failure injection.
+
+No commit, push, tag or installation was attempted for fix 28.

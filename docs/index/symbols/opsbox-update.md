@@ -8,7 +8,7 @@ crates/opsbox-update/src/lib.rs: const MINISIGN_PUBKEY  Minisign public key comp
 crates/opsbox-update/src/lib.rs: enum UpdateError
 crates/opsbox-update/src/lib.rs: mod release
 crates/opsbox-update/src/lib.rs: mod slots
-crates/opsbox-update/src/lib.rs: use release::{ CACHE_TTL_SECS, Channel, CheckResult, DEFAULT_REPO, HttpFetcher, HttpReply, NoOfferReason, ReleaseChecker, ReleaseFetcher, ReleaseInfo, check_latest, check_latest_default_channel, current_target, default_channel, download_and_verify, download_and_verify_for_target, select_release, select_release_default_channel, verify_minisign, verify_sha256, }
+crates/opsbox-update/src/lib.rs: use release::{ CACHE_TTL_SECS, Channel, CheckResult, DEFAULT_REPO, HttpFetcher, HttpReply, NoOfferReason, ReleaseChecker, ReleaseFetcher, ReleaseInfo, check_latest, check_latest_default_channel, current_target, default_channel, download_and_verify, download_and_verify_for_target, download_for_install, extract_release_binary, select_release, select_release_default_channel, verify_minisign, verify_sha256, }
 crates/opsbox-update/src/lib.rs: use slots::{ BIN_SLOTS_DIR, SYMLINK_PATH, SlotLayout, SlotMeta, UPDATE_STATE_PATH, UpdateOutcome, UpdateState, }
 crates/opsbox-update/src/release.rs: const CACHE_TTL_SECS  How long a fetched release list is reused before GitHub is asked again.
 crates/opsbox-update/src/release.rs: const DEFAULT_REPO
@@ -22,6 +22,8 @@ crates/opsbox-update/src/release.rs: fn current_target  Target triple for releas
 crates/opsbox-update/src/release.rs: fn default_channel  The channel to use when neither the panel setting nor the config file names one:
 crates/opsbox-update/src/release.rs: fn download_and_verify  Download `opsbox-<version>-<target>.tar.gz`, verify SHA-256 + minisign signature,
 crates/opsbox-update/src/release.rs: fn download_and_verify_for_target
+crates/opsbox-update/src/release.rs: fn download_for_install  Download the signed archive for the root helper; do not execute caller-writable files.
+crates/opsbox-update/src/release.rs: fn extract_release_binary  Extract only a regular binary from an already authenticated release archive.
 crates/opsbox-update/src/release.rs: fn new
 crates/opsbox-update/src/release.rs: fn parse
 crates/opsbox-update/src/release.rs: fn select_release  Pick the highest matching release from a GitHub Releases JSON payload.
