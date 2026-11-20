@@ -585,3 +585,7 @@ Show the escaped failure inline with Retry; clear it for a deliberate retry or t
 ## Fix 12 — Actionable empty lists
 Use shared empty() guidance for empty folders, updates, services, scheduled jobs, filtered journal results and snapshots; reuse upload, refresh, add-job and backup actions.
 Services has no filter control, so cover its empty response and the existing unit journal filter; non-admin snapshot guidance asks an administrator and offers Refresh.
+
+## Fix 13 — Coarse-pointer selection targets
+Keep checkbox/radio artwork at 22px; give inputs a 44px pseudo-element hit area and labels a 44px minimum, without press scaling that shrinks the target.
+Stretch selection hit areas over Files/Updates rows on coarse pointers, unpinning their first cell so the row contains the overlay; raise file links above it and preserve desktop CSS density.
