@@ -12,6 +12,7 @@ mod client;
 mod config;
 mod io;
 mod ops;
+mod proxy_identity;
 mod secrets;
 mod server;
 
@@ -21,11 +22,13 @@ pub use client::{
 };
 pub use config::{
     DEFAULT_APPS_DIR, DEFAULT_BACKUP_CACHE_DIR, DEFAULT_BACKUP_DIR, DEFAULT_MASTER_KEY_PATH,
-    DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR, PrivConfig, resolve_users,
+    DEFAULT_PROXY_SOCKET_PATH, DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR,
+    PrivConfig, ProxySocketConfig, resolve_users,
 };
 pub use io::PtyIoError;
 pub use ops::managed_dirs::prepare as prepare_managed_dirs;
 pub use ops::{base32_encode, cleanup, code_at, uninstall, verify_at, web as web_ops};
+pub use proxy_identity::prepare_proxy_identity;
 pub use server::{PrivServer, ServerError};
 
 /// Version reported by `Ping`, so `status` can notice a stale helper after an update.

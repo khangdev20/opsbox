@@ -27,6 +27,8 @@ BACKUP_CACHE_DIR="/var/cache/opsbox/restic"
 CONF_DIR="/etc/opsbox"
 UNIT_DIR="/etc/systemd/system"
 SVC_USER="opsbox"
+PROXY_USER="opsbox-proxy"
+PROXY_STATE_DIR="$STATE_DIR/proxy"
 
 VERSION=""
 CHANNEL=""
@@ -446,17 +448,17 @@ run install -d -m 0755 -o root -g root "$CONF_DIR"
 # /var/lib/opsbox is writable by the unprivileged `opsbox` user (the database lives
 # there) but root executes the binaries under bin/. Without the sticky bit that user
 # could rename bin/ away and plant its own binary, which root would then run. Mode
-# 1770 means it can create files here but cannot rename or delete entries it does
+# 1771 means it can create files here but cannot rename or delete entries it does
 # not own, such as bin/.
 [ ! -L "$STATE_DIR" ] || die "$STATE_DIR is a symlink; refusing to install"
-run install -d -m 1770 -o root -g "$SVC_USER" "$STATE_DIR"
+run install -d -m 1771 -o root -g "$SVC_USER" "$STATE_DIR"
 # BEGIN managed-state-dirs
 # Temporarily remove panel write access while migrating panel-owned legacy dirs.
 # The sticky parent then protects the root-owned entries from replacement.
 prepare_managed_state_dirs() (
   if [ "$DRY_RUN" -ne 1 ]; then
     chmod 0700 "$STATE_DIR"
-    trap 'chmod 1770 "$STATE_DIR"' EXIT
+    trap 'chmod 1771 "$STATE_DIR"' EXIT
   fi
   for managed_name in apps xfer trash; do
     [ ! -L "$STATE_DIR/$managed_name" ] ||
@@ -468,7 +470,40 @@ prepare_managed_state_dirs() (
 )
 prepare_managed_state_dirs
 # END managed-state-dirs
-run install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$STATE_DIR/proxy"
+# BEGIN proxy-identity
+# Shared verbatim with helper startup so an update from an older binary migrates
+# before systemd restarts the proxy. No shared group with the panel is needed.
+prepare_proxy_identity() (
+  [ ! -L "$STATE_DIR" ] || die "$STATE_DIR is a symlink; refusing proxy migration"
+  getent group "$PROXY_USER" >/dev/null 2>&1 || run groupadd --system "$PROXY_USER"
+  if ! getent passwd "$PROXY_USER" >/dev/null 2>&1; then
+    NOLOGIN=/usr/sbin/nologin
+    [ -x "$NOLOGIN" ] || NOLOGIN=/sbin/nologin
+    [ -x "$NOLOGIN" ] || NOLOGIN=/bin/false
+    run useradd --system --gid "$PROXY_USER" --no-create-home --home-dir /nonexistent --shell "$NOLOGIN" "$PROXY_USER"
+  fi
+  # Allow traversal to proxy/ without granting database listing or group access.
+  # Remove parent write access while repairing legacy panel-owned state.
+  run chmod 0700 "$STATE_DIR"
+  trap 'run chmod 1771 "$STATE_DIR"' EXIT
+  [ ! -L "$PROXY_STATE_DIR" ] || die "$PROXY_STATE_DIR is a symlink; refusing proxy migration"
+  if [ "$DRY_RUN" -eq 1 ] || [ ! -d "$PROXY_STATE_DIR" ] ||
+     [ "$(ls -nd "$PROXY_STATE_DIR" | awk '{print $3}')" != "$(getent passwd "$PROXY_USER" | cut -d: -f3)" ]; then
+    # Stop the legacy writer before migrating its encrypted certificates/routes.
+    if [ -d /run/systemd/system ]; then
+      run systemctl stop opsbox.service opsbox-proxy.service
+    fi
+    run mkdir -p "$PROXY_STATE_DIR"
+    if [ "$DRY_RUN" -ne 1 ] && [ -n "$(find "$PROXY_STATE_DIR" -type f -links +1 -print -quit)" ]; then
+      die "proxy state contains hard links; refusing ownership migration"
+    fi
+    # Never dereference links planted in the old service-owned state tree.
+    run chown -hR -P "$PROXY_USER:$PROXY_USER" "$PROXY_STATE_DIR"
+  fi
+  run chmod 0700 "$PROXY_STATE_DIR"
+)
+prepare_proxy_identity
+# END proxy-identity
 run install -d -m 0755 -o root -g root "$SLOT_DIR"
 run install -d -m 0700 -o root -g root "$BACKUP_DIR"
 run install -d -m 0700 -o root -g root "$BACKUP_CACHE_DIR"
@@ -493,6 +528,7 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 
 # [priv]
 # socket = "/run/opsbox/priv.sock"
+# proxy_socket = "/run/opsbox/priv-proxy.sock"
 # allowed_users = ["opsbox", "root"]
 
 # [proxy]

@@ -77,6 +77,7 @@ impl Default for ApiSection {
 #[serde(default, deny_unknown_fields)]
 struct PrivSection {
     socket: PathBuf,
+    proxy_socket: PathBuf,
     allowed_users: Vec<String>,
     allowed_uids: Vec<u32>,
     socket_mode: String,
@@ -88,6 +89,7 @@ impl Default for PrivSection {
     fn default() -> Self {
         Self {
             socket: opsbox_priv::DEFAULT_SOCKET_PATH.into(),
+            proxy_socket: opsbox_priv::DEFAULT_PROXY_SOCKET_PATH.into(),
             // `root` so that an administrator can run `sudo opsbox status`.
             allowed_users: vec!["opsbox".into(), "root".into()],
             allowed_uids: Vec::new(),
@@ -272,6 +274,7 @@ pub struct Config {
     /// `serve` terminates TLS itself (always true unless `listen` is on loopback).
     pub tls: bool,
     pub priv_socket: PathBuf,
+    pub priv_proxy_socket: PathBuf,
     pub allowed_users: Vec<String>,
     pub allowed_uids: Vec<u32>,
     pub socket_mode: u32,
@@ -314,6 +317,7 @@ pub struct Config {
 pub struct Overrides {
     pub listen: Option<SocketAddr>,
     pub priv_socket: Option<PathBuf>,
+    pub priv_proxy_socket: Option<PathBuf>,
     pub db_path: Option<PathBuf>,
     pub allow_uids: Vec<u32>,
     pub allow_users: Vec<String>,
@@ -363,7 +367,7 @@ impl Overrides {
                 o.proxy_listen_https = a.https;
                 o.proxy_socket.clone_from(&a.proxy_socket);
                 o.proxy_state_dir.clone_from(&a.state_dir);
-                o.priv_socket.clone_from(&a.socket);
+                o.priv_proxy_socket.clone_from(&a.socket);
                 o.acme_staging = a.staging;
             }
             Command::Status(a) => {
@@ -425,6 +429,7 @@ impl Config {
             listen,
             tls: file.api.tls,
             priv_socket: o.priv_socket.unwrap_or(file.privileged.socket),
+            priv_proxy_socket: o.priv_proxy_socket.unwrap_or(file.privileged.proxy_socket),
             allowed_users,
             allowed_uids,
             socket_mode: parse_mode(&mode)?,
@@ -660,6 +665,22 @@ mod tests {
         let c = Config::load(Some(&path), Overrides::default()).unwrap();
         assert_eq!(c.listen.port(), 1234);
         assert_eq!(c.loaded_from.as_deref(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn proxy_helper_socket_is_separate_and_cli_override_targets_it() {
+        use clap::Parser;
+        let cli =
+            Cli::try_parse_from(["opsbox", "proxy", "--socket", "/tmp/proxy-helper.sock"]).unwrap();
+        let c = load_str("", Overrides::from_cli(&cli)).unwrap();
+        assert_eq!(c.priv_proxy_socket, Path::new("/tmp/proxy-helper.sock"));
+        assert_eq!(c.priv_socket, Path::new(opsbox_priv::DEFAULT_SOCKET_PATH));
+        let c = load_str(
+            "[priv]\nproxy_socket = \"/tmp/custom-proxy.sock\"\n",
+            Overrides::default(),
+        )
+        .unwrap();
+        assert_eq!(c.priv_proxy_socket, Path::new("/tmp/custom-proxy.sock"));
     }
 
     #[test]

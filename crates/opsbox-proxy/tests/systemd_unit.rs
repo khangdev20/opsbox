@@ -56,3 +56,10 @@ fn proxy_database_is_inaccessible() {
         "proxy must hide the database"
     );
 }
+
+#[test]
+fn proxy_runs_as_a_separate_identity() {
+    assert_eq!(service_values("User"), ["opsbox-proxy"]);
+    assert_eq!(service_values("Group"), ["opsbox-proxy"]);
+    assert!(service_values("SupplementaryGroups").is_empty());
+}

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use nix::unistd::User;
 
+pub const DEFAULT_PROXY_SOCKET_PATH: &str = "/run/opsbox/priv-proxy.sock";
 pub const DEFAULT_SOCKET_PATH: &str = "/run/opsbox/priv.sock";
 pub const DEFAULT_MASTER_KEY_PATH: &str = "/etc/opsbox/master.key";
 pub const DEFAULT_XFER_DIR: &str = "/var/lib/opsbox/xfer";
@@ -12,6 +13,14 @@ pub const DEFAULT_DB_PATH: &str = "/var/lib/opsbox/opsbox.db";
 pub const DEFAULT_BACKUP_DIR: &str = "/var/backups/opsbox";
 pub const DEFAULT_BACKUP_CACHE_DIR: &str = "/var/cache/opsbox/restic";
 
+/// Separate listener identity. The kernel UID must match this socket's role.
+#[derive(Debug, Clone)]
+pub struct ProxySocketConfig {
+    pub path: PathBuf,
+    pub uid: u32,
+    pub group: Option<String>,
+}
+
 /// Everything the server needs, already resolved (no user names left).
 #[derive(Debug, Clone)]
 pub struct PrivConfig {
@@ -19,6 +28,7 @@ pub struct PrivConfig {
     pub capacity_image_size_mb: Option<u64>,
     pub capacity_profile: Option<opsbox_capacity::Profile>,
     pub socket_path: PathBuf,
+    pub proxy_socket: Option<ProxySocketConfig>,
     /// Only processes running as one of these user ids may talk to `priv`.
     pub allowed_uids: Vec<u32>,
     /// File mode of the socket, e.g. `0o660`.
@@ -59,6 +69,7 @@ impl PrivConfig {
         Self {
             socket_path: socket_path.into(),
             allowed_uids,
+            proxy_socket: None,
             socket_mode: 0o660,
             socket_group: None,
             master_key_path: DEFAULT_MASTER_KEY_PATH.into(),

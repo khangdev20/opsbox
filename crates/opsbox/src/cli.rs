@@ -166,7 +166,7 @@ pub struct ProxyArgs {
     /// Directory for proxy state and encrypted certificates [default: /var/lib/opsbox/proxy]
     #[arg(long, env = "OPSBOX_PROXY_STATE_DIR", value_name = "PATH")]
     pub state_dir: Option<PathBuf>,
-    /// Privileged helper socket [default: /run/opsbox/priv.sock]
+    /// Proxy privileged helper socket [default: /run/opsbox/priv-proxy.sock]
     #[arg(long, env = "OPSBOX_PRIV_SOCKET", value_name = "PATH")]
     pub socket: Option<PathBuf>,
     /// Use Let's Encrypt staging environment

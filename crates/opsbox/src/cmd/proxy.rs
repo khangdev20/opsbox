@@ -26,7 +26,7 @@ pub fn run(config: Config) -> Result<()> {
         AcmeDirectory::Production
     };
 
-    let mut proxy_cfg = ProxyConfig::new(&config.priv_socket);
+    let mut proxy_cfg = ProxyConfig::new(&config.priv_proxy_socket);
     proxy_cfg.listen_http = config.proxy_listen_http;
     proxy_cfg.listen_https = config.proxy_listen_https;
     proxy_cfg.fallback_http = config.proxy_fallback_http;

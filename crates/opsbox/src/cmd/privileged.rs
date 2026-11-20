@@ -7,6 +7,8 @@ use crate::config::{Config, DEFAULT_CONFIG_PATH};
 
 pub fn run(config: Config, explicit_config: Option<&std::path::Path>) -> Result<()> {
     if geteuid().is_root() {
+        opsbox_priv::prepare_proxy_identity(&config.proxy_state_dir)
+            .context("cannot prepare the proxy identity")?;
         opsbox_priv::prepare_managed_dirs(&config.apps_dir, &config.xfer_dir, &config.trash_dir)
             .map_err(|e| {
                 anyhow::anyhow!("cannot prepare opsbox state directories: {}", e.message)
@@ -33,6 +35,16 @@ pub fn run(config: Config, explicit_config: Option<&std::path::Path>) -> Result<
     }
 
     let mut priv_config = PrivConfig::new(&config.priv_socket, uids);
+    let (proxy_uids, _) = resolve_users(&["opsbox-proxy".into()]);
+    if let Some(&uid) = proxy_uids.first() {
+        priv_config.proxy_socket = Some(opsbox_priv::ProxySocketConfig {
+            path: config.priv_proxy_socket.clone(),
+            uid,
+            group: Some("opsbox-proxy".into()),
+        });
+    } else if geteuid().is_root() {
+        bail!("opsbox-proxy user is missing; re-run the installer");
+    }
     priv_config.socket_mode = config.socket_mode;
     priv_config.socket_group.clone_from(&config.socket_group);
     priv_config.master_key_path.clone_from(&config.master_key);

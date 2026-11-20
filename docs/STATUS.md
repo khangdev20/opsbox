@@ -1,24 +1,27 @@
 # Status
 
-Last prompt done: **Fix 25 — Internet-facing proxy can write the database**.
-No commit, push, tag or installation attempted, as requested; changes remain on `dev`.
+Last prompt done: **Fix 26 — Give the proxy its own system user and socket**.
+No commit, push, tag or installation attempted; changes remain on `dev`, as requested.
 
 ## Completed
-- Limit proxy ReadWritePaths to /var/lib/opsbox/proxy under ProtectSystem=strict; hide xfer and the existing opsbox.db with InaccessiblePaths.
-- Confirm proxy persistence needs only routes, adopted listeners, ACME accounts and encrypted certificates under its own state directory.
-- Retain existing installer directory creation/unit copying; no duplicate unit definition needs changing.
-- Add three unit-file regressions, update decisions/QA/fix table and archive fix 25; regenerate the index.
+- Run proxy as opsbox-proxy:opsbox-proxy; add a separate root:opsbox-proxy 0660 helper socket at /run/opsbox/priv-proxy.sock, configurable in [priv].
+- Match kernel peer UID to the accepting listener before parsing; reject shared UID/path configurations and retain socket origin in tracing; clean up both sockets on shutdown.
+- Share idempotent installer/root-helper-startup migration for accounts and encrypted state; refresh the installed proxy unit on binary-only updates from older helpers.
+- Keep private proxy state and root sticky parent traversal without sharing the panel group; retain authenticated panel access to the proxy control socket.
+- Add socket/UID, service-user, migration and configuration regressions; update decisions/QA/config docs, archive fix 26 and regenerate maps.
 
 ## Verification
-- Strict TDD: all three unit-file tests failed before the service change, then passed; they check database ancestry, writable proxy state, strict protection and both hidden paths.
-- Requested full proxy tests: nine library tests pass; four existing socket-bind tests fail with sandbox Operation not permitted, stopping Cargo before integration tests. All nine socket-free library tests pass separately.
-- Focused all-target Clippy with warnings denied, formatting, whitespace, index regeneration and freshness checks pass; generated maps are unchanged.
-- `timeout 120 cargo build --release` passed in 1m22s with the pre-existing rust-objcopy/libLLVM debug-stripping warning.
-- Linux service namespace enforcement, fresh installation and real certificate issue/renew/reload remain owner checks in docs/QA.md.
+- Strict TDD failures observed before implementation for service identity, new socket API, migration block and CLI socket routing.
+- All 18 configuration tests, four service-unit tests, migration harness and shared-UID refusal pass.
+- New two-socket integration test compiles but cannot bind in this sandbox; Linux owner run remains required.
+- Requested cargo check --workspace passes. Full priv tests: 228 pass, three existing environment failures (socket denial, stripped setuid, denied uptime sysctl). Full proxy tests: nine pass, four existing socket-denial failures. Cargo stops before integration suites.
+- Focused all-target Clippy with warnings denied, formatting and shell syntax pass.
+- Final release build passes (1m21s), with the existing rust-objcopy/libLLVM debug-stripping warning. Index regeneration/freshness, shell syntax and whitespace checks pass.
+- Exact fresh/reinstall/binary-update, ownership, ACME and cross-socket refusal checks are in docs/QA.md. Rollback to pre-dual-socket binaries needs matching service/state restoration.
 
 ## Limits and next prompt
-- Database exclusion permits a missing file so fresh proxy startup precedes panel SQLite creation. Parent stays read-only; restart the proxy after creation to hide the new database from reads too.
-- Next: Fix 26 — give the proxy its own system user, then Fix 27 helper operation authorization. This mount policy does not isolate the shared UID or helper socket.
+- Per-operation authorization on the proxy helper connection is Fix 27; this change separates identities and listeners.
+- Next: Fix 27 — helper operation authorization by caller role.
 
 ## Found, not fixed
 - Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. This broader ancestor-deletion gap needs a separate fix; do not try it on an installed host.
@@ -32,4 +35,4 @@ No commit, push, tag or installation attempted, as requested; changes remain on 
 - Navigation maps/lookup remain lexical rather than Rust/JavaScript type resolution.
 
 ## Next
-- Fix 25 — Restrict the internet-facing proxy's writable paths.
+- Fix 27 — Authorize helper operations by caller role.

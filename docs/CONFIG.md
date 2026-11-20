@@ -21,6 +21,7 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 |---|---|---|---|---|
 | `[api] listen` | `0.0.0.0:8443` | `--listen ADDR` | `OPSBOX_LISTEN` | serve, status |
 | `[priv] socket` | `/run/opsbox/priv.sock` | `--socket PATH` | `OPSBOX_PRIV_SOCKET` | serve, priv, status |
+| `[priv] proxy_socket` | `/run/opsbox/priv-proxy.sock` | `proxy --socket PATH` | `OPSBOX_PRIV_SOCKET` (proxy only) | priv, proxy |
 | `[priv] allowed_users` | `["opsbox", "root"]` | `--allow-user NAME` (repeatable, or comma list) | `OPSBOX_PRIV_ALLOW_USERS` | priv |
 | `[priv] allowed_uids` | `[]` | `--allow-uid UID` (repeatable, or comma list) | `OPSBOX_PRIV_ALLOW_UIDS` | priv |
 | `[priv] socket_mode` | `"0660"` | `--socket-mode MODE` | `OPSBOX_PRIV_SOCKET_MODE` | priv |
@@ -60,7 +61,9 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 
 ### What the privileged-helper settings mean
 
-`priv` accepts a connection only if the connecting process runs as one of the allowed users. The kernel reports who is on the other end (`SO_PEERCRED` on Linux); the check happens before anything the peer sent is read. Names in `allowed_users` are looked up when `priv` starts; names that do not exist are skipped with a warning. If nobody is allowed, `priv` refuses to start.
+The proxy runs as `opsbox-proxy` and connects to `[priv] proxy_socket`, fixed at root:opsbox-proxy 0660. That socket accepts only the proxy UID; the panel socket rejects that UID, even if an allow-list accidentally includes it (startup fails). Proxy and panel use separate groups. The proxy control socket remains accessible to panel/root via kernel UID checks. Operation restrictions for the proxy helper connection are tracked separately in Fix 27.
+
+`priv` accepts a connection on the panel socket only if the connecting process runs as one of the allowed users. The kernel reports who is on the other end (`SO_PEERCRED` on Linux); the check happens before anything the peer sent is read. Names in `allowed_users` are looked up when `priv` starts; names that do not exist are skipped with a warning. If nobody is allowed, `priv` refuses to start.
 
 The default includes `root` so an administrator can run `sudo opsbox status`. Remove it if you do not want that.
 

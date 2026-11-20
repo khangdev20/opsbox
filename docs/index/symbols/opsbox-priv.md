@@ -128,19 +128,22 @@ crates/opsbox-priv/src/config.rs: const DEFAULT_BACKUP_DIR
 crates/opsbox-priv/src/config.rs: const DEFAULT_CONFIG_PATH
 crates/opsbox-priv/src/config.rs: const DEFAULT_DB_PATH
 crates/opsbox-priv/src/config.rs: const DEFAULT_MASTER_KEY_PATH
+crates/opsbox-priv/src/config.rs: const DEFAULT_PROXY_SOCKET_PATH
 crates/opsbox-priv/src/config.rs: const DEFAULT_SOCKET_PATH
 crates/opsbox-priv/src/config.rs: const DEFAULT_TRASH_DIR
 crates/opsbox-priv/src/config.rs: const DEFAULT_XFER_DIR
 crates/opsbox-priv/src/config.rs: fn new
 crates/opsbox-priv/src/config.rs: fn resolve_users  Look up user names in the system user database.
 crates/opsbox-priv/src/config.rs: struct PrivConfig  Everything the server needs, already resolved (no user names left).
+crates/opsbox-priv/src/config.rs: struct ProxySocketConfig  Separate listener identity. The kernel UID must match this socket's role.
 crates/opsbox-priv/src/io.rs: enum PtyIoError
 crates/opsbox-priv/src/lib.rs: const VERSION  Version reported by `Ping`, so `status` can notice a stale helper after an update.
 crates/opsbox-priv/src/lib.rs: use client::{ ClientError, DeployBuildSession, DockerLogSession, InstallUpload, PrivClient, PtyReader, PtySession, PtyWriter, }
-crates/opsbox-priv/src/lib.rs: use config::{ DEFAULT_APPS_DIR, DEFAULT_BACKUP_CACHE_DIR, DEFAULT_BACKUP_DIR, DEFAULT_MASTER_KEY_PATH, DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR, PrivConfig, resolve_users, }
+crates/opsbox-priv/src/lib.rs: use config::{ DEFAULT_APPS_DIR, DEFAULT_BACKUP_CACHE_DIR, DEFAULT_BACKUP_DIR, DEFAULT_MASTER_KEY_PATH, DEFAULT_PROXY_SOCKET_PATH, DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR, PrivConfig, ProxySocketConfig, resolve_users, }
 crates/opsbox-priv/src/lib.rs: use io::PtyIoError
 crates/opsbox-priv/src/lib.rs: use ops::managed_dirs::prepare as prepare_managed_dirs
 crates/opsbox-priv/src/lib.rs: use ops::{base32_encode, cleanup, code_at, uninstall, verify_at, web as web_ops}
+crates/opsbox-priv/src/lib.rs: use proxy_identity::prepare_proxy_identity
 crates/opsbox-priv/src/lib.rs: use server::{PrivServer, ServerError}
 crates/opsbox-priv/src/ops/access.rs: fn add_to  Append `line` to the file's text.
 crates/opsbox-priv/src/ops/access.rs: fn groups_of  The groups a user belongs to (primary group first).
@@ -315,6 +318,7 @@ crates/opsbox-priv/src/ops/units.rs: fn valid_service_name  `ssh.service`, `dock
 crates/opsbox-priv/src/ops/watchdog.rs: fn status_from_path
 crates/opsbox-priv/src/ops/web.rs: fn replace_listen_in_toml  Replace `[api] listen = "..."` in `raw` with `listen`, inserting `[api]` if absent.
 crates/opsbox-priv/src/ops/web.rs: fn set_listen_in_toml  Update or add `[api]\nlisten = "..."` in `raw` TOML text, preserving any custom port
+crates/opsbox-priv/src/proxy_identity.rs: fn prepare_proxy_identity  Create the separate account and migrate only proxy state. Root startup calls
 crates/opsbox-priv/src/secrets.rs: enum SecretError
 crates/opsbox-priv/src/secrets.rs: fn derive_backup_password  Derive the deterministic restic repository password from the 32-byte master key.
 crates/opsbox-priv/src/secrets.rs: fn new

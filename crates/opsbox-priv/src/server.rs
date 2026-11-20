@@ -38,6 +38,7 @@ pub enum ServerError {
 
 pub struct PrivServer {
     listener: UnixListener,
+    proxy_listener: Option<UnixListener>,
     config: PrivConfig,
 }
 
@@ -47,7 +48,44 @@ impl PrivServer {
     /// A stale socket file left by a crashed process is replaced. A socket that
     /// still answers, or any non-socket file, is never touched.
     pub fn bind(config: PrivConfig) -> Result<Self, ServerError> {
-        let path = config.socket_path.as_path();
+        if let Some(proxy) = &config.proxy_socket
+            && (proxy.path == config.socket_path || config.allowed_uids.contains(&proxy.uid))
+        {
+            return Err(ServerError::Prepare {
+                path: proxy.path.display().to_string(),
+                source: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "proxy requires a separate socket and UID",
+                ),
+            });
+        }
+        let listener = Self::bind_socket(
+            &config.socket_path,
+            config.socket_mode,
+            &config.socket_group,
+        )?;
+        let proxy_listener = match &config.proxy_socket {
+            Some(proxy) => match Self::bind_socket(&proxy.path, 0o660, &proxy.group) {
+                Ok(listener) => Some(listener),
+                Err(error) => {
+                    let _ = std::fs::remove_file(&config.socket_path);
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
+        Ok(Self {
+            listener,
+            proxy_listener,
+            config,
+        })
+    }
+
+    fn bind_socket(
+        path: &Path,
+        mode: u32,
+        group: &Option<String>,
+    ) -> Result<UnixListener, ServerError> {
         let prep = |source| ServerError::Prepare {
             path: path.display().to_string(),
             source,
@@ -62,21 +100,23 @@ impl PrivServer {
         let std_listener = std::os::unix::net::UnixListener::bind(path).map_err(prep)?;
         std_listener.set_nonblocking(true).map_err(prep)?;
 
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(config.socket_mode))
-            .map_err(prep)?;
-        if let Some(name) = &config.socket_group {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(prep)?;
+        if let Some(name) = group {
             match Group::from_name(name) {
                 Ok(Some(group)) => {
                     std::os::unix::fs::chown(path, None, Some(group.gid.as_raw())).map_err(prep)?;
                 }
                 _ => {
-                    warn!(group = %name, "socket group does not exist; leaving the socket's group unchanged")
+                    return Err(prep(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("socket group {name} does not exist"),
+                    )));
                 }
             }
         }
 
         let listener = UnixListener::from_std(std_listener).map_err(prep)?;
-        Ok(Self { listener, config })
+        Ok(listener)
     }
 
     pub fn socket_path(&self) -> &Path {
@@ -108,6 +148,13 @@ impl PrivServer {
             network_proc_root: self.config.network_proc_root.clone(),
             network_systemctl: self.config.network_systemctl.clone(),
         });
+        let proxy_allowed: Arc<[u32]> = self
+            .config
+            .proxy_socket
+            .as_ref()
+            .map(|proxy| vec![proxy.uid])
+            .unwrap_or_default()
+            .into();
         let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
         info!(
             socket = %self.config.socket_path.display(),
@@ -143,29 +190,53 @@ impl PrivServer {
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
-                accepted = self.listener.accept() => match accepted {
-                    Ok((stream, _)) => {
-                        let allowed = Arc::clone(&allowed);
-                        let permits = Arc::clone(&permits);
-                        let env = Arc::clone(&env);
-                        tokio::spawn(async move {
-                            // Held for the life of the connection.
-                            let Ok(_permit) = permits.acquire_owned().await else { return };
-                            handle_connection(stream, &allowed, &env).await;
-                        });
+                accepted = self.listener.accept() => {
+                    spawn_connection(accepted, "panel", &allowed, &permits, &env);
+                },
+                accepted = async {
+                    match &self.proxy_listener {
+                        Some(listener) => listener.accept().await,
+                        None => std::future::pending().await,
                     }
-                    Err(e) => {
-                        warn!(error = %e, "accept failed");
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
+                } => {
+                    spawn_connection(accepted, "proxy", &proxy_allowed, &permits, &env);
                 },
             }
         }
         janitor.abort();
         info!("priv shutting down");
-        if let Err(e) = std::fs::remove_file(&self.config.socket_path) {
-            debug!(error = %e, "could not remove socket file");
+        for path in std::iter::once(&self.config.socket_path)
+            .chain(self.config.proxy_socket.as_ref().map(|proxy| &proxy.path))
+        {
+            if let Err(e) = std::fs::remove_file(path) {
+                debug!(error = %e, "could not remove socket file");
+            }
         }
+    }
+}
+
+fn spawn_connection(
+    accepted: io::Result<(UnixStream, tokio::net::unix::SocketAddr)>,
+    origin: &'static str,
+    allowed: &Arc<[u32]>,
+    permits: &Arc<Semaphore>,
+    env: &Arc<Env>,
+) {
+    match accepted {
+        Ok((stream, _)) => {
+            let allowed = Arc::clone(allowed);
+            let permits = Arc::clone(permits);
+            let env = Arc::clone(env);
+            tokio::spawn(async move {
+                let Ok(_permit) = permits.acquire_owned().await else {
+                    return;
+                };
+                handle_connection(stream, &allowed, &env)
+                    .instrument(info_span!("priv_connection", socket_origin = origin))
+                    .await;
+            });
+        }
+        Err(e) => warn!(error = %e, socket_origin = origin, "accept failed"),
     }
 }
 

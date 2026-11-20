@@ -495,3 +495,71 @@ mod terminal {
         srv.stop().await;
     }
 }
+
+// Each case uses real kernel credentials. Swap which role owns the current UID
+// to exercise both directions without requiring root or changing process UIDs.
+#[tokio::test]
+async fn proxy_and_panel_socket_uids_are_separate() {
+    for proxy_is_self in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let uid = own_uid(dir.path());
+        let other = uid.wrapping_add(1);
+        let panel_uid = if proxy_is_self { other } else { uid };
+        let proxy_uid = if proxy_is_self { uid } else { other };
+        let panel_path = dir.path().join("priv.sock");
+        let proxy_path = dir.path().join("priv-proxy.sock");
+        let mut cfg = PrivConfig::new(&panel_path, vec![panel_uid]);
+        cfg.proxy_socket = Some(opsbox_priv::ProxySocketConfig {
+            path: proxy_path.clone(),
+            uid: proxy_uid,
+            group: None,
+        });
+        let server = PrivServer::bind(cfg).unwrap();
+        assert_eq!(
+            std::fs::metadata(&proxy_path).unwrap().mode() & 0o777,
+            0o660
+        );
+        let (stop, rx) = oneshot::channel();
+        let task = tokio::spawn(server.run(async {
+            let _ = rx.await;
+        }));
+        for (path, accepted) in [(&panel_path, !proxy_is_self), (&proxy_path, proxy_is_self)] {
+            let mut stream = UnixStream::connect(path).await.unwrap();
+            if accepted {
+                let req =
+                    frame::encode(&serde_json::json!({"id":"separate", "op":{"type":"ping"}}))
+                        .unwrap();
+                stream.write_all(&req).await.unwrap();
+                assert!(matches!(
+                    read_response(&mut stream).await.unwrap().result,
+                    PrivResult::Success { .. }
+                ));
+            } else {
+                // Rejection must arrive before the client supplies a request.
+                let response =
+                    tokio::time::timeout(Duration::from_secs(2), read_response(&mut stream))
+                        .await
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(failure_code(&response), PrivErrorCode::Forbidden);
+            }
+        }
+        stop.send(()).unwrap();
+        task.await.unwrap();
+        assert!(!panel_path.exists());
+        assert!(!proxy_path.exists());
+    }
+}
+
+#[tokio::test]
+async fn proxy_socket_rejects_shared_uid_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let uid = own_uid(dir.path());
+    let mut cfg = PrivConfig::new(dir.path().join("priv.sock"), vec![uid]);
+    cfg.proxy_socket = Some(opsbox_priv::ProxySocketConfig {
+        path: dir.path().join("priv-proxy.sock"),
+        uid,
+        group: None,
+    });
+    assert!(PrivServer::bind(cfg).is_err());
+}

@@ -7,8 +7,8 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=opsbox
-Group=opsbox
+User=opsbox-proxy
+Group=opsbox-proxy
 ExecStart=/usr/local/bin/opsbox proxy
 Restart=always
 RestartSec=2
@@ -43,7 +43,7 @@ SystemCallFilter=@system-service
 UMask=0077
 MemoryMax=256M
 
-# Creates /run/opsbox-proxy (opsbox:opsbox 0755) for proxy.sock and preserves it across restarts.
+# Creates /run/opsbox-proxy (opsbox-proxy:opsbox-proxy 0755) for proxy.sock and preserves it across restarts.
 RuntimeDirectory=opsbox-proxy
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes

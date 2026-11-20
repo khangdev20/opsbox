@@ -449,7 +449,9 @@ fn bind_control_socket(path: &Path) -> Result<UnixListener, ProxyServerError> {
     }
     let std_listener = std::os::unix::net::UnixListener::bind(path).map_err(prep)?;
     std_listener.set_nonblocking(true).map_err(prep)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o660)).map_err(prep)?;
+    // Panel and proxy have separate groups. Kernel UID checks below authenticate
+    // control clients before parsing; granting connect does not grant operations.
+    fs::set_permissions(path, fs::Permissions::from_mode(0o666)).map_err(prep)?;
     UnixListener::from_std(std_listener).map_err(prep)
 }
 
