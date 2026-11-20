@@ -3,6 +3,7 @@
 Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 
 ## Completed
+- Fix 16: service deletion reports the first cleanup failure and preserves the database record for retry; removes an empty project network and the app directory after container cleanup, retaining attached sibling networks and persistent volumes.
 - Fix 15: image-source app PATCH validates and saves the configured image reference; Settings offers Change image with a Redeploy hint, preserving retained releases for rollback.
 - Fix 14: concurrent Cleanup scans share one HTTP request; unmount aborts it, clears its deadline and prevents late responses from updating the page/cache or disturbing a newer request.
 - Fix 13: coarse-pointer checkboxes/radios retain 22px artwork with 44px hit areas and labels; Files/Updates selection spans rows while file links remain tappable and desktop density is unchanged.
@@ -26,6 +27,7 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Mapped Linux openat2 confinement races (EAGAIN) to Refused while continuing to deny the operation; reproduced the prior intermittent Internal error under parallel file tests.
 
 ## Verification
+- Fix 16: both test-first fake-Docker regressions and all four helper deploy unit tests pass, plus 30 Docker/protocol tests; all-target Clippy, formatting and whitespace checks pass. HTTP cleanup/failure/record-preservation/retry regressions compile but sandbox Unix socket binds block execution. Owner HTTP and live VM checks are in QA 17. No commit or push was attempted, as requested.
 - Fix 15: both test-first Rust PATCH regressions and all five related Node/DOM tests pass; crate check/all-target Clippy, formatting, JS syntax and whitespace checks pass. Pull/new-tag/rollback coverage was added to deploy_http, whose local socket bind is denied by the sandbox; owner rerun and live checks are in QA 17. No commit or push was attempted, as requested.
 - Fix 14: six test-first Node/DOM regressions cover shared fresh scans, retry, navigation abort, reopening and late responses; all 44 focused/related tests pass. Git pull/staging are blocked by read-only metadata; owner Git/CI/release and VM checks are in QA 22.
 - Fix 13: test-first Chromium regression now passes at 390px with coarse-pointer emulation, real touch activation, disabled controls and scrolled-row selection; 1440px desktop screenshot comparison passes. Git metadata writes remain blocked; owner Git/VM completion is in QA 11.
@@ -46,6 +48,6 @@ Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
 - Full Linux Clippy, workspace tests, dependency audit, release builds, version stamping, and signed release artifacts are checked by GitHub Actions.
 
 ## Next
-- Run fix 04/05/06/07/08/09/10/11/12/13/14/15 Linux/VM checks and complete pending Git/CI/release work from a host terminal; next fix is 16 (empty-project network cleanup). Fix 15 commit/push was excluded by request.
+- Run fix 04/05/06/07/08/09/10/11/12/13/14/15/16 Linux/VM checks and complete pending Git/CI/release work from a host terminal; next fix is 17 (readiness route documentation). Fix 15/16 commit/push was excluded by request.
 - Verify the alpha release's x86_64/arm64 archives, checksums, signatures, SBOM, and installer on GitHub Releases.
 - Smoke-test the table and notification views at desktop/mobile widths on an updated server.

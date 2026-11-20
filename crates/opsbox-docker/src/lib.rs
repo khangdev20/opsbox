@@ -1503,6 +1503,39 @@ impl DockerClient {
         }
     }
 
+    /// Remove the project bridge only when no containers remain attached.
+    /// Docker also rejects removal if a container attaches after inspection.
+    pub async fn remove_empty_project_network(&self, project: &str) -> Result<(), DockerError> {
+        if !opsbox_proto::valid_service_name(project) {
+            return Err(DockerError::Invalid("Invalid project name.".into()));
+        }
+        let docker = self.connect().await?;
+        let name = format!("opsbox-{project}");
+        let network = match docker
+            .inspect_network(&name, None::<InspectNetworkOptions>)
+            .await
+        {
+            Ok(network) => network,
+            Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => return Ok(()),
+            Err(e) => return Err(DockerError::from_bollard(e, "inspect project network")),
+        };
+        if network
+            .containers
+            .is_some_and(|containers| !containers.is_empty())
+        {
+            return Ok(());
+        }
+        match docker.remove_network(&name).await {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(()),
+            Err(e) => Err(DockerError::from_bollard(e, "remove project network")),
+        }
+    }
+
     /// Ensure a managed local named Docker volume (`opsbox-vol-...`) exists.
     pub async fn ensure_volume(
         &self,

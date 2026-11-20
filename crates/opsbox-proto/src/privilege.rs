@@ -387,8 +387,9 @@ pub enum PrivOp {
         service: String,
         image_refs: Vec<String>,
     },
-    /// Remove a service's containers, retained images, and app directory.
+    /// Remove service resources and its project network if empty.
     DeployDeleteService {
+        project: String,
         service: String,
         container_ids: Vec<String>,
         image_refs: Vec<String>,

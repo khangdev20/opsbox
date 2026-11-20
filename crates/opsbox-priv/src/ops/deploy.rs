@@ -1377,33 +1377,96 @@ pub fn prune_images_with(
     Ok(removed)
 }
 
+// Keep the Docker dependency injectable so partial-delete behavior can be tested
+// without a daemon or privileged socket.
+trait ServiceDeleteDocker {
+    fn containers(&self) -> Result<Vec<opsbox_proto::DockerContainer>, PrivError>;
+    fn remove_container(&self, id: &str) -> Result<(), PrivError>;
+    fn prune_images(&self, service: &str, images: &[String]) -> Result<(), PrivError>;
+    fn remove_empty_network(&self, project: &str) -> Result<(), PrivError>;
+}
+
+impl ServiceDeleteDocker for Env {
+    fn containers(&self) -> Result<Vec<opsbox_proto::DockerContainer>, PrivError> {
+        block_on_fut(self.docker.list_containers())?
+            .map_err(|e| map_docker_err(e, self.docker.socket_path()))
+    }
+
+    fn remove_container(&self, id: &str) -> Result<(), PrivError> {
+        stop_container_with(self, id)
+    }
+
+    fn prune_images(&self, service: &str, images: &[String]) -> Result<(), PrivError> {
+        let prefix = format!("opsbox/{service}:");
+        for image in images {
+            if image.starts_with(&prefix) && valid_docker_image_ref(image) {
+                block_on_fut(self.docker.remove_image(image))?
+                    .map_err(|e| map_docker_err(e, self.docker.socket_path()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_empty_network(&self, project: &str) -> Result<(), PrivError> {
+        block_on_fut(self.docker.remove_empty_project_network(project))?
+            .map_err(|e| map_docker_err(e, self.docker.socket_path()))
+    }
+}
+
 pub fn delete_service_with(
     env: &Env,
+    project: &str,
     service: &str,
     container_ids: &[String],
     image_refs: &[String],
 ) -> Result<(), PrivError> {
-    if !valid_service_name(service) {
-        return Err(err(PrivErrorCode::Invalid, "Invalid service name."));
+    delete_service_resources(
+        env,
+        &env.apps_dir,
+        project,
+        service,
+        container_ids,
+        image_refs,
+    )
+}
+
+fn delete_service_resources(
+    docker: &impl ServiceDeleteDocker,
+    apps_dir: &Path,
+    project: &str,
+    service: &str,
+    container_ids: &[String],
+    image_refs: &[String],
+) -> Result<(), PrivError> {
+    if !valid_service_name(service)
+        || !valid_service_name(project)
+        || container_ids.iter().any(|id| !valid_docker_ref(id))
+    {
+        return Err(err(
+            PrivErrorCode::Invalid,
+            "Invalid service, project or container ID.",
+        ));
     }
     for cid in container_ids {
-        if valid_docker_ref(cid) {
-            let _ = block_on_fut(env.docker.force_stop_and_remove_container(cid));
+        docker.remove_container(cid)?;
+    }
+    for c in docker.containers()? {
+        if c.labels.get("opsbox.service").map(String::as_str) == Some(service) {
+            docker.remove_container(&c.full_id)?;
         }
     }
-    if let Ok(Ok(all)) = block_on_fut(env.docker.list_containers()) {
-        for c in all {
-            if c.labels.get("opsbox.service").map(String::as_str) == Some(service) {
-                let _ = block_on_fut(env.docker.force_stop_and_remove_container(&c.full_id));
-            }
-        }
+    docker.prune_images(service, image_refs)?;
+    // This endpoint has no volume-removal opt-in; persistent volumes are retained.
+    docker.remove_empty_network(project)?;
+    let svc_dir = apps_dir.join(service);
+    match std::fs::remove_dir_all(&svc_dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(err(
+            PrivErrorCode::Internal,
+            format!("Could not remove app directory: {e}"),
+        )),
     }
-    let _ = prune_images_with(env, service, image_refs)?;
-    let svc_dir = env.apps_dir.join(service);
-    if svc_dir.exists() {
-        let _ = std::fs::remove_dir_all(&svc_dir);
-    }
-    Ok(())
 }
 
 pub(crate) async fn bounded_builder(env: &Env, id: &str) -> Result<BuildGuard, PrivError> {
@@ -1480,6 +1543,127 @@ impl Drop for BuildGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FakeDeleteDocker {
+        calls: std::cell::RefCell<Vec<String>>,
+        failure: &'static str,
+        sibling: bool,
+    }
+
+    impl FakeDeleteDocker {
+        fn call(&self, action: String) -> Result<(), PrivError> {
+            self.calls.borrow_mut().push(action.clone());
+            if action == self.failure {
+                Err(err(PrivErrorCode::Internal, "injected removal failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl ServiceDeleteDocker for FakeDeleteDocker {
+        fn containers(&self) -> Result<Vec<opsbox_proto::DockerContainer>, PrivError> {
+            self.call("list".into())?;
+            Ok([("orphan", "web"), ("sibling", "other")]
+                .into_iter()
+                .map(|(id, service)| opsbox_proto::DockerContainer {
+                    id: id.into(),
+                    full_id: id.into(),
+                    name: id.into(),
+                    image: "nginx:1.27".into(),
+                    state: "exited".into(),
+                    status: String::new(),
+                    created: 1,
+                    ports: String::new(),
+                    port_list: vec![],
+                    labels: [("opsbox.service".into(), service.into())].into(),
+                    managed: true,
+                    service: Some(service.into()),
+                    deploy: None,
+                })
+                .collect())
+        }
+        fn remove_container(&self, id: &str) -> Result<(), PrivError> {
+            self.call(format!("container:{id}"))
+        }
+        fn prune_images(&self, _: &str, _: &[String]) -> Result<(), PrivError> {
+            self.call("images".into())
+        }
+        fn remove_empty_network(&self, project: &str) -> Result<(), PrivError> {
+            if self.sibling {
+                return Ok(());
+            }
+            self.call(format!("network:{project}"))
+        }
+    }
+
+    #[test]
+    fn service_delete_cleanup_last_app_and_sibling() {
+        for sibling in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path().join("web");
+            std::fs::create_dir(&app).unwrap();
+            std::fs::write(app.join("source"), "data").unwrap();
+            let docker = FakeDeleteDocker {
+                calls: Default::default(),
+                failure: "",
+                sibling,
+            };
+            delete_service_resources(
+                &docker,
+                dir.path(),
+                "project-a",
+                "web",
+                &["release".into()],
+                &[],
+            )
+            .unwrap();
+            assert!(!app.exists());
+            let mut expected = vec!["container:release", "list", "container:orphan", "images"];
+            if !sibling {
+                expected.push("network:project-a");
+            }
+            assert_eq!(*docker.calls.borrow(), expected);
+        }
+    }
+
+    #[test]
+    fn service_delete_cleanup_stops_on_each_failure() {
+        for failure in [
+            "container:release",
+            "list",
+            "container:orphan",
+            "images",
+            "network:project-a",
+            "directory",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let app = dir.path().join("web");
+            if failure == "directory" {
+                std::fs::write(&app, "blocked").unwrap();
+            } else {
+                std::fs::create_dir(&app).unwrap();
+            }
+            let docker = FakeDeleteDocker {
+                calls: Default::default(),
+                failure,
+                sibling: false,
+            };
+            let result = delete_service_resources(
+                &docker,
+                dir.path(),
+                "project-a",
+                "web",
+                &["release".into()],
+                &[],
+            );
+            assert!(result.is_err(), "delete hid {failure}");
+            assert!(app.exists(), "delete continued after {failure}");
+            if failure != "directory" {
+                assert_eq!(docker.calls.borrow().last().unwrap(), failure);
+            }
+        }
+    }
 
     #[test]
     fn rejects_invalid_repo_urls_and_secret_contexts() {

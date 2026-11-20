@@ -331,10 +331,11 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             image_refs,
         } => deploy::prune_images_with(env, service, image_refs).map(PrivReply::PrunedImages),
         PrivOp::DeployDeleteService {
+            project,
             service,
             container_ids,
             image_refs,
-        } => deploy::delete_service_with(env, service, container_ids, image_refs)
+        } => deploy::delete_service_with(env, project, service, container_ids, image_refs)
             .map(|()| PrivReply::Done),
         PrivOp::TemplateStart(req) => {
             templates_compose::start_template_with(env, req).map(PrivReply::DeployStarted)

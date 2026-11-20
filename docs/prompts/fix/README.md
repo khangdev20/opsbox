@@ -32,6 +32,6 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 13 | Touch targets below 44 px ([13-touch-targets-44.md](archive/13-touch-targets-44.md)) | Fixed in fix 13 |
 | 14 | Cleanup scans pile up ([14-cleanup-scan-overlap.md](archive/14-cleanup-scan-overlap.md)) | Fixed in fix 14 |
 | 15 | Cannot change an image service's tag ([15-image-tag-update.md](archive/15-image-tag-update.md)) | Fixed in fix 15 |
-| 16 | Deleting the last app leaves its network and directory (`16-project-network-cleanup.md`) | |
+| 16 | Deleting the last app leaves its network and directory ([16-project-network-cleanup.md](archive/16-project-network-cleanup.md)) | Fixed in fix 16 |
 | 17 | Docs say /health/ready but the route is /readyz (`17-readyz-doc-mismatch.md`) | |
 | 18 | Why did creating a database report that the helper is not running? (`18-db-create-priv-diagnosis.md`) | |

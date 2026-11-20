@@ -369,6 +369,7 @@ impl DockerHarness {
         cfg.xfer_dir = root.join("xfer");
         cfg.trash_dir = root.join("trash");
         cfg.docker_socket = docker_sock.to_path_buf();
+        cfg.apps_dir = root.join("apps");
         let server = PrivServer::bind(cfg).unwrap();
         let (stop, rx) = oneshot::channel::<()>();
         let task = tokio::spawn(server.run(async {
@@ -800,4 +801,209 @@ async fn missing_docker_vs_stopped_daemon_map_to_distinct_status_codes() {
     assert_eq!(list_stopped.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(list_stopped.error_code(), "unavailable");
     h_stopped.shutdown().await;
+}
+
+// Fix 16: exercise the real DELETE handler, helper and Docker client together.
+async fn check_service_delete_cleanup(failure: &str, sibling: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("docker.sock");
+    let listener = UnixListener::bind(&sock).unwrap();
+    let actions = Arc::new(Mutex::new(Vec::<String>::new()));
+    let requests = actions.clone();
+    let failure_path = Arc::new(Mutex::new(failure.to_owned()));
+    let injected = failure_path.clone();
+    let daemon = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let requests = requests.clone();
+            let injected = injected.clone();
+            tokio::spawn(async move {
+                let Some((method, target)) = read_http_req(&mut stream).await else {
+                    return;
+                };
+                let path = strip_api_prefix(target.split('?').next().unwrap());
+                let action = format!("{method} {path}");
+                requests.lock().unwrap().push(action.clone());
+                let fail = injected.lock().unwrap().clone();
+                if fail == action
+                    || (fail == "images" && method == "DELETE" && path.starts_with("/images/"))
+                {
+                    write_http_json(
+                        &mut stream,
+                        500,
+                        "Error",
+                        &json!({"message": "injected removal failure"}),
+                    )
+                    .await;
+                    return;
+                }
+                match (method.as_str(), path) {
+                    ("GET", "/version") => write_http_json(&mut stream, 200, "OK", &json!({"ApiVersion": "1.47", "Version": "27.4.0"})).await,
+                    // Include an unrecorded managed container: deletion must discover old releases.
+                    ("GET", "/containers/json") => write_http_json(&mut stream, 200, "OK", &json!([{
+                        "Id": "old-release", "Names": ["/old-release"], "Labels": {"opsbox.service": "web", "opsbox.project": "default"}
+                    }, {"Id": "sibling", "Names": ["/sibling"], "Labels": {"opsbox.service": "other", "opsbox.project": "default"}}])).await,
+                    ("GET", "/networks/opsbox-default") => {
+                        let containers = if sibling { json!({"sibling": {"Name": "other"}}) } else { json!({}) };
+                        write_http_json(&mut stream, 200, "OK", &json!({"Name": "opsbox-default", "Containers": containers, "Labels": {"opsbox.project": "default"}})).await;
+                    }
+                    ("DELETE", p) if p.starts_with("/images/") => write_http_json(&mut stream, 200, "OK", &json!([])).await,
+                    ("POST", p) if p.ends_with("/stop") => write_http_empty(&mut stream, 204, "No Content").await,
+                    ("DELETE", p) if p.starts_with("/containers/") || p == "/networks/opsbox-default" => write_http_empty(&mut stream, 204, "No Content").await,
+                    _ => write_http_json(&mut stream, 404, "Not Found", &json!({"message": "missing"})).await,
+                }
+            });
+        }
+    });
+    let h = DockerHarness::with_docker_socket(&sock);
+    let mut admin = h.signed_in("cleanup-admin", Role::Admin);
+    let (project, env) = h.store.ensure_default_project(1).unwrap();
+    let svc = h
+        .store
+        .create_service(opsbox_store::NewService {
+            project_id: &project.id,
+            env_id: &env.id,
+            name: "web",
+            kind: opsbox_store::ServiceKind::App,
+            owner_id: None,
+            source_kind: opsbox_store::SourceKind::DockerImage,
+            repo: "",
+            branch: "main",
+            build_method: "auto",
+            dockerfile_path: None,
+            start_cmd: None,
+            port: 80,
+            health_path: "/",
+            domain: None,
+            image_ref: Some("nginx:1.27"),
+            deploy_key_id: None,
+            auto_deploy: false,
+            memory_limit_mb: None,
+            cpu_limit_millis: None,
+            graph_x: 0,
+            graph_y: 0,
+            note: None,
+            now: 1,
+        })
+        .unwrap();
+    let deploy = h
+        .store
+        .create_deploy(
+            &svc.id,
+            None,
+            "fixture",
+            opsbox_store::DeployTrigger::Manual,
+            "cleanup-admin",
+            1,
+        )
+        .unwrap();
+    h.store
+        .complete_deploy_switch(
+            &svc.id,
+            &deploy.id,
+            "opsbox/web:release",
+            "release",
+            0,
+            None,
+            1,
+        )
+        .unwrap();
+    let app_dir = h.state.files.apps_dir.join("web");
+    if failure == "directory" {
+        // A file where a directory belongs reliably fails remove_dir_all, even as root.
+        std::fs::write(&app_dir, "blocked").unwrap();
+    } else {
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("source"), "data").unwrap();
+    }
+    let reply = admin
+        .send(
+            Method::DELETE,
+            &format!("/api/v1/services/{}", svc.id),
+            None,
+            Opts::default(),
+        )
+        .await;
+    if failure.is_empty() {
+        assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+        assert!(h.store.get_service(&svc.id).unwrap().is_none());
+        assert!(!app_dir.exists(), "app directory remains");
+        let calls = actions.lock().unwrap();
+        assert!(calls.iter().any(|c| c == "DELETE /containers/old-release"));
+        assert!(!calls.iter().any(|c| c == "DELETE /containers/sibling"));
+        assert!(
+            !calls.iter().any(|c| c.starts_with("DELETE /volumes/")),
+            "volumes require explicit consent"
+        );
+        assert_eq!(
+            calls.iter().any(|c| c == "DELETE /networks/opsbox-default"),
+            !sibling,
+            "network must be removed only when empty: {calls:?}"
+        );
+        if !sibling {
+            let container = calls
+                .iter()
+                .position(|c| c == "DELETE /containers/old-release")
+                .unwrap();
+            let network = calls
+                .iter()
+                .position(|c| c == "DELETE /networks/opsbox-default")
+                .unwrap();
+            assert!(container < network);
+        }
+    } else {
+        assert!(
+            !reply.status.is_success(),
+            "delete hid {failure}: {}",
+            reply.text()
+        );
+        assert!(
+            h.store.get_service(&svc.id).unwrap().is_some(),
+            "failed delete lost its retry record"
+        );
+        assert!(app_dir.exists(), "cleanup continued past its first failure");
+        // A partial delete remains retryable; missing resources must be harmless.
+        failure_path.lock().unwrap().clear();
+        if failure == "directory" {
+            std::fs::remove_file(&app_dir).unwrap();
+        }
+        let retry = admin
+            .send(
+                Method::DELETE,
+                &format!("/api/v1/services/{}", svc.id),
+                None,
+                Opts::default(),
+            )
+            .await;
+        assert_eq!(retry.status, StatusCode::OK, "{}", retry.text());
+        assert!(h.store.get_service(&svc.id).unwrap().is_none());
+    }
+    h.shutdown().await;
+    daemon.abort();
+}
+
+#[tokio::test]
+async fn service_delete_cleanup_last_app_removes_network_and_directory() {
+    check_service_delete_cleanup("", false).await;
+}
+
+#[tokio::test]
+async fn service_delete_cleanup_preserves_network_with_sibling() {
+    check_service_delete_cleanup("", true).await;
+}
+
+#[tokio::test]
+async fn service_delete_cleanup_failures_keep_record_for_retry() {
+    for failure in [
+        "POST /containers/release/stop",
+        "DELETE /containers/release",
+        "GET /containers/json",
+        "POST /containers/old-release/stop",
+        "DELETE /containers/old-release",
+        "images",
+        "GET /networks/opsbox-default",
+        "DELETE /networks/opsbox-default",
+        "directory",
+    ] {
+        check_service_delete_cleanup(failure, false).await;
+    }
 }

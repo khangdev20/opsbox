@@ -1464,6 +1464,7 @@ impl PrivClient {
         &self,
         rid: &str,
         actor: &str,
+        project: &str,
         service: &str,
         container_ids: Vec<String>,
         image_refs: Vec<String>,
@@ -1474,6 +1475,7 @@ impl PrivClient {
                 rid,
                 actor,
                 PrivOp::DeployDeleteService {
+                    project: project.to_owned(),
                     service: service.to_owned(),
                     container_ids,
                     image_refs,

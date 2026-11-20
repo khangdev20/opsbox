@@ -597,3 +597,7 @@ Unmount aborts the scan and releases its deadline/slot; aborted responses cannot
 ## Fix 15 — Update image-source app references
 PATCH accepts image (and create's image_ref/imageRef aliases), trims and validates with create's validator, then persists image_ref for generic image-source apps.
 Settings shows the configured image with an editor and Redeploy hint; deploy admission and retained-release rollback keep their existing paths.
+
+## Fix 16 — Fail service deletion on incomplete cleanup
+Pass the validated project name to the helper; remove recorded/discovered service containers, prune retained images, remove only an empty project network, then remove the app directory; preserve volumes because this endpoint has no volume-removal opt-in.
+Return the first cleanup error and keep the database record until the helper succeeds; missing containers, networks and directories remain safe to retry, and Docker rejects network-removal races with new attachments.

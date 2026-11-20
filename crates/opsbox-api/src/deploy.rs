@@ -1542,9 +1542,14 @@ pub(crate) async fn delete_service(
                 .map_err(|_| HttpError::internal())?;
         }
     } else {
+        let (project, _) = state
+            .store
+            .resolve_project(&svc.project_id, now_secs())
+            .map_err(|_| HttpError::internal())?
+            .ok_or_else(HttpError::internal)?;
         state
             .priv_client
-            .deploy_delete_service(&rid, &who.user.name, &svc.name, cids, imgs)
+            .deploy_delete_service(&rid, &who.user.name, &project.name, &svc.name, cids, imgs)
             .await?;
 
         state
