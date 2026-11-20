@@ -366,6 +366,8 @@ mod tests {
         }
         let captured = Arc::new(Mutex::new(String::new()));
         tracing::subscriber::with_default(Capture(Arc::clone(&captured)), || {
+            // The callsite may have been cached as disabled before this subscriber existed.
+            tracing::callsite::rebuild_interest_cache();
             let request = PrivRequest {
                 id: "audit-27".into(),
                 actor: Some("forged-admin".into()),
