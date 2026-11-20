@@ -646,3 +646,7 @@ Check normalized names before mutations and during symlink traversal with a clea
 Install/migrate apps as root:opsbox 0750, xfer as root:opsbox 0770 and trash as root:root 0700; refuse symlinks. Temporarily remove parent write access while migrating legacy directories, then restore the sticky parent mode.
 Prepare directories before helper startup after binary updates and before self-update activation. Runtime helper access uses O_NOFOLLOW|O_DIRECTORY, owner/mode checks and descriptor-relative children; the API only opens and validates xfer, never creates or chmods it.
 Keep new service children accessible to their parent group despite UMask=0077; stage downloads as root:opsbox 0640 so the panel can read them. Update downloads require an existing real transfer directory.
+
+## Fix 25 — Limit proxy filesystem writes to its own state
+Keep ProtectSystem=strict and allow writes only under /var/lib/opsbox/proxy; routes, adopted listeners, ACME accounts and encrypted certificates all live there. Hide /var/lib/opsbox/xfer and the existing /var/lib/opsbox/opsbox.db with InaccessiblePaths.
+Allow the database exclusion to be absent at startup (- prefix): a fresh install starts the proxy before the panel creates SQLite. Its parent remains read-only; restart the proxy after database creation to hide that new file as well. The installer already creates the proxy directory and copies the packaged unit, so no installer change is needed. Separate proxy UID/helper authorization remain fixes 26/27.

@@ -1,22 +1,24 @@
 # Status
 
-Last prompt done: **Fix 24 — Root-owned apps/, xfer/ and trash/ directories**.
+Last prompt done: **Fix 25 — Internet-facing proxy can write the database**.
 No commit, push, tag or installation attempted, as requested; changes remain on `dev`.
 
 ## Completed
-- Finish the started managed-directory hardening; retain the portable `Mode::from_raw_mode(mode as _)` conversion.
-- Install/migrate apps as root:opsbox 0750, xfer as root:opsbox 0770 and trash as root:root 0700; refuse directory symlinks and protect legacy migration against parent renames.
-- Prepare configured directories at root-helper startup after binary upgrades and before self-update activation; update downloading requires an existing real xfer directory.
-- Use checked no-follow directory descriptors for helper roots/children, uploads, downloads, Trash moves/purges and staged-update verification; API opens/validates xfer without creating or chmodding it.
-- Preserve service-group access under UMask=0077 and stage root-owned downloads with group-readable 0640 permissions.
-- Update decisions, QA evidence/owner checks and the fix table; archive fix 24 and regenerate the index.
+- Limit proxy ReadWritePaths to /var/lib/opsbox/proxy under ProtectSystem=strict; hide xfer and the existing opsbox.db with InaccessiblePaths.
+- Confirm proxy persistence needs only routes, adopted listeners, ACME accounts and encrypted certificates under its own state directory.
+- Retain existing installer directory creation/unit copying; no duplicate unit definition needs changing.
+- Add three unit-file regressions, update decisions/QA/fix table and archive fix 25; regenerate the index.
 
 ## Verification
-- API symlink regression failed before the change by altering the target mode, then passed; five managed helper regressions pass, including unchanged symlink targets and fresh/migration preparation.
-- Required two-crate cargo check and both requested focused test commands pass; all 30 other file tests pass when skipping the known environment-sensitive mode-display test.
-- Installer scratch harness passes fresh install, legacy-mode migration and all three symlink refusals; actual shell control flow runs with recorded owner/group arguments and real mkdir/chmod.
-- Focused all-target Clippy, formatting, shell syntax and whitespace checks pass; generated maps refreshed and freshness check passes.
-- `timeout 120 cargo build --release` passed in 1m29s with the pre-existing rust-objcopy/libLLVM warning. Linux installation/upgrade and real root chown/systemd remain owner checks in docs/QA.md.
+- Strict TDD: all three unit-file tests failed before the service change, then passed; they check database ancestry, writable proxy state, strict protection and both hidden paths.
+- Requested full proxy tests: nine library tests pass; four existing socket-bind tests fail with sandbox Operation not permitted, stopping Cargo before integration tests. All nine socket-free library tests pass separately.
+- Focused all-target Clippy with warnings denied, formatting, whitespace, index regeneration and freshness checks pass; generated maps are unchanged.
+- `timeout 120 cargo build --release` passed in 1m22s with the pre-existing rust-objcopy/libLLVM debug-stripping warning.
+- Linux service namespace enforcement, fresh installation and real certificate issue/renew/reload remain owner checks in docs/QA.md.
+
+## Limits and next prompt
+- Database exclusion permits a missing file so fresh proxy startup precedes panel SQLite creation. Parent stays read-only; restart the proxy after creation to hide the new database from reads too.
+- Next: Fix 26 — give the proxy its own system user, then Fix 27 helper operation authorization. This mount policy does not isolate the shared UID or helper socket.
 
 ## Found, not fixed
 - Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. This broader ancestor-deletion gap needs a separate fix; do not try it on an installed host.
@@ -25,6 +27,7 @@ No commit, push, tag or installation attempted, as requested; changes remain on 
 - Prior Fix 19/20 helper lifecycle, Fix 21 Safe Mode filtering/TLS isolation, and Fix 22 Linux activation/credential-consumer checks remain owner follow-ups.
 - Existing installed job files retain their old modes until separately reviewed/recreated (Fix 22 secures newly written files).
 - Historical database-create failure still needs QA 03 VM request/journal/kernel evidence; no OOM, timeout or panic cause is claimed.
+- Prior Fix 24 live installation/upgrade, root ownership and managed-directory checks remain owner follow-ups.
 - Prior CI/release work remains pending; prior runtime target remains `v0.1.0-alpha.43`.
 - Navigation maps/lookup remain lexical rather than Rust/JavaScript type resolution.
 

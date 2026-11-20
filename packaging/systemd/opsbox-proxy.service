@@ -17,7 +17,11 @@ RestartSec=2
 # holds only CAP_NET_BIND_SERVICE, and encrypts/decrypts keys via opsbox-priv.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/opsbox
+ReadWritePaths=/var/lib/opsbox/proxy
+InaccessiblePaths=/var/lib/opsbox/xfer
+# The panel creates the DB after proxy startup on a fresh install. Until then,
+# ProtectSystem=strict keeps its parent read-only; an existing DB is hidden.
+InaccessiblePaths=-/var/lib/opsbox/opsbox.db
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

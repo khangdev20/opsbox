@@ -1077,3 +1077,21 @@ Owner checks — disposable Multipass `opsbox-vm` with a recoverable snapshot:
 4. With services stopped and a snapshot available, move one managed directory aside as root, replace its name with a symlink to a scratch directory containing a sentinel, then run the installer. It must refuse without changing the target's owner, mode or contents. Starting the new helper must also fail safely. Restore the directory before repeating for the other two names and restarting services. Never use a real system directory as the symlink target.
 
 No commit, push, tag or installation was attempted in this session.
+
+## Fixed in fix 25 — Proxy filesystem write access (2026-11-20)
+
+Fixed in fix 25. `packaging/systemd/opsbox-proxy.service` now permits writes only to `/var/lib/opsbox/proxy` under `ProtectSystem=strict`. `InaccessiblePaths` hides `/var/lib/opsbox/xfer` and the existing database. The proxy's persistent files are routes, adopted listeners, ACME accounts and encrypted certificates under its own state directory; it does not need SQLite or xfer. `install.sh` already creates that directory and installs this unit directly.
+
+The database exclusion has a `-` prefix so first installation can start the proxy before the panel creates SQLite. If absent at proxy startup, the new database is still on the read-only parent mount, but read concealment requires a proxy restart after creation. Existing installations hide the database immediately on restart. This filesystem restriction does not replace the separate UID/helper authorization work in fixes 26/27.
+
+Strict TDD: all three new `tests/systemd_unit.rs` regressions failed against the original unit: `/var/lib/opsbox` granted database write access, and neither inaccessible path was present. After the unit change all three pass. The tests inspect effective repeated/reset directives in `[Service]`, check path ancestry by components (including direct database grants and optional path prefixes), require the proxy state directory to remain writable and retain `ProtectSystem=strict`.
+
+Validation: `cargo test -p opsbox-proxy` ran nine passing library tests and four failures at sandbox-denied socket binds (`Operation not permitted`); Cargo stopped before integration tests. The three new unit-file tests pass when run separately, as do all nine socket-free library tests. Focused all-target Clippy with warnings denied, formatting and index regeneration pass. Release-build/final freshness results are recorded in docs/STATUS.md. Commands use `timeout 120` and the local stable Rust toolchain on PATH.
+
+Owner checks — disposable Multipass `opsbox-vm` with a recoverable snapshot:
+
+1. From `/home/ubuntu/opsbox`, run `CARGO_TARGET_DIR=~/target cargo build --release`, then `sudo sh install.sh --dev --binary ~/target/release/opsbox`. Run `timeout 120 cargo test -p opsbox-proxy` here, including the local ACME issue/renewal integration test. Check both a fresh installation and a reinstall with existing data. On a fresh install, restart `opsbox-proxy` after SQLite exists to apply database concealment.
+2. Run `sudo systemctl show opsbox-proxy -p ReadWritePaths -p InaccessiblePaths` and confirm the paths above. Get the process ID with `pid=$(systemctl show opsbox-proxy -p MainPID --value)`. Inspect its filesystem as its service user using `sudo nsenter -t "$pid" -m -- runuser -u opsbox -- sh -c 'test -w /var/lib/opsbox/proxy && ! test -w /var/lib/opsbox && ! test -r /var/lib/opsbox/xfer && ! test -r /var/lib/opsbox/opsbox.db'`; require success. Do not test by writing real database bytes. A read-only `cat` of either hidden path in that same namespace/user must be refused.
+3. Tunnel the panel with `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`. Issue and renew a certificate for a controlled domain using ACME staging, verify HTTPS, then restart the proxy and verify persisted routes/certificates reload. Confirm the database remains writable by the panel and scratch upload/download still works through the helper.
+
+No commit, push, tag or installation was attempted for fix 25.
