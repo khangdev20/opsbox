@@ -437,6 +437,10 @@ exit 0
                     ("POST", p) if p.starts_with("/containers/") && p.ends_with("/start") => {
                         write_http_empty(&mut stream, 204, "No Content").await;
                     }
+                    // Exact path first: the generic "/containers/*/json" arm below would shadow it.
+                    ("GET", "/containers/json") => {
+                        write_http_json(&mut stream, 200, "OK", &json!([])).await;
+                    }
                     ("GET", p) if p.starts_with("/containers/") && p.ends_with("/json") => {
                         let cid = p
                             .trim_start_matches("/containers/")
@@ -463,9 +467,6 @@ exit 0
                             }),
                         )
                         .await;
-                    }
-                    ("GET", "/containers/json") => {
-                        write_http_json(&mut stream, 200, "OK", &json!([])).await;
                     }
                     ("GET", p) if p.starts_with("/containers/") && p.ends_with("/logs") => {
                         write_http_empty(&mut stream, 200, "OK").await;
@@ -1034,7 +1035,7 @@ exit 0
     let _ = wait_task_done(&api_addr, (&cookie_d2, false), api_task_id).await;
 
     // 6. Delete service `web` -> removes from project and proxy returns 404 for app.example.com.
-    let (st_del, _) = req_json(
+    let (st_del, del_body) = req_json(
         &api_addr,
         Method::DELETE,
         "/api/v1/services/web",
@@ -1042,7 +1043,7 @@ exit 0
         None,
     )
     .await;
-    assert_eq!(st_del, StatusCode::OK);
+    assert_eq!(st_del, StatusCode::OK, "{del_body}");
     let (ps_gone, _) = http_get_host(proxy_http_addr, "app.example.com", "/").await;
     assert_eq!(ps_gone, 404);
 
