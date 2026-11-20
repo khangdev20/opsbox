@@ -1187,6 +1187,7 @@ pub(crate) async fn create_service(
             DeployTrigger::Manual,
             &who.user.name,
             who.via_token,
+            who.user.role,
             Some(&client.ip),
             None,
             Some("Initial deploy"),
@@ -1632,6 +1633,7 @@ pub(crate) async fn redeploy(
         trigger,
         &who.user.actor_label(),
         who.via_token,
+        who.user.role,
         Some(&client.ip),
         opts.commit.as_deref().map(str::trim),
         opts.message.as_deref().map(str::trim),
@@ -2425,6 +2427,7 @@ pub(crate) async fn trigger_webhook_deploys(
             DeployTrigger::Webhook,
             actor,
             false,
+            Role::Deployer,
             None,
             Some(commit_sha),
             commit_message,
@@ -2452,10 +2455,12 @@ pub(crate) async fn enqueue_deploy(
     trigger: DeployTrigger,
     actor: &str,
     via_token: bool,
+    role: Role,
     ip: Option<&str>,
     commit_sha: Option<&str>,
     message: Option<&str>,
 ) -> Result<(DeployRecord, String), HttpError> {
+    crate::templates::authorize_compose_redeploy(state, role, svc, rid, actor).await?;
     let approval = state.capacity_approvals.lock().unwrap().get(rid).copied();
     let _capacity_lock = if approval.is_none() {
         Some(state.capacity_lock.lock().await)
@@ -2534,6 +2539,7 @@ pub(crate) async fn enqueue_deploy(
             ip_bg,
             stream,
             capacity_override,
+            role == Role::Admin,
         )
         .await;
         drop(guard);
@@ -2674,6 +2680,7 @@ async fn run_deploy_pipeline(
     ip: Option<String>,
     stream: Arc<DeployStream>,
     capacity_override: bool,
+    compose_admin: bool,
 ) -> Result<crate::tasks::Outcome, HttpError> {
     let short_id: String = deploy_id
         .chars()
@@ -2707,6 +2714,7 @@ async fn run_deploy_pipeline(
             &rid,
             &svc,
             stack_id,
+            compose_admin,
             &project_name,
             &deploy_id,
             &actor,

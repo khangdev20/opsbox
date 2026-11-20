@@ -352,6 +352,12 @@ async fn guard_inner(state: AppState, req: Request, next: Next) -> Result<Respon
                         .get_compose_stack(stack_id)
                         .map_err(|_| HttpError::internal())?
                     {
+                        crate::templates::require_compose_admin(
+                            &state,
+                            who.user.role,
+                            &stack.compose_yaml,
+                            &stack.name,
+                        )?;
                         let doc = opsbox_deploy::compose::parse_compose_yaml(&stack.compose_yaml)
                             .map_err(|e| {
                             HttpError::new(ErrorCode::Validation, e.to_string())
@@ -390,6 +396,12 @@ async fn guard_inner(state: AppState, req: Request, next: Next) -> Result<Respon
         }
         ["compose"] => {
             if let Some(yaml) = body.get("yaml").and_then(Value::as_str) {
+                crate::templates::require_compose_admin(
+                    &state,
+                    who.user.role,
+                    yaml,
+                    body.get("stack").and_then(Value::as_str).unwrap_or(""),
+                )?;
                 let doc = opsbox_deploy::compose::parse_compose_yaml(yaml)
                     .map_err(|e| HttpError::new(ErrorCode::Validation, e.to_string()))?;
                 let (mb, cpu, build) = opsbox_deploy::compose::capacity_requirements(&doc)

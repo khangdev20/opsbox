@@ -546,6 +546,8 @@ fn looks_like_public_db_port(val: &Value) -> Option<u16> {
 
 /// Inspect a Compose YAML/JSON document for elevated privileges or host access:
 /// - `privileged: true`
+/// - capabilities, devices, security options, user namespaces, sysctls, inherited volumes
+/// - `pid: host` or `ipc: host`
 /// - `network_mode: host` (or top-level network `driver: host`)
 /// - bind mounts outside `service_dir`
 /// - public (non-loopback) database port publishing (`5432`, `3306`, `6379`, `27017`)
@@ -590,6 +592,27 @@ pub fn inspect_compose_risks(doc: &Value, service_dir: &Path) -> ComposeRiskRepo
             };
             if obj.get("privileged").is_some_and(is_truthy) {
                 reasons.insert(format!("service '{svc_name}' runs in privileged mode"));
+            }
+            for key in [
+                "cap_add",
+                "devices",
+                "security_opt",
+                "userns_mode",
+                "sysctls",
+                "volumes_from",
+            ] {
+                if obj.contains_key(key) {
+                    reasons.insert(format!("service '{svc_name}' requests {key}"));
+                }
+            }
+            for key in ["pid", "ipc"] {
+                if obj
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| v.trim().eq_ignore_ascii_case("host"))
+                {
+                    reasons.insert(format!("service '{svc_name}' uses host {key}"));
+                }
             }
             if obj
                 .get("network_mode")
@@ -750,6 +773,27 @@ pub fn capacity_requirements(doc: &Value) -> Result<(u64, u64, bool), DeployErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flags_all_elevated_service_options() {
+        for option in [
+            serde_json::json!({"cap_add": ["SYS_ADMIN"]}),
+            serde_json::json!({"pid": "host"}),
+            serde_json::json!({"ipc": "host"}),
+            serde_json::json!({"devices": ["/dev/sda:/dev/sda"]}),
+            serde_json::json!({"security_opt": ["apparmor:unconfined"]}),
+            serde_json::json!({"userns_mode": "host"}),
+            serde_json::json!({"sysctls": {"kernel.shmmax": 1000000}}),
+            serde_json::json!({"volumes_from": ["other"]}),
+            serde_json::json!({"volumes": [{"type": "bind", "source": "/", "target": "/host"}]}),
+        ] {
+            let doc = serde_json::json!({"services": {"web": option}});
+            assert!(
+                !inspect_compose_risks(&doc, Path::new("/apps/shop")).is_safe(),
+                "{doc}"
+            );
+        }
+    }
 
     #[test]
     fn accepts_safe_compose_and_contained_relative_binds() {

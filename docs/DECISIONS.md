@@ -621,3 +621,7 @@ Treat API.md drift as informational, list generic-call-only variants as lacking 
 ## Prompt 18c — Agent entry point and lookup
 Keep hand-written AGENTS.md as the shared agent entry point (CLAUDE.md delegates); reuse the index generator's lexical masks/ignore rules for a stdlib lookup accelerated by rg, with qualified definitions, name-candidate instance usages, at most 39 definitions and 20 usages.
 Run the read-only freshness check immediately after CI checkout with explicit regeneration advice and run both Python suites; use a local temporary route to verify refusal, since this session forbids commits/pushes, and leave existing generated maps unchanged when already fresh.
+
+## Fix 19 — Restrict elevated Compose to administrators
+Use the shared risk detector before capacity admission and enqueue; fail closed on YAML parse errors and require Admin for elevated raw or helper-resolved Compose, including legacy/imported stacks.
+Only Admin confirmation reaches validation/deploy; carry the authenticated role into background redeploys, while imports already require Admin and fixed-catalog template installs accept no Compose source.

@@ -8,7 +8,7 @@ use axum::Json;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use opsbox_deploy::compose::parse_compose_yaml;
+use opsbox_deploy::compose::{inspect_compose_risks, parse_compose_yaml};
 use opsbox_deploy::refs::parse_pure_var_ref;
 use opsbox_deploy::templates::{
     TemplateCategory, TemplateKind, TemplateSpec, catalog, generate_instance_env, get_template,
@@ -366,6 +366,7 @@ pub(crate) async fn create_template_instance(
         DeployTrigger::Manual,
         &who.user.actor_label(),
         who.via_token,
+        who.user.role,
         Some(&client.ip),
         None,
         Some(&format!("Create {} ({version})", tmpl.name)),
@@ -491,8 +492,73 @@ fn allocate_compose_service_name(
     unreachable!("exhausted unique service suffixes")
 }
 
+fn compose_admin_required() -> HttpError {
+    forbidden("This Compose file requests elevated access and needs an administrator.")
+}
+
+pub(crate) fn require_compose_admin(
+    state: &AppState,
+    role: Role,
+    yaml: &str,
+    stack: &str,
+) -> Result<(), HttpError> {
+    if role != Role::Admin {
+        let doc = parse_compose_yaml(yaml).map_err(|_| compose_admin_required())?;
+        if !inspect_compose_risks(&doc, &state.files.apps_dir.join(stack)).is_safe() {
+            return Err(compose_admin_required());
+        }
+    }
+    Ok(())
+}
+
+fn compose_validation_error(role: Role, error: opsbox_priv::ClientError) -> HttpError {
+    // The helper also checks the resolved config, including interpolation/extends.
+    if role != Role::Admin
+        && matches!(&error, opsbox_priv::ClientError::Remote(e)
+            if e.code == opsbox_proto::PrivErrorCode::ConfirmRequired)
+    {
+        compose_admin_required()
+    } else {
+        error.into()
+    }
+}
+
+pub(crate) async fn authorize_compose_redeploy(
+    state: &AppState,
+    role: Role,
+    svc: &ServiceRecord,
+    rid: &str,
+    actor: &str,
+) -> Result<(), HttpError> {
+    if role == Role::Admin {
+        return Ok(());
+    }
+    if let Some(stack_id) = &svc.compose_stack_id {
+        let stack = state
+            .store
+            .get_compose_stack(stack_id)
+            .map_err(|_| HttpError::internal())?
+            .ok_or_else(HttpError::not_found)?;
+        require_compose_admin(state, role, &stack.compose_yaml, &stack.name)?;
+        state
+            .priv_client
+            .compose_validate(
+                rid,
+                actor,
+                ComposeValidateRequest {
+                    stack: stack.name,
+                    yaml: stack.compose_yaml,
+                    confirm: false,
+                },
+            )
+            .await
+            .map_err(|e| compose_validation_error(role, e))?;
+    }
+    Ok(())
+}
+
 /// `POST /api/v1/compose`: validate a Compose YAML via `docker compose config` inside `priv`,
-/// enforce elevated privilege/mount confirmations (`409 confirmation_required`), deploy the
+/// require Admin for elevated access and confirmation (`409 confirmation_required`), deploy the
 /// stack (`up -d`), connect containers to `opsbox-<project>`, and register graph nodes + edges.
 pub(crate) async fn deploy_compose(
     State(state): State<AppState>,
@@ -508,9 +574,14 @@ pub(crate) async fn deploy_compose(
         return Err(invalid("yaml", "Paste a Docker Compose YAML file."));
     }
 
+    // Check before even inferring the stack name: uninspectable YAML fails closed.
+    require_compose_admin(&state, who.user.role, &body.yaml, "")?;
+
     let stack_name = pick_stack_name(body.stack.as_deref(), &body.yaml, |cand| {
         state.store.get_compose_stack(cand).ok().flatten().is_some()
     })?;
+    require_compose_admin(&state, who.user.role, &body.yaml, &stack_name)?;
+    let confirm = who.user.role == Role::Admin && body.confirm;
 
     let owner_id = resolve_owner_id(&state, &who, body.owner.as_deref())?;
     let project_key = body
@@ -569,10 +640,11 @@ pub(crate) async fn deploy_compose(
             ComposeValidateRequest {
                 stack: stack_name.clone(),
                 yaml: body.yaml.clone(),
-                confirm: body.confirm,
+                confirm,
             },
         )
-        .await?;
+        .await
+        .map_err(|e| compose_validation_error(who.user.role, e))?;
 
     let raw_names: Vec<String> = validation.services.iter().map(|s| s.name.clone()).collect();
     let raw_edges: Vec<(String, String)> = validation
@@ -596,7 +668,7 @@ pub(crate) async fn deploy_compose(
             project_name: &validation.project_name,
             service_names: &raw_names,
             depends_edges: &raw_edges,
-            confirmed: body.confirm,
+            confirmed: confirm,
             now,
         })
         .map_err(|_| HttpError::internal())?;
@@ -738,7 +810,7 @@ pub(crate) async fn deploy_compose(
     let proj_bg = proj.name.clone();
     let stack_bg = stack_name.clone();
     let yaml_bg = body.yaml.clone();
-    let confirm_bg = body.confirm || stack_rec.confirmed;
+    let confirm_bg = who.user.role == Role::Admin && (confirm || stack_rec.confirmed);
     let actor_bg = who.user.name.clone();
     let via_token = who.via_token;
     let ip_bg = client.ip.clone();
@@ -932,6 +1004,7 @@ pub(crate) async fn run_compose_service_redeploy(
     rid: &str,
     svc: &ServiceRecord,
     stack_id: &str,
+    compose_admin: bool,
     project_name: &str,
     deploy_id: &str,
     actor: &str,
@@ -987,7 +1060,7 @@ pub(crate) async fn run_compose_service_redeploy(
         project_name.to_owned(),
         stack.name,
         stack.compose_yaml,
-        stack.confirmed,
+        compose_admin && stack.confirmed,
         vars,
         targets,
         actor.to_owned(),

@@ -548,6 +548,19 @@ exit 1
     .unwrap();
     let tok_a = "sess-alice-1234567890";
     let tok_v = "sess-bob-1234567890";
+    let tok_d = "sess-dep-1234567890";
+    store
+        .create_session(
+            &deployer.id,
+            &opsbox_auth::tokens::hash_token(tok_d),
+            SessionKind::Web,
+            None,
+            None,
+            now,
+        )
+        .unwrap();
+    let deployer_csrf = opsbox_auth::tokens::csrf_token(tok_d);
+    let deployer_cookie = format!("opsbox_session={tok_d}; opsbox_csrf={deployer_csrf}");
     store
         .create_session(
             &admin.id,
@@ -792,7 +805,7 @@ exit 1
     .await;
 
     // 4. Compose refuses `network_mode: host` with 409 confirmation_required and leaves no files/rows.
-    let unsafe_yaml = "services:\n  web:\n    image: nginx:1.27-alpine\n    network_mode: host\n";
+    let unsafe_yaml = "services:\n  web:\n    image: nginx:1.27-alpine\n    network_mode: host\n    privileged: true\n";
     let (st, err_val) = send(
         &app,
         Method::POST,
@@ -840,14 +853,14 @@ exit 1
     );
 
     // 5. Safe Compose stack creates services, `depends_on` edges on graph, supports delete.
-    let shop_yaml = "services:\n  web:\n    image: nginx:1.27-alpine\n    ports: [\"127.0.0.1:3000:80\"]\n    depends_on: [cache]\n  cache:\n    image: redis:7-alpine\n";
+    let shop_yaml = "services:\n  web:\n    image: nginx:1.27-alpine\n    ports: [\"127.0.0.1:3000:80\"]\n    environment: {APP_MODE: production}\n    volumes: [cachedata:/cache]\n    depends_on: [cache]\n  cache:\n    image: redis:7-alpine\nvolumes:\n  cachedata: {}\n";
     let (st, shop_res) = send(
         &app,
         Method::POST,
         "/api/v1/compose",
-        &admin_cookie,
+        &deployer_cookie,
         false,
-        &admin_csrf,
+        &deployer_csrf,
         Some(json!({ "stack": "shop", "yaml": shop_yaml })),
     )
     .await;
@@ -897,9 +910,9 @@ exit 1
         &app,
         Method::POST,
         &format!("/api/v1/services/{shop_web_name}/deploys"),
-        &admin_cookie,
+        &deployer_cookie,
         false,
-        &admin_csrf,
+        &deployer_csrf,
         None,
     )
     .await;
