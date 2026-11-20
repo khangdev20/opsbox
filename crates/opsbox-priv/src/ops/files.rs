@@ -8,7 +8,8 @@
 //! 3. `/proc`, `/sys`, `/dev` and the master key are never touched;
 //! 4. if the request has a `jail` (a deployer's apps directory) the canonical path must be
 //!    inside the canonical jail, so a symlink cannot lead out of it;
-//! 5. changing or deleting opsbox's own binaries, database or state is refused.
+//! 5. changing or deleting opsbox's own configuration, service units, binaries,
+//!    database or state is refused.
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::{self, Metadata};
@@ -85,10 +86,11 @@ const NO_MODIFY: [&str; 6] = [
     "/var/lib/opsbox/xfer",
     "/etc/opsbox/firewall.json",
 ];
-const NO_MODIFY_DIRS: [&str; 3] = [
+const NO_MODIFY_DIRS: [&str; 4] = [
     "/var/lib/opsbox/bin",
     "/var/lib/opsbox/xfer",
     "/var/lib/opsbox/trash",
+    "/etc/opsbox",
 ];
 const NO_MODIFY_FILES: [&str; 4] = [
     "/var/lib/opsbox/opsbox.db",
@@ -166,8 +168,23 @@ impl Policy {
                 .filter_map(|p| stat(*p).ok().map(|st| DevIno::from_stat(&st)))
                 .collect()
         };
-        let no_modify_dirs = collect(&NO_MODIFY_DIRS);
-        let no_modify_files = collect(&NO_MODIFY_FILES);
+        let mut no_modify_dirs = collect(&NO_MODIFY_DIRS);
+        let mut no_modify_files = collect(&NO_MODIFY_FILES);
+        // Keep inode protection for aliases to existing units, including symlinked units.
+        if let Ok(entries) = fs::read_dir("/etc/systemd/system") {
+            for entry in entries.flatten() {
+                if !entry.file_name().as_bytes().starts_with(b"opsbox") {
+                    continue;
+                }
+                if let Ok(st) = stat(entry.path()) {
+                    if FileType::from_raw_mode(st.st_mode as _).is_dir() {
+                        no_modify_dirs.insert(DevIno::from_stat(&st));
+                    } else {
+                        no_modify_files.insert(DevIno::from_stat(&st));
+                    }
+                }
+            }
+        }
         let mut no_delete_exact = collect(&NO_DELETE);
         for p in NO_DELETE
             .iter()
@@ -223,7 +240,7 @@ impl Policy {
         if self.is_unmodifiable_stat(st) {
             Err(err(
                 PrivErrorCode::Refused,
-                "This belongs to opsbox itself and is read-only here.",
+                "Protected opsbox configuration, service or internal state is read-only through the file manager.",
             ))
         } else {
             Ok(())
@@ -266,9 +283,22 @@ fn is_denied(p: &Path) -> bool {
     DENIED.iter().any(|d| p.starts_with(d)) || DENIED_FILES.iter().any(|f| p == Path::new(f))
 }
 
+/// Protect names too: new files and drop-ins must not bypass the inode policy.
+fn is_protected_opsbox_path(p: &Path) -> bool {
+    let under_etc = |etc: &Path| {
+        p.starts_with(etc.join("opsbox"))
+            || p.strip_prefix(etc.join("systemd/system"))
+                .ok()
+                .and_then(|rel| rel.components().next())
+                .is_some_and(|c| c.as_os_str().as_bytes().starts_with(b"opsbox"))
+    };
+    under_etc(Path::new("/etc")) || fs::canonicalize("/etc").is_ok_and(|etc| under_etc(&etc))
+}
+
 #[cfg(test)]
 fn is_unmodifiable(p: &Path) -> bool {
     NO_MODIFY.iter().any(|d| p.starts_with(d))
+        || is_protected_opsbox_path(p)
         // The trash and transfer areas are managed by opsbox, never edited by hand.
         || p.starts_with("/var/lib/opsbox/trash")
 }
@@ -296,7 +326,7 @@ fn check_unmodifiable_flag(unmodifiable: bool) -> Result<(), PrivError> {
     if unmodifiable {
         Err(err(
             PrivErrorCode::Refused,
-            "This belongs to opsbox itself and is read-only here.",
+            "Protected opsbox configuration, service or internal state is read-only through the file manager.",
         ))
     } else {
         Ok(())
@@ -309,6 +339,7 @@ struct RootCtx {
     root_lex: PathBuf,
     root_real: Option<PathBuf>,
     jailed: bool,
+    modifying: bool,
     policy: Policy,
 }
 
@@ -335,6 +366,13 @@ struct WalkState {
 }
 
 impl RootCtx {
+    fn open_for_modify(path: &str, jail: Option<&str>) -> Result<(Self, Vec<String>), PrivError> {
+        check_unmodifiable_flag(is_protected_opsbox_path(&normalize_lexical(path)?))?;
+        let (mut ctx, rel) = Self::open(path, jail)?;
+        ctx.modifying = true;
+        Ok((ctx, rel))
+    }
+
     fn open(path: &str, jail: Option<&str>) -> Result<(Self, Vec<String>), PrivError> {
         let lexical = normalize_lexical(path)?;
         check_not_denied(&lexical)?;
@@ -371,6 +409,7 @@ impl RootCtx {
                     root_lex,
                     root_real,
                     jailed: true,
+                    modifying: false,
                     policy,
                 },
                 rel,
@@ -395,6 +434,7 @@ impl RootCtx {
                     root_lex: PathBuf::from("/"),
                     root_real: None,
                     jailed: false,
+                    modifying: false,
                     policy,
                 },
                 rel,
@@ -432,6 +472,15 @@ impl RootCtx {
         let raw_target = readlinkat(&state.cur_fd, link_name, Vec::new())
             .map_err(|e| r_io_err("Cannot read symbolic link", e))?;
         let target_path = Path::new(std::ffi::OsStr::from_bytes(raw_target.as_bytes()));
+        if self.modifying {
+            let mut destination = state.cur_path.join(target_path);
+            for component in queue.iter() {
+                destination.push(component);
+            }
+            check_unmodifiable_flag(is_protected_opsbox_path(&normalize_lexical(
+                &destination.to_string_lossy(),
+            )?))?;
+        }
         let mut extra = Vec::new();
         if target_path.is_absolute() {
             let stripped = if self.jailed {
@@ -567,6 +616,9 @@ impl RootCtx {
             if comp == ".." {
                 self.step_parent(&mut state)?;
                 continue;
+            }
+            if self.modifying {
+                check_unmodifiable_flag(is_protected_opsbox_path(&state.cur_path.join(&comp)))?;
             }
             if queue.is_empty() {
                 if follow_leaf_symlink
@@ -969,7 +1021,7 @@ pub(super) fn write(
             MAX_EDIT_BYTES / 1_048_576
         )));
     }
-    let (ctx, rel) = RootCtx::open(path, jail)?;
+    let (ctx, rel) = RootCtx::open_for_modify(path, jail)?;
     if rel.is_empty() {
         return Err(invalid("That is not a regular file."));
     }
@@ -1017,7 +1069,7 @@ pub fn parse_mode(text: &str) -> Result<u32, String> {
 
 pub(super) fn chmod(path: &str, mode: &str, jail: Option<&str>) -> Result<(), PrivError> {
     let bits = parse_mode(mode).map_err(invalid)?;
-    let (ctx, rel) = RootCtx::open(path, jail)?;
+    let (ctx, rel) = RootCtx::open_for_modify(path, jail)?;
     if rel.is_empty() {
         let st = fstat(&ctx.root_fd).map_err(|e| r_io_err("Cannot open the path", e))?;
         ctx.policy.check_not_denied(&st)?;
@@ -1056,7 +1108,7 @@ pub(super) fn chmod(path: &str, mode: &str, jail: Option<&str>) -> Result<(), Pr
 }
 
 pub(super) fn mkdir(path: &str, jail: Option<&str>) -> Result<(), PrivError> {
-    let (ctx, rel) = RootCtx::open(path, jail)?;
+    let (ctx, rel) = RootCtx::open_for_modify(path, jail)?;
     if rel.is_empty() {
         return Err(err(
             PrivErrorCode::Conflict,
@@ -1109,7 +1161,7 @@ pub(super) fn remove(
     // Resolve and check everything first: either all of it goes or none of it does.
     let mut targets = Vec::new();
     for raw in paths {
-        let (ctx, rel) = RootCtx::open(raw, jail)?;
+        let (ctx, rel) = RootCtx::open_for_modify(raw, jail)?;
         if rel.is_empty() {
             return Err(err(PrivErrorCode::Refused, "That cannot be removed."));
         }
@@ -1440,8 +1492,8 @@ pub(super) fn install_upload(
         return Err(invalid("That is not a valid file name."));
     }
     let (xfer_fd, staged_name, input_fd) = check_staging_at(staging, dirs)?;
-    let (ctx, mut rel) = RootCtx::open(dir, jail)?;
-    rel.push(name.to_owned());
+    let destination = Path::new(dir).join(name);
+    let (ctx, rel) = RootCtx::open_for_modify(&destination.to_string_lossy(), jail)?;
     let rp = ctx.resolve_parent_and_leaf(&rel, false)?;
     check_unmodifiable_flag(rp.unmodifiable)?;
     let dest_dir_st = fstat(&rp.parent_fd).map_err(|e| r_io_err("Cannot open the folder", e))?;
@@ -1656,7 +1708,103 @@ mod tests {
             assert!(is_unmodifiable(Path::new(p)), "{p} must be read-only");
         }
         assert!(!is_unmodifiable(Path::new("/var/lib/opsbox/apps/web/.env")));
-        assert!(!is_unmodifiable(Path::new("/etc/opsbox/config.toml")));
+        assert!(is_unmodifiable(Path::new("/etc/opsbox/config.toml")));
+    }
+
+    fn assert_opsbox_protected<T: std::fmt::Debug>(result: Result<T, PrivError>, action: &str) {
+        let error = result.expect_err(action);
+        assert_eq!(error.code, PrivErrorCode::Refused, "{action}: {error:?}");
+        assert!(
+            error.message.contains("Protected opsbox configuration")
+                && error.message.contains("service"),
+            "{action}: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn opsbox_configuration_and_services_refuse_all_file_mutations() {
+        let (_temp, root) = tmp();
+        let d = dirs(&root);
+        let staged = d.xfer.join("upload.part");
+        fs::write(&staged, "replacement").unwrap();
+        for path in [
+            "/etc/opsbox",
+            "/etc/opsbox/config.toml",
+            "/etc/opsbox/watchdog/tls.key",
+            "/etc/opsbox/new-file",
+            "/etc/opsbox/../opsbox/config.toml",
+            "/etc/systemd/system/opsbox.service",
+            "/etc/systemd/system/opsbox-priv.service",
+            "/etc/systemd/system/opsbox-proxy.service",
+            "/etc/systemd/system/opsbox-watchdog.service",
+            "/etc/systemd/system/opsbox-job-test.timer",
+            "/etc/systemd/system/opsbox.service.d/override.conf",
+            "/etc/systemd/system/../system/opsbox-new.service",
+        ] {
+            // Fail before any real mutation on an installed host when the rule is missing.
+            assert!(is_unmodifiable(&normalize_lexical(path).unwrap()), "{path}");
+            assert_opsbox_protected(write(path, "replacement", None, None), path);
+            assert_opsbox_protected(chmod(path, "600", None), path);
+            for permanent in [false, true] {
+                assert_opsbox_protected(remove(&[path.into()], permanent, None, &d), path);
+            }
+            let p = Path::new(path);
+            assert_opsbox_protected(
+                install_upload(
+                    &s(&staged),
+                    &s(p.parent().unwrap()),
+                    p.file_name().unwrap().to_str().unwrap(),
+                    true,
+                    None,
+                    &d,
+                ),
+                path,
+            );
+            assert!(staged.exists(), "a refused upload must not consume staging");
+        }
+        for path in [
+            "/etc/opsbox-other/config.toml",
+            "/etc/systemd/system/nginx.service",
+        ] {
+            assert!(!is_unmodifiable(Path::new(path)), "{path}");
+        }
+    }
+
+    #[test]
+    fn opsbox_configuration_and_services_refuse_symlink_and_parent_traversal() {
+        // This safety assertion also makes the red run safe on an installed host.
+        assert!(is_unmodifiable(Path::new("/etc/opsbox/config.toml")));
+        let (_temp, root) = tmp();
+        let d = dirs(&root);
+        symlink("/etc", root.join("etc-link")).unwrap();
+        symlink("/etc/opsbox/config.toml", root.join("config-link")).unwrap();
+        symlink("/etc/systemd/system/opsbox.service", root.join("unit-link")).unwrap();
+        symlink(
+            "/etc/opsbox/../opsbox/config.toml",
+            root.join("parent-link"),
+        )
+        .unwrap();
+        for path in [
+            root.join("config-link"),
+            root.join("unit-link"),
+            root.join("parent-link"),
+            root.join("etc-link/opsbox/config.toml"),
+            root.join("etc-link/opsbox/../opsbox/config.toml"),
+            root.join("etc-link/systemd/system/opsbox.service"),
+        ] {
+            let path = s(&path);
+            assert_opsbox_protected(write(&path, "replacement", None, None), &path);
+            assert_opsbox_protected(chmod(&path, "600", None), &path);
+            if path.contains("etc-link/") {
+                for permanent in [false, true] {
+                    assert_opsbox_protected(
+                        remove(std::slice::from_ref(&path), permanent, None, &d),
+                        &path,
+                    );
+                }
+            }
+        }
     }
 
     // ---- property tests: no spelling of a path gets around the rules

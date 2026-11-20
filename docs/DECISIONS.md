@@ -637,3 +637,7 @@ Generate a separate root-owned 0600 key under /etc/opsbox/watchdog with no panel
 ## Fix 22 — Private root-helper file creation
 Set the root helper's systemd UMask=0077; write job service/timer files and deployment credentials through the existing same-directory atomic writer with explicit 0600 permissions before content is written.
 Keep uninstall audit exports and adoption receipts private through fresh 0600 temporary files and atomic replacement; preserve recorded modes when restoring adopted files, and retain intentional public/group-readable modes elsewhere.
+
+## Fix 23 — Protect opsbox configuration and service units
+Make /etc/opsbox and /etc/systemd/system/opsbox* read-only in the file manager, including new files and unit drop-ins; retain inode protection for existing configuration directories and service targets.
+Check normalized names before mutations and during symlink traversal with a clear protected-configuration/service refusal; cover writes, chmod, permanent deletion, moves to Trash and upload replacement without changing read access or adding a move operation.
