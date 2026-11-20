@@ -35,3 +35,18 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 16 | Deleting the last app leaves its network and directory ([16-project-network-cleanup.md](archive/16-project-network-cleanup.md)) | Fixed in fix 16 |
 | 17 | Docs say /health/ready but the route is /readyz ([17-readyz-doc-mismatch.md](archive/17-readyz-doc-mismatch.md)) | Fixed in fix 17 |
 | 18 | Why did creating a database report that the helper is not running? ([18-db-create-priv-diagnosis.md](archive/18-db-create-priv-diagnosis.md)) | Fixed in fix 18 (source audit; VM diagnosis pending) |
+| 19 | SECURITY: Deployer can reach root through Compose (`19-compose-elevated-admin-only.md`) | |
+| 20 | SECURITY: Full API tokens reach root-equivalent endpoints (`20-token-deny-root-endpoints.md`) | |
+| 21 | SECURITY: Safe Mode (root) listens on the public interface by default (`21-safe-mode-exposure.md`) | |
+| 22 | SECURITY: Root helper creates files with a permissive umask (`22-priv-umask-and-unit-modes.md`) | |
+| 23 | SECURITY: The file manager can rewrite /etc/opsbox/config.toml (`23-config-toml-no-modify.md`) | |
+| 24 | SECURITY: apps/, xfer/, trash/ are created at runtime inside a group-writable dir (`24-install-root-owned-dirs.md`) | |
+| 25 | SECURITY: The internet-facing proxy can write the database (`25-proxy-readwrite-paths.md`) | |
+| 26 | SECURITY: Give the proxy its own system user (`26-proxy-own-uid.md`) | |
+| 27 | SECURITY: The helper authorises by UID only, not by operation (`27-priv-op-allowlist-by-uid.md`) | |
+| 28 | SECURITY: The root helper runs a staged binary without checking its signature (`28-priv-verify-update.md`) | |
+| 29 | SECURITY: Audit log trusts the caller's own actor string (`29-audit-actor-from-peercred.md`) | |
+| 30 | SECURITY: Make the security docs say what is true (`30-threat-model-honest-alpha.md`) | |
+
+## Security batch (19-30): do these BEFORE the public alpha post
+Order: 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30. Items 19 to 21 are the must-haves; 22 to 25 are quick hardening; 26 to 28 are the structural root-boundary work (26 before 27); 30 is docs and can run any time. Prompts 01 to 18 can wait until these are done.
