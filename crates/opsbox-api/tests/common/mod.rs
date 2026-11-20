@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -88,6 +88,12 @@ impl Harness {
         let dir = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::create_dir_all(root.join("apps")).unwrap();
+        // The installer owns these in production; fixtures create them with the same modes.
+        for (name, mode) in [("xfer", 0o770), ("trash", 0o700)] {
+            let path = root.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
         let socket = dir.path().join("priv.sock");
         let probe = dir.path().join("probe");
         std::fs::write(&probe, b"").unwrap();

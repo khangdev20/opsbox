@@ -525,10 +525,10 @@ async fn full_tokens_cannot_reach_root_equivalent_actions() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "unchanged");
-    assert!(
-        !h.root.join("xfer").exists(),
-        "token upload must not stage files"
-    );
+    let staged = std::fs::read_dir(h.root.join("xfer"))
+        .map(|dir| dir.count())
+        .unwrap_or(0);
+    assert_eq!(staged, 0, "token upload must not stage files");
     // A person can still change settings; this requires no system command.
     let reply = send(
         &mut admin,
