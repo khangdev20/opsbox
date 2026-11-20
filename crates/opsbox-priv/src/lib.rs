@@ -1,4 +1,4 @@
-//! The privileged helper.
+//! Privileged helper: runs typed system operations as root for the unprivileged panel.
 //!
 //! `opsbox priv` runs as root, listens on a Unix socket and executes a closed set of
 //! typed operations ([`opsbox_proto::PrivOp`]) for `serve`. [`PrivClient`] is what

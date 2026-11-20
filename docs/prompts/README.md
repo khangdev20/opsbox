@@ -58,6 +58,6 @@ If a prompt turns out too big, ask the agent to stop at a clean point, update `d
 | 16r | Default security headers on every response (`16r-security-headers.md`) | release prep | ✓ |
 | 16s | Responsive panel: phones and tablets (`16s-responsive-panel.md`) | release prep | ✓ |
 | 17 | Alpha release (`17-alpha-release.md`) | release | ✓ |
-| 18a | Agent index: generator, crate map, symbol map (`18a-index-crates-symbols.md`) | tooling | |
+| 18a | Agent index: generator, crate map, symbol map (`archive/18a-index-crates-symbols.md`) | tooling | ✓ |
 | 18b | Agent index: routes, privileged ops, database and UI maps (`18b-index-routes-privops-ui.md`) | tooling | |
 | 18c | Agent index: AGENTS.md, `where` lookup, CI freshness check (`18c-agents-md-and-lookup.md`) | tooling | |

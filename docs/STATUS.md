@@ -1,57 +1,37 @@
 # Status
 
-Release target: `v0.1.0-alpha.43`, tagged from `dev` after CI passes.
+Last prompt done: **18a — Project index: generator, crate map and symbol map**.
+Scripts and documentation only; no release tag. Prior runtime release target remains `v0.1.0-alpha.43`, pending CI/release completion.
 
 ## Completed
-- Fix 18: audited database-create calls and history; the old Connect/Timeout mapping caused the misleading message. Startup/pull already use 300 seconds and helper OOM protection exists, so production settings remain unchanged; historical runtime trigger awaits VM evidence (QA 03).
-- Fix 17: `/readyz` stays canonical; `/health/ready` uses the same readiness handler, IP allowlist exemption and no-store responses, with both URLs documented and regression-tested.
-- Fix 16: service deletion reports the first cleanup failure and preserves the database record for retry; removes an empty project network and the app directory after container cleanup, retaining attached sibling networks and persistent volumes.
-- Fix 15: image-source app PATCH validates and saves the configured image reference; Settings offers Change image with a Redeploy hint, preserving retained releases for rollback.
-- Fix 14: concurrent Cleanup scans share one HTTP request; unmount aborts it, clears its deadline and prevents late responses from updating the page/cache or disturbing a newer request.
-- Fix 13: coarse-pointer checkboxes/radios retain 22px artwork with 44px hit areas and labels; Files/Updates selection spans rows while file links remain tappable and desktop density is unchanged.
-- Fix 12: empty folders, updates, services, jobs, unit-filtered journal results and snapshots use shared guidance with working actions; backup guidance respects roles.
-- Fix 11: failed Apps domain requests show an inline error and Retry; failures persist per service until Retry or the next poll, without a repaint loop.
-- Fix 10: shared HTTP requests have 30-second deadlines (120 seconds for known slow endpoints); awaited mounts and System pane errors show Retry instead of retaining the skeleton.
-- Fix 09: native nft address/port element timeouts expire emergency SSH after one hour even while the watchdog is stopped or restarted; renewal reuses the rule.
-- Fix 08: per-unit systemd restart deltas trip safe mode at five restarts in ten minutes even with healthy probes; the three-failed-probes rule remains.
-- Fix 07: stdin DB restores verify a complete dump in a private temporary file before replay; PostgreSQL replay is transactional.
-- Fix 06: import preview/apply validate the checked-in schema; per-secret task results fail on missing or unrestored secrets and skip credentialless destinations.
-- Fix 05: whole Compose YAML is omitted or passphrase-sealed on export, restored exactly on import, and missing source skips stacks and members.
-- Fix 04: firewall undo is persisted before risky mutation, verified before clearing, retained with capped retry backoff on restore failure, and protected from overlapping risky changes.
-- Fix 03: panel/recovery firewall allowance removal now requires typed confirmation and schedules the existing 60-second undo; default/custom listener, CIDR/IPv6 and unknown-caller regressions added.
-- Redesigned shared tables with consistent cell padding, borders, compact action columns, and selected-row states.
-- Redesigned System → Updates with select-all/mixed states, selection counts, disabled empty selection, and selection preserved across tab changes.
-- Redesigned Notifications with a quieter unread background, storage/security icons, unread count, clearer content/time/action hierarchy, and a detailed empty state.
-- Fixed stray commas between notification rows during refresh by returning one safely rendered HTML fragment.
-- Fixed the Docker HTTP test's assumption that a missing fixture socket means Docker binaries are absent on the CI host; production behavior is unchanged.
-- Matched the isolated loopback memory probe's listener to its HTTP readiness request; production TLS defaults are unchanged.
-- Updated CI's cargo-deny to 0.21.0 for CVSS 4.0 advisories; allowed versionless local paths in private workspace crates while keeping registry wildcards denied.
-- Mapped Linux openat2 confinement races (EAGAIN) to Refused while continuing to deny the operation; reproduced the prior intermittent Internal error under parallel file tests.
+- 18a: `scripts/gen-index.py` uses Python 3 standard library only, without Cargo, Git or network access; generates `docs/INDEX.md` and 18 crate symbol maps.
+- The index covers layout, crate purposes, internal dependencies, non-test LOC, entry files, dependency graph and serve/priv/proxy/watchdog startup paths. The root helper's crate header now states its privilege role.
+- Symbol maps cover public declarations/methods and lib re-exports; omit restricted/private items, test-only bodies, ignored/generated sources and excluded directories. Large maps prioritize crate-root re-exports and documented items within 400 lines.
+- Generation preserves prose outside INDEX markers, removes obsolete crate maps and enforces size budgets before writing. `--check` prints unified diffs, exits 1 for stale maps and writes nothing.
+- Marked 18a done and archived its prompt; no commit or push attempted, as requested.
+- Previous fixes 03–09: firewall undo/confirmation and kernel SSH expiry; sealed Compose export/import and per-secret import results; transactional PostgreSQL restore; watchdog restart deltas.
+- Previous fixes 10–14: request deadlines, domain retry, actionable empty states, coarse-pointer targets and shared/cancelled Cleanup scans.
+- Previous fixes 15–17: image-source settings/redeploy, retryable service cleanup with preserved volumes, and `/health/ready` compatibility with canonical `/readyz`.
+- Fix 18: audited the misleading helper error; retained existing 300-second startup/pull deadlines and OOM protection pending live evidence.
+- Earlier table, update and notification redesigns, Docker fixture checks, memory-probe listener, cargo-deny update and openat2 race refusal remain implemented.
 
 ## Verification
-- Fix 18: delayed-helper regression compiles but sandbox Unix socket binds block execution. Five error-mapping tests, the service-unit test, formatting and all-target helper Clippy pass; exact live diagnosis steps are recorded in QA 03; no timeout/OOM runtime cause is claimed without VM logs. No commit or push was attempted.
-- Fix 17: test-first regressions reproduced alias 404 and allowlist 403; both now pass for both URLs with readiness JSON. Helper-backed 200/version-skew cases compile but sandbox Unix socket binds block execution; owner rerun and VM probes are in QA 04. Crate check, all-target Clippy, formatting, API inventory and whitespace checks pass. No commit or push was attempted, as requested.
-- Fix 16: both test-first fake-Docker regressions and all four helper deploy unit tests pass, plus 30 Docker/protocol tests; all-target Clippy, formatting and whitespace checks pass. HTTP cleanup/failure/record-preservation/retry regressions compile but sandbox Unix socket binds block execution. Owner HTTP and live VM checks are in QA 17. No commit or push was attempted, as requested.
-- Fix 15: both test-first Rust PATCH regressions and all five related Node/DOM tests pass; crate check/all-target Clippy, formatting, JS syntax and whitespace checks pass. Pull/new-tag/rollback coverage was added to deploy_http, whose local socket bind is denied by the sandbox; owner rerun and live checks are in QA 17. No commit or push was attempted, as requested.
-- Fix 14: six test-first Node/DOM regressions cover shared fresh scans, retry, navigation abort, reopening and late responses; all 44 focused/related tests pass. Git pull/staging are blocked by read-only metadata; owner Git/CI/release and VM checks are in QA 22.
-- Fix 13: test-first Chromium regression now passes at 390px with coarse-pointer emulation, real touch activation, disabled controls and scrolled-row selection; 1440px desktop screenshot comparison passes. Git metadata writes remain blocked; owner Git/VM completion is in QA 11.
-- Fix 12: eight new tests failed before implementation; all 36 focused/related Node regressions now pass. Source checks pass; browser localhost binds/headless startup and Git metadata writes are blocked here. See QA 13 for visual/VM and commit/push/CI/release completion.
-- Fix 11: test-first HTTP 500 request-count regression failed before the fix; 4 Node/DOM regressions now pass, covering three-second request bounds, per-service failures, Retry, polling recovery and in-flight deduplication. Git staging/pull are blocked by read-only metadata; owner checks are in QA 13.
-- Fix 10: 26 Node/DOM tests and five existing Node checks pass; four browser checks hit sandbox localhost-bind restrictions. Live VM and Git completion remain owner checks in QA 09.
-- Fix 09: test-first controlled-clock IPv4/IPv6 expiry/restart, renewal and failure tests pass; watchdog suite 20 pass/2 sandbox socket-bind failures; formatting/Clippy pass. Live nft and Git completion remain owner checks in QA 26.
-- Fix 08: regression failed before implementation; 17 watchdog tests pass, with 2 existing sandbox socket-bind failures. Formatting/Clippy pass; live systemd and Git completion remain owner checks in QA 26.
-- Fix 07: test-first late-dump regression plus success/empty staging checks pass (6 backup tests); requested helper suite: 215 pass/2 existing setuid/sysctl environment failures; Clippy/formatting pass. Git metadata is read-only; host commit/push, CI/release and live VM checks are in QA 18.
-- Fix 06: schema, unavailable-helper and Compose HTTP regressions pass; full import suite has 3 pass/5 sandbox Unix-socket bind failures. Clippy/formatting pass. Git pull/staging are blocked by read-only metadata; owner CI/release and real-helper verification are recorded in QA 24.
-- Fix 05: test-first plaintext leak regression and helper-free HTTP export/import round trip pass; Clippy/formatting pass. Requested crate tests hit sandbox TLS binds (API 71 pass/4 fail); helper tests hit existing setuid/sysctl limits (212 pass/2 fail). See QA 24.
-- Fix 04: 21 focused firewall tests, crate Clippy, formatting and whitespace checks passed, including test-first save/restore/overlap regressions; live backend fault injection remains an owner check in QA 25.
-- Fix 03: helper guard and 2 UI regressions passed; crate Clippy and formatting passed. Full Cargo run attempted: sandbox socket binds block API TLS/HTTP tests; helper suite has existing setuid/sysctl environment failures. See QA 25 for exact checks.
-- Linux VM: all 208 opsbox-priv tests passed in 20 consecutive parallel runs after the confinement-race fix; Clippy passed. The memory probe measured 14.37 MiB idle RSS against a 40 MiB limit. Current cargo-deny audit passed.
-- Passed frontend DOM checks: package selection/clear/mixed state, tab persistence, selected-only mock install, notification refresh, read/read-all, snooze, keyboard navigation, focus return, text escaping, and empty state.
-- Passed JS/CSS syntax, API docs, network UI contracts, source-level live-list checks, update status text, mock API allowlist, Rust formatting, shellcheck, and installer channel checks.
-- Browser visual review was not completed: browser automation was unavailable and native browser control conflicted with an active user session.
-- Full Linux Clippy, workspace tests, dependency audit, release builds, version stamping, and signed release artifacts are checked by GitHub Actions.
+- Run `python3 scripts/gen-index.py` to regenerate; `python3 scripts/gen-index.py --check` passes.
+- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-gen-index.py`: all 9 tests pass, covering lexical scanning, test exclusion, doc association, dependency kinds/aliases, ignore rules, truncation, sensitive-prose redaction, freshness/idempotency, prose preservation, obsolete maps and size-limit refusal.
+- Two actual repository generations changed neither bytes nor mtimes, taking 0.255 and 0.254 seconds. A temporary public symbol made `--check` exit 1 with unified diffs and zero writes; restored source, regenerated and rechecked successfully.
+- `docs/INDEX.md`: 7,491 bytes / 135 lines. Combined INDEX and symbol maps: 166,430 bytes; each symbol file stays below 400 lines. No absolute home paths appear in generated output.
+- Navigation review identifies backups as `opsbox-backup`, Docker client ownership as `opsbox-docker`, and root system operations as `opsbox-priv`.
+- `git diff --check` passes. Cargo is absent from this environment, so workspace formatting, Clippy and Rust tests could not run; the sole Rust edit is a crate-doc one-liner.
+- Git pull was attempted on `dev` but read-only metadata denied `.git/FETCH_HEAD`; no commit, push or release action was attempted.
+- Prior focused fix regressions passed as recorded in their archived prompts. Sandbox socket binds and setuid/sysctl restrictions prevented some helper-backed HTTP, TLS and privileged tests; full Linux/CI coverage remains pending.
+- Earlier Linux VM verification: 208 helper tests passed in 20 consecutive parallel runs, Clippy and cargo-deny passed, and idle memory measured 14.37 MiB against a 40 MiB limit.
+
+## Found, not fixed
+- Historical database-create failure still needs QA 03 VM request/journal/kernel evidence; no runtime OOM, timeout or panic cause is claimed.
+- Live VM checks for fixes 04–18 and pending Git/CI/release work remain owner follow-ups; see QA 03/04/09/11/13/17/18/22/24/25/26. Fixes 15–18 excluded commit/push by request.
+- Browser visual review and desktop/mobile smoke tests remain pending; prior browser automation was unavailable or conflicted with an active session.
 
 ## Next
-- Run fix 04/05/06/07/08/09/10/11/12/13/14/15/16 Linux/VM checks and complete pending Git/CI/release work from a host terminal; fix 18 source audit is recorded, but runtime database-create diagnosis still requires the QA 03 VM checks. Fix 17 helper-backed readiness/VM checks remain in QA 04; fix 15/16/17 commit/push was excluded by request.
-- Verify the alpha release's x86_64/arm64 archives, checksums, signatures, SBOM, and installer on GitHub Releases.
-- Smoke-test the table and notification views at desktop/mobile widths on an updated server.
+- **18b**: routes, privileged operations, database and UI maps; 18c follows with agent instructions, lookup and CI freshness checking.
+- On `opsbox-vm`, run the generator's `--check` and focused Python tests from `/home/ubuntu/opsbox`; the freshness regression must reject stale maps without writing them.
+- Complete pending Linux workspace/VM checks and verify release archives, checksums, signatures, SBOM and installer from a host with Cargo and writable Git metadata.

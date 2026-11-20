@@ -609,3 +609,7 @@ Give both URLs the health probe IP-allowlist exemption and no-store responses; t
 ## Fix 18 — Preserve evidence in helper diagnosis
 The old Connect/Timeout mapping explains the misleading database-create message; startup/image pull already use 300 seconds and the helper already has OOMScoreAdjust=-900, so retain production settings.
 Add delayed-helper timeout coverage; require VM request/journal/kernel evidence before classifying the historical trigger as OOM, timeout, version skew or panic (QA 03).
+
+## Prompt 18a — Lexical navigation index
+Use a standard-library Python scanner without Cargo, Git, network access or a Rust parser; keep public declarations even in private modules and retain platform/feature alternatives, while excluding test-only code and generated/ignored sources.
+Count nonblank code lines after masking comments, literals and test-only items; include normal/build/target internal dependencies, excluding dev dependencies. Bound whole symbol files to 400 lines, prioritizing crate-root re-exports then documented items; fail before writing if output size limits are exceeded.
