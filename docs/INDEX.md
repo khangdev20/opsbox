@@ -5,6 +5,13 @@ Regenerate with `python3 scripts/gen-index.py`; verify with
 `python3 scripts/gen-index.py --check`. Edit prose outside the generated markers.
 
 <!-- gen:start -->
+## Task maps
+
+- [HTTP and WebSocket routes](index/routes.md): handlers, permissions, API call links and documentation drift.
+- [Privileged operations](index/privops.md): request types, helper dispatch, client methods and timeouts.
+- [Store](index/store.md): current columns, indexes, migrations, Store methods and settings keys.
+- [UI](index/ui.md): pages, hashes, API functions, styles and shared helpers; mock backlog first.
+
 ## Layout
 
 | Folder | Contents |

@@ -613,3 +613,7 @@ Add delayed-helper timeout coverage; require VM request/journal/kernel evidence 
 ## Prompt 18a — Lexical navigation index
 Use a standard-library Python scanner without Cargo, Git, network access or a Rust parser; keep public declarations even in private modules and retain platform/feature alternatives, while excluding test-only code and generated/ignored sources.
 Count nonblank code lines after masking comments, literals and test-only items; include normal/build/target internal dependencies, excluding dev dependencies. Bound whole symbol files to 400 lines, prioritizing crate-root re-exports then documented items; fail before writing if output size limits are exceeded.
+
+## Prompt 18b — Task navigation maps
+Extend the lexical stdlib generator with nested routes and direct API call links, PrivOp dispatch/client wiring, in-memory SQLite migration reconstruction and actual UI/API/CSS references; exclude temporary rebuild tables and retain the original creation migration.
+Treat API.md drift as informational, list generic-call-only variants as lacking dedicated clients, and classify mode-independent UI utilities as REAL without HTTP endpoints so the mock backlog represents unwired operations.

@@ -1,37 +1,38 @@
 # Status
 
-Last prompt done: **18a — Project index: generator, crate map and symbol map**.
-Scripts and documentation only; no release tag. Prior runtime release target remains `v0.1.0-alpha.43`, pending CI/release completion.
+Last prompt done: **18b — Project index: routes, privileged operations, database and UI maps**.
+Tooling/documentation only; no release tag. Prior runtime target remains `v0.1.0-alpha.43`, pending CI/release completion.
 
 ## Completed
-- 18a: `scripts/gen-index.py` uses Python 3 standard library only, without Cargo, Git or network access; generates `docs/INDEX.md` and 18 crate symbol maps.
-- The index covers layout, crate purposes, internal dependencies, non-test LOC, entry files, dependency graph and serve/priv/proxy/watchdog startup paths. The root helper's crate header now states its privilege role.
-- Symbol maps cover public declarations/methods and lib re-exports; omit restricted/private items, test-only bodies, ignored/generated sources and excluded directories. Large maps prioritize crate-root re-exports and documented items within 400 lines.
-- Generation preserves prose outside INDEX markers, removes obsolete crate maps and enforces size budgets before writing. `--check` prints unified diffs, exits 1 for stale maps and writes nothing.
-- Marked 18a done and archived its prompt; no commit or push attempted, as requested.
-- Previous fixes 03–09: firewall undo/confirmation and kernel SSH expiry; sealed Compose export/import and per-secret import results; transactional PostgreSQL restore; watchdog restart deltas.
-- Previous fixes 10–14: request deadlines, domain retry, actionable empty states, coarse-pointer targets and shared/cancelled Cleanup scans.
-- Previous fixes 15–17: image-source settings/redeploy, retryable service cleanup with preserved volumes, and `/health/ready` compatibility with canonical `/readyz`.
-- Fix 18: audited the misleading helper error; retained existing 300-second startup/pull deadlines and OOM protection pending live evidence.
-- Earlier table, update and notification redesigns, Docker fixture checks, memory-probe listener, cargo-deny update and openat2 race refusal remain implemented.
+- Extended the Python 3 standard-library generator with `routes.md`, `privops.md`, `store.md` and `ui.md`; linked them from `docs/INDEX.md` alongside the 18a crate/symbol maps.
+- Routes include nested prefixes, methods, WebSocket upgrades, signature extractors, token refusals, capacity patterns, API call links and informational API.md drift.
+- PrivOp rows include typed/inline requests, grouped dispatch, streaming interception, client delegation/timeouts and variants without dedicated wiring.
+- Store reconstruction uses in-memory SQLite migrations, including ALTERs, table rebuilds, explicit/implicit indexes, creation migrations, Store methods/delegation and literal settings reads.
+- UI maps cover actual page references, router hashes, global/vendor CSS, exported API functions/auth methods, normalized endpoints, mock backlog and shared helpers. Mode-independent local utilities are REAL with no HTTP endpoint.
+- Marked 18b done and archived its prompt. No commit, push or release action attempted, as requested.
+
+## Acceptance example — add a field to the database create form
+Read only the generated index files for this trace; no repository source search was used.
+1. `ui.md` Pages: `web/js/pages/templates.js`, exported `view`, hash `#/apps/new/templates` (optional trailing slash), CSS `web/css/app.css`, calls `api.addTemplate`.
+2. `ui.md` API layer: `addTemplate` in `web/js/api.js` sends `POST /api/v1/templates/{id}/instances`.
+3. `routes.md` templates: this URL reaches `templates::create_template_instance` in `crates/opsbox-api/src/templates.rs`, with `Deployer` and `Client` extractors; API call links name `CreateTemplateInstanceBody` and `Store::create_service_with_exposure`.
+4. Follow the same call links through `deploy::enqueue_deploy` to `deploy::run_deploy_pipeline` in `crates/opsbox-api/src/deploy.rs`, which calls `PrivClient::template_start`.
+5. `privops.md`: `template_start` sends `PrivOp::TemplateStart(crate::deploy::TemplateStartRequest)`, with a 300-second timeout; helper handler `templates_compose::start_template_with` is in `crates/opsbox-priv/src/ops/templates_compose.rs`.
+6. `store.md`: `create_service_with_exposure` in `crates/opsbox-store/src/deploy.rs` touches `services`, created by `crates/opsbox-store/migrations/0006_deploy_pipeline.sql`; the row lists current column types/indexes. A persisted field needs a new migration and this Store path as well as the form, API body mapping and typed helper request when relevant.
 
 ## Verification
-- Run `python3 scripts/gen-index.py` to regenerate; `python3 scripts/gen-index.py --check` passes.
-- `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-gen-index.py`: all 9 tests pass, covering lexical scanning, test exclusion, doc association, dependency kinds/aliases, ignore rules, truncation, sensitive-prose redaction, freshness/idempotency, prose preservation, obsolete maps and size-limit refusal.
-- Two actual repository generations changed neither bytes nor mtimes, taking 0.255 and 0.254 seconds. A temporary public symbol made `--check` exit 1 with unified diffs and zero writes; restored source, regenerated and rechecked successfully.
-- `docs/INDEX.md`: 7,491 bytes / 135 lines. Combined INDEX and symbol maps: 166,430 bytes; each symbol file stays below 400 lines. No absolute home paths appear in generated output.
-- Navigation review identifies backups as `opsbox-backup`, Docker client ownership as `opsbox-docker`, and root system operations as `opsbox-priv`.
-- `git diff --check` passes. Cargo is absent from this environment, so workspace formatting, Clippy and Rust tests could not run; the sole Rust edit is a crate-doc one-liner.
-- Git pull was attempted on `dev` but read-only metadata denied `.git/FETCH_HEAD`; no commit, push or release action was attempted.
-- Prior focused fix regressions passed as recorded in their archived prompts. Sandbox socket binds and setuid/sysctl restrictions prevented some helper-backed HTTP, TLS and privileged tests; full Linux/CI coverage remains pending.
-- Earlier Linux VM verification: 208 helper tests passed in 20 consecutive parallel runs, Clippy and cargo-deny passed, and idle memory measured 14.37 MiB against a 40 MiB limit.
+- All 17 tests pass: `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-gen-index.py`; new regressions cover each map, nesting, auth/WS, grouped/stream dispatch, timeouts, SQL ALTER/rebuild/rename, settings, JS templates/regex, CSS and freshness.
+- Two repository generations preserved bytes and mtimes, taking 1.067 and 1.082 seconds; `python3 scripts/gen-index.py --check` passes.
+- A temporary real router entry made `--check` exit 1 without writing; regenerating passed, then the entry was removed, regenerated and checked successfully. Source restored exactly.
+- `docs/index/` totals 323,393 bytes; `docs/INDEX.md` is 7,919 bytes. Generated output has no source line numbers.
+- Source spot checks: routes readyz/template-create/upload/metrics-stream/tools-gateway; PrivOps Ping/TemplateStart/BackupRun/PtyOpen/ProxyNetwork; store settings/users/services/database_settings/backup_jobs; UI templates/database/files/terminal/system plus addTemplate/scanCleanup/runBackup/streamDeployLog/auth.login API rows. Corrected temporary rebuild-table leakage and vendor CSS paths.
+- `git diff --check` passes. Cargo fmt, Clippy and workspace tests were attempted but Cargo is unavailable. Git pull on dev was blocked by read-only `.git/FETCH_HEAD`.
 
 ## Found, not fixed
-- Historical database-create failure still needs QA 03 VM request/journal/kernel evidence; no runtime OOM, timeout or panic cause is claimed.
-- Live VM checks for fixes 04–18 and pending Git/CI/release work remain owner follow-ups; see QA 03/04/09/11/13/17/18/22/24/25/26. Fixes 15–18 excluded commit/push by request.
-- Browser visual review and desktop/mobile smoke tests remain pending; prior browser automation was unavailable or conflicted with an active session.
+- Maps are lexical navigation, not Rust/JavaScript type resolution: method-name links can be candidates; arbitrary router expressions fail explicitly. Computed settings keys and table names are omitted; metrics_* SQL selected by formatting has no literal table-to-method association. API drift compares explicit method/path mentions, leaving prose shorthand unexpanded.
+- Historical database-create failure still requires QA 03 VM request/journal/kernel evidence; no runtime OOM, timeout or panic cause is claimed.
+- Prior Linux/VM, browser smoke tests and pending Git/CI/release work remain owner follow-ups (QA 03/04/09/11/13/17/18/22/24/25/26).
 
 ## Next
-- **18b**: routes, privileged operations, database and UI maps; 18c follows with agent instructions, lookup and CI freshness checking.
-- On `opsbox-vm`, run the generator's `--check` and focused Python tests from `/home/ubuntu/opsbox`; the freshness regression must reject stale maps without writing them.
-- Complete pending Linux workspace/VM checks and verify release archives, checksums, signatures, SBOM and installer from a host with Cargo and writable Git metadata.
+- **18c**: agent instructions, lookup and CI freshness checking.
+- Run the Python checks and pending Rust/VM verification on `opsbox-vm`; stale index output must be refused by `--check` without writes.
