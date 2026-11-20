@@ -448,7 +448,26 @@ run install -d -m 0755 -o root -g root "$CONF_DIR"
 # could rename bin/ away and plant its own binary, which root would then run. Mode
 # 1770 means it can create files here but cannot rename or delete entries it does
 # not own, such as bin/.
+[ ! -L "$STATE_DIR" ] || die "$STATE_DIR is a symlink; refusing to install"
 run install -d -m 1770 -o root -g "$SVC_USER" "$STATE_DIR"
+# BEGIN managed-state-dirs
+# Temporarily remove panel write access while migrating panel-owned legacy dirs.
+# The sticky parent then protects the root-owned entries from replacement.
+prepare_managed_state_dirs() (
+  if [ "$DRY_RUN" -ne 1 ]; then
+    chmod 0700 "$STATE_DIR"
+    trap 'chmod 1770 "$STATE_DIR"' EXIT
+  fi
+  for managed_name in apps xfer trash; do
+    [ ! -L "$STATE_DIR/$managed_name" ] ||
+      die "$STATE_DIR/$managed_name is a symlink; refusing to install"
+  done
+  run install -d -m 0750 -o root -g "$SVC_USER" "$STATE_DIR/apps"
+  run install -d -m 0770 -o root -g "$SVC_USER" "$STATE_DIR/xfer"
+  run install -d -m 0700 -o root -g root "$STATE_DIR/trash"
+)
+prepare_managed_state_dirs
+# END managed-state-dirs
 run install -d -m 0750 -o "$SVC_USER" -g "$SVC_USER" "$STATE_DIR/proxy"
 run install -d -m 0755 -o root -g root "$SLOT_DIR"
 run install -d -m 0700 -o root -g root "$BACKUP_DIR"

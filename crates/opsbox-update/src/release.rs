@@ -600,7 +600,14 @@ pub fn download_and_verify_for_target(
     verify_sha256(&archive_bytes, &sha_text)?;
     verify_minisign(&archive_bytes, &sig_text, pubkey_b64)?;
 
-    fs::create_dir_all(staging_dir)?;
+    // The installer/root helper owns this directory. Never create it as the
+    // panel user or follow a planted directory symlink during an update.
+    if !fs::symlink_metadata(staging_dir)?.file_type().is_dir() {
+        return Err(std::io::Error::other(
+            "The transfer folder must be a real directory; re-run the installer.",
+        )
+        .into());
+    }
     let bin_name = format!("opsbox-update-{clean_ver}.bin");
     let staged_path = staging_dir.join(bin_name);
     let expected_entry = format!("{pkg}/opsbox");

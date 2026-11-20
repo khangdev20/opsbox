@@ -24,6 +24,7 @@ pub use config::{
     DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR, PrivConfig, resolve_users,
 };
 pub use io::PtyIoError;
+pub use ops::managed_dirs::prepare as prepare_managed_dirs;
 pub use ops::{base32_encode, cleanup, code_at, uninstall, verify_at, web as web_ops};
 pub use server::{PrivServer, ServerError};
 

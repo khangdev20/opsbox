@@ -304,20 +304,10 @@ pub fn ensure_service_dir(apps_dir: &Path, service: &str) -> Result<PathBuf, Pri
     if !valid_service_name(service) {
         return Err(err(PrivErrorCode::Invalid, "Invalid service name."));
     }
-    std::fs::create_dir_all(apps_dir).map_err(|e| {
-        err(
-            PrivErrorCode::Internal,
-            format!("Cannot prepare apps directory: {e}"),
-        )
-    })?;
+    let apps_fd = super::managed_dirs::ensure_dir(apps_dir, 0o750)?;
+    let svc_fd = super::managed_dirs::child(&apps_fd, service, 0o750)?;
+    let _src_fd = super::managed_dirs::child(&svc_fd, "src", 0o750)?;
     let svc_dir = apps_dir.join(service);
-    std::fs::create_dir_all(svc_dir.join("src")).map_err(|e| {
-        err(
-            PrivErrorCode::Internal,
-            format!("Cannot create service directory: {e}"),
-        )
-    })?;
-    let _ = std::fs::set_permissions(&svc_dir, std::fs::Permissions::from_mode(0o750));
     Ok(svc_dir)
 }
 
@@ -1540,6 +1530,50 @@ impl Drop for BuildGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn managed_service_children_are_created_and_symlinks_are_refused() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let tmp = tempfile::tempdir().unwrap();
+        let apps = tmp.path().join("apps");
+        let service = ensure_service_dir(&apps, "web").unwrap();
+        for path in [&apps, &service, &service.join("src")] {
+            let st = std::fs::metadata(path).unwrap();
+            assert_eq!(st.mode() & 0o7777, 0o750);
+            assert_eq!(st.uid(), nix::unistd::geteuid().as_raw());
+        }
+        let target = tmp.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        symlink(&target, apps.join("linked")).unwrap();
+        assert!(ensure_service_dir(&apps, "linked").is_err());
+        std::fs::remove_dir(service.join("src")).unwrap();
+        symlink(&target, service.join("src")).unwrap();
+        assert!(ensure_service_dir(&apps, "web").is_err());
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn managed_apps_symlink_is_refused_without_touching_target() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("sentinel"), "untouched").unwrap();
+        let before = std::fs::metadata(&target).unwrap().mode();
+        let apps = tmp.path().join("apps");
+        symlink(&target, &apps).unwrap();
+        let result = ensure_service_dir(&apps, "web");
+        assert!(
+            !target.join("web").exists(),
+            "must not create a service in the symlink target"
+        );
+        assert_eq!(std::fs::metadata(&target).unwrap().mode(), before);
+        assert_eq!(
+            std::fs::read_to_string(target.join("sentinel")).unwrap(),
+            "untouched"
+        );
+        assert!(result.is_err(), "apps symlinks must be refused");
+    }
 
     struct FakeDeleteDocker {
         calls: std::cell::RefCell<Vec<String>>,

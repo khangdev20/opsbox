@@ -40,7 +40,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 21 | SECURITY: Safe Mode (root) listens on the public interface by default ([21-safe-mode-exposure.md](archive/21-safe-mode-exposure.md)) | Fixed in fix 21 (live owner checks pending) |
 | 22 | SECURITY: Root helper creates files with a permissive umask ([22-priv-umask-and-unit-modes.md](archive/22-priv-umask-and-unit-modes.md)) | Fixed in fix 22 (live owner checks pending) |
 | 23 | SECURITY: The file manager can rewrite /etc/opsbox/config.toml ([23-config-toml-no-modify.md](archive/23-config-toml-no-modify.md)) | Fixed in fix 23 (live owner checks pending) |
-| 24 | SECURITY: apps/, xfer/, trash/ are created at runtime inside a group-writable dir (`24-install-root-owned-dirs.md`) | |
+| 24 | SECURITY: apps/, xfer/, trash/ are created at runtime inside a group-writable dir ([24-install-root-owned-dirs.md](archive/24-install-root-owned-dirs.md)) | Fixed in fix 24 (live owner checks pending) |
 | 25 | SECURITY: The internet-facing proxy can write the database (`25-proxy-readwrite-paths.md`) | |
 | 26 | SECURITY: Give the proxy its own system user (`26-proxy-own-uid.md`) | |
 | 27 | SECURITY: The helper authorises by UID only, not by operation (`27-priv-op-allowlist-by-uid.md`) | |

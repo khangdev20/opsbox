@@ -21,6 +21,7 @@ mod host_info;
 mod hostset;
 mod jobs;
 mod journal;
+pub(crate) mod managed_dirs;
 mod metrics;
 mod network;
 mod ping;
@@ -243,9 +244,8 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
             staging,
             version,
             target_schema,
-        } => {
-            update::install(staging, version, *target_schema, &env.files).map(|()| PrivReply::Done)
-        }
+        } => update::install(staging, version, *target_schema, &env.apps_dir, &env.files)
+            .map(|()| PrivReply::Done),
         PrivOp::SelfUpdateRollback { to_version } => {
             update::rollback(to_version.as_deref()).map(|()| PrivReply::Done)
         }

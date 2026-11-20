@@ -7,7 +7,7 @@
 use std::os::fd::OwnedFd;
 use std::path::{Component, Path, PathBuf};
 
-use rustix::fs::{AtFlags, Mode, OFlags, fchmod, open, openat, unlinkat};
+use rustix::fs::{AtFlags, Mode, OFlags, fstat, open, openat, unlinkat};
 
 use axum::Json;
 use axum::body::Body;
@@ -421,22 +421,22 @@ pub(crate) struct UploadQuery {
     overwrite: bool,
 }
 
-/// Make sure the staging folder exists and only the opsbox user can use it, returning its fd.
+/// Open the installer-owned staging folder without following a planted symlink.
 async fn ensure_xfer(dir: &Path) -> Result<OwnedFd, HttpError> {
-    tokio::fs::create_dir_all(dir).await.map_err(|e| {
-        tracing::error!(error = %e, dir = %dir.display(), "cannot create the transfer folder");
-        HttpError::internal()
-    })?;
     let xfer_fd = open(
         dir,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
     .map_err(|e| {
-        tracing::error!(error = %e, dir = %dir.display(), "cannot open the transfer folder");
+        tracing::error!(error = %e, dir = %dir.display(), "cannot open the transfer folder; re-run the installer");
         HttpError::internal()
     })?;
-    let _ = fchmod(&xfer_fd, Mode::from_raw_mode(0o700));
+    let st = fstat(&xfer_fd).map_err(|_| HttpError::internal())?;
+    if st.st_uid != 0 || st.st_mode & 0o7777 != 0o770 {
+        tracing::error!(dir = %dir.display(), "unsafe transfer folder ownership or permissions; re-run the installer");
+        return Err(HttpError::internal());
+    }
     Ok(xfer_fd)
 }
 
@@ -626,6 +626,21 @@ pub(crate) async fn download(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn managed_xfer_symlink_leaves_target_untouched() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let before = std::fs::metadata(&target).unwrap().mode();
+        let xfer = tmp.path().join("xfer");
+        symlink(&target, &xfer).unwrap();
+        let result = ensure_xfer(&xfer).await;
+        assert_eq!(std::fs::metadata(&target).unwrap().mode(), before);
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0);
+    }
 
     #[test]
     fn download_names_are_safe_in_headers() {

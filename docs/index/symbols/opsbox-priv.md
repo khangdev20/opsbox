@@ -139,6 +139,7 @@ crates/opsbox-priv/src/lib.rs: const VERSION  Version reported by `Ping`, so `st
 crates/opsbox-priv/src/lib.rs: use client::{ ClientError, DeployBuildSession, DockerLogSession, InstallUpload, PrivClient, PtyReader, PtySession, PtyWriter, }
 crates/opsbox-priv/src/lib.rs: use config::{ DEFAULT_APPS_DIR, DEFAULT_BACKUP_CACHE_DIR, DEFAULT_BACKUP_DIR, DEFAULT_MASTER_KEY_PATH, DEFAULT_SOCKET_PATH, DEFAULT_TRASH_DIR, DEFAULT_XFER_DIR, PrivConfig, resolve_users, }
 crates/opsbox-priv/src/lib.rs: use io::PtyIoError
+crates/opsbox-priv/src/lib.rs: use ops::managed_dirs::prepare as prepare_managed_dirs
 crates/opsbox-priv/src/lib.rs: use ops::{base32_encode, cleanup, code_at, uninstall, verify_at, web as web_ops}
 crates/opsbox-priv/src/lib.rs: use server::{PrivServer, ServerError}
 crates/opsbox-priv/src/ops/access.rs: fn add_to  Append `line` to the file's text.
@@ -257,6 +258,7 @@ crates/opsbox-priv/src/ops/jobs.rs: fn timer_unit
 crates/opsbox-priv/src/ops/jobs.rs: fn valid_id
 crates/opsbox-priv/src/ops/journal.rs: fn parse_entries
 crates/opsbox-priv/src/ops/journal.rs: fn valid_cursor  Journal cursors look like `s=...;i=1b3;b=...;m=...;t=...;x=...`.
+crates/opsbox-priv/src/ops/managed_dirs.rs: fn prepare  Prepare fresh installs and migrate legacy state on helper startup after updates.
 crates/opsbox-priv/src/ops/metrics.rs: fn count_established  Count ESTABLISHED (state `01`) rows of `/proc/net/tcp` or `tcp6`.
 crates/opsbox-priv/src/ops/metrics.rs: fn parse_diskstats  `/proc/diskstats`; sectors are always 512 bytes.
 crates/opsbox-priv/src/ops/metrics.rs: fn parse_loadavg

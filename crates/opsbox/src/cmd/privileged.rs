@@ -6,6 +6,12 @@ use tracing::warn;
 use crate::config::{Config, DEFAULT_CONFIG_PATH};
 
 pub fn run(config: Config, explicit_config: Option<&std::path::Path>) -> Result<()> {
+    if geteuid().is_root() {
+        opsbox_priv::prepare_managed_dirs(&config.apps_dir, &config.xfer_dir, &config.trash_dir)
+            .map_err(|e| {
+                anyhow::anyhow!("cannot prepare opsbox state directories: {}", e.message)
+            })?;
+    }
     if !geteuid().is_root() {
         warn!(
             "not running as root: this is fine for development, but real privileged operations will fail"

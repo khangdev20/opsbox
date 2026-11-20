@@ -29,17 +29,7 @@ fn verify_staged_binary(
     xfer_dir: &Path,
 ) -> Result<(std::os::fd::OwnedFd, String), PrivError> {
     let lexical = files::normalize_lexical(staging)?;
-    let xfer_fd = open(
-        xfer_dir,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| {
-        err(
-            PrivErrorCode::Internal,
-            "The transfer folder does not exist.",
-        )
-    })?;
+    let xfer_fd = super::managed_dirs::open_dir(xfer_dir, true)?;
     let xfer_st = fstat(&xfer_fd).map_err(|_| {
         err(
             PrivErrorCode::Internal,
@@ -181,8 +171,10 @@ pub(super) fn install(
     staging: &str,
     version: &str,
     target_schema: u32,
+    apps_dir: &Path,
     dirs: &files::Dirs,
 ) -> Result<(), PrivError> {
+    super::managed_dirs::prepare(apps_dir, &dirs.xfer, &dirs.trash)?;
     let (xfer_fd, staged_name) = verify_staged_binary(staging, &dirs.xfer)?;
     let staged_path = Path::new(staging);
 

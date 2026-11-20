@@ -1250,14 +1250,7 @@ fn move_to_trash_at(
     display_path: &Path,
     dirs: &Dirs,
 ) -> Result<(), PrivError> {
-    fs::create_dir_all(&dirs.trash).map_err(|e| io_err("Cannot create the trash", &e))?;
-    let trash_fd = open(
-        &dirs.trash,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|e| r_io_err("Cannot open the trash", e))?;
-    let _ = fchmod(&trash_fd, Mode::from_raw_mode(0o700));
+    let trash_fd = super::managed_dirs::ensure_dir(&dirs.trash, 0o700)?;
     let now = now_secs();
     let mut rnd = [0u8; 3];
     getrandom::fill(&mut rnd)
@@ -1326,24 +1319,31 @@ fn now_secs() -> i64 {
 
 /// Remove trash entries older than seven days. Called by the janitor.
 pub fn purge_trash(trash: &Path, now: i64) -> usize {
-    let Ok(dir) = fs::read_dir(trash) else {
+    let Ok(fd) = super::managed_dirs::open_dir(trash, false) else {
+        return 0;
+    };
+    let Ok(mut dir) = Dir::read_from(&fd) else {
         return 0;
     };
     let mut gone = 0;
-    for e in dir.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        // `<unix time>-<random>-<name>` (and a `.meta` twin with the same prefix)
+    while let Some(Ok(entry)) = dir.read() {
+        let name = entry.file_name().to_string_lossy();
         let Some(ts) = name.split('-').next().and_then(|t| t.parse::<i64>().ok()) else {
             continue;
         };
         if now - ts > TRASH_KEEP_SECS {
-            let p = e.path();
-            let _ = if p.is_dir() {
-                fs::remove_dir_all(&p)
-            } else {
-                fs::remove_file(&p)
+            let Ok(st) = statat(&fd, entry.file_name(), AtFlags::SYMLINK_NOFOLLOW) else {
+                continue;
             };
-            gone += 1;
+            let result = if FileType::from_raw_mode(st.st_mode as _).is_dir() {
+                remove_dir_all_at(&fd, &name)
+            } else {
+                unlinkat(&fd, entry.file_name(), AtFlags::empty())
+                    .map_err(|e| r_io_err("Cannot purge trash", e))
+            };
+            if result.is_ok() {
+                gone += 1;
+            }
         }
     }
     gone
@@ -1353,17 +1353,7 @@ pub fn purge_trash(trash: &Path, now: i64) -> usize {
 
 fn check_staging_at(staging: &str, dirs: &Dirs) -> Result<(OwnedFd, String, OwnedFd), PrivError> {
     let lexical = normalize_lexical(staging)?;
-    let xfer_fd = open(
-        &dirs.xfer,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| {
-        err(
-            PrivErrorCode::Internal,
-            "The transfer folder does not exist.",
-        )
-    })?;
+    let xfer_fd = super::managed_dirs::open_dir(&dirs.xfer, true)?;
     let xfer_st = fstat(&xfer_fd).map_err(|_| {
         err(
             PrivErrorCode::Internal,
@@ -1431,17 +1421,7 @@ pub(super) fn stage_download(
     if !FileType::from_raw_mode(src_st.st_mode as _).is_file() {
         return Err(invalid("Only files can be downloaded (not folders)."));
     }
-    let xfer_fd = open(
-        &dirs.xfer,
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| {
-        err(
-            PrivErrorCode::Internal,
-            "The transfer folder does not exist.",
-        )
-    })?;
+    let xfer_fd = super::managed_dirs::open_dir(&dirs.xfer, true)?;
     let xfer_st = fstat(&xfer_fd).map_err(|e| r_io_err("Cannot open the transfer folder", e))?;
     let mut rnd = [0u8; 8];
     getrandom::fill(&mut rnd)
@@ -1469,6 +1449,9 @@ pub(super) fn stage_download(
         Some(Gid::from_raw(xfer_st.st_gid)),
     )
     .map_err(|e| r_io_err("Cannot set the owner", e))?;
+    // xfer is root-owned; the panel reads downloads through its opsbox group.
+    fchmod(&out, Mode::from_raw_mode(0o640))
+        .map_err(|e| r_io_err("Cannot set the transfer permissions", e))?;
     let xfer_real = fs::canonicalize(&dirs.xfer).unwrap_or_else(|_| dirs.xfer.clone());
     Ok(Staged {
         staging: xfer_real.join(&dl_name).to_string_lossy().into_owned(),
@@ -1574,7 +1557,80 @@ mod tests {
             trash: root.join("trash"),
         };
         fs::create_dir_all(&d.xfer).unwrap();
+        fs::set_permissions(&d.xfer, fs::Permissions::from_mode(0o770)).unwrap();
         d
+    }
+
+    #[test]
+    fn managed_trash_symlink_is_refused_without_touching_target() {
+        let (_tmp, t) = tmp();
+        let d = dirs(&t);
+        let target = t.join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("sentinel"), "untouched").unwrap();
+        fs::write(target.join("1-old-entry"), "keep expired entry").unwrap();
+        let before = fs::metadata(&target).unwrap().mode();
+        symlink(&target, &d.trash).unwrap();
+        fs::write(t.join("source"), "keep me").unwrap();
+        let result = remove(&[s(&t.join("source"))], false, None, &d);
+        assert_eq!(
+            fs::metadata(&target).unwrap().mode(),
+            before,
+            "target mode changed"
+        );
+        assert_eq!(
+            fs::read_dir(&target).unwrap().count(),
+            2,
+            "target contents changed"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("sentinel")).unwrap(),
+            "untouched"
+        );
+        assert!(t.join("source").exists());
+        assert!(result.is_err(), "trash symlinks must be refused");
+        assert_eq!(purge_trash(&d.trash, now_secs()), 0);
+        assert_eq!(
+            fs::read_to_string(target.join("1-old-entry")).unwrap(),
+            "keep expired entry"
+        );
+    }
+
+    #[test]
+    fn managed_xfer_symlink_is_refused_without_touching_target() {
+        let (_tmp, t) = tmp();
+        let d = dirs(&t);
+        fs::remove_dir(&d.xfer).unwrap();
+        let target = t.join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("sentinel"), "untouched").unwrap();
+        let before = fs::metadata(&target).unwrap().mode();
+        symlink(&target, &d.xfer).unwrap();
+        fs::write(t.join("source"), "keep me").unwrap();
+        let result = stage_download(&s(&t.join("source")), None, &d);
+        assert!(
+            install_upload(
+                &s(&d.xfer.join("sentinel")),
+                &s(&t),
+                "uploaded",
+                false,
+                None,
+                &d
+            )
+            .is_err()
+        );
+        assert!(!t.join("uploaded").exists());
+        assert_eq!(fs::metadata(&target).unwrap().mode(), before);
+        assert_eq!(
+            fs::read_dir(&target).unwrap().count(),
+            1,
+            "target contents changed"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("sentinel")).unwrap(),
+            "untouched"
+        );
+        assert!(result.is_err(), "xfer symlinks must be refused");
     }
 
     // ---- resolution rules
@@ -2255,7 +2311,11 @@ mod tests {
         assert_eq!((st.name.as_str(), st.size), ("report.pdf", 9));
         assert!(Path::new(&st.staging).starts_with(&d.xfer));
         assert_eq!(fs::read_to_string(&st.staging).unwrap(), "pdf bytes");
-        assert_eq!(fs::metadata(&st.staging).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(&st.staging).unwrap().mode() & 0o777, 0o640);
+        assert_eq!(
+            fs::metadata(&st.staging).unwrap().gid(),
+            fs::metadata(&d.xfer).unwrap().gid()
+        );
         assert_eq!(
             stage_download(&s(&t), None, &d).unwrap_err().code,
             PrivErrorCode::Invalid,
@@ -2317,19 +2377,21 @@ mod tests {
     }
 
     #[test]
-    fn the_transfer_folder_may_be_reached_through_a_symlink() {
+    fn transfer_folder_ancestors_may_be_symlinks() {
         // Regression: /tmp is a link to /private/tmp on macOS, and configured paths on
         // Linux can contain links too. The staged file's folder is compared as a real path.
         let (_d, t) = tmp();
         let real = t.join("real_xfer");
         fs::create_dir(&real).unwrap();
-        symlink(&real, t.join("link_xfer")).unwrap();
+        fs::set_permissions(&real, fs::Permissions::from_mode(0o770)).unwrap();
+        let alias = t.join("alias");
+        symlink(&t, &alias).unwrap();
         fs::create_dir(t.join("dest")).unwrap();
         let d = Dirs {
-            xfer: t.join("link_xfer"),
+            xfer: alias.join("real_xfer"),
             trash: t.join("trash"),
         };
-        let staged = t.join("link_xfer/up.part");
+        let staged = alias.join("real_xfer/up.part");
         fs::write(&staged, "via a link").unwrap();
         install_upload(&s(&staged), &s(&t.join("dest")), "f.txt", false, None, &d).unwrap();
         assert_eq!(
@@ -2341,7 +2403,7 @@ mod tests {
         symlink(t.join("elsewhere"), real.join("evil.part")).unwrap();
         assert!(
             install_upload(
-                &s(&t.join("link_xfer/evil.part")),
+                &s(&alias.join("real_xfer/evil.part")),
                 &s(&t.join("dest")),
                 "g.txt",
                 false,

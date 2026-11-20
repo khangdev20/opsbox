@@ -641,3 +641,8 @@ Keep uninstall audit exports and adoption receipts private through fresh 0600 te
 ## Fix 23 — Protect opsbox configuration and service units
 Make /etc/opsbox and /etc/systemd/system/opsbox* read-only in the file manager, including new files and unit drop-ins; retain inode protection for existing configuration directories and service targets.
 Check normalized names before mutations and during symlink traversal with a clear protected-configuration/service refusal; cover writes, chmod, permanent deletion, moves to Trash and upload replacement without changing read access or adding a move operation.
+
+## Fix 24 — Root-owned managed state directories
+Install/migrate apps as root:opsbox 0750, xfer as root:opsbox 0770 and trash as root:root 0700; refuse symlinks. Temporarily remove parent write access while migrating legacy directories, then restore the sticky parent mode.
+Prepare directories before helper startup after binary updates and before self-update activation. Runtime helper access uses O_NOFOLLOW|O_DIRECTORY, owner/mode checks and descriptor-relative children; the API only opens and validates xfer, never creates or chmods it.
+Keep new service children accessible to their parent group despite UMask=0077; stage downloads as root:opsbox 0640 so the panel can read them. Update downloads require an existing real transfer directory.

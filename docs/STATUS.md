@@ -1,19 +1,22 @@
 # Status
 
-Last prompt done: **Fix 23 — Protect opsbox configuration and service units**.
+Last prompt done: **Fix 24 — Root-owned apps/, xfer/ and trash/ directories**.
 No commit, push, tag or installation attempted, as requested; changes remain on `dev`.
 
 ## Completed
-- Protect `/etc/opsbox` and descendants plus `/etc/systemd/system/opsbox*`, including new units and drop-ins, from file-manager mutations.
-- Check normalized paths and symlink expansion before mutations; retain descriptor/inode protection and explain that opsbox configuration/service state is protected.
-- Cover write, chmod, permanent delete, move to Trash and upload replacement with two test-first regressions; ordinary reads retain their existing rules.
-- Record the three-line decision, QA evidence and Linux owner checks; regenerate the index, update the fix table and archive fix 23.
+- Finish the started managed-directory hardening; retain the portable `Mode::from_raw_mode(mode as _)` conversion.
+- Install/migrate apps as root:opsbox 0750, xfer as root:opsbox 0770 and trash as root:root 0700; refuse directory symlinks and protect legacy migration against parent renames.
+- Prepare configured directories at root-helper startup after binary upgrades and before self-update activation; update downloading requires an existing real xfer directory.
+- Use checked no-follow directory descriptors for helper roots/children, uploads, downloads, Trash moves/purges and staged-update verification; API opens/validates xfer without creating or chmodding it.
+- Preserve service-group access under UMask=0077 and stage root-owned downloads with group-readable 0640 permissions.
+- Update decisions, QA evidence/owner checks and the fix table; archive fix 24 and regenerate the index.
 
 ## Verification
-- Both new regression tests failed before implementation and now pass. All 28 other file checks pass when skipping the unchanged mode-display test.
-- Full file run: 28 pass, one environment failure in `mode_strings_look_like_ls`; scratch chmod 04755 is reduced to 0755 here, independently reproduced with Python.
-- `cargo check -p opsbox-priv`, all-target Clippy with warnings denied, formatting, whitespace and regenerated-index freshness checks pass.
-- `timeout 120 cargo build --release` passed in 1m25s with the pre-existing rust-objcopy/libLLVM warning; Linux live-panel checks remain owner checks in docs/QA.md.
+- API symlink regression failed before the change by altering the target mode, then passed; five managed helper regressions pass, including unchanged symlink targets and fresh/migration preparation.
+- Required two-crate cargo check and both requested focused test commands pass; all 30 other file tests pass when skipping the known environment-sensitive mode-display test.
+- Installer scratch harness passes fresh install, legacy-mode migration and all three symlink refusals; actual shell control flow runs with recorded owner/group arguments and real mkdir/chmod.
+- Focused all-target Clippy, formatting, shell syntax and whitespace checks pass; generated maps refreshed and freshness check passes.
+- `timeout 120 cargo build --release` passed in 1m29s with the pre-existing rust-objcopy/libLLVM warning. Linux installation/upgrade and real root chown/systemd remain owner checks in docs/QA.md.
 
 ## Found, not fixed
 - Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. This broader ancestor-deletion gap needs a separate fix; do not try it on an installed host.
@@ -26,4 +29,4 @@ No commit, push, tag or installation attempted, as requested; changes remain on 
 - Navigation maps/lookup remain lexical rather than Rust/JavaScript type resolution.
 
 ## Next
-- Fix 24 — Install root-owned apps/, xfer/ and trash/ directories.
+- Fix 25 — Restrict the internet-facing proxy's writable paths.
