@@ -46,7 +46,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 27 | SECURITY: The helper authorises by UID only, not by operation ([27-priv-op-allowlist-by-uid.md](archive/27-priv-op-allowlist-by-uid.md)) | Fixed in fix 27 (live owner checks pending) |
 | 28 | SECURITY: The root helper runs a staged binary without checking its signature ([28-priv-verify-update.md](archive/28-priv-verify-update.md)) | Fixed in fix 28 (live owner checks pending) |
 | 29 | SECURITY: Audit log trusts the caller's own actor string ([29-audit-actor-from-peercred.md](archive/29-audit-actor-from-peercred.md)) | Fixed in fix 29 (live journal owner check pending) |
-| 30 | SECURITY: Make the security docs say what is true (`30-threat-model-honest-alpha.md`) | |
+| 30 | SECURITY: Make the security docs say what is true ([30-threat-model-honest-alpha.md](archive/30-threat-model-honest-alpha.md)) | Fixed in fix 30 (docs only) |
 
 ## Security batch (19-30): do these BEFORE the public alpha post
 Order: 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30. Items 19 to 21 are the must-haves; 22 to 25 are quick hardening; 26 to 28 are the structural root-boundary work (26 before 27); 30 is docs and can run any time. Prompts 01 to 18 can wait until these are done.

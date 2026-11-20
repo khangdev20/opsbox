@@ -272,16 +272,16 @@
     <div class="head">
       <span class="eyebrow">Security</span>
       <h2>A panel with root access should be hard to reach.</h2>
-      <p>So it is locked down from the first minute, without you having to know how.</p>
+      <p>Alpha: treat panel process compromise as host-root compromise. Restrict panel access with a VPN, SSH tunnel, or IP allowlist, and restrict Safe Mode separately.</p>
     </div>
     <div class="sec-list">
       <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Locked until you claim it</b><span>Before setup only the claim page answers, and it needs a one-time token from your server's boot log.</span></div></div>
-      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Safe mode</b><span>A separate watchdog restarts opsbox, rolls back a bad update and can open SSH for an hour if you need it.</span></div></div>
-      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Two-factor and lockout</b><span>TOTP on every account, sign-in lockout after repeated failures, every action in an audit log.</span></div></div>
-      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>No telemetry</b><span>opsbox sends nothing home. Your servers talk only to you.</span></div></div>
-      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Signed releases</b><span>The installer verifies checksums and signatures before anything runs.</span></div></div>
-      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Memory-safe by design</b><span>The agent is written in Rust: no runtime to install, and a whole class of memory bugs ruled out by the compiler.</span></div></div>
-      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Least privilege</b><span>The part that talks to the network runs unprivileged; only a small local helper can change the system.</span></div></div>
+      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Restrict Safe Mode</b><span>The root watchdog normally follows the panel IP on port 8444. Fix 21 adds exact-address filtering before TLS with [watchdog] allow_ips; an empty/default list permits remote access to recovery authentication. Restart opsbox-watchdog after changes, include loopback for tunnels, and check exposure/fingerprint with opsbox status. It has a separate root-only TLS key.</span></div></div>
+      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Two-factor and lockout</b><span>TOTP enrolment, sign-in lockout after repeated failures, and audit records help protect panel accounts. These controls do not contain a compromised panel process.</span></div></div>
+      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>No telemetry</b><span>opsbox does not send telemetry. Configured deployments, updates, certificates and notifications contact their external services.</span></div></div>
+      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Signed releases</b><span>The installer verifies checksums and signatures before installing a downloaded binary. Security fixes target the latest alpha release only.</span></div></div>
+      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Trusted deployers and sensitive tokens</b><span>Fix 19 makes elevated Compose Admin-only; this alpha does not sandbox hostile tenants. Grant Deployer access only to trusted people. Full API tokens mean everything except root-equivalent actions after fix 20; ordinary deployments remain available, so protect and revoke leaked tokens.</span></div></div>
+      <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Panel has root-equivalent access</b><span>The panel runs as opsbox and can request every typed operation from the root helper, including root jobs and terminals. Fixes 26/27 give the proxy a separate UID/socket and allow only port-holder queries and proxy: secret operations. Proxy compromise still exposes routed traffic and certificates. Existing hosts must install the fixes and restart services.</span></div></div>
       <div class="sec-item"><span class="ok" aria-hidden="true">✓</span><div><b>Open source</b><span>Read every line. Report issues privately through <a href="https://github.com/khangdev20/opsbox/blob/main/SECURITY.md">SECURITY.md</a>; threats and controls in the <a href="https://github.com/khangdev20/opsbox/blob/main/docs/THREAT_MODEL.md">threat model</a>.</span></div></div>
     </div>
   </div>

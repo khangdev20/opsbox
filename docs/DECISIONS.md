@@ -667,3 +667,7 @@ Copy authenticated bytes into an exclusively created helper-owned 0700 temporary
 ## Fix 29 — Use kernel credentials for helper audit identity
 Record peer_uid and optional pid from Unix-socket peer credentials in every ordinary/streaming priv_request span; kernel identity describes the connecting process/account.
 Label the unchanged PrivRequest.actor string claimed_actor (or - when absent): advisory attribution only, never authenticated panel-user identity or authorization proof.
+
+## Fix 30 — Describe the implemented alpha security boundary
+Treat panel UID compromise as host root; distinguish the proxy UID/socket/operation restrictions in fixes 26/27 from the panel's unrestricted typed helper access.
+Align policy, threat model, README and site on trusted deployers, Full-token exclusions and the opt-in Safe Mode allowlist; support only the latest alpha and retain private GitHub advisory reporting.

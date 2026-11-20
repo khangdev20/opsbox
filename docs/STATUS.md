@@ -1,23 +1,22 @@
 # Status
 
-Last prompt completed: **Fix 29 — Helper audit identity from peer credentials**.
+Last prompt completed: **Fix 30 — Honest alpha security documentation (docs only)**.
 No commit, push, tag or installation attempted; changes remain on `dev`, as requested.
 
 ## Completed
-- Add kernel peer_uid and optional pid to all four priv_request spans: ordinary requests, PTY, Docker log follow and deploy builds.
-- Label the caller-supplied actor as claimed_actor; preserve PrivRequest and authorization behavior.
-- Add socket-pair regression coverage for all four paths with alice and absent actor; compare structured fields with real kernel credentials.
-- Document advisory actor/authoritative kernel identity, record the three-line decision, update QA and archive Fix 29.
+- Add Alpha status to THREAT_MODEL.md and SECURITY.md: panel UID compromise remains host-root compromise; fixes 26/27 restrict the separate proxy UID/socket/operations.
+- Align README/site text on trusted deployers (fix 19), sensitive Full tokens with root-equivalent exclusions (fix 20), and the separate, opt-in Safe Mode source allowlist (fix 21).
+- Keep private GitHub advisory reporting; document latest-alpha-only support and distinguish current source from installed releases.
+- Record the three-line decision, update QA/fix index and archive Fix 30. No runtime, layout or style changes.
 
 ## Verification
-- Strict TDD: the new test first failed on missing peer_uid with the old actor=alice/uid span; all eight cases now pass.
-- Full helper suite: 237 pass, three existing environment failures (socket bind denied, stripped setuid, denied uptime sysctl); Cargo stops before integration suites.
-- All-target helper Clippy with warnings denied and generated-index regeneration/freshness checks pass.
-- Formatting and whitespace checks pass. Release build passes (1m22s), with the existing rust-objcopy/libLLVM debug-stripping warning.
+- Manual source/document review covers helper caller authorization, peer credentials, Compose restrictions, token scope/denials and watchdog defaults.
+- Generated-index regeneration makes no changes; `timeout 120 python3 scripts/gen-index.py --check` passes.
+- `timeout 120 git diff --check` passes; misleading privilege/automatic-lockdown claims removed. No runtime tests or release build needed for prose-only changes.
 
 ## Limits and next prompt
-- Complete Linux helper tests and installed-service journal checks remain owner work; exact steps are in docs/QA.md.
-- Next: Fix 30 — Make the security docs say what is true.
+- Complete Linux helper tests, installed-service journal checks and prior fixes' live owner checks remain; exact steps are in docs/QA.md.
+- Fix prompts 01–30 are complete in the working tree; pending Linux owner checks and prior CI/release work are next.
 
 ## Found, not fixed
 - Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. This broader ancestor-deletion gap needs a separate fix; do not try it on an installed host.
@@ -32,4 +31,4 @@ No commit, push, tag or installation attempted; changes remain on `dev`, as requ
 
 
 ## Next
-- Fix 30 — Make the security docs say what is true.
+- Run the pending Linux owner checks in docs/QA.md before the public alpha post; no new numbered fix prompt is queued.

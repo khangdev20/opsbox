@@ -2,7 +2,11 @@
 
 **Your own Railway / Render, on any Linux server.** Install once; deploy from GitHub, watch the machine, open a terminal, back up data, and manage the host from the browser. Goal: never SSH into the instance again.
 
-> **Alpha.** APIs and UI can still change. Use it for side projects and staging first, keep backups off-box, and prefer a VPN, SSH tunnel, or IP allowlist for the panel. See [docs/SECURITY.md](docs/SECURITY.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+> **Alpha.** APIs and UI can still change. Use it for side projects and staging first and keep backups off-box. Treat panel process compromise as host-root compromise; restrict panel access with a VPN, SSH tunnel, or IP allowlist. See [SECURITY.md](SECURITY.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+
+The panel runs as `opsbox` but can request all typed operations from the root helper. Fixes 26/27 give the proxy a separate UID/socket and restrict its helper access to port-holder queries and `proxy:` secrets. Use trusted deployers only: fix 19 makes elevated Compose Admin-only, but this alpha is not a hostile-tenant sandbox. Full API tokens remain sensitive even though fix 20 excludes root-equivalent actions; ordinary deployments remain available.
+
+Restrict Safe Mode separately: its root watchdog normally follows the panel's bind IP on port 8444. Fix 21 adds `[watchdog] allow_ips` for exact addresses checked before TLS; an empty/default list permits any source to reach recovery authentication. Restart `opsbox-watchdog` after changing it, include loopback explicitly for tunnels, and check exposure/fingerprint with `opsbox status`. `--local-only` makes the default recovery bind loopback unless `[watchdog] listen` overrides it. Existing hosts need these fixes installed and services restarted; only the latest alpha release receives security fixes.
 
 ## Supported OS
 
@@ -52,6 +56,6 @@ Or Settings → Export and uninstall → Uninstall opsbox (password + type `unin
 
 ## Principles
 
-Binds to localhost by default unless you open it for first-run claim, no telemetry, single static binary, UI embedded, panel meant to sit behind a VPN or IP allowlist while alpha.
+No telemetry, single static binary, UI embedded. Use `--local-only` for loopback access through an SSH tunnel, or restrict the panel with a VPN or IP allowlist. Review the separate Safe Mode listener and allowlist while alpha.
 
 License: Apache-2.0. Bundled libraries and fonts retain their licences under `web/vendor` and `web/fonts`.

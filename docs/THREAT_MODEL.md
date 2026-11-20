@@ -2,15 +2,26 @@
 
 Short, one section per area. Extend it when a prompt changes what is trusted. Reporting channel and response targets: [SECURITY.md](../SECURITY.md) (summary in [docs/SECURITY.md](SECURITY.md)).
 
+## Alpha status
+
+- **Panel compromise means host-root compromise.** `serve` runs as the `opsbox` UID and delegates system actions to the root helper. That UID can request every typed `PrivOp`, including root jobs and terminals; the helper does not require independent proof of an authenticated panel administrator. Typed requests and parameter validation do not contain a compromised panel process. Keep panel access behind a VPN, SSH tunnel (`--local-only`), or IP allowlist.
+- **Proxy separation is implemented (fixes 26/27).** The proxy runs as the distinct `opsbox-proxy` UID and connects through `/run/opsbox/priv-proxy.sock`. Kernel peer credentials and an operation allowlist restrict it to `PortHolders` and `SecretSeal`/`SecretOpen` in `proxy:` contexts. It cannot use the panel helper socket or request jobs, terminals or arbitrary file writes. A compromised proxy still controls routed traffic, its forwarding secret and proxy certificates; this separation does not protect the panel if the attacker also compromises `serve`.
+- **Deployers must be trusted operators.** Fix 19 requires Admin approval for elevated Compose, checks raw and helper-resolved configuration, and refuses unsafe parsing. Before that fix, Deployer access could grant host root through Compose. These checks reduce known escalation paths; they are not a sandbox for hostile tenants or untrusted build/deploy code. Do not grant Deployer access to untrusted people on an alpha host.
+- **Full API tokens remain sensitive (fix 20).** Full means “everything except root-equivalent actions”. Root-equivalent and sensitive account/secret routes require an interactive session; ordinary deployments remain available. Token redeploys apply Deployer checks to elevated Compose even if an Admin previously confirmed it. Protect and revoke leaked tokens: they still grant broad application access and can change deployed code.
+- **Restrict Safe Mode separately (fix 21).** The watchdog is a root recovery service, normally on port 8444. Its default bind follows the panel IP, and an empty/default `[watchdog] allow_ips = []` permits any source to reach recovery authentication. Set exact allowed IPv4/IPv6 addresses (no CIDRs) and restart `opsbox-watchdog`; other peers are dropped before TLS. Loopback is not implicitly allowed, so include it for SSH tunnels. `--local-only` makes the default watchdog bind loopback unless `[watchdog] listen` overrides it. The watchdog uses its own root-only TLS key; check exposure and its certificate fingerprint with `opsbox status`.
+
+These describe the current source and packaged configuration. Existing hosts need the fixes installed and services restarted; outstanding Linux installation and recovery checks are tracked in [QA.md](QA.md).
+
 ## Trust boundaries (alpha)
 
 | Boundary | Trust | Notes |
 |---|---|---|
 | Browser → `serve` | Untrusted until claimed; then authenticated session + TOTP | Claim needs the one-time setup token; after claim, setup routes 404 |
-| `serve` → `priv` | Local socket; typed `PrivOp` only | `serve` never runs as root; `priv` re-validates every op |
+| `serve` → `priv` | Panel/root kernel peer UID on the panel socket; typed `PrivOp` only | Panel UID can request all operations; treat `serve` compromise as root |
+| Proxy → `priv` | Separate proxy UID and socket (fixes 26/27) | Only `PortHolders` and `proxy:` secret seal/open operations |
 | Proxy → `serve` | Loopback + shared secret | Forwarded headers ignored unless both match |
 | Installer → host | Root for install only | Verifies SHA-256 + minisign before replacing the binary |
-| Watchdog / safe mode | Root recovery path | Separate port; can roll back a bad update and open emergency SSH briefly |
+| Watchdog / Safe Mode | Root recovery path with separate TLS key | Separate listener/allowlist; empty allowlist permits remote access to authentication |
 
 In scope for no one yet: a public bug bounty, formal third-party audit, or hardening against a malicious admin who already owns the panel.
 
@@ -34,7 +45,7 @@ What we defend against: someone on the network reading or changing traffic, a co
 
 In scope for no one: encrypting JSON inside TLS, mutual TLS, a WAF.
 
-Known limit: the proxy secret is in the database and in the proxy's route table in memory. Anyone who can read either already controls opsbox.
+Known limit: the forwarding secret is in the panel database and the proxy's route table in memory. A compromised proxy can forge forwarded headers to `serve`, including client addresses used by its allowlist and rate limits. This secret authenticates proxy transport, not a panel user; panel session authentication still applies. Protect panel reachability at the VPN or firewall as well.
 
 ## Default response headers (prompt 16r)
 

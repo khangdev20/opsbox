@@ -1164,3 +1164,13 @@ Owner checks — disposable Multipass `opsbox-vm`:
 3. Reuse Fix 27's harmless proxy PTY probe with `actor: "alice"`: it must still return Forbidden and open no terminal; its denial warning must retain the real UID/PID. Tunnel panel access with `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`.
 
 No commit, push, tag or installation was attempted for fix 29.
+
+## Fixed in fix 30 — Honest alpha security documentation (2026-11-20)
+
+Fixed in fix 30. The threat model omitted the panel UID's root-equivalent helper access, the site claimed “Least privilege” and automatic lockdown, and SECURITY.md did not identify supported versions. Manual reproduction before editing: read the trust-boundary table and site security section; `rg -n -i 'least privilege|locked down from the first minute' site/index.html` matched both misleading claims.
+
+Added Alpha status to docs/THREAT_MODEL.md and SECURITY.md and aligned README/site text: panel compromise means host root; fixes 26/27 separate the proxy UID/socket and restrict its operations to PortHolders and proxy: secret seal/open; fix 19 blocks elevated Compose for Deployers without promising hostile-tenant isolation; fix 20 excludes root-equivalent actions from Full tokens while retaining ordinary deployments; fix 21 filters exact Safe Mode source IPs before TLS, with an empty/default list still open to recovery authentication. Documented separate recovery restrictions, restart/loopback considerations, current-source versus installed-release limits, latest-alpha-only support and the existing private GitHub advisory channel. Corrected the threat model's claim that reading a proxy forwarding secret necessarily implies full panel control.
+
+Validation: reviewed current helper caller authorization, server peer-credential/dispatch gates, Compose authorization, token denial/scope text and watchdog configuration against the prose. `timeout 120 python3 scripts/gen-index.py --check` and `timeout 120 git diff --check` pass; index regeneration produces no changes. No runtime test was added or claimed: this fix changes prose only and manual source/document comparison is the relevant check. The prompt is archived and the fix index is marked complete.
+
+Owner checks: no new runtime checks for this docs-only fix. Existing Linux install, proxy separation, token/Compose and Safe Mode acceptance checks in fixes 19–29 remain pending where recorded; no VM installation or release verification is claimed. No commit, push or tag was attempted.
