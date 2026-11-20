@@ -7,9 +7,9 @@
 use std::convert::Infallible;
 use std::fs;
 use std::future::Future;
-use std::io;
+use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -21,7 +21,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode, header};
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder as ConnBuilder;
-use nix::unistd::{Group, User, chown};
+
 use opsbox_proto::WatchdogStatus;
 use rcgen::generate_simple_self_signed;
 use rustls_pki_types::pem::PemObject;
@@ -94,36 +94,28 @@ fn generate_self_signed_pem() -> io::Result<(String, String)> {
     Ok((certified.cert.pem(), certified.key_pair.serialize_pem()))
 }
 
-fn chown_to_opsbox(path: &Path) {
-    let Ok(Some(user)) = User::from_name("opsbox") else {
-        return;
-    };
-    let gid = Group::from_name("opsbox")
-        .ok()
-        .flatten()
-        .map_or(user.gid, |g| g.gid);
-    let _ = chown(path, Some(user.uid), Some(gid));
-}
-
 fn write_cert_pair(
     cert_path: &Path,
     key_path: &Path,
     cert_pem: &str,
     key_pem: &str,
 ) -> io::Result<()> {
-    if let Some(p) = cert_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(p)?;
-    }
-    if let Some(p) = key_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(p)?;
-    }
-    fs::write(cert_path, cert_pem)?;
-    fs::set_permissions(cert_path, fs::Permissions::from_mode(0o644))?;
-    chown_to_opsbox(cert_path);
-
-    fs::write(key_path, key_pem)?;
-    fs::set_permissions(key_path, fs::Permissions::from_mode(0o640))?;
-    chown_to_opsbox(key_path);
+    // Never truncate an existing key or follow a planted symlink. Set the mode
+    // at creation, before any private bytes are written (independent of umask).
+    let mut key = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(key_path)?;
+    key.set_permissions(fs::Permissions::from_mode(0o600))?;
+    key.write_all(key_pem.as_bytes())?;
+    let mut cert = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(cert_path)?;
+    cert.set_permissions(fs::Permissions::from_mode(0o644))?;
+    cert.write_all(cert_pem.as_bytes())?;
     Ok(())
 }
 
@@ -149,35 +141,51 @@ fn load_tls_acceptor_from_files(cert_path: &Path, key_path: &Path) -> io::Result
     Ok(TlsAcceptor::from(Arc::new(cfg)))
 }
 
-/// Share the panel TLS certificate (`DEFAULT_CERT_PATH` or `<db_dir>/panel-selfsigned.{crt,key}`).
+/// Load only the watchdog's dedicated certificate; never reuse panel credentials.
 pub fn load_or_create_tls_acceptor(
     cert_path: &Path,
     key_path: &Path,
-    fallback_cert_path: &Path,
-    fallback_key_path: &Path,
 ) -> io::Result<(TlsAcceptor, PathBuf)> {
-    if cert_path.exists() && key_path.exists() {
-        let acc = load_tls_acceptor_from_files(cert_path, key_path)?;
-        return Ok((acc, cert_path.to_path_buf()));
+    if let Some(parent) = key_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+        let meta = fs::symlink_metadata(parent)?;
+        if !meta.is_dir() || meta.uid() != nix::unistd::geteuid().as_raw() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "watchdog TLS directory must be owned by its root process",
+            ));
+        }
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
     }
-    if fallback_cert_path.exists() && fallback_key_path.exists() {
-        let acc = load_tls_acceptor_from_files(fallback_cert_path, fallback_key_path)?;
-        return Ok((acc, fallback_cert_path.to_path_buf()));
+    if !cert_path.exists() && !key_path.exists() {
+        let (cert_pem, key_pem) = generate_self_signed_pem()?;
+        write_cert_pair(cert_path, key_path, &cert_pem, &key_pem)?;
     }
-    let (cert_pem, key_pem) = generate_self_signed_pem()?;
-    if write_cert_pair(cert_path, key_path, &cert_pem, &key_pem).is_ok() {
-        let acc = load_tls_acceptor_from_files(cert_path, key_path)?;
-        return Ok((acc, cert_path.to_path_buf()));
+    let meta = fs::symlink_metadata(key_path)?;
+    if !meta.is_file() || meta.uid() != nix::unistd::geteuid().as_raw() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "watchdog TLS key must be owned by its root process",
+        ));
     }
-    write_cert_pair(fallback_cert_path, fallback_key_path, &cert_pem, &key_pem)?;
-    let acc = load_tls_acceptor_from_files(fallback_cert_path, fallback_key_path)?;
-    Ok((acc, fallback_cert_path.to_path_buf()))
+    fs::set_permissions(key_path, fs::Permissions::from_mode(0o600))?;
+    let acc = load_tls_acceptor_from_files(cert_path, key_path)?;
+    Ok((acc, cert_path.to_path_buf()))
+}
+
+/// Exact source addresses, canonicalized for IPv4-mapped IPv6 listeners.
+pub fn peer_allowed(allow_ips: &[IpAddr], peer: IpAddr) -> bool {
+    allow_ips.is_empty()
+        || allow_ips
+            .iter()
+            .any(|ip| ip.to_canonical() == peer.to_canonical())
 }
 
 pub async fn serve(
     listener: TcpListener,
     acceptor: TlsAcceptor,
     state: SafeModeState,
+    allow_ips: Vec<IpAddr>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
     tokio::pin!(shutdown);
@@ -193,6 +201,10 @@ pub async fn serve(
                         continue;
                     }
                 };
+                // Drop disallowed sockets before TLS work or HTTP parsing.
+                if !peer_allowed(&allow_ips, peer.ip()) {
+                    continue;
+                }
                 let acceptor = acceptor.clone();
                 let st = state.clone();
                 tokio::spawn(async move {
@@ -1127,7 +1139,107 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
+    #[test]
+    fn watchdog_allow_ips_filters_before_tls() {
+        let allowed = ["203.0.113.7".parse().unwrap(), "::1".parse().unwrap()];
+        assert!(peer_allowed(&allowed, "203.0.113.7".parse().unwrap()));
+        assert!(peer_allowed(&allowed, "::1".parse().unwrap()));
+        assert!(peer_allowed(
+            &allowed,
+            "::ffff:203.0.113.7".parse().unwrap()
+        ));
+        assert!(!peer_allowed(&allowed, "203.0.113.8".parse().unwrap()));
+        assert!(!peer_allowed(&allowed, "127.0.0.1".parse().unwrap()));
+        assert!(!peer_allowed(&allowed, "2001:db8::1".parse().unwrap()));
+        assert!(peer_allowed(&[], "203.0.113.8".parse().unwrap()));
+        assert!(peer_allowed(&[], "2001:db8::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn watchdog_tls_key_is_private_and_owned_by_creator() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("watchdog.crt");
+        let key = dir.path().join("watchdog.key");
+        let (cert_pem, key_pem) = generate_self_signed_pem().unwrap();
+        write_cert_pair(&cert, &key, &cert_pem, &key_pem).unwrap();
+        let meta = fs::metadata(&key).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o600);
+        // In production the creator is root; never hand the key to opsbox.
+        assert_eq!(meta.uid(), nix::unistd::geteuid().as_raw());
+    }
+
+    #[test]
+    fn watchdog_tls_reload_preserves_identity_and_refuses_symlink_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("tls/selfsigned.crt");
+        let key = dir.path().join("tls/selfsigned.key");
+        load_or_create_tls_acceptor(&cert, &key).unwrap();
+        let original = fs::read(&key).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+        load_or_create_tls_acceptor(&cert, &key).unwrap();
+        assert_eq!(fs::metadata(&key).unwrap().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&key).unwrap(), original);
+        let saved = dir.path().join("saved.key");
+        fs::rename(&key, &saved).unwrap();
+        std::os::unix::fs::symlink(&saved, &key).unwrap();
+        assert!(load_or_create_tls_acceptor(&cert, &key).is_err());
+    }
+
+    #[test]
+    fn watchdog_tls_defaults_are_separate_from_panel() {
+        let cfg = crate::WatchdogConfig::default();
+        assert_eq!(
+            cfg.key_path,
+            Path::new("/etc/opsbox/watchdog/selfsigned.key")
+        );
+        assert_eq!(
+            cfg.cert_path,
+            Path::new("/etc/opsbox/watchdog/selfsigned.crt")
+        );
+    }
+
     async fn start_test_server() -> (
+        SocketAddr,
+        PathBuf,
+        PathBuf,
+        tempfile::TempDir,
+        Arc<SafeModeState>,
+    ) {
+        start_test_server_with_ips(Vec::new()).await
+    }
+
+    #[tokio::test]
+    async fn watchdog_allow_ips_drops_disallowed_connections_before_tls() {
+        for (ips, denied) in [
+            (vec!["203.0.113.7".parse().unwrap()], true),
+            (vec![], false),
+            (vec!["127.0.0.1".parse().unwrap()], false),
+        ] {
+            let (addr, _, _, _dir, _) = start_test_server_with_ips(ips).await;
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            let mut byte = [0];
+            let read =
+                tokio::time::timeout(Duration::from_millis(200), stream.read(&mut byte)).await;
+            if denied {
+                assert!(
+                    matches!(read, Ok(Ok(0)) | Ok(Err(_))),
+                    "peer must close before ClientHello"
+                );
+            } else {
+                assert!(
+                    read.is_err(),
+                    "allowed connection must wait for ClientHello"
+                );
+                let (status, _, _) = https_raw(addr, "GET", "/healthz", &[], "").await;
+                assert_eq!(status, 200);
+            }
+        }
+    }
+
+    async fn start_test_server_with_ips(
+        allow_ips: Vec<IpAddr>,
+    ) -> (
         SocketAddr,
         PathBuf,
         PathBuf,
@@ -1163,13 +1275,7 @@ mod tests {
 
         let cert = dir.path().join("cert.pem");
         let key = dir.path().join("key.pem");
-        let (acceptor, _) = load_or_create_tls_acceptor(
-            &cert,
-            &key,
-            &dir.path().join("fb.crt"),
-            &dir.path().join("fb.key"),
-        )
-        .unwrap();
+        let (acceptor, _) = load_or_create_tls_acceptor(&cert, &key).unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1212,7 +1318,7 @@ mod tests {
 
         let st = (*state).clone();
         tokio::spawn(async move {
-            let _ = serve(listener, acceptor, st, std::future::pending()).await;
+            let _ = serve(listener, acceptor, st, allow_ips, std::future::pending()).await;
         });
 
         (addr, cert, rt, dir, state)

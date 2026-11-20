@@ -213,6 +213,7 @@ impl Default for ProxySection {
 #[serde(default, deny_unknown_fields)]
 struct WatchdogSection {
     listen: Option<SocketAddr>,
+    allow_ips: Vec<IpAddr>,
     runtime_dir: PathBuf,
 }
 
@@ -220,6 +221,7 @@ impl Default for WatchdogSection {
     fn default() -> Self {
         Self {
             listen: None,
+            allow_ips: Vec::new(),
             runtime_dir: "/run/opsbox-watchdog".into(),
         }
     }
@@ -296,6 +298,7 @@ pub struct Config {
     pub acme_email: Option<String>,
     pub public_ips: Vec<IpAddr>,
     pub watchdog_listen: SocketAddr,
+    pub watchdog_allow_ips: Vec<IpAddr>,
     pub watchdog_runtime_dir: PathBuf,
     pub db_path: PathBuf,
     /// `[update] channel`, if the file names one (the panel setting still wins).
@@ -448,6 +451,7 @@ impl Config {
             acme_email: file.proxy.acme_email,
             public_ips: file.proxy.public_ips,
             watchdog_listen,
+            watchdog_allow_ips: file.watchdog.allow_ips,
             watchdog_runtime_dir: o.watchdog_runtime_dir.unwrap_or(file.watchdog.runtime_dir),
             db_path: o.db_path.unwrap_or(file.store.db_path),
             update_channel,
@@ -700,6 +704,36 @@ mod tests {
         assert_eq!(c2.proxy_listen_http.port(), 9080);
         assert_eq!(c2.proxy_socket, Path::new("/tmp/cli-proxy.sock"));
         assert!(c2.acme_staging);
+    }
+
+    #[test]
+    fn watchdog_allow_ips_accepts_addresses_and_rejects_invalid_entries() {
+        assert!(
+            load_str(
+                "[watchdog]\nallow_ips = [\"203.0.113.7\", \"::1\"]\n",
+                Overrides::default(),
+            )
+            .is_ok()
+        );
+        let configured = load_str(
+            "[watchdog]\nallow_ips = [\"203.0.113.7\"]\n",
+            Overrides::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            configured.watchdog_allow_ips,
+            vec!["203.0.113.7".parse::<IpAddr>().unwrap()]
+        );
+        let open = load_str("[watchdog]\nallow_ips = []\n", Overrides::default()).unwrap();
+        assert!(open.watchdog_allow_ips.is_empty());
+        assert!(
+            load_str(
+                "[watchdog]\nallow_ips = [\"203.0.113.0/24\"]\n",
+                Overrides::default()
+            )
+            .is_err()
+        );
+        assert!(load_str("[watchdog]\nallow_ips = [\"typo\"]\n", Overrides::default()).is_err());
     }
 
     #[test]

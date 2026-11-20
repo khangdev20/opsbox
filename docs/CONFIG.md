@@ -48,6 +48,7 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[proxy] acme_email` | unset | | | proxy |
 | `[proxy] public_ips` | `[]` (auto-detected) | | | proxy, serve |
 | `[watchdog] listen` | `<api.listen ip>:8444` | `--listen ADDR` | `OPSBOX_WATCHDOG_LISTEN` | watchdog, status |
+| `[watchdog] allow_ips` | `[]` (all addresses) | | | watchdog, status |
 | `[watchdog] runtime_dir` | `/run/opsbox-watchdog` | `--runtime-dir PATH` | `OPSBOX_WATCHDOG_RUNTIME_DIR` | watchdog, recovery-code |
 | `[store] db_path` | `/var/lib/opsbox/opsbox.db` | `--db PATH` | `OPSBOX_DB` | serve, watchdog |
 | `[update] channel` | unset (`"beta"` while the running version is a pre-release, else `"stable"`) | `opsbox update --channel` | | serve, update |
@@ -181,3 +182,21 @@ The proxy remains running, reports `port_conflict` and retries each primary port
 Settings > Network can stop a confirmed Docker holder and set its restart policy to `no`, or stop/disable a confirmed systemd service. Undo restores its original policy/enablement and starts it after yielding opsbox's primary listeners. Root-only receipts next to `config.toml` survive restarts; the audit records the old policy and outcome. Unknown/ambiguous holders have no takeover action, and opsbox/Docker/containerd units cannot be stopped here. Containers and volumes are never removed.
 
 “Keep it and use other ports” saves the current HTTP/HTTPS addresses as `listen_http` / `listen_https`, applies them live and ends primary retries. Automatic Let's Encrypt HTTP-01 for domains needs 80/443. File configuration should be authoritative when using this action: CLI/environment listener overrides still take precedence at the next proxy restart.
+
+### Safe Mode source addresses and certificate
+
+`[watchdog] allow_ips = ["203.0.113.7", "::1"]` accepts only those exact source IPs,
+before TLS or HTTP. IPv4-mapped IPv6 addresses match their IPv4 equivalent; CIDRs
+and invalid addresses are rejected at config load. An empty list keeps remote
+recovery open to all source addresses; authentication is still required. Restart
+`opsbox-watchdog` after editing. Include `127.0.0.1` / `::1` if you want local
+health probes or SSH tunnels; there is no implicit loopback exception. Local-only
+installation still follows the panel's loopback bind unless watchdog.listen is set.
+
+Safe Mode generates its own `/etc/opsbox/watchdog/selfsigned.crt` and
+`selfsigned.key` (root-owned, `0600`); it never reads the panel key or falls back
+to the panel's writable data directory. `opsbox status` and the installer's status
+summary show the allowlist and watchdog certificate SHA-256 fingerprint. When the
+list excludes local probes, `sudo opsbox status` uses the root-only watchdog
+snapshot (at most 45 seconds old). Compare the watchdog fingerprint with your
+browser before signing in; the panel certificate has a different fingerprint.

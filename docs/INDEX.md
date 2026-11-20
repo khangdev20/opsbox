@@ -32,7 +32,7 @@ Dependencies include normal/build/target tables; dev dependencies are omitted.
 
 | Crate / symbols | Purpose | Internal dependencies | Non-test LOC | Entry |
 |---|---|---|---:|---|
-| [opsbox](index/symbols/opsbox.md) | The `opsbox` binary: one executable, many roles (docs/BACKEND_SPEC.md section 2). | opsbox-api, opsbox-auth, opsbox-backup, opsbox-capacity, opsbox-priv, opsbox-proto, opsbox-proxy, opsbox-store, opsbox-update, opsbox-version, opsbox-watchdog | 2,891 | [crates/opsbox/src/main.rs](../crates/opsbox/src/main.rs) |
+| [opsbox](index/symbols/opsbox.md) | The `opsbox` binary: one executable, many roles (docs/BACKEND_SPEC.md section 2). | opsbox-api, opsbox-auth, opsbox-backup, opsbox-capacity, opsbox-priv, opsbox-proto, opsbox-proxy, opsbox-store, opsbox-update, opsbox-version, opsbox-watchdog | 2,947 | [crates/opsbox/src/main.rs](../crates/opsbox/src/main.rs) |
 | [opsbox-alerts](index/symbols/opsbox-alerts.md) | Persistent alert state machine and TLS-only outbound channels (spec 7.13). | opsbox-proto | 590 | [crates/opsbox-alerts/src/lib.rs](../crates/opsbox-alerts/src/lib.rs) |
 | [opsbox-api](index/symbols/opsbox-api.md) | The HTTP server: router, request ids, the error format, health endpoints and the | opsbox-alerts, opsbox-auth, opsbox-backup, opsbox-capacity, opsbox-deploy, opsbox-metrics, opsbox-priv, opsbox-proto, opsbox-proxy, opsbox-store, opsbox-update, opsbox-version | 23,829 | [crates/opsbox-api/src/lib.rs](../crates/opsbox-api/src/lib.rs) |
 | [opsbox-auth](index/symbols/opsbox-auth.md) | Panel accounts: passwords, two-factor sign-in, sessions, lockout, first-run setup. | opsbox-priv, opsbox-proto, opsbox-store | 1,376 | [crates/opsbox-auth/src/lib.rs](../crates/opsbox-auth/src/lib.rs) |
@@ -49,7 +49,7 @@ Dependencies include normal/build/target tables; dev dependencies are omitted.
 | [opsbox-sys](index/symbols/opsbox-sys.md) | System facts and actions used by priv: packages, systemd, journal, timers, firewall, users, ssh, swap, disks (Phase 1). | — | 0 | [crates/opsbox-sys/src/lib.rs](../crates/opsbox-sys/src/lib.rs) |
 | [opsbox-update](index/symbols/opsbox-update.md) | Self-update, signature verification and version slots (Phase 2). | opsbox-version | 797 | [crates/opsbox-update/src/lib.rs](../crates/opsbox-update/src/lib.rs) |
 | [opsbox-version](index/symbols/opsbox-version.md) | The version this build reports: `opsbox --version`, `/health`, `/updates/self`, | — | 47 | [crates/opsbox-version/src/lib.rs](../crates/opsbox-version/src/lib.rs) |
-| [opsbox-watchdog](index/symbols/opsbox-watchdog.md) | `opsbox-watchdog`: independent supervisor, health probe loop, auto-rollback | opsbox-proto, opsbox-store, opsbox-version | 3,535 | [crates/opsbox-watchdog/src/lib.rs](../crates/opsbox-watchdog/src/lib.rs) |
+| [opsbox-watchdog](index/symbols/opsbox-watchdog.md) | `opsbox-watchdog`: independent supervisor, health probe loop, auto-rollback | opsbox-proto, opsbox-store, opsbox-version | 3,538 | [crates/opsbox-watchdog/src/lib.rs](../crates/opsbox-watchdog/src/lib.rs) |
 
 ## Dependency graph
 

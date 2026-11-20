@@ -30,6 +30,7 @@ pub fn run(config: Config) -> Result<()> {
 
     let wd_cfg = WatchdogConfig {
         listen: config.watchdog_listen,
+        allow_ips: config.watchdog_allow_ips,
         serve_listen: config.listen,
         priv_socket: config.priv_socket,
         proxy_socket: config.proxy_socket,
@@ -40,10 +41,6 @@ pub fn run(config: Config) -> Result<()> {
         binary_symlink,
         update_state_file: data_dir.join("bin").join("update-state.json"),
         xfer_dir: config.xfer_dir,
-        cert_path: opsbox_api::tls::DEFAULT_CERT_PATH.into(),
-        key_path: opsbox_api::tls::DEFAULT_KEY_PATH.into(),
-        fallback_cert_path: data_dir.join("panel-selfsigned.crt"),
-        fallback_key_path: data_dir.join("panel-selfsigned.key"),
         ..WatchdogConfig::default()
     };
 

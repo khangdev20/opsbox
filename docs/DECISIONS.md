@@ -629,3 +629,7 @@ Only Admin confirmation reaches validation/deploy; carry the authenticated role 
 ## Fix 20 — Full tokens exclude root-equivalent actions
 Require deny_token before system/job/file mutations, installation/update policy, security fixes, listener exposure, Compose submission and live restore; capacity admission must refuse session-only requests before helper probes.
 Treat token-triggered Compose redeploys as Deployer for raw/resolved elevation checks, retain ordinary deploys, and require a reviewed token decision for every mutating route; keep Full wording consistent in API and UI.
+
+## Fix 21 — Restrict Safe Mode and isolate its TLS key
+Apply [watchdog] allow_ips as exact canonical IP matches immediately after accept, before TLS; an empty list retains remote recovery, and loopback has no implicit exemption.
+Generate a separate root-owned 0600 key under /etc/opsbox/watchdog with no panel/data-directory fallback; status/install output shows exposure and its certificate fingerprint, using fresh private status when local probes are excluded.

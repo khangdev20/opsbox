@@ -97,6 +97,8 @@ pub struct Report {
     pub proxy: ProxyState,
     pub watchdog_addr: SocketAddr,
     pub watchdog: WatchdogState,
+    pub watchdog_allow_ips: Vec<IpAddr>,
+    pub watchdog_cert_sha256: Option<String>,
 }
 
 impl Report {
@@ -249,6 +251,25 @@ impl Report {
             WatchdogState::Down(why) => ("DOWN    ", why.clone()),
         };
         let _ = writeln!(out, "watchdog {tag} https://{}  {text}", self.watchdog_addr);
+        let allowlist = if self.watchdog_allow_ips.is_empty() {
+            "open (all source addresses)".to_owned()
+        } else {
+            format!(
+                "restricted to {}",
+                self.watchdog_allow_ips
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let _ = writeln!(out, "         allowlist: {allowlist}");
+        let fingerprint = self
+            .watchdog_cert_sha256
+            .as_deref()
+            .map(colon_fingerprint)
+            .unwrap_or_else(|| "unavailable".into());
+        let _ = writeln!(out, "         watchdog certificate SHA-256: {fingerprint}");
         if matches!(
             self.serve,
             ServeState::Down(_) | ServeState::Degraded { .. }
@@ -311,7 +332,7 @@ pub async fn collect(config: &Config) -> Report {
         probe_serve(serve_addr),
         probe_priv(&config.priv_socket),
         probe_proxy(&config.proxy_socket, proxy_expected),
-        probe_watchdog(watchdog_addr, watchdog_expected),
+        probe_watchdog(config, watchdog_expected),
     );
     if matches!(serve, ServeState::Degraded { ref detail, .. } if detail == "/readyz answered HTTP 403")
         && matches!(privileged, PrivState::Ok { .. })
@@ -341,15 +362,51 @@ pub async fn collect(config: &Config) -> Report {
         proxy,
         watchdog_addr,
         watchdog,
+        watchdog_allow_ips: config.watchdog_allow_ips.clone(),
+        watchdog_cert_sha256: opsbox_api::tls::cert_sha256_hex(
+            &opsbox_watchdog::WatchdogConfig::default().cert_path,
+        ),
     }
 }
 
-async fn probe_watchdog(listen: SocketAddr, expected: bool) -> WatchdogState {
+async fn probe_watchdog(config: &Config, expected: bool) -> WatchdogState {
+    let listen = config.watchdog_listen;
     let addr = if listen.ip().is_unspecified() {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), listen.port())
+        SocketAddr::new(
+            if listen.is_ipv6() {
+                "::1".parse().unwrap()
+            } else {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            },
+            listen.port(),
+        )
     } else {
         listen
     };
+    // A restrictive list may intentionally exclude this machine. Root status
+    // (including the installer) can use the watchdog's private, fresh snapshot.
+    if !opsbox_watchdog::server::peer_allowed(&config.watchdog_allow_ips, addr.ip()) {
+        let snapshot = std::fs::read(
+            config
+                .watchdog_runtime_dir
+                .join(opsbox_watchdog::STATUS_FILE),
+        )
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<opsbox_proto::WatchdogStatus>(&bytes).ok());
+        if let Some(st) = snapshot {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64);
+            if st.running && (0..=45).contains(&(now - st.updated_at)) {
+                return WatchdogState::Ok {
+                    version: st.current_version,
+                    failed: st.failed,
+                    degraded: st.degraded,
+                };
+            }
+        }
+        return WatchdogState::Down("local probe excluded by watchdog.allow_ips; run sudo opsbox status to read the watchdog snapshot".into());
+    }
     match http_get(addr, "/healthz").await {
         Ok(r) if r.status == 200 => {
             let version = r
@@ -879,6 +936,37 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn watchdog_status_reads_fresh_snapshot_when_local_probe_is_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            format!(
+                "[watchdog]\nallow_ips = [\"203.0.113.7\"]\nruntime_dir = \"{}\"\n",
+                dir.path().display()
+            ),
+        )
+        .unwrap();
+        let config = Config::load(Some(&path), crate::config::Overrides::default()).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let status_path = dir.path().join(opsbox_watchdog::STATUS_FILE);
+        for (age, running, good) in [(0, true, true), (46, true, false), (0, false, false)] {
+            let snapshot = opsbox_proto::WatchdogStatus {
+                running,
+                updated_at: now - age,
+                current_version: VERSION.into(),
+                ..Default::default()
+            };
+            std::fs::write(&status_path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+            let state = probe_watchdog(&config, true).await;
+            assert_eq!(matches!(state, WatchdogState::Ok { .. }), good);
+        }
+    }
+
     #[test]
     fn fingerprints_are_printed_the_way_browsers_print_them() {
         assert_eq!(colon_fingerprint("0aff10"), "0A:FF:10");
@@ -908,6 +996,8 @@ mod tests {
                 ..Default::default()
             }),
             watchdog_addr: "127.0.0.1:8444".parse().unwrap(),
+            watchdog_allow_ips: Vec::new(),
+            watchdog_cert_sha256: None,
             watchdog: WatchdogState::Ok {
                 version: VERSION.into(),
                 failed: false,
@@ -940,6 +1030,8 @@ mod tests {
             proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
             proxy: ProxyState::NotConfigured,
             watchdog_addr: "127.0.0.1:8444".parse().unwrap(),
+            watchdog_allow_ips: Vec::new(),
+            watchdog_cert_sha256: None,
             watchdog: WatchdogState::NotConfigured,
         };
         assert!(!report.healthy());
@@ -947,6 +1039,26 @@ mod tests {
         assert!(text.contains("DOWN"), "{text}");
         assert!(text.contains("connection refused"), "{text}");
         assert!(text.contains("none (built-in defaults)"), "{text}");
+        assert!(
+            text.contains("allowlist: open (all source addresses)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("watchdog certificate SHA-256: unavailable"),
+            "{text}"
+        );
+        let mut restricted = report;
+        restricted.watchdog_allow_ips = vec!["203.0.113.7".parse().unwrap()];
+        restricted.watchdog_cert_sha256 = Some("aabbcc".into());
+        let text = restricted.render();
+        assert!(
+            text.contains("allowlist: restricted to 203.0.113.7"),
+            "{text}"
+        );
+        assert!(
+            text.contains("watchdog certificate SHA-256: AA:BB:CC"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -966,6 +1078,8 @@ mod tests {
             proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
             proxy: ProxyState::NotConfigured,
             watchdog_addr: "127.0.0.1:8444".parse().unwrap(),
+            watchdog_allow_ips: Vec::new(),
+            watchdog_cert_sha256: None,
             watchdog: WatchdogState::NotConfigured,
         };
         assert!(!report.healthy());

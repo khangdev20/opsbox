@@ -486,6 +486,7 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 
 # [watchdog]
 # listen = "0.0.0.0:8444"
+# allow_ips = []  # open; set exact admin IPs to restrict Safe Mode before TLS
 # runtime_dir = "/run/opsbox-watchdog"
 
 # [store]
@@ -575,6 +576,9 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 say "opsbox $VER is installed and running."
+say "Safe Mode allowlist and certificate SHA-256 fingerprint are shown in the status output above."
+say "To restrict recovery access, set [watchdog] allow_ips in $CONF_DIR/config.toml and restart opsbox-watchdog."
+say "An empty allow_ips list allows all source addresses; compare the watchdog fingerprint before signing in."
 # First run: a one-time token proves you can read this machine's console. It is
 # printed here, on /dev/console and in the journal. Once an admin exists this prints
 # nothing and setup is closed.

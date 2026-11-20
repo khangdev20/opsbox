@@ -8,7 +8,7 @@
 use std::fs;
 use std::future::Future;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +50,7 @@ pub enum WatchdogError {
 #[derive(Debug, Clone)]
 pub struct WatchdogConfig {
     pub listen: SocketAddr,
+    pub allow_ips: Vec<IpAddr>,
     pub serve_listen: SocketAddr,
     pub priv_socket: PathBuf,
     pub proxy_socket: PathBuf,
@@ -62,8 +63,6 @@ pub struct WatchdogConfig {
     pub xfer_dir: PathBuf,
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
-    pub fallback_cert_path: PathBuf,
-    pub fallback_key_path: PathBuf,
     pub poll_interval: Duration,
 }
 
@@ -71,6 +70,7 @@ impl Default for WatchdogConfig {
     fn default() -> Self {
         Self {
             listen: SocketAddr::from(([0, 0, 0, 0], 8444)),
+            allow_ips: Vec::new(),
             serve_listen: SocketAddr::from(([127, 0, 0, 1], 8443)),
             priv_socket: PathBuf::from("/run/opsbox/priv.sock"),
             proxy_socket: PathBuf::from("/run/opsbox-proxy/proxy.sock"),
@@ -81,10 +81,8 @@ impl Default for WatchdogConfig {
             binary_symlink: PathBuf::from("/usr/local/bin/opsbox"),
             update_state_file: PathBuf::from("/var/lib/opsbox/bin/update-state.json"),
             xfer_dir: PathBuf::from("/var/lib/opsbox/xfer"),
-            cert_path: PathBuf::from("/etc/opsbox/panel-selfsigned.crt"),
-            key_path: PathBuf::from("/etc/opsbox/panel-selfsigned.key"),
-            fallback_cert_path: PathBuf::from("/var/lib/opsbox/panel-selfsigned.crt"),
-            fallback_key_path: PathBuf::from("/var/lib/opsbox/panel-selfsigned.key"),
+            cert_path: PathBuf::from("/etc/opsbox/watchdog/selfsigned.crt"),
+            key_path: PathBuf::from("/etc/opsbox/watchdog/selfsigned.key"),
             poll_interval: DEFAULT_PROBE_INTERVAL,
         }
     }
@@ -368,12 +366,8 @@ pub async fn run_with_listener(
             .await
             .unwrap_or_else(|_| DbHealth::Failed("SQLite startup check panicked.".into()));
 
-    let (acceptor, active_cert) = server::load_or_create_tls_acceptor(
-        &cfg.cert_path,
-        &cfg.key_path,
-        &cfg.fallback_cert_path,
-        &cfg.fallback_key_path,
-    )?;
+    let (acceptor, active_cert) =
+        server::load_or_create_tls_acceptor(&cfg.cert_path, &cfg.key_path)?;
 
     let slots = SlotManager {
         slots_dir: cfg.slots_dir.clone(),
@@ -446,6 +440,7 @@ pub async fn run_with_listener(
         listener,
         acceptor,
         server_state,
+        cfg.allow_ips.clone(),
         async move {
             let _ = stop_rx.await;
         },
@@ -625,6 +620,7 @@ mod tests {
         let wd_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let cfg = WatchdogConfig {
             listen: wd_listener.local_addr().unwrap(),
+            allow_ips: Vec::new(),
             serve_listen: serve_addr,
             priv_socket: priv_sock,
             proxy_socket: dir.path().join("missing-proxy.sock"),
@@ -637,8 +633,6 @@ mod tests {
             xfer_dir: dir.path().join("xfer"),
             cert_path: dir.path().join("panel.crt"),
             key_path: dir.path().join("panel.key"),
-            fallback_cert_path: dir.path().join("fb.crt"),
-            fallback_key_path: dir.path().join("fb.key"),
             poll_interval: Duration::from_millis(75),
         };
 

@@ -88,7 +88,8 @@ crates/opsbox-watchdog/src/probes.rs: fn probe_proxy
 crates/opsbox-watchdog/src/probes.rs: fn probe_serve
 crates/opsbox-watchdog/src/probes.rs: struct DiskHealth
 crates/opsbox-watchdog/src/server.rs: fn handle_request
-crates/opsbox-watchdog/src/server.rs: fn load_or_create_tls_acceptor  Share the panel TLS certificate (`DEFAULT_CERT_PATH` or `<db_dir>/panel-selfsigned.{crt,key}`).
+crates/opsbox-watchdog/src/server.rs: fn load_or_create_tls_acceptor  Load only the watchdog's dedicated certificate; never reuse panel credentials.
+crates/opsbox-watchdog/src/server.rs: fn peer_allowed  Exact source addresses, canonicalized for IPv4-mapped IPv6 listeners.
 crates/opsbox-watchdog/src/server.rs: fn serve
 crates/opsbox-watchdog/src/server.rs: struct SafeModeState
 crates/opsbox-watchdog/src/slots.rs: fn available_previous_slot  Returns the previous slot version if its binary exists and differs from the active one.
