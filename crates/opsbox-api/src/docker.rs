@@ -88,6 +88,7 @@ pub(crate) async fn install(
     client: Client,
     Extension(RequestId(rid)): Extension<RequestId>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    crate::session::deny_token(&who)?;
     let (pc, name, ip, s) = (
         patient(&state, 20 * 60),
         who.user.name.clone(),

@@ -171,6 +171,21 @@ async fn guard_inner(state: AppState, req: Request, next: Next) -> Result<Respon
     }
     let (mut parts, body) = req.into_parts();
     let Deployer(who) = Deployer::from_request_parts(&mut parts, &state).await?;
+    // Refuse session-only operations before capacity probes can call the helper.
+    if matches!(
+        p.as_slice(),
+        ["compose"]
+            | ["docker", "install"]
+            | ["backups", "snapshots", _, "restore"]
+            | ["databases", ..]
+    ) {
+        crate::session::deny_token(&who)?;
+    }
+    let compose_role = if who.via_token {
+        Role::Deployer
+    } else {
+        who.user.role
+    };
     parts.headers.remove(axum::http::header::CONTENT_LENGTH);
     let bytes = axum::body::to_bytes(body, 1024 * 1024)
         .await
@@ -354,7 +369,7 @@ async fn guard_inner(state: AppState, req: Request, next: Next) -> Result<Respon
                     {
                         crate::templates::require_compose_admin(
                             &state,
-                            who.user.role,
+                            compose_role,
                             &stack.compose_yaml,
                             &stack.name,
                         )?;

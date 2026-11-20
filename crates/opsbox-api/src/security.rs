@@ -677,6 +677,7 @@ pub(crate) async fn fix(
     Extension(RequestId(rid)): Extension<RequestId>,
     Path(id): Path<String>,
 ) -> Result<Response, HttpError> {
+    crate::session::deny_token(&who)?;
     if id == "autoupdates" {
         return crate::system::set_auto_updates(
             State(state),

@@ -567,9 +567,7 @@ pub(crate) async fn deploy_compose(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(body): ApiJson<DeployComposeBody>,
 ) -> Result<Response, HttpError> {
-    if who.via_token && who.user.role != Role::Admin {
-        return Err(forbidden("Deploy tokens cannot deploy new Compose stacks."));
-    }
+    crate::session::deny_token(&who)?;
     if body.yaml.trim().is_empty() {
         return Err(invalid("yaml", "Paste a Docker Compose YAML file."));
     }

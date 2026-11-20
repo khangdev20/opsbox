@@ -119,6 +119,7 @@ pub(crate) async fn install_updates(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(body): ApiJson<InstallBody>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    crate::session::deny_token(&who)?;
     let which = match body.which.as_str() {
         "security" => PkgSelect::Security,
         "all" => PkgSelect::All,
@@ -178,6 +179,7 @@ pub(crate) async fn set_auto_updates(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(body): ApiJson<OnBody>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    crate::session::deny_token(&who)?;
     let pc = patient(&state, 700);
     let s = state.clone();
     let task = state.tasks.start("updates.auto", async move {
@@ -225,6 +227,7 @@ pub(crate) async fn reboot(
     Extension(RequestId(rid)): Extension<RequestId>,
     body: Option<ApiJson<RebootBody>>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let delay = body.and_then(|b| b.0.delay_min).unwrap_or(1);
     state
         .priv_client
@@ -247,6 +250,7 @@ pub(crate) async fn reboot_cancel(
     client: Client,
     Extension(RequestId(rid)): Extension<RequestId>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     state
         .priv_client
         .reboot_cancel(&rid, &who.user.name)
@@ -283,6 +287,7 @@ pub(crate) async fn unit_action(
     Extension(RequestId(rid)): Extension<RequestId>,
     Path((name, action)): Path<(String, String)>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let kind = match action.as_str() {
         "start" => UnitActionKind::Start,
         "stop" => UnitActionKind::Stop,
@@ -466,6 +471,7 @@ pub(crate) async fn add_job(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<JobBody>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    crate::session::deny_token(&who)?;
     let id = state
         .priv_client
         .job_add(&rid, &who.user.name, &b.name, &b.cron, &b.command)
@@ -488,6 +494,7 @@ pub(crate) async fn run_job(
     Extension(RequestId(rid)): Extension<RequestId>,
     Path(id): Path<String>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    crate::session::deny_token(&who)?;
     if id.len() != 8 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(invalid("id", "That is not a job id."));
     }
@@ -514,6 +521,7 @@ pub(crate) async fn remove_job(
     Extension(RequestId(rid)): Extension<RequestId>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     state
         .priv_client
         .job_remove(&rid, &who.user.name, &id)
@@ -591,6 +599,7 @@ pub(crate) async fn add_rule(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<RuleBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let rule = NewRule {
         port: parse_port(&b.port)?,
         proto: b.proto,
@@ -636,6 +645,7 @@ pub(crate) async fn remove_rule(
     Path(id): Path<String>,
     Query(q): Query<ConfirmQuery>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let change = patient(&state, 90)
         .firewall_remove(
             &rid,
@@ -663,6 +673,7 @@ pub(crate) async fn confirm_firewall(
     client: Client,
     Extension(RequestId(rid)): Extension<RequestId>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     state
         .priv_client
         .firewall_confirm(&rid, &who.user.name)
@@ -693,6 +704,7 @@ pub(crate) async fn ssh_emergency(
     Extension(RequestId(rid)): Extension<RequestId>,
     body: Option<ApiJson<SshBody>>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let asked = body
         .and_then(|b| b.0.ip)
         .map(|s| s.trim().to_owned())
@@ -735,6 +747,7 @@ pub(crate) async fn set_swap(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<SwapBody>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
+    crate::session::deny_token(&who)?;
     let (pc, name, ip, s) = (
         patient(&state, 20 * 60),
         who.user.name.clone(),
@@ -926,6 +939,7 @@ pub(crate) async fn set_hostname(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<HostnameBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     state
         .priv_client
         .hostname_set(&rid, &who.user.name, b.name.trim())
@@ -953,6 +967,7 @@ pub(crate) async fn set_timezone(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<ZoneBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     state
         .priv_client
         .timezone_set(&rid, &who.user.name, b.zone.trim())

@@ -460,6 +460,7 @@ pub(crate) async fn apply(
     Extension(RequestId(rid)): Extension<RequestId>,
     body: Option<ApiJson<ApplyBody>>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let requested = body.and_then(|ApiJson(b)| b.version);
     let target = match requested {
         Some(v) if !v.trim().is_empty() => v,
@@ -503,6 +504,7 @@ pub(crate) async fn rollback(
     Extension(RequestId(rid)): Extension<RequestId>,
     body: Option<ApiJson<RollbackBody>>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let target = body.and_then(|ApiJson(b)| b.version);
     state
         .priv_client
@@ -532,6 +534,7 @@ pub(crate) async fn set_auto(
     client: Client,
     ApiJson(body): ApiJson<AutoBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     if let Some(ref ch) = body.channel {
         let parsed = Channel::parse(ch).ok_or_else(|| {
             HttpError::new(ErrorCode::Validation, "Channel must be stable or beta.")

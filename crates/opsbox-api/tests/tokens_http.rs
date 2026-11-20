@@ -329,3 +329,245 @@ async fn even_a_full_access_token_cannot_manage_people_keys_terminals_or_tokens(
     assert_eq!(std::fs::read_to_string(path).unwrap(), "unchanged");
     h.shutdown().await;
 }
+
+/// No helper is listening: authorization must finish before any privileged work.
+#[tokio::test]
+async fn full_tokens_cannot_reach_root_equivalent_actions() {
+    let h = Harness::new(false);
+    let mut admin = h.signed_in("owner", Role::Admin);
+    let full = send(
+        &mut admin,
+        Method::POST,
+        "/api/v1/tokens",
+        Some(json!({"name":"root-probe", "scope":"full"})),
+    )
+    .await
+    .json()["secret"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let path = h.root.join("apps/probe.txt");
+    std::fs::write(&path, "unchanged").unwrap();
+    let cases = vec![
+        (
+            Method::POST,
+            "/api/v1/jobs",
+            Some(json!({"name":"probe","cron":"0 2 * * *","command":"true"})),
+        ),
+        (Method::POST, "/api/v1/jobs/01234567/run", None),
+        (Method::DELETE, "/api/v1/jobs/01234567", None),
+        (
+            Method::PUT,
+            "/api/v1/files/content",
+            Some(json!({"path":path,"content":"changed"})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/files/delete",
+            Some(json!({"paths":[path]})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/files/delete",
+            Some(json!({"paths":[path],"permanent":true})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/files/chmod",
+            Some(json!({"path":path,"mode":"0644"})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/files/mkdir",
+            Some(json!({"path":path})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/files/upload?dir=/tmp&name=probe",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/v1/system/updates/install",
+            Some(json!({"which":"all"})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/system/updates/install",
+            Some(json!({"which":"security"})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/system/updates/install",
+            Some(json!({"which":"selected","packages":["curl"]})),
+        ),
+        (
+            Method::PUT,
+            "/api/v1/system/updates/auto",
+            Some(json!({"on":true})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/tokens",
+            Some(json!({"name":"forbidden-token","scope":"full"})),
+        ),
+        (Method::DELETE, "/api/v1/tokens/missing", None),
+        (
+            Method::POST,
+            "/api/v1/users/invites",
+            Some(json!({"name":"probe","role":"viewer"})),
+        ),
+        (Method::DELETE, "/api/v1/users/missing", None),
+        (
+            Method::POST,
+            "/api/v1/access/keys",
+            Some(json!({"user":"root","key":"ssh-ed25519 AAAA"})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/access/keys/remove",
+            Some(json!({"id":"root:SHA256:probe"})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/panel/local-only",
+            Some(json!({"localOnly":false,"confirm":true})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/config/export",
+            Some(json!({"password":"probe"})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/config/import/apply",
+            Some(json!({"password":"probe","document":{}})),
+        ),
+        (Method::POST, "/api/v1/system/reboot", None),
+        (Method::POST, "/api/v1/system/reboot/cancel", None),
+        (
+            Method::POST,
+            "/api/v1/system/units/nginx.service/restart",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/v1/firewall/rules",
+            Some(json!({"port":80})),
+        ),
+        (
+            Method::DELETE,
+            "/api/v1/firewall/rules/tcp:80:anywhere",
+            None,
+        ),
+        (Method::POST, "/api/v1/firewall/confirm", None),
+        (
+            Method::POST,
+            "/api/v1/ssh/emergency",
+            Some(json!({"ip":"203.0.113.5"})),
+        ),
+        (
+            Method::PUT,
+            "/api/v1/system/swap",
+            Some(json!({"sizeMb":1024})),
+        ),
+        (
+            Method::PUT,
+            "/api/v1/system/hostname",
+            Some(json!({"name":"probe"})),
+        ),
+        (
+            Method::PUT,
+            "/api/v1/system/timezone",
+            Some(json!({"zone":"UTC"})),
+        ),
+        (Method::POST, "/api/v1/docker/install", None),
+        (Method::POST, "/api/v1/security/checks/ssh-root/fix", None),
+        (
+            Method::POST,
+            "/api/v1/backups/snapshots/probe/restore",
+            None,
+        ),
+        (
+            Method::POST,
+            "/api/v1/updates/apply",
+            Some(json!({"version":"0.0.0"})),
+        ),
+        (Method::POST, "/api/v1/updates/rollback", None),
+        (
+            Method::PUT,
+            "/api/v1/updates/auto",
+            Some(json!({"auto":true})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/config/import/preview",
+            Some(json!({"password":"probe","document":{}})),
+        ),
+        (
+            Method::POST,
+            "/api/v1/compose",
+            Some(json!({"yaml":"services: {}"})),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (method, route, body) in cases {
+        let reply = with_token(&h, &full, method.clone(), route, body).await;
+        if reply.status != StatusCode::FORBIDDEN
+            || !reply.text().contains("API tokens cannot do this")
+        {
+            failures.push(format!(
+                "{method} {route}: {} {}",
+                reply.status,
+                reply.text()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "unchanged");
+    assert!(
+        !h.root.join("xfer").exists(),
+        "token upload must not stage files"
+    );
+    // A person can still change settings; this requires no system command.
+    let reply = send(
+        &mut admin,
+        Method::PUT,
+        "/api/v1/updates/auto",
+        Some(json!({"auto":false})),
+    )
+    .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    // The same root job request passes authorization and reaches the absent helper.
+    let reply = send(
+        &mut admin,
+        Method::POST,
+        "/api/v1/jobs",
+        Some(json!({"name":"probe","cron":"0 2 * * *","command":"true"})),
+    )
+    .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{}",
+        reply.text()
+    );
+    h.shutdown().await;
+}
+
+#[test]
+fn mutating_routes_have_an_explicit_token_policy() {
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/test-token-policy.py"
+        ))
+        .output()
+        .expect("run route policy check");
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

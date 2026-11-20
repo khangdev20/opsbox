@@ -130,7 +130,7 @@ crates/opsbox-api/src/session.rs: fn check_origin_if_present  Pre-login requests
 crates/opsbox-api/src/session.rs: fn clear_session_cookies
 crates/opsbox-api/src/session.rs: fn client_ip  The caller's address, as decided by the transport middleware: the TCP peer, or the
 crates/opsbox-api/src/session.rs: fn cookie_value
-crates/opsbox-api/src/session.rs: fn deny_token  Refuse a caller that used an API token. Managing people, tokens, SSH keys and terminals
+crates/opsbox-api/src/session.rs: fn deny_token  Refuse API tokens for root-equivalent actions and sensitive account/secret management.
 crates/opsbox-api/src/session.rs: fn origin_matches_host  A browser sends `Origin` on every cross-site request. It must name this server.
 crates/opsbox-api/src/session.rs: fn session_cookie_name  The session cookie's name for a request that did or did not arrive over HTTPS.
 crates/opsbox-api/src/session.rs: fn session_cookies  `Set-Cookie` headers that start a session: the secret cookie (not readable by

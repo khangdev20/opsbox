@@ -58,7 +58,7 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 | POST | /api/v1/backups/recovery-key | backups::recovery_key | crates/opsbox-api/src/backups.rs | Admin, Client |
 | POST | /api/v1/backups/restore-test | backups::run_restore_test_all | crates/opsbox-api/src/backups.rs | Admin, Client |
 | POST | /api/v1/backups/run | backups::run_all | crates/opsbox-api/src/backups.rs | Admin, Client |
-| POST | /api/v1/backups/snapshots/{id}/restore | backups::restore_snapshot | crates/opsbox-api/src/backups.rs | Admin, Client |
+| POST | /api/v1/backups/snapshots/{id}/restore | backups::restore_snapshot | crates/opsbox-api/src/backups.rs | Admin, Client, token refused |
 | POST | /api/v1/backups/snapshots/{id}/test | backups::test_snapshot_restore | crates/opsbox-api/src/backups.rs | Admin, Client |
 
 ## capacity
@@ -123,7 +123,7 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 | GET | /api/v1/docker/volumes | docker::list_volumes | crates/opsbox-api/src/docker.rs | Viewer |
 | GET (WS) | /api/v1/stream/containers/{id}/logs | docker::stream_logs | crates/opsbox-api/src/docker.rs | Viewer, Client |
 | POST | /api/v1/docker/containers/{id}/{action} | docker::container_action | crates/opsbox-api/src/docker.rs | Admin, Client |
-| POST | /api/v1/docker/install | docker::install | crates/opsbox-api/src/docker.rs | Admin, Client |
+| POST | /api/v1/docker/install | docker::install | crates/opsbox-api/src/docker.rs | Admin, Client, token refused |
 
 ## domains
 
@@ -150,11 +150,11 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 | GET | /api/v1/files | files::list | crates/opsbox-api/src/files.rs | Deployer |
 | GET | /api/v1/files/content | files::read | crates/opsbox-api/src/files.rs | Deployer |
 | GET | /api/v1/files/download | files::download | crates/opsbox-api/src/files.rs | Deployer, Client |
-| POST | /api/v1/files/chmod | files::chmod | crates/opsbox-api/src/files.rs | Deployer, Client |
-| POST | /api/v1/files/delete | files::delete | crates/opsbox-api/src/files.rs | Deployer, Client |
-| POST | /api/v1/files/mkdir | files::mkdir | crates/opsbox-api/src/files.rs | Deployer, Client |
-| POST | /api/v1/files/upload | files::upload | crates/opsbox-api/src/files.rs | Deployer, Client |
-| PUT | /api/v1/files/content | files::write | crates/opsbox-api/src/files.rs | Deployer, Client |
+| POST | /api/v1/files/chmod | files::chmod | crates/opsbox-api/src/files.rs | Deployer, Client, token refused |
+| POST | /api/v1/files/delete | files::delete | crates/opsbox-api/src/files.rs | Deployer, Client, token refused |
+| POST | /api/v1/files/mkdir | files::mkdir | crates/opsbox-api/src/files.rs | Deployer, Client, token refused |
+| POST | /api/v1/files/upload | files::upload | crates/opsbox-api/src/files.rs | Deployer, Client, token refused |
+| PUT | /api/v1/files/content | files::write | crates/opsbox-api/src/files.rs | Deployer, Client, token refused |
 
 ## github
 
@@ -229,7 +229,7 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 | GET | /api/v1/panel | panel::status | crates/opsbox-api/src/panel.rs | Admin |
 | POST | /api/v1/panel/certificate | panel::issue_cert | crates/opsbox-api/src/panel.rs | Admin, Client |
 | POST | /api/v1/panel/dns-check | panel::check_dns | crates/opsbox-api/src/panel.rs | Admin |
-| POST | /api/v1/panel/local-only | panel::set_local_only | crates/opsbox-api/src/panel.rs | Admin, Client |
+| POST | /api/v1/panel/local-only | panel::set_local_only | crates/opsbox-api/src/panel.rs | Admin, Client, token refused |
 
 ## recovery
 
@@ -250,7 +250,7 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 | GET | /api/v1/audit | security::list_audit | crates/opsbox-api/src/security.rs | Admin |
 | GET | /api/v1/audit/export.csv | security::export_audit_csv | crates/opsbox-api/src/security.rs | Admin, Client |
 | GET | /api/v1/security | security::get | crates/opsbox-api/src/security.rs | Viewer |
-| POST | /api/v1/security/checks/{id}/fix | security::fix | crates/opsbox-api/src/security.rs | Admin, Client |
+| POST | /api/v1/security/checks/{id}/fix | security::fix | crates/opsbox-api/src/security.rs | Admin, Client, token refused |
 | PUT | /api/v1/security/allow-ips | security::set_allow_ips | crates/opsbox-api/src/security.rs | Admin, Client, token refused |
 
 ## setup
@@ -266,8 +266,8 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 
 | Method | Path | Handler | File | Auth |
 |---|---|---|---|---|
-| DELETE | /api/v1/firewall/rules/{id} | system::remove_rule | crates/opsbox-api/src/system.rs | Admin, Client |
-| DELETE | /api/v1/jobs/{id} | system::remove_job | crates/opsbox-api/src/system.rs | Admin, Client |
+| DELETE | /api/v1/firewall/rules/{id} | system::remove_rule | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| DELETE | /api/v1/jobs/{id} | system::remove_job | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
 | GET | /api/v1/firewall | system::get_firewall | crates/opsbox-api/src/system.rs | Viewer |
 | GET | /api/v1/jobs | system::get_jobs | crates/opsbox-api/src/system.rs | Viewer |
 | GET | /api/v1/system/disk | system::get_disk | crates/opsbox-api/src/system.rs | Viewer |
@@ -276,20 +276,20 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 | GET | /api/v1/system/updates | system::get_updates | crates/opsbox-api/src/system.rs | Viewer |
 | GET | /api/v1/tasks/{id} | system::get_task | crates/opsbox-api/src/system.rs | Viewer |
 | GET (WS) | /api/v1/stream/journal | system::stream_journal | crates/opsbox-api/src/system.rs | Viewer, Client |
-| POST | /api/v1/firewall/confirm | system::confirm_firewall | crates/opsbox-api/src/system.rs | Admin, Client |
-| POST | /api/v1/firewall/rules | system::add_rule | crates/opsbox-api/src/system.rs | Admin, Client |
-| POST | /api/v1/jobs | system::add_job | crates/opsbox-api/src/system.rs | Admin, Client |
-| POST | /api/v1/jobs/{id}/run | system::run_job | crates/opsbox-api/src/system.rs | Admin, Client |
-| POST | /api/v1/ssh/emergency | system::ssh_emergency | crates/opsbox-api/src/system.rs | Admin, Client |
+| POST | /api/v1/firewall/confirm | system::confirm_firewall | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| POST | /api/v1/firewall/rules | system::add_rule | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| POST | /api/v1/jobs | system::add_job | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| POST | /api/v1/jobs/{id}/run | system::run_job | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| POST | /api/v1/ssh/emergency | system::ssh_emergency | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
 | POST | /api/v1/system/disk/grow | system::grow_disk | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
-| POST | /api/v1/system/reboot | system::reboot | crates/opsbox-api/src/system.rs | Admin, Client |
-| POST | /api/v1/system/reboot/cancel | system::reboot_cancel | crates/opsbox-api/src/system.rs | Admin, Client |
-| POST | /api/v1/system/units/{name}/{action} | system::unit_action | crates/opsbox-api/src/system.rs | Admin, Client |
-| POST | /api/v1/system/updates/install | system::install_updates | crates/opsbox-api/src/system.rs | Admin, Client |
-| PUT | /api/v1/system/hostname | system::set_hostname | crates/opsbox-api/src/system.rs | Admin, Client |
-| PUT | /api/v1/system/swap | system::set_swap | crates/opsbox-api/src/system.rs | Admin, Client |
-| PUT | /api/v1/system/timezone | system::set_timezone | crates/opsbox-api/src/system.rs | Admin, Client |
-| PUT | /api/v1/system/updates/auto | system::set_auto_updates | crates/opsbox-api/src/system.rs | Admin, Client |
+| POST | /api/v1/system/reboot | system::reboot | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| POST | /api/v1/system/reboot/cancel | system::reboot_cancel | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| POST | /api/v1/system/units/{name}/{action} | system::unit_action | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| POST | /api/v1/system/updates/install | system::install_updates | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| PUT | /api/v1/system/hostname | system::set_hostname | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| PUT | /api/v1/system/swap | system::set_swap | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| PUT | /api/v1/system/timezone | system::set_timezone | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
+| PUT | /api/v1/system/updates/auto | system::set_auto_updates | crates/opsbox-api/src/system.rs | Admin, Client, token refused |
 
 ## templates
 
@@ -297,7 +297,7 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 |---|---|---|---|---|
 | DELETE | /api/v1/compose/{stack} | templates::delete_compose_stack | crates/opsbox-api/src/templates.rs | Deployer, Client, token refused |
 | GET | /api/v1/templates | templates::list_templates | crates/opsbox-api/src/templates.rs | Viewer |
-| POST | /api/v1/compose | templates::deploy_compose | crates/opsbox-api/src/templates.rs | Deployer, Client |
+| POST | /api/v1/compose | templates::deploy_compose | crates/opsbox-api/src/templates.rs | Deployer, Client, token refused |
 | POST | /api/v1/services/{id}/rotate | templates::rotate_database | crates/opsbox-api/src/templates.rs | Deployer, Client, token refused |
 | POST | /api/v1/templates/{id}/instances | templates::create_template_instance | crates/opsbox-api/src/templates.rs | Deployer, Client |
 | PUT | /api/v1/services/{id}/exposure | templates::set_service_exposure | crates/opsbox-api/src/templates.rs | Deployer, Client, token refused |
@@ -345,10 +345,10 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 | Method | Path | Handler | File | Auth |
 |---|---|---|---|---|
 | GET | /api/v1/updates/self | update::get_status | crates/opsbox-api/src/update.rs | Admin |
-| POST | /api/v1/updates/apply | update::apply | crates/opsbox-api/src/update.rs | Admin, Client |
+| POST | /api/v1/updates/apply | update::apply | crates/opsbox-api/src/update.rs | Admin, Client, token refused |
 | POST | /api/v1/updates/check | update::check | crates/opsbox-api/src/update.rs | Admin |
-| POST | /api/v1/updates/rollback | update::rollback | crates/opsbox-api/src/update.rs | Admin, Client |
-| PUT | /api/v1/updates/auto | update::set_auto | crates/opsbox-api/src/update.rs | Admin, Client |
+| POST | /api/v1/updates/rollback | update::rollback | crates/opsbox-api/src/update.rs | Admin, Client, token refused |
+| PUT | /api/v1/updates/auto | update::set_auto | crates/opsbox-api/src/update.rs | Admin, Client, token refused |
 
 ## users
 
@@ -426,7 +426,7 @@ Lexical direct calls reachable from route handlers, including background functio
 | backups::recovery_key | crates/opsbox-api/src/backups.rs | ReauthBody, Value | secrets::audit_reveal, secrets::audit_reveal_denied, secrets::begin_reveal, secrets::no_store_headers | backup_recovery_key | — |
 | backups::repo_target_from_record | crates/opsbox-api/src/backups.rs | — | — | — | — |
 | backups::resolve_default_destination_id | crates/opsbox-api/src/backups.rs | — | — | — | get_backup_destination, get_setting, list_backup_destinations |
-| backups::restore_snapshot | crates/opsbox-api/src/backups.rs | RestoreBody, Value | backups::allocate_copy_service_name, backups::infer_db_kind_from_snapshot, backups::now_unix, backups::repo_target_from_record, backups::resolve_default_destination_id, backups::store_env_specs, backups::sync_all_snapshots, deploy::next_graph_pos, deploy::seal_and_store_vars, deploy::var_seal_context | backup_restore, deploy_stop_container, secret_open, template_start | complete_deploy_switch_with_refs, create_deploy, create_service_with_exposure, delete_service, get_backup_destination, get_backup_job, get_backup_job_for_service, get_backup_snapshot_by_any_id, get_service, list_service_vars, list_services, lock, resolve_project, set_backup_job_destination, upsert_backup_job |
+| backups::restore_snapshot | crates/opsbox-api/src/backups.rs | RestoreBody, Value | backups::allocate_copy_service_name, backups::infer_db_kind_from_snapshot, backups::now_unix, backups::repo_target_from_record, backups::resolve_default_destination_id, backups::store_env_specs, backups::sync_all_snapshots, deploy::next_graph_pos, deploy::seal_and_store_vars, deploy::var_seal_context, session::deny_token | backup_restore, deploy_stop_container, secret_open, template_start | complete_deploy_switch_with_refs, create_deploy, create_service_with_exposure, delete_service, get_backup_destination, get_backup_job, get_backup_job_for_service, get_backup_snapshot_by_any_id, get_service, list_service_vars, list_services, lock, resolve_project, set_backup_job_destination, upsert_backup_job |
 | backups::reveal_destination | crates/opsbox-api/src/backups.rs | ReauthBody, Value | secrets::audit_reveal, secrets::audit_reveal_denied, secrets::begin_reveal, secrets::no_store_headers, session::deny_token | secret_open | get_backup_destination |
 | backups::run_all | crates/opsbox-api/src/backups.rs | RunOptionsBody, Value | backups::sync_all_snapshots | — | list_backup_jobs |
 | backups::run_job | crates/opsbox-api/src/backups.rs | RunOptionsBody, Value | backups::sync_all_snapshots | — | get_backup_job |
@@ -524,7 +524,7 @@ Lexical direct calls reachable from route handlers, including background functio
 | docker::container_logs | crates/opsbox-api/src/docker.rs | Value | docker::validate_ref, system::patient | docker_logs | — |
 | docker::docker_err | crates/opsbox-api/src/docker.rs | — | — | — | — |
 | docker::inspect_container | crates/opsbox-api/src/docker.rs | Value | docker::validate_ref, system::patient | docker_inspect | — |
-| docker::install | crates/opsbox-api/src/docker.rs | Value | system::patient | docker_install | — |
+| docker::install | crates/opsbox-api/src/docker.rs | Value | session::deny_token, system::patient | docker_install | — |
 | docker::list_containers | crates/opsbox-api/src/docker.rs | Value | docker::round1, system::patient | docker_list_containers, docker_stats | — |
 | docker::list_images | crates/opsbox-api/src/docker.rs | Value | system::patient | docker_list_images | — |
 | docker::list_networks | crates/opsbox-api/src/docker.rs | Value | system::patient | docker_list_networks | — |
@@ -566,24 +566,24 @@ Lexical direct calls reachable from route handlers, including background functio
 | export::var_json | crates/opsbox-api/src/export.rs | — | deploy::var_seal_context, export::open | — | — |
 | files::apps_roots | crates/opsbox-api/src/files.rs | — | files::normalize_lexical | — | — |
 | files::audit | crates/opsbox-api/src/files.rs | — | — | — | — |
-| files::chmod | crates/opsbox-api/src/files.rs | ChmodBody, Value | files::audit, files::jail_for_target | file_chmod | — |
+| files::chmod | crates/opsbox-api/src/files.rs | ChmodBody, Value | files::audit, files::jail_for_target, session::deny_token | file_chmod | — |
 | files::content_disposition | crates/opsbox-api/src/files.rs | — | — | — | — |
-| files::delete | crates/opsbox-api/src/files.rs | DeleteBody, Value | files::audit, files::jail_for_target, files::outside_jail | file_remove | — |
+| files::delete | crates/opsbox-api/src/files.rs | DeleteBody, Value | files::audit, files::jail_for_target, files::outside_jail, session::deny_token | file_remove | — |
 | files::download | crates/opsbox-api/src/files.rs | — | files::audit, files::content_disposition, files::ensure_xfer, files::jail_for_target, files::need_path | file_stage_download | — |
 | files::ensure_xfer | crates/opsbox-api/src/files.rs | — | export::open | — | — |
 | files::invalid | crates/opsbox-api/src/files.rs | — | — | — | — |
 | files::is_apps_root_path | crates/opsbox-api/src/files.rs | — | files::apps_roots, files::normalize_lexical | — | — |
 | files::jail_for_target | crates/opsbox-api/src/files.rs | — | files::apps_roots, files::normalize_lexical, files::outside_jail, files::owned_service_names | — | — |
 | files::list | crates/opsbox-api/src/files.rs | Value | files::is_apps_root_path, files::jail_for_target, files::need_path, files::owned_service_names, files::type_char | file_list | — |
-| files::mkdir | crates/opsbox-api/src/files.rs | PathBody, Value | files::audit, files::jail_for_target | file_mkdir | — |
+| files::mkdir | crates/opsbox-api/src/files.rs | PathBody, Value | files::audit, files::jail_for_target, session::deny_token | file_mkdir | — |
 | files::need_path | crates/opsbox-api/src/files.rs | — | files::invalid | — | — |
 | files::normalize_lexical | crates/opsbox-api/src/files.rs | — | — | — | — |
 | files::outside_jail | crates/opsbox-api/src/files.rs | — | — | — | — |
 | files::owned_service_names | crates/opsbox-api/src/files.rs | — | — | — | list_compose_stacks_by_owner, list_services_by_owner |
 | files::read | crates/opsbox-api/src/files.rs | Value | files::jail_for_target, files::need_path | file_read | — |
 | files::type_char | crates/opsbox-api/src/files.rs | — | — | — | — |
-| files::upload | crates/opsbox-api/src/files.rs | Value | files::audit, files::ensure_xfer, files::jail_for_target | file_install_upload | — |
-| files::write | crates/opsbox-api/src/files.rs | Value, WriteBody | files::audit, files::jail_for_target | file_write | — |
+| files::upload | crates/opsbox-api/src/files.rs | Value | files::audit, files::ensure_xfer, files::jail_for_target, session::deny_token | file_install_upload | — |
+| files::write | crates/opsbox-api/src/files.rs | Value, WriteBody | files::audit, files::jail_for_target, session::deny_token | file_write | — |
 | github::complete_manifest | crates/opsbox-api/src/github.rs | CompleteBody, Value | github::now_secs, github::status_json, github::valid_token_param, panel::active_panel_domain | secret_seal | consume_github_manifest_state, get_github_app, upsert_github_app |
 | github::create_deploy_key | crates/opsbox-api/src/github.rs | CreateDeployKeyBody, Value | github::deploy_key_context, github::now_secs | secret_seal | create_deploy_key |
 | github::delete_deploy_key | crates/opsbox-api/src/github.rs | Value | github::valid_token_param | — | delete_deploy_key |
@@ -676,7 +676,7 @@ Lexical direct calls reachable from route handlers, including background functio
 | panel::panel_route | crates/opsbox-api/src/panel.rs | — | panel::upstream_addr | — | — |
 | panel::remove_domain | crates/opsbox-api/src/panel.rs | ConfirmBody, Value | panel::active_panel_domain, panel::sync_proxy_routes | — | delete_setting |
 | panel::run_dns_check | crates/opsbox-api/src/panel.rs | — | panel::detect_server_public_ips | — | — |
-| panel::set_local_only | crates/opsbox-api/src/panel.rs | LocalOnlyBody, Value | panel::active_panel_domain | web_local_only | — |
+| panel::set_local_only | crates/opsbox-api/src/panel.rs | LocalOnlyBody, Value | panel::active_panel_domain, session::deny_token | web_local_only | — |
 | panel::snapshot | crates/opsbox-api/src/panel.rs | — | panel::active_panel_domain, panel::cert_state_str, panel::draft_panel_domain | — | — |
 | panel::status | crates/opsbox-api/src/panel.rs | Value | panel::snapshot | — | — |
 | panel::sync_proxy_routes | crates/opsbox-api/src/panel.rs | — | panel::build_proxy_routes | — | — |
@@ -696,7 +696,7 @@ Lexical direct calls reachable from route handlers, including background functio
 | security::build_checks | crates/opsbox-api/src/security.rs | — | security::check | — | — |
 | security::check | crates/opsbox-api/src/security.rs | — | — | — | — |
 | security::export_audit_csv | crates/opsbox-api/src/security.rs | — | security::audit_csv_filename, security::audit_filter | host_info | for_each_audit, verify_audit_range |
-| security::fix | crates/opsbox-api/src/security.rs | — | system::patient, system::set_auto_updates | security_fix | — |
+| security::fix | crates/opsbox-api/src/security.rs | — | session::deny_token, system::patient, system::set_auto_updates | security_fix | — |
 | security::get | crates/opsbox-api/src/security.rs | Value | allowlist::render, security::build_checks, security::user_json, system::patient | access_list, firewall_list, pkg_list, security_scan, watchdog_status | get_setting, list_users, recent_audit |
 | security::list_audit | crates/opsbox-api/src/security.rs | Value | security::audit_filter | — | list_audit |
 | security::looks_like_rfc3339 | crates/opsbox-api/src/security.rs | — | — | — | — |
@@ -723,11 +723,11 @@ Lexical direct calls reachable from route handlers, including background functio
 | setup::ensure_open | crates/opsbox-api/src/setup.rs | — | — | — | — |
 | setup::setup_session | crates/opsbox-api/src/setup.rs | — | session::cookie_value | — | — |
 | setup::status | crates/opsbox-api/src/setup.rs | serde_json | setup::ensure_open | — | — |
-| system::add_job | crates/opsbox-api/src/system.rs | JobBody, Value | system::audit | job_add | — |
-| system::add_rule | crates/opsbox-api/src/system.rs | RuleBody, Value | system::audit, system::caller_ip, system::parse_port, system::patient | firewall_add | — |
+| system::add_job | crates/opsbox-api/src/system.rs | JobBody, Value | session::deny_token, system::audit | job_add | — |
+| system::add_rule | crates/opsbox-api/src/system.rs | RuleBody, Value | session::deny_token, system::audit, system::caller_ip, system::parse_port, system::patient | firewall_add | — |
 | system::audit | crates/opsbox-api/src/system.rs | — | — | — | — |
 | system::caller_ip | crates/opsbox-api/src/system.rs | — | — | — | — |
-| system::confirm_firewall | crates/opsbox-api/src/system.rs | Value | system::audit | firewall_confirm | — |
+| system::confirm_firewall | crates/opsbox-api/src/system.rs | Value | session::deny_token, system::audit | firewall_confirm | — |
 | system::disk_sizes | crates/opsbox-api/src/system.rs | — | — | — | — |
 | system::follow_journal | crates/opsbox-api/src/system.rs | — | system::patient | journal | — |
 | system::get_disk | crates/opsbox-api/src/system.rs | Value | system::patient | disk_state | — |
@@ -738,22 +738,22 @@ Lexical direct calls reachable from route handlers, including background functio
 | system::get_units | crates/opsbox-api/src/system.rs | Value | — | unit_list | — |
 | system::get_updates | crates/opsbox-api/src/system.rs | Value | system::patient, system::updates_view | pkg_list | — |
 | system::grow_disk | crates/opsbox-api/src/system.rs | GrowDiskBody, Value | session::deny_token, system::disk_sizes, system::invalid, system::patient | disk_grow, disk_state | — |
-| system::install_updates | crates/opsbox-api/src/system.rs | InstallBody, Value | system::audit, system::invalid, system::patient | pkg_install, pkg_install_selected | — |
+| system::install_updates | crates/opsbox-api/src/system.rs | InstallBody, Value | session::deny_token, system::audit, system::invalid, system::patient | pkg_install, pkg_install_selected | — |
 | system::invalid | crates/opsbox-api/src/system.rs | — | — | — | — |
 | system::parse_port | crates/opsbox-api/src/system.rs | — | system::invalid | — | — |
 | system::patient | crates/opsbox-api/src/system.rs | — | — | — | — |
-| system::reboot | crates/opsbox-api/src/system.rs | RebootBody, Value | system::audit | reboot | — |
-| system::reboot_cancel | crates/opsbox-api/src/system.rs | Value | system::audit | reboot_cancel | — |
-| system::remove_job | crates/opsbox-api/src/system.rs | Value | system::audit | job_remove | — |
-| system::remove_rule | crates/opsbox-api/src/system.rs | Value | system::audit, system::caller_ip, system::patient | firewall_remove | — |
-| system::run_job | crates/opsbox-api/src/system.rs | Value | system::audit, system::invalid, system::patient | job_run | — |
-| system::set_auto_updates | crates/opsbox-api/src/system.rs | OnBody, Value | system::audit, system::patient | auto_updates_set | — |
-| system::set_hostname | crates/opsbox-api/src/system.rs | HostnameBody, Value | system::audit | hostname_set | — |
-| system::set_swap | crates/opsbox-api/src/system.rs | SwapBody, Value | system::audit, system::patient | swap_set | — |
-| system::set_timezone | crates/opsbox-api/src/system.rs | Value, ZoneBody | system::audit | timezone_set | — |
-| system::ssh_emergency | crates/opsbox-api/src/system.rs | SshBody, Value | system::caller_ip, system::invalid | ssh_emergency | — |
+| system::reboot | crates/opsbox-api/src/system.rs | RebootBody, Value | session::deny_token, system::audit | reboot | — |
+| system::reboot_cancel | crates/opsbox-api/src/system.rs | Value | session::deny_token, system::audit | reboot_cancel | — |
+| system::remove_job | crates/opsbox-api/src/system.rs | Value | session::deny_token, system::audit | job_remove | — |
+| system::remove_rule | crates/opsbox-api/src/system.rs | Value | session::deny_token, system::audit, system::caller_ip, system::patient | firewall_remove | — |
+| system::run_job | crates/opsbox-api/src/system.rs | Value | session::deny_token, system::audit, system::invalid, system::patient | job_run | — |
+| system::set_auto_updates | crates/opsbox-api/src/system.rs | OnBody, Value | session::deny_token, system::audit, system::patient | auto_updates_set | — |
+| system::set_hostname | crates/opsbox-api/src/system.rs | HostnameBody, Value | session::deny_token, system::audit | hostname_set | — |
+| system::set_swap | crates/opsbox-api/src/system.rs | SwapBody, Value | session::deny_token, system::audit, system::patient | swap_set | — |
+| system::set_timezone | crates/opsbox-api/src/system.rs | Value, ZoneBody | session::deny_token, system::audit | timezone_set | — |
+| system::ssh_emergency | crates/opsbox-api/src/system.rs | SshBody, Value | session::deny_token, system::caller_ip, system::invalid | ssh_emergency | — |
 | system::stream_journal | crates/opsbox-api/src/system.rs | — | session::bounded_socket, session::origin_matches_host, session::stream_ended, session::stream_slot, system::follow_journal | — | — |
-| system::unit_action | crates/opsbox-api/src/system.rs | Value | system::audit, system::invalid, system::patient | unit_action | — |
+| system::unit_action | crates/opsbox-api/src/system.rs | Value | session::deny_token, system::audit, system::invalid, system::patient | unit_action | — |
 | system::updates_view | crates/opsbox-api/src/system.rs | — | — | — | — |
 | templates::allocate_compose_service_name | crates/opsbox-api/src/templates.rs | — | — | — | — |
 | templates::authorize_compose_redeploy | crates/opsbox-api/src/templates.rs | — | templates::compose_validation_error, templates::require_compose_admin | compose_validate | get_compose_stack |
@@ -762,7 +762,7 @@ Lexical direct calls reachable from route handlers, including background functio
 | templates::compose_validation_error | crates/opsbox-api/src/templates.rs | — | templates::compose_admin_required | — | — |
 | templates::create_template_instance | crates/opsbox-api/src/templates.rs | CreateTemplateInstanceBody | backups::resolve_default_destination_id, deploy::audit_user, deploy::enqueue_deploy, deploy::fetch_live_cert_domains, deploy::next_graph_pos, deploy::parse_vars_input, deploy::resolve_owner_id, deploy::resolve_service_view, deploy::seal_and_store_vars, deploy::validate_vars_refs_before_create | — | create_service_with_exposure, delete_service, get_backup_job_for_service, get_service, list_services, resolve_project, set_backup_job_destination, upsert_backup_job |
 | templates::delete_compose_stack | crates/opsbox-api/src/templates.rs | Value | deploy::audit_user, panel::sync_proxy_routes, session::deny_token | compose_down | delete_compose_stack, get_compose_stack, list_service_domains, list_services_by_compose_stack, lock |
-| templates::deploy_compose | crates/opsbox-api/src/templates.rs | DeployComposeBody | deploy::next_graph_pos, deploy::parse_vars_input, deploy::resolve_owner_id, deploy::seal_and_store_vars, templates::allocate_compose_service_name, templates::collect_stack_env_specs, templates::compose_validation_error, templates::execute_compose_deploy, templates::pick_stack_name, templates::require_compose_admin | compose_validate | create_deploy, create_service_with_meta, delete_service, get_compose_stack, list_services, list_services_by_compose_stack, lock, resolve_project, update_service, upsert_compose_stack |
+| templates::deploy_compose | crates/opsbox-api/src/templates.rs | DeployComposeBody | deploy::next_graph_pos, deploy::parse_vars_input, deploy::resolve_owner_id, deploy::seal_and_store_vars, session::deny_token, templates::allocate_compose_service_name, templates::collect_stack_env_specs, templates::compose_validation_error, templates::execute_compose_deploy, templates::pick_stack_name, templates::require_compose_admin | compose_validate | create_deploy, create_service_with_meta, delete_service, get_compose_stack, list_services, list_services_by_compose_stack, lock, resolve_project, update_service, upsert_compose_stack |
 | templates::execute_compose_deploy | crates/opsbox-api/src/templates.rs | — | deploy::audit_user, deploy::fail_and_report, deploy::service_ref_sources, panel::sync_proxy_routes | compose_deploy | capture_service_ref_seq, complete_deploy_switch_with_refs |
 | templates::list_templates | crates/opsbox-api/src/templates.rs | Value | — | — | — |
 | templates::pick_stack_name | crates/opsbox-api/src/templates.rs | — | — | — | — |
@@ -793,13 +793,13 @@ Lexical direct calls reachable from route handlers, including background functio
 | uninstall::exec | crates/opsbox-api/src/uninstall.rs | UninstallBody, Value | session::deny_token, uninstall::collect_domains, uninstall::plan_json | uninstall, uninstall_plan | — |
 | uninstall::plan | crates/opsbox-api/src/uninstall.rs | Value | session::deny_token, uninstall::collect_domains, uninstall::plan_json | uninstall_plan | — |
 | uninstall::plan_json | crates/opsbox-api/src/uninstall.rs | — | — | — | — |
-| update::apply | crates/opsbox-api/src/update.rs | ApplyBody, Value | update::audit, update::nothing_to_apply | — | — |
+| update::apply | crates/opsbox-api/src/update.rs | ApplyBody, Value | session::deny_token, update::audit, update::nothing_to_apply | — | — |
 | update::audit | crates/opsbox-api/src/update.rs | — | — | — | — |
 | update::check | crates/opsbox-api/src/update.rs | Value | — | — | — |
 | update::get_status | crates/opsbox-api/src/update.rs | Value | — | — | — |
 | update::nothing_to_apply | crates/opsbox-api/src/update.rs | — | — | — | — |
-| update::rollback | crates/opsbox-api/src/update.rs | RollbackBody, Value | update::audit | self_update_rollback | — |
-| update::set_auto | crates/opsbox-api/src/update.rs | AutoBody, Value | update::audit | — | set_setting |
+| update::rollback | crates/opsbox-api/src/update.rs | RollbackBody, Value | session::deny_token, update::audit | self_update_rollback | — |
+| update::set_auto | crates/opsbox-api/src/update.rs | AutoBody, Value | session::deny_token, update::audit | — | set_setting |
 | users::claim | crates/opsbox-api/src/users.rs | ClaimBody | session::check_origin_if_present, session::session_cookies | — | — |
 | users::info | crates/opsbox-api/src/users.rs | InviteInfoBody | — | — | — |
 | users::invite | crates/opsbox-api/src/users.rs | InviteBody, serde_json | session::deny_token | — | — |

@@ -267,6 +267,7 @@ pub(crate) async fn write(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<WriteBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let jail = jail_for_target(&state, &who, &b.path)?;
     let mtime = state
         .priv_client
@@ -303,6 +304,7 @@ pub(crate) async fn chmod(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<ChmodBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let jail = jail_for_target(&state, &who, &b.path)?;
     state
         .priv_client
@@ -337,6 +339,7 @@ pub(crate) async fn mkdir(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<PathBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let jail = jail_for_target(&state, &who, &b.path)?;
     state
         .priv_client
@@ -367,6 +370,7 @@ pub(crate) async fn delete(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(b): ApiJson<DeleteBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let jail = if who.user.role == Role::Admin {
         None
     } else {
@@ -447,6 +451,7 @@ pub(crate) async fn upload(
     headers: axum::http::HeaderMap,
     body: Body,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     let upload_jail = jail_for_target(&state, &who, &q.dir)?;
     let max = state.files.max_upload;
     let too_big = || {

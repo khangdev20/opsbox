@@ -36,7 +36,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 17 | Docs say /health/ready but the route is /readyz ([17-readyz-doc-mismatch.md](archive/17-readyz-doc-mismatch.md)) | Fixed in fix 17 |
 | 18 | Why did creating a database report that the helper is not running? ([18-db-create-priv-diagnosis.md](archive/18-db-create-priv-diagnosis.md)) | Fixed in fix 18 (source audit; VM diagnosis pending) |
 | 19 | SECURITY: Deployer can reach root through Compose ([19-compose-elevated-admin-only.md](archive/19-compose-elevated-admin-only.md)) | Fixed in fix 19 |
-| 20 | SECURITY: Full API tokens reach root-equivalent endpoints (`20-token-deny-root-endpoints.md`) | |
+| 20 | SECURITY: Full API tokens reach root-equivalent endpoints ([20-token-deny-root-endpoints.md](archive/20-token-deny-root-endpoints.md)) | Fixed in fix 20 |
 | 21 | SECURITY: Safe Mode (root) listens on the public interface by default (`21-safe-mode-exposure.md`) | |
 | 22 | SECURITY: Root helper creates files with a permissive umask (`22-priv-umask-and-unit-modes.md`) | |
 | 23 | SECURITY: The file manager can rewrite /etc/opsbox/config.toml (`23-config-toml-no-modify.md`) | |

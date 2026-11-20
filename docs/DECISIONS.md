@@ -625,3 +625,7 @@ Run the read-only freshness check immediately after CI checkout with explicit re
 ## Fix 19 — Restrict elevated Compose to administrators
 Use the shared risk detector before capacity admission and enqueue; fail closed on YAML parse errors and require Admin for elevated raw or helper-resolved Compose, including legacy/imported stacks.
 Only Admin confirmation reaches validation/deploy; carry the authenticated role into background redeploys, while imports already require Admin and fixed-catalog template installs accept no Compose source.
+
+## Fix 20 — Full tokens exclude root-equivalent actions
+Require deny_token before system/job/file mutations, installation/update policy, security fixes, listener exposure, Compose submission and live restore; capacity admission must refuse session-only requests before helper probes.
+Treat token-triggered Compose redeploys as Deployer for raw/resolved elevation checks, retain ordinary deploys, and require a reviewed token decision for every mutating route; keep Full wording consistent in API and UI.

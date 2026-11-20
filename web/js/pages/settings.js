@@ -372,7 +372,7 @@ export async function view({ query = {} } = {}) {
             title: 'Create API token',
             fields: [
               { name: 'n', label: 'Name', placeholder: 'ci-deploy' },
-              { name: 'c', label: 'Can do', options: ['deploy only', ...svcScopes, 'read-only metrics', 'full access'], value: 'deploy only' },
+              { name: 'c', label: 'Can do', options: ['deploy only', ...svcScopes, 'read-only metrics', 'full access'], value: 'deploy only', hint: 'Full access: everything except root-equivalent actions. Sign in to change system files, jobs, packages or security settings.' },
               { name: 'svc', label: 'Or specific service name (overrides above)', placeholder: 'web', hint: 'Creates a token scoped strictly to deploy:<service>.' },
             ],
             submit: 'Create',

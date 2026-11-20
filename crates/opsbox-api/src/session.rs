@@ -242,8 +242,8 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .filter(|t| !t.is_empty())
 }
 
-/// Refuse a caller that used an API token. Managing people, tokens, SSH keys and terminals
-/// needs a signed-in account.
+/// Refuse API tokens for root-equivalent actions and sensitive account/secret management.
+/// These operations require an interactive signed-in account, even with Full scope.
 pub fn deny_token(who: &Principal) -> Result<(), HttpError> {
     if who.via_token {
         return Err(forbidden(

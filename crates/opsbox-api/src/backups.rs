@@ -2930,6 +2930,7 @@ pub(crate) async fn restore_snapshot(
     Path(id): Path<String>,
     body: Option<ApiJson<RestoreBody>>,
 ) -> Result<(StatusCode, Json<Value>), HttpError> {
+    crate::session::deny_token(&who)?;
     let body = body.map(|ApiJson(b)| b).unwrap_or_default();
     let mode = match body.mode.trim().to_ascii_lowercase().as_str() {
         "" | "copy" => BackupRestoreMode::Copy,

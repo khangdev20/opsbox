@@ -2,8 +2,7 @@
 //!
 //! API tokens let a script (a CI job, an uptime check) call the API with
 //! `Authorization: Bearer ops_...`. A token is shown once when it is created and stored only
-//! as a hash. Its scope decides what it may do; none can open terminals or manage people,
-//! tokens or SSH keys.
+//! as a hash. Its scope decides what it may do; even Full excludes root-equivalent actions.
 
 use axum::Json;
 use axum::extract::{Extension, Path, State};
@@ -23,7 +22,7 @@ fn can_text(scope: &TokenScope) -> String {
         TokenScope::Read => "read-only metrics".to_owned(),
         TokenScope::Deploy => "deploy services, metrics and logs".to_owned(),
         TokenScope::DeployService(svc) => format!("deploy {svc} and view its build logs"),
-        TokenScope::Full => "full access (not people, terminals or keys)".to_owned(),
+        TokenScope::Full => "everything except root-equivalent actions".to_owned(),
     }
 }
 

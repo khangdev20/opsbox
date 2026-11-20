@@ -1,26 +1,25 @@
 # Status
 
-Last prompt done: **Fix 19 — Deployer must not reach root through Compose**.
+Last prompt done: **Fix 20 — Full API tokens must not be root**.
 No commit, push, tag or installation attempted, as requested; changes remain on `dev`.
 
 ## Completed
-- Extended Compose risk detection to capabilities, devices, security options, user namespaces, sysctls, inherited volumes and host PID/IPC; external short/long bind mounts remain covered.
-- Require Admin before capacity admission and deploy enqueue for risky Compose; YAML parse errors fail closed for Deployer.
-- Ignore non-Admin confirmation and carry authenticated Admin authorization into background stack redeploy, including legacy/imported stacks. The helper retains raw/resolved checks.
-- Imports already require Admin; fixed catalog template installs have no Compose input or arbitrary host-access options.
-- Recorded the decision, QA evidence and owner checks; marked fix 19 done and archived its prompt.
+- Refuse tokens on system jobs, file mutations, package/Docker installation, reboot/units, firewall/SSH/host/swap changes, automatic/self updates, security fixes, listener exposure, Compose submission and snapshot restore.
+- Refuse session-only requests before capacity helper calls; token redeploys cannot reuse elevated Compose authorization, including previously confirmed stacks.
+- Retain ordinary service deployment and interactive Admin authorization; Full scope now says “everything except root-equivalent actions” in UI/API docs.
+- Added HTTP regressions and a live-router inventory check for explicit token decisions on all 138 mutating routes; recorded decision and QA, marked fix 20 done and archived its prompt.
 
 ## Verification
-- Strict TDD: observed failing HTTP create, malformed YAML and legacy confirmed-stack redeploy regressions, plus missed cap_add in the detector.
-- Three Compose role HTTP tests pass (every requested key, both confirmation values); five Compose detector tests pass.
-- `cargo fmt --check`, targeted all-target Clippy with `-D warnings`, `git diff --check` and regenerated index freshness checks pass.
-- Updated full lifecycle coverage for plain Deployer create/redeploy and confirmed elevated Admin deployment. Local TCP bind denied by sandbox before lifecycle assertions; run on the VM.
+- Strict TDD: root-action HTTP requests initially reached helper/tasks; elevated Full-token Compose redeploy initially returned 503 instead of 403. Both regressions now pass.
+- All four Compose role tests and the mutating-route policy test pass. The bind-free root-action test verifies 403, no file/staging changes, Admin settings success and Admin job authorization reaching the helper.
+- Targeted all-target Clippy with `-D warnings`, formatting and regenerated index checks pass.
+- Existing helper-backed token/file tests cannot start because this sandbox refuses Unix socket binds; successful Admin file/helper lifecycle remains an owner check in docs/QA.md.
 
 ## Found, not fixed
-- Live-helper lifecycle, VM installation and browser checks remain owner follow-ups (docs/QA.md, Fix 19).
-- Historical database-create failure still requires QA 03 VM request/journal/kernel evidence; no OOM, timeout or panic cause is claimed.
+- Prior Fix 19 live-helper lifecycle and VM/browser checks remain owner follow-ups.
+- Historical database-create failure still needs QA 03 VM request/journal/kernel evidence; no OOM, timeout or panic cause is claimed.
 - Prior Linux/VM and pending CI/release work remain owner follow-ups; prior runtime target remains `v0.1.0-alpha.43`.
 - Navigation maps/lookup remain lexical rather than Rust/JavaScript type resolution.
 
 ## Next
-- Fix 20 — Full API tokens reach root-equivalent endpoints.
+- Fix 21 — Safe Mode listens on the public interface by default.

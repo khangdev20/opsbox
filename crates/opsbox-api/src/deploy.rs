@@ -2460,7 +2460,10 @@ pub(crate) async fn enqueue_deploy(
     commit_sha: Option<&str>,
     message: Option<&str>,
 ) -> Result<(DeployRecord, String), HttpError> {
-    crate::templates::authorize_compose_redeploy(state, role, svc, rid, actor).await?;
+    // Tokens may deploy ordinary services, but never inherit Admin's elevated
+    // Compose authorization from their Full scope or a stack's saved confirmation.
+    let compose_role = if via_token { Role::Deployer } else { role };
+    crate::templates::authorize_compose_redeploy(state, compose_role, svc, rid, actor).await?;
     let approval = state.capacity_approvals.lock().unwrap().get(rid).copied();
     let _capacity_lock = if approval.is_none() {
         Some(state.capacity_lock.lock().await)

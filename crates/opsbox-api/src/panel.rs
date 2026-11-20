@@ -474,6 +474,7 @@ pub(crate) async fn set_local_only(
     Extension(RequestId(rid)): Extension<RequestId>,
     ApiJson(body): ApiJson<LocalOnlyBody>,
 ) -> Result<Json<Value>, HttpError> {
+    crate::session::deny_token(&who)?;
     if body.local_only && !body.confirm {
         let domain_live = if let Some(dom) = active_panel_domain(&state)
             && let Some(ref proxy) = state.proxy
