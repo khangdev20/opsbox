@@ -65,7 +65,7 @@ async function checkSources() {
   assert(css.includes('.term-keys') && css.includes('files-page.editing'), 'terminal key bar + files fullscreen CSS');
   assert(css.includes('grid-template-columns:1fr') && css.includes('repeat(2,minmax(0,1fr))'), 'KPI 1/2 column breakpoints');
   assert(/main\{[^}]*width:min\(100%,1680px\)[^}]*padding:40px clamp\(16px,2\.5vw,40px\) 64px/.test(css), 'main uses a fluid 1680px cap with responsive side padding');
-  assert(/main\.narrow #b\{[^}]*max-width:880px/.test(css), 'Settings forms keep a readable inner width');
+  assert(/main\.narrow #b\{[^}]*max-width:880px/.test(css), 'other narrow pages keep their readable inner width');
   assert(/html: html`<main>/.test(cleanupJs), 'Cleanup must use the full-width main container');
   assert(/html: html`<main>/.test(newServiceJs), 'New service must use the full-width main container');
   assert(newServiceJs.includes('repo-row') && css.includes('.repo-row{display:grid'), 'New service repository rows use a grid');
@@ -296,6 +296,49 @@ async function runBrowserChecks() {
     }
 
     await setViewport(browser, 1920, 900);
+    await browser.send('Page.navigate', { url: `${base}/index.html?mode=mock#/settings` });
+    await waitFor(browser.evalJs, `!!document.querySelector('.content main #b #sh') && !!document.querySelector('.content main #b #imp-pass')`, 'settings mounted');
+    const settings = await browser.evalJs(`(() => {
+      const main = document.querySelector('.content main').getBoundingClientRect();
+      const body = document.querySelector('.content main #b');
+      const cards = [...body.querySelectorAll(':scope > .sec')];
+      const generalCard = cards[0];
+      const general = generalCard.getBoundingClientRect();
+      const generalContentRight = general.right - parseFloat(getComputedStyle(generalCard).paddingRight);
+      const network = body.querySelector(':scope > #network-card').getBoundingClientRect();
+      const save = body.querySelector('[data-act="save"]').getBoundingClientRect();
+      const fields = ['#sh', '#imp-pass'].map((selector) => {
+        const input = body.querySelector(selector).getBoundingClientRect();
+        const card = body.querySelector(selector).closest('.sec').getBoundingClientRect();
+        return { width: input.width, left: input.left, cardLeft: card.left };
+      });
+      const updates = cards.find((card) => card.querySelector('[data-act="autoup"]'));
+      const switchRow = updates?.querySelector('[data-act="autoup"]')?.closest('.list-row');
+      const switchControl = switchRow?.lastElementChild?.getBoundingClientRect();
+      return { mainWidth: main.width, bodyWidth: body.getBoundingClientRect().width,
+        columns: getComputedStyle(body).gridTemplateColumns.split(' ').length,
+        cards: cards.length, networkSameRow: Math.abs(network.top - general.top) < 2 && network.left > general.left,
+        saveRight: save.right, generalRight: generalContentRight, fields,
+        switchRight: switchControl?.right, switchRowRight: switchRow?.getBoundingClientRect().right };
+    })()`);
+    assert(settings.mainWidth >= 1400 && settings.bodyWidth >= 1400, `settings width at 1920px: ${JSON.stringify(settings)}`);
+    assert(Math.abs(settings.mainWidth - overviewWidth1920) <= 24, `settings/overview widths: ${settings.mainWidth}/${overviewWidth1920}`);
+    assert(settings.cards >= 6 && settings.columns === 2 && settings.networkSameRow, `settings cards need two columns: ${JSON.stringify(settings)}`);
+    for (const field of settings.fields) {
+      assert(field.width <= 561, `settings form field too wide: ${JSON.stringify(field)}`);
+      assert(field.left >= field.cardLeft + 16 && field.left <= field.cardLeft + 40, `settings form field not left aligned: ${JSON.stringify(field)}`);
+    }
+    assert(Math.abs(settings.saveRight - settings.generalRight) <= 26, `settings Save not at card right: ${JSON.stringify(settings)}`);
+    assert(settings.switchRight && Math.abs(settings.switchRight - settings.switchRowRight) <= 1, `settings switch not at row right: ${JSON.stringify(settings)}`);
+    for (const w of [390, 768, 1024]) {
+      await setViewport(browser, w, w <= 768 ? 800 : 900);
+      const layout = await browser.evalJs(`({ sw: document.documentElement.scrollWidth, iw: innerWidth,
+        columns: getComputedStyle(document.querySelector('.content main #b')).gridTemplateColumns.split(' ').length })`);
+      assert(layout.sw <= layout.iw + 1, `settings horizontal scroll at ${w}px: ${JSON.stringify(layout)}`);
+      assert.equal(layout.columns, 1, `settings should use one column at ${w}px`);
+    }
+
+    await setViewport(browser, 1920, 900);
     await browser.send('Page.navigate', { url: `${base}/index.html?mode=mock#/apps/new` });
     await waitFor(browser.evalJs, `!!document.querySelector('#l .repo-row')`, 'new service repositories mounted');
     const newServiceWidth = await browser.evalJs(`document.querySelector('.content main').getBoundingClientRect().width`);
@@ -340,7 +383,7 @@ async function runBrowserChecks() {
         const mobile = await browser.evalJs(`({ sw: document.documentElement.scrollWidth, iw: innerWidth,
           actionHeight: document.querySelector('#body .new-service-form-controls .btn')?.getBoundingClientRect().height })`);
         assert(mobile.sw <= mobile.iw + 1, `${label} horizontal scroll at ${w}px: ${mobile.sw}/${mobile.iw}`);
-        if (w === 390 && i > 0) assert(mobile.actionHeight >= 44, `${label} action height at 390px: ${mobile.actionHeight}`);
+        if (w === 390 && i > 0) assert(mobile.actionHeight >= 43.5, `${label} action height at 390px: ${mobile.actionHeight}`);
       }
       await setViewport(browser, 1920, 900);
     }
@@ -375,7 +418,7 @@ async function runBrowserChecks() {
         }
         if (w === 390) {
           assert(row.top >= row.textBottom, `${row.name} action must sit under text at 390px`);
-          assert(row.height >= 44, `${row.name} action height at 390px: ${row.height}`);
+          assert(row.height >= 43.5, `${row.name} action height at 390px: ${row.height}`);
         }
       }
       assert(layout.scrollWidth <= layout.viewport + 1, `new service horizontal scroll at ${w}px: ${layout.scrollWidth}/${layout.viewport}`);

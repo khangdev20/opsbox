@@ -149,10 +149,10 @@ export async function view({ query = {} } = {}) {
       : html`${why.text}${why.detail ? html`<br><span class="sm muted">${why.detail}</span>` : ''}`;
     const chanSource = { setting: 'set here', config: 'set when opsbox was installed', default: 'chosen automatically' }[u.channelSource] || '';
     return html`
-    ${section('General', html`<div style="max-width:520px;display:flex;flex-direction:column;gap:16px">
+    ${section('General', html`<div class="settings-general-form">
       <div class="field"><label for="sh">Hostname</label><input class="input" id="sh" value="${d.hostname}"></div>
       <div class="field"><label for="sz">Time zone</label><select class="select" id="sz">${(d.timezones || TZ).map((z) => html`<option${z === d.tz ? ' selected' : ''}>${z}</option>`)}</select><span class="hint">Used for cron jobs, backups and alert quiet hours.</span></div>
-      <p id="err" class="form-err" role="alert"></p><div>${btn('Save', { act: 'save', kind: 'primary' })}</div></div>`)}
+      <p id="err" class="form-err" role="alert"></p><div class="settings-general-actions">${btn('Save', { act: 'save', kind: 'primary' })}</div></div>`)}
     <div id="network-card">${networkCard(proxyNetwork, proxyBusy)}</div>
     ${section('Panel address', html`<div class="col gap16">
       <div class="field"><label for="sp">Panel domain</label>
@@ -247,7 +247,7 @@ export async function view({ query = {} } = {}) {
   return {
     unmount() { clearInterval(this._networkTimer); root = null; },
     nav: null, title: 'Settings',
-    html: html`<main class="narrow">${header('Settings', `${d.hostname} · opsbox 0.1.0`)}<div id="b"></div></main>`,
+    html: html`<main class="settings-page">${header('Settings', `${d.hostname} · opsbox 0.1.0`)}<div id="b"></div></main>`,
     mount(r) {
       root = r; paint();
       if (query.section === 'network') root.querySelector('#network')?.scrollIntoView();

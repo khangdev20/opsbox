@@ -47,6 +47,16 @@ button,input,select,textarea{font:inherit;color:inherit}
 main{flex:1;width:min(100%,1680px);margin:0 auto;padding:40px clamp(16px,2.5vw,40px) 64px;display:flex;flex-direction:column;gap:32px}
 main.narrow{max-width:1100px}
 main.narrow #b{width:100%;max-width:880px;align-self:flex-start}
+main.settings-page #b{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;align-items:start}
+main.settings-page #network-card{min-width:0}
+main.settings-page #network-card>.sec{height:100%}
+.settings-general-form{display:flex;flex-direction:column;gap:16px}
+.settings-general-form .input,.settings-general-form .select{width:100%;max-width:520px}
+.settings-general-actions{display:flex;justify-content:flex-end}
+main.settings-page #imp-pass{width:100%;max-width:560px}
+main.settings-page #sp,main.settings-page #gh-org{max-width:560px}
+main.settings-page .list-row>:last-child{margin-left:auto}
+@media (max-width:1100px){main.settings-page #b{grid-template-columns:minmax(0,1fr)}}
 main:has(> .hdr a[href="#/security/access"]) #b > .cols > .w2{max-width:880px}
 .statusbar{border-top:1px solid var(--ls);font:400 12px var(--mono);color:var(--muted)}
 .statusbar .wrap{display:flex;flex-wrap:wrap;align-items:center;gap:4px 24px;min-height:44px;padding-top:8px;padding-bottom:8px}
