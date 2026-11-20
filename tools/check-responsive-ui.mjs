@@ -30,7 +30,7 @@ const MIME = {
 };
 
 async function checkSources() {
-  const [index, kitHtml, css, shell, ui, term, files, kitJs] = await Promise.all([
+  const [index, kitHtml, css, shell, ui, term, files, kitJs, cleanupJs] = await Promise.all([
     readFile(join(WEB_DIR, 'index.html'), 'utf8'),
     readFile(join(WEB_DIR, 'kit.html'), 'utf8'),
     readFile(join(WEB_DIR, 'css/app.css'), 'utf8'),
@@ -39,6 +39,7 @@ async function checkSources() {
     readFile(join(WEB_DIR, 'js/pages/terminal.js'), 'utf8'),
     readFile(join(WEB_DIR, 'js/pages/files.js'), 'utf8'),
     readFile(join(WEB_DIR, 'js/kit.js'), 'utf8'),
+    readFile(join(WEB_DIR, 'js/pages/cleanup.js'), 'utf8'),
   ]);
 
   assert(index.includes('viewport-fit=cover'), 'index.html needs viewport-fit=cover');
@@ -64,6 +65,7 @@ async function checkSources() {
   assert(css.includes('grid-template-columns:1fr') && css.includes('repeat(2,minmax(0,1fr))'), 'KPI 1/2 column breakpoints');
   assert(/main\{[^}]*width:min\(100%,1680px\)[^}]*padding:40px clamp\(16px,2\.5vw,40px\) 64px/.test(css), 'main uses a fluid 1680px cap with responsive side padding');
   assert(/main\.narrow #b\{[^}]*max-width:880px/.test(css), 'Settings forms keep a readable inner width');
+  assert(/html: html`<main>/.test(cleanupJs), 'Cleanup must use the full-width main container');
 
   assert(term.includes('visualViewport') && term.includes('term-keys'), 'terminal visualViewport + key bar');
   assert(files.includes('files-page') && files.includes('editing'), 'files page toggles fullscreen editor class');
@@ -245,6 +247,7 @@ async function runBrowserChecks() {
       else assert.equal(scroll.drawerBtn, false, `menu button hidden at ${w}px`);
     }
 
+    let overviewWidth1920;
     for (const w of [1440, 1920, 2560]) {
       await setViewport(browser, w, 900);
       const page = await browser.evalJs(`(() => {
@@ -254,8 +257,30 @@ async function runBrowserChecks() {
       assert(page.width, `main page container missing at ${w}px`);
       assert(page.scrollWidth <= page.viewport + 1, `horizontal page scroll at ${w}px`);
       if (w === 1440) assert(page.width >= 1100 && page.width <= 1440, `main width at 1440px: ${page.width}`);
-      if (w === 1920) assert(page.width >= 1400, `main width at 1920px: ${page.width}`);
+      if (w === 1920) {
+        overviewWidth1920 = page.width;
+        assert(page.width >= 1400, `overview width at 1920px: ${page.width}`);
+      }
       if (w === 2560) assert(page.width <= 1800, `main width at 2560px: ${page.width}`);
+    }
+
+    await setViewport(browser, 1920, 900);
+    await browser.send('Page.navigate', { url: `${base}/index.html?mode=mock#/cleanup` });
+    await waitFor(browser.evalJs, `!!document.querySelector('.content main #b') && !!document.querySelector('.content main [data-act="auto"]')`, 'cleanup mounted');
+    const cleanup = await browser.evalJs(`(() => {
+      const main = document.querySelector('.content main').getBoundingClientRect();
+      const list = document.querySelector('.content main #b').getBoundingClientRect();
+      const toggle = document.querySelector('.content main [data-act="auto"]').getBoundingClientRect();
+      return { width: main.width, listRight: list.right, toggleRight: toggle.right };
+    })()`);
+    assert(cleanup.width >= 1400, `cleanup content width at 1920px: ${cleanup.width}`);
+    assert(Math.abs(cleanup.toggleRight - cleanup.listRight) <= 1, `cleanup toggle/list right edges: ${cleanup.toggleRight}/${cleanup.listRight}`);
+    // Pages with different scrollbar presence can differ by the scrollbar width.
+    assert(Math.abs(cleanup.width - overviewWidth1920) <= 24, `cleanup/overview widths: ${cleanup.width}/${overviewWidth1920}`);
+    for (const w of [390, 768, 1024]) {
+      await setViewport(browser, w, w <= 768 ? 800 : 900);
+      const scroll = await browser.evalJs(`({ sw: document.documentElement.scrollWidth, iw: window.innerWidth })`);
+      assert(scroll.sw <= scroll.iw + 1, `cleanup horizontal page scroll at ${w}px: scrollWidth=${scroll.sw} innerWidth=${scroll.iw}`);
     }
 
     await setViewport(browser, 390);

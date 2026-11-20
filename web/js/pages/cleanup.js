@@ -79,7 +79,7 @@ export async function view() {
 
   return {
     nav: 'cleanup', title: 'Cleanup',
-    html: html`<main class="narrow">${header('Cleanup', 'Free disk space without touching running apps.', html`<span class="row"><span class="sm muted">Weekly auto-clean</span>${sw('Weekly auto-clean', false, 'auto')}</span>`)}<div id="b">${skeleton()}</div></main>`,
+    html: html`<main>${header('Cleanup', 'Free disk space without touching running apps.', html`<span class="row"><span class="sm muted">Weekly auto-clean</span>${sw('Weekly auto-clean', false, 'auto')}</span>`)}<div id="b">${skeleton()}</div></main>`,
     mount(r) {
       root = r;
       load(false);
