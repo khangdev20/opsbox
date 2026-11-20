@@ -1,27 +1,28 @@
 # Status
 
-Last prompt done: **Fix 21 — Safe Mode exposure and TLS key isolation**.
+Last prompt done: **Fix 22 — Root helper umask and unit modes**.
 No commit, push, tag or installation attempted, as requested; changes remain on `dev`.
 
 ## Completed
-- Add exact-IP `[watchdog] allow_ips` filtering immediately after accept, before TLS; empty lists retain open recovery and local-only binding still follows the panel.
-- Use a separate root-owned 0600 watchdog TLS key under `/etc/opsbox/watchdog`; never chown it to opsbox or fall back to panel/data-directory credentials.
-- Show allowlist state and watchdog certificate SHA-256 in status and installer output; root status can use a fresh private snapshot when its source is excluded.
-- Add admission, key, config, status and live-connection regressions; document configuration and owner checks, record decision, mark fix 21 done and archive its prompt.
+- Set `UMask=0077` in `packaging/systemd/opsbox-priv.service`.
+- Write JobAdd service/timer files atomically with explicit 0600 before content, using the existing private tempfile writer.
+- Audit helper file writes; use private atomic writes for deployment credentials, uninstall audit exports and adoption receipts; preserve intended public/group modes elsewhere.
+- Add permission, packaging and uninstall regressions; record the three-line decision and audit/VM checks in docs/QA.md, regenerate the index and archive fix 22.
 
 ## Verification
-- Test-first key, config and status regressions reproduced the old behavior; source-filter test initially found the admission function missing.
-- 24 socket-free watchdog tests, 17 config tests, eight socket-free status tests and the local-only config-edit test pass.
-- Three watchdog socket tests are blocked by sandbox PermissionDenied (including the new close-before-TLS integration test); live root ownership, network filtering and installation remain owner checks in docs/QA.md.
-- Targeted all-target Clippy with warnings denied, formatting, shell syntax, whitespace and regenerated-index checks pass.
-- `timeout 120 cargo build --release` passed in 1m39s; local rust-objcopy emitted a nonfatal missing-libLLVM warning.
+- Test-first job regression observed both files at 0644; service regression found no UMask. Both pass; job creation is checked under child-process umask 000 without changing the test runner's umask.
+- Uninstall regressions first reproduced a public audit export and stale temporary symlink overwrite; both pass after private atomic replacement.
+- Seven jobs tests, eight uninstall tests and four deploy unit tests pass.
+- Targeted cargo check, all-target Clippy with warnings denied, formatting, whitespace and regenerated-index freshness checks pass.
+- `timeout 120 cargo build --release` passed in 1m24s with the pre-existing rust-objcopy/libLLVM warning; Linux activation and real credential-consumer checks remain owner checks in docs/QA.md.
 
 ## Found, not fixed
-- Local rust-objcopy cannot load libLLVM.dylib for debug stripping; release compilation still exits successfully.
-- Prior Fix 19 live-helper lifecycle and Fix 20 successful Admin file/helper lifecycle remain owner follow-ups.
+- Existing installed job files retain their old modes until separately reviewed/recreated; this fix secures newly written files.
+- Local rust-objcopy cannot load libLLVM.dylib for debug stripping; release compilation emits the pre-existing warning.
+- Prior Fix 19/20 live-helper lifecycle and Fix 21 live Safe Mode filtering/TLS isolation checks remain owner follow-ups.
 - Historical database-create failure still needs QA 03 VM request/journal/kernel evidence; no OOM, timeout or panic cause is claimed.
 - Prior Linux/VM and pending CI/release work remain owner follow-ups; prior runtime target remains `v0.1.0-alpha.43`.
 - Navigation maps/lookup remain lexical rather than Rust/JavaScript type resolution.
 
 ## Next
-- Fix 22 — Root helper umask and unit modes.
+- Fix 23 — Prevent file-manager modification of /etc/opsbox/config.toml.

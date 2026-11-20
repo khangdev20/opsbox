@@ -1014,3 +1014,31 @@ Owner checks — disposable `opsbox-vm`, console access and a recoverable snapsh
 2. Inspect `sudo stat -c '%U:%G %a %n' /etc/opsbox/watchdog/selfsigned.key`: expect `root:root 600`; `sudo -u opsbox cat /etc/opsbox/watchdog/selfsigned.key` must be refused. Compare `sudo opsbox status` watchdog SHA-256 with `openssl x509 -in /etc/opsbox/watchdog/selfsigned.crt -noout -fingerprint -sha256`; verify the panel key/fingerprint differs. Reinstall and confirm the installer shows the watchdog fingerprint/allowlist and preserves the watchdog identity.
 3. In the existing `[watchdog]` table of `/etc/opsbox/config.toml`, set `allow_ips = ["<controlled-admin-source-ip>"]`, restart `opsbox-watchdog`, and verify HTTPS from that address. A different source must close before TLS; forwarded headers must not change admission. Root status should still work via its fresh private snapshot. Repeat with IPv6 if available.
 4. Set `allow_ips = []`, restart and confirm both sources reach HTTPS (unauthenticated recovery actions still return 401). Run the installer with `--local-only` without an explicit watchdog.listen override; verify `sudo ss -ltnp` shows watchdog on `127.0.0.1:8444`. Tunnel panel access using `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>` and recovery using `ssh -L 8444:127.0.0.1:8444 ubuntu@<vm-ip>`; when restricting again, include loopback explicitly if tunnels are desired. Restore the VM configuration after testing.
+
+## Fixed in fix 22 — Root helper umask and sensitive file modes (2026-11-20)
+
+Fixed in fix 22. The current unit path is `packaging/systemd/opsbox-priv.service`; it now sets `UMask=0077`. `JobAdd` writes each service/timer through the existing `network::atomic_write`: a fresh same-directory tempfile, explicit 0600 before content, file sync, atomic rename, then directory sync. Deployment GitHub tokens, SSH private keys and BuildKit secrets use the same writer instead of write-then-chmod. Uninstall audit exports and saved adoption receipts use private atomic replacement; restored adopted files retain their recorded final mode.
+
+Strict TDD: `job_add_creates_private_unit_and_timer_files` first failed with `[0644, 0644]` instead of `[0600, 0600]`; `root_helper_service_uses_private_umask` first failed because UMask was absent. The job regression now runs the actual add implementation with a temporary unit directory and harmless systemctl substitute under child-process umask 000, checks both modes/content and no leftover staging files. `audit_export_is_private_even_when_replacing_a_public_file` first observed 0644; `private_restore_does_not_follow_a_stale_temporary_symlink` first overwrote its sentinel. All now pass (seven jobs tests, eight uninstall tests, four deploy unit tests).
+
+Audit of other `fs::write` / `File::create` sites in `crates/opsbox-priv/src`:
+
+| Sites | Assessment |
+|---|---|
+| `secrets.rs`, backup password/SFTP keys | Already create_new + explicit 0600. |
+| Backup Redis staging and database upgrade dumps | Reopen files already created privately by tempfile; permissions are retained. |
+| Compose validation/deploy | NamedTempFile starts at 0600; installed Compose deliberately uses 0640 for its service group. |
+| Network/adoption receipts and backups | Existing atomic writer explicitly uses 0600 for private state. |
+| Deployment askpass and generated Dockerfile | No credential values in these generated files; private 0700 parent and final 0700/0600 modes retained. |
+| Docker apt key/repository, package/host configuration, SSH drop-in, panel listener config, cleanup timer/cache | Public configuration, fixed commands or aggregate counts; retain existing intended modes and gain the helper's restrictive default for new unspecified modes. |
+| File manager | Existing descriptor-based writer uses private staging, then preserves the requested final file mode/ownership. |
+| Remaining matches in test modules | Fixtures only. |
+
+Validation: focused jobs/uninstall/deploy unit tests, `cargo check -p opsbox-priv`, `cargo clippy -p opsbox-priv --all-targets -- -D warnings`, formatting and regenerated-index checks pass. Native release-build result is recorded in docs/STATUS.md. Live systemd activation and real deployment credential consumers require the disposable Linux VM; existing installed job files are not migrated by this fix.
+
+Owner checks — disposable Multipass `opsbox-vm`:
+
+1. From `/home/ubuntu/opsbox`, build with `CARGO_TARGET_DIR=~/target cargo build --release`; reinstall with `sudo sh install.sh --dev --binary ~/target/release/opsbox`. Confirm `systemctl show opsbox-priv.service -p UMask` prints `UMask=0077` (reload/restart the helper if testing by manually copying the unit).
+2. Tunnel with `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`. As an Admin, create a job named `Fix 22 permissions`, schedule `0 2 * * *`, command `true`. Check both new `/etc/systemd/system/opsbox-job-<id>.{service,timer}` files with `sudo stat -c '%a %U:%G %n'`: each must be `600 root:root`. Run the job successfully; retain it for the refusal check below.
+3. As an unprivileged account, `cat /etc/systemd/system/opsbox-job-<id>.service` must fail with permission denied before removing the job. An invalid schedule must be refused without creating units. Remove the valid job through the panel afterward. Do not include real secrets in test commands.
+4. Run `timeout 120 cargo test -p opsbox-priv --test deploy build_streams_scrubs_secrets_uses_secret_mount_and_health_checks_loopback` on a socket-capable host, then verify a disposable private-repository deployment and BuildKit secret mount still succeed on the VM. No installation, commit, push or tag was attempted in this session.

@@ -119,6 +119,16 @@ fn new_id() -> Result<String, PrivError> {
 }
 
 pub(super) fn add(name: &str, cron: &str, command: &str) -> Result<String, PrivError> {
+    add_with(name, cron, command, Path::new(UNIT_DIR), systemctl)
+}
+
+fn add_with(
+    name: &str,
+    cron: &str,
+    command: &str,
+    unit_dir: &Path,
+    systemctl: impl FnOnce() -> Result<String, PrivError>,
+) -> Result<String, PrivError> {
     let name = check_name(name).map_err(|m| err(PrivErrorCode::Invalid, m))?;
     let command = check_command(command).map_err(|m| err(PrivErrorCode::Invalid, m))?;
     let on_calendar = to_on_calendar(cron).map_err(|m| err(PrivErrorCode::Invalid, m))?;
@@ -126,10 +136,15 @@ pub(super) fn add(name: &str, cron: &str, command: &str) -> Result<String, PrivE
     let ctl = systemctl()?;
     let id = new_id()?;
     let write = |suffix: &str, content: &str| {
-        std::fs::write(format!("{UNIT_DIR}/{PREFIX}{id}.{suffix}"), content).map_err(|e| {
+        super::network::atomic_write(
+            &unit_dir.join(format!("{PREFIX}{id}.{suffix}")),
+            content.as_bytes(),
+            0o600,
+        )
+        .map_err(|e| {
             err(
                 PrivErrorCode::Internal,
-                format!("cannot write the unit file: {e}"),
+                format!("cannot write the unit file: {}", e.message),
             )
         })
     };
@@ -142,7 +157,7 @@ pub(super) fn add(name: &str, cron: &str, command: &str) -> Result<String, PrivE
         Duration::from_secs(30),
     );
     if !o.as_ref().is_some_and(|o| o.ok()) {
-        let _ = remove_files(&id);
+        let _ = remove_files_in(unit_dir, &id);
         run(&ctl, &["daemon-reload"], Duration::from_secs(30));
         let why = o.map(|o| tail(&o.stderr, 2).join(" ")).unwrap_or_default();
         return Err(err(
@@ -154,8 +169,12 @@ pub(super) fn add(name: &str, cron: &str, command: &str) -> Result<String, PrivE
 }
 
 fn remove_files(id: &str) -> std::io::Result<()> {
+    remove_files_in(Path::new(UNIT_DIR), id)
+}
+
+fn remove_files_in(unit_dir: &Path, id: &str) -> std::io::Result<()> {
     for suffix in ["timer", "service"] {
-        let p = format!("{UNIT_DIR}/{PREFIX}{id}.{suffix}");
+        let p = unit_dir.join(format!("{PREFIX}{id}.{suffix}"));
         if Path::new(&p).exists() {
             std::fs::remove_file(p)?;
         }
@@ -281,6 +300,60 @@ pub(super) fn list() -> Result<Vec<JobInfo>, PrivError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn job_add_creates_private_unit_and_timer_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Change umask only in a child process; test threads share the parent's umask.
+        if std::env::var_os("OPSBOX_TEST_JOB_UMASK").is_none() {
+            let status = std::process::Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "umask 000; exec \"$1\" --exact ops::jobs::tests::job_add_creates_private_unit_and_timer_files --nocapture",
+                    "job-permissions-test",
+                ])
+                .arg(std::env::current_exe().unwrap())
+                .env("OPSBOX_TEST_JOB_UMASK", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let id = add_with(
+            "Private backup",
+            "0 2 * * *",
+            "echo secret",
+            dir.path(),
+            || Ok("/usr/bin/true".into()),
+        )
+        .unwrap();
+        let mut modes = Vec::new();
+        for suffix in ["service", "timer"] {
+            let path = dir.path().join(format!("{PREFIX}{id}.{suffix}"));
+            modes.push(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777);
+            let text = std::fs::read_to_string(path).unwrap();
+            assert!(text.contains("Private backup"));
+            if suffix == "service" {
+                assert!(text.contains("ExecStart=/bin/sh -c \"echo secret\""));
+            } else {
+                assert!(text.contains("OnCalendar=*-*-* 02:00:00"));
+            }
+        }
+        assert_eq!(modes, [0o600, 0o600]);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn root_helper_service_uses_private_umask() {
+        assert!(
+            include_str!("../../../../packaging/systemd/opsbox-priv.service")
+                .lines()
+                .any(|line| line == "UMask=0077")
+        );
+    }
 
     #[test]
     fn quoting_neutralises_systemd_and_shell_specials() {

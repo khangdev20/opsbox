@@ -776,13 +776,12 @@ async fn run_deploy_build_pipeline(
         && let Some(tok) = &req.github_token
     {
         let tok_file = ephem.path().join("gh_token");
-        std::fs::write(&tok_file, tok.expose().as_bytes()).map_err(|e| {
+        super::network::atomic_write(&tok_file, tok.expose().as_bytes(), 0o600).map_err(|e| {
             err(
                 PrivErrorCode::Internal,
-                format!("Credential write failed: {e}"),
+                format!("Credential write failed: {}", e.message),
             )
         })?;
-        let _ = std::fs::set_permissions(&tok_file, std::fs::Permissions::from_mode(0o600));
         let askpass = ephem.path().join("askpass.sh");
         let script = format!(
             "#!/bin/sh\ncase \"$1\" in\n  *Username*|*username*) printf '%s\\n' 'x-access-token' ;;\n  *) exec cat '{}' ;;\nesac\n",
@@ -805,13 +804,12 @@ async fn run_deploy_build_pipeline(
         })?;
         let key_file = ephem.path().join("id_deploy");
         let known_hosts = ephem.path().join("known_hosts");
-        std::fs::write(&key_file, pem.as_bytes()).map_err(|e| {
+        super::network::atomic_write(&key_file, pem.as_bytes(), 0o600).map_err(|e| {
             err(
                 PrivErrorCode::Internal,
-                format!("SSH key write failed: {e}"),
+                format!("SSH key write failed: {}", e.message),
             )
         })?;
-        let _ = std::fs::set_permissions(&key_file, std::fs::Permissions::from_mode(0o600));
         let ssh_cmd = format!(
             "ssh -i '{}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile='{}'",
             key_file.display(),
@@ -1097,13 +1095,12 @@ async fn run_deploy_build_pipeline(
     for v in opened_vars {
         if v.is_secret {
             let sec_file = secrets_dir.join(&v.key);
-            std::fs::write(&sec_file, v.value.as_bytes()).map_err(|e| {
+            super::network::atomic_write(&sec_file, v.value.as_bytes(), 0o600).map_err(|e| {
                 err(
                     PrivErrorCode::Internal,
-                    format!("Cannot write BuildKit secret file: {e}"),
+                    format!("Cannot write BuildKit secret file: {}", e.message),
                 )
             })?;
-            let _ = std::fs::set_permissions(&sec_file, std::fs::Permissions::from_mode(0o600));
             d_cmd.arg("--secret");
             d_cmd.arg(format!("id={},src={}", v.key, sec_file.display()));
         } else {

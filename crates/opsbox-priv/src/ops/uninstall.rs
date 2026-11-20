@@ -337,7 +337,7 @@ pub fn export_audit_log(layout: &Layout, purge: bool) -> io::Result<PathBuf> {
         body.push_str("(no database present)\n");
     }
 
-    fs::write(&dest, body.as_bytes())?;
+    write_file_mode(&dest, body.as_bytes(), 0o600)?;
 
     if purge {
         // Keep a copy outside the purged tree.
@@ -598,7 +598,11 @@ fn restore_adopted_via_cli(conf_dir: &Path) -> Result<(), String> {
             if let Some(p) = v.get_mut("public") {
                 p["active"] = serde_json::json!(false);
             }
-            let _ = fs::write(e.path(), serde_json::to_vec_pretty(&v).unwrap_or(raw));
+            let _ = write_file_mode(
+                &e.path(),
+                &serde_json::to_vec_pretty(&v).unwrap_or(raw),
+                0o600,
+            );
         }
         println!(
             "Restored adopted web server {} (ports 80/443).",
@@ -612,14 +616,21 @@ fn write_file_mode(path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("opsbox-uninstall-tmp");
-    fs::write(&tmp, bytes)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::other("missing parent directory"))?;
+    // NamedTempFile creates a new 0600 file, even with a permissive process umask.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(bytes)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
+        tmp.as_file()
+            .set_permissions(fs::Permissions::from_mode(mode))?;
     }
-    fs::rename(&tmp, path)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -813,6 +824,43 @@ mod tests {
         fs::write(layout.conf_dir.join("config.toml"), b"# cfg").unwrap();
         fs::write(layout.state_dir.join("opsbox.db"), b"db").unwrap();
         layout
+    }
+
+    #[test]
+    fn audit_export_is_private_even_when_replacing_a_public_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempdir().unwrap();
+        let layout = Layout::under(root.path());
+        let path = export_audit_log(&layout, false).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        export_audit_log(&layout, false).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn private_restore_does_not_follow_a_stale_temporary_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = tempdir().unwrap();
+        let path = root.path().join("config");
+        let outside = root.path().join("outside");
+        fs::write(&outside, "keep").unwrap();
+        symlink(&outside, path.with_extension("opsbox-uninstall-tmp")).unwrap();
+        write_file_mode(&path, b"private config", 0o600).unwrap();
+        assert_eq!(fs::read_to_string(outside).unwrap(), "keep");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "private config");
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

@@ -38,7 +38,7 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 19 | SECURITY: Deployer can reach root through Compose ([19-compose-elevated-admin-only.md](archive/19-compose-elevated-admin-only.md)) | Fixed in fix 19 |
 | 20 | SECURITY: Full API tokens reach root-equivalent endpoints ([20-token-deny-root-endpoints.md](archive/20-token-deny-root-endpoints.md)) | Fixed in fix 20 |
 | 21 | SECURITY: Safe Mode (root) listens on the public interface by default ([21-safe-mode-exposure.md](archive/21-safe-mode-exposure.md)) | Fixed in fix 21 (live owner checks pending) |
-| 22 | SECURITY: Root helper creates files with a permissive umask (`22-priv-umask-and-unit-modes.md`) | |
+| 22 | SECURITY: Root helper creates files with a permissive umask ([22-priv-umask-and-unit-modes.md](archive/22-priv-umask-and-unit-modes.md)) | Fixed in fix 22 (live owner checks pending) |
 | 23 | SECURITY: The file manager can rewrite /etc/opsbox/config.toml (`23-config-toml-no-modify.md`) | |
 | 24 | SECURITY: apps/, xfer/, trash/ are created at runtime inside a group-writable dir (`24-install-root-owned-dirs.md`) | |
 | 25 | SECURITY: The internet-facing proxy can write the database (`25-proxy-readwrite-paths.md`) | |

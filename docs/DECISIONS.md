@@ -633,3 +633,7 @@ Treat token-triggered Compose redeploys as Deployer for raw/resolved elevation c
 ## Fix 21 — Restrict Safe Mode and isolate its TLS key
 Apply [watchdog] allow_ips as exact canonical IP matches immediately after accept, before TLS; an empty list retains remote recovery, and loopback has no implicit exemption.
 Generate a separate root-owned 0600 key under /etc/opsbox/watchdog with no panel/data-directory fallback; status/install output shows exposure and its certificate fingerprint, using fresh private status when local probes are excluded.
+
+## Fix 22 — Private root-helper file creation
+Set the root helper's systemd UMask=0077; write job service/timer files and deployment credentials through the existing same-directory atomic writer with explicit 0600 permissions before content is written.
+Keep uninstall audit exports and adoption receipts private through fresh 0600 temporary files and atomic replacement; preserve recorded modes when restoring adopted files, and retain intentional public/group-readable modes elsewhere.
