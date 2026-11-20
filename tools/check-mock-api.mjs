@@ -22,7 +22,7 @@ const REAL = new Set(
 /** Non-capability exports (mode flags, helpers, constants). */
 const HELPERS = new Set([
   'MODE', 'isReal', 'PAGE_USES', 'resetUsage', 'usageFor', 'quiet',
-  'formatAuditIp', 'setUiHooks', 'downloadUrl', 'TEMPLATES', 'auth',
+  'formatAuditIp', 'setUiHooks', 'downloadUrl', 'TEMPLATES', 'auth', 'cancelCleanupScan',
 ]);
 
 /** Stream / wrapper names that ride on a REAL capability. */

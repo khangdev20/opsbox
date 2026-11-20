@@ -589,3 +589,7 @@ Services has no filter control, so cover its empty response and the existing uni
 ## Fix 13 — Coarse-pointer selection targets
 Keep checkbox/radio artwork at 22px; give inputs a 44px pseudo-element hit area and labels a 44px minimum, without press scaling that shrinks the target.
 Stretch selection hit areas over Files/Updates rows on coarse pointers, unpinning their first cell so the row contains the overlay; raise file links above it and preserve desktop CSS density.
+
+## Fix 14 — Share and cancel Cleanup scans
+Share one in-flight HTTP scan, including fresh scans; clone results per caller and retain the existing completed-result cache.
+Unmount aborts the scan and releases its deadline/slot; aborted responses cannot update the cache, and dead pages cannot apply results or start scans.

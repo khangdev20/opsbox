@@ -501,18 +501,26 @@ No release tag is needed for these documentation-only changes.
 - Cleanup uses category-specific Docker Engine prune calls, not a blanket `docker system prune`; images use the dangling filter. `crates/opsbox-priv/src/ops/cleanup.rs:946–1068` vacuums journals with `journalctl --vacuum-time 7d`, cleans package caches, and measures nonnegative eligible-file before/after differences. Other file categories count listed bytes only after successful removal. Docker results use daemon `space_reclaimed` (`crates/opsbox-docker/src/lib.rs:1392–1440`). Logical file sizes and daemon reports are not an independent filesystem-free-space measurement.
 - Helper validates all IDs before action, executes each selected category once in fixed order, reports per-category errors as zero bytes and invalidates its scan cache before/after. API totals returned bytes, audits `freed_bytes`/failed IDs, preserves raw bytes and converts display “GB” using 2^30 rounded to two decimals. UI sums raw bytes, displays partial errors, removes successful rows immediately and requests a fresh scan; this optimistic row removal does not prove all reclaimable data disappeared.
 - Busy buttons and `opsbox:task` events provide activity feedback (`web/js/ui.js:636`, `web/js/api.js:180,915`); task log/result arrives only on completion. No incremental category/byte progress is reported by the cleanup worker. On-demand volume sizing can wait 120 seconds. The prompt's 30-second progress criterion remains unverified live.
-- PASS: temporary `timeout 120 node --input-type=module` harness imported the actual HTTP-mode API with stubbed fetch. A completed scan was reused without another request; two concurrent fresh scans created two pending fetches. This is a transport/cache check, not browser or VM validation.
+- PASS (before fix 14): temporary `timeout 120 node --input-type=module` harness imported the actual HTTP-mode API with stubbed fetch. A completed scan was reused without another request; two concurrent fresh scans created two pending fetches. This is a transport/cache check, not browser or VM validation.
 - Existing tests inspected: helper size parsers, bounded walks, deletion accounting, pending scanner deadline and cache invalidation; `crates/opsbox-api/tests/cleanup_http.rs` covers roles, CSRF, response shape and invalid selections, not successful reclamation; `crates/opsbox-docker/tests/mock_daemon.rs:720–741` checks scan and prune byte results against a mock daemon. `timeout 120 cargo test -p opsbox-priv ops::cleanup::tests --offline` and `timeout 120 cargo test -p opsbox-api --test cleanup_http --offline` could not run (Cargo unavailable, exit 127). `timeout 120 multipass info opsbox-vm` failed with socket access denied (exit 2). No VM junk was created or deleted.
 
-### Found, not fixed — 22: Scan requests can overlap across navigation
+### Fixed in fix 14 — 22: Scan requests can overlap across navigation
 
-`web/js/pages/cleanup.js:50–54,111` clears timers and ignores late results but does not abort an outstanding fetch or guard concurrent loads. `web/js/api.js:896–905` caches completed results without sharing an in-flight promise. Backend scanner caching limits ordinary duplicate scanner work, but does not eliminate overlapping HTTP requests. Fixing navigation cancellation, shared request ownership and associated coverage spans more than this QA prompt's tiny-fix scope.
+`web/js/api.js` now shares one in-flight scan across concurrent fresh/cached calls, clones results per caller, and releases the slot after success, failure or cancellation. Cleanup unmount aborts the HTTP request and clears its deadline; aborted responses cannot overwrite a newer cache or release a newer request's slot. The page retains its dead-result guard and refuses to start scans after unmount. The mock-API check recognizes cancellation as a local helper. No routes, PrivOps or UI map changed.
 
-Reproduce on a disposable dev server:
-1. In DevTools delay `/api/v1/cleanup/scan`, open Cleanup, navigate away before the response and reopen repeatedly.
-2. Observe outstanding scan requests from prior mounts; alternatively call `Promise.all([api.scanCleanup(true), api.scanCleanup(true)])` in an API harness and count two fetches (confirmed with the temporary stub).
+Validation (2026-11-20): six Node/DOM regressions were written first; five failed before the fix (duplicate requests, stale reads/cache and missing navigation cancellation). All 44 focused/related tests pass with `timeout 120 node --experimental-vm-modules --test tools/check-cleanup-scan.test.mjs tools/check-api-errors.test.mjs tools/check-apps-domains.test.mjs tools/check-demo-data.test.mjs tools/check-firewall-guard.test.mjs tools/check-empty-states.test.mjs`. Coverage includes `Promise.all([api.scanCleanup(true), api.scanCleanup(true)])` producing one request, shared failure/retry, abort on navigation, immediate reopening, late fetches that ignore abort, dead-page rendering/polling, and cleared deadlines. Existing API deadline/error coverage still passes.
 
-Suggested prompt: **Coalesce cleanup scan requests and cancel or detach navigation safely, with slow-network coverage.**
+Additional checks: `timeout 120 node tools/check-mock-api.mjs`, JavaScript syntax checks and `timeout 120 git diff --check` pass.
+
+Owner verification: in disposable `opsbox-vm` at `/home/ubuntu/opsbox`, run `CARGO_TARGET_DIR=~/target timeout 120 cargo build --release`, then `timeout 120 sudo sh install.sh --dev --binary ~/target/release/opsbox`. From the host open the panel through `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`. Delay `/api/v1/cleanup/scan` in DevTools, open Cleanup, leave and reopen repeatedly; old requests must be cancelled and only the current scan remain. Force a scan HTTP 503: the page must report failure safely and Rescan/reopening must recover after restoring the endpoint. Live timing/reclamation checks below remain separate.
+
+Git completion for fix 14: branch is `dev`; `git pull --ff-only` failed writing `.git/FETCH_HEAD` and staging failed creating `.git/index.lock` (Operation not permitted). The prompt was archived by filesystem rename. From a host terminal with Git write access, review/stage only this fix, commit, push, then wait for CI and tag the next unused alpha per `docs/prompts/CONVENTIONS.md`:
+
+```sh
+timeout 120 git add web/js/api.js web/js/pages/cleanup.js tools/check-cleanup-scan.test.mjs tools/check-mock-api.mjs docs/DECISIONS.md docs/QA.md docs/STATUS.md docs/prompts/fix/README.md docs/prompts/fix/14-cleanup-scan-overlap.md docs/prompts/fix/archive/14-cleanup-scan-overlap.md
+timeout 120 git commit -m "fix 14: Cleanup scans pile up"
+timeout 120 git push origin dev
+```
 
 ### Owner checks — 22: Live speed, progress and reclaimed space
 

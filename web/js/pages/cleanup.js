@@ -53,6 +53,7 @@ export async function view() {
   };
 
   const load = async (fresh = false) => {
+    if (dead) return;
     clearTimeout(timer);
     try {
       const next = await api.scanCleanup(fresh);
@@ -124,6 +125,6 @@ export async function view() {
         auto: async (el) => { const on = el.getAttribute('aria-checked') !== 'true'; await api.setAutoCleanup(on); setSwitch(el, on); },
       });
     },
-    unmount() { dead = true; clearTimeout(timer); },
+    unmount() { dead = true; clearTimeout(timer); api.cancelCleanupScan(); },
   };
 }

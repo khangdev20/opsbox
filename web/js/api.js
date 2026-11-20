@@ -119,12 +119,13 @@ function cookie(name) {
 
 // One fetch helper for every real endpoint. Errors carry the server's own
 // sentence (docs/BACKEND_SPEC.md 6.1), which the UI shows verbatim.
-async function http(path, options = {}) {
+async function http(path, { controller = new AbortController(), ...options } = {}) {
   // These operations may synchronously scan disks or contact upstream servers.
   const slow = /^(?:\/system\/updates(?:\?|$)|\/updates\/check(?:\?|$)|\/cleanup\/scan(?:\?|$)|\/backups(?:\/|\?|$))/.test(path);
-  const controller = new AbortController();
-  let timer;
+  let timer, onAbort;
   const deadline = new Promise((_, reject) => {
+    onAbort = () => reject(controller.signal.reason);
+    controller.signal.addEventListener('abort', onAbort, { once: true });
     timer = setTimeout(() => {
       reject(new Error('The server did not answer in time. Try again.'));
       controller.abort();
@@ -133,7 +134,10 @@ async function http(path, options = {}) {
   try {
     // Race also bounds a stalled response body (or a fetch that ignores abort).
     return await Promise.race([httpRequest(path, { ...options, signal: controller.signal }), deadline]);
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    controller.signal.removeEventListener('abort', onAbort);
+  }
 }
 
 async function httpRequest(path, { method = 'GET', body, onResponse, signal } = {}) {
@@ -912,18 +916,29 @@ export async function openSsh() { sample('openSsh');
   if (real('openSsh')) return openSshReal(); await lag(400); S.sshOpenUntil = now() + HOUR; S.units.find((u) => u.name === 'ssh.service').state = 'active'; audit('emergency SSH enabled for 1 hour', 'admin', true); return { until: S.sshOpenUntil }; }
 
 // ---------------------------------------------------------------- cleanup
-let cleanupCache = null;
+let cleanupCache = null, cleanupScan = null;
 export async function scanCleanup(fresh = false) { sample('scanCleanup');
   if (real('scanCleanup')) {
+    if (cleanupScan) return clone(await cleanupScan.promise);
     if (!fresh && cleanupCache && !cleanupCache.pending && (Date.now() - cleanupCache._at) < 60000) {
       return clone(cleanupCache);
     }
-    const r = await http(fresh ? '/cleanup/scan?fresh=1' : '/cleanup/scan');
-    cleanupCache = { ...r, _at: Date.now() };
-    return clone(r);
+    const scan = { controller: new AbortController() };
+    scan.promise = http(fresh ? '/cleanup/scan?fresh=1' : '/cleanup/scan', { controller: scan.controller })
+      .then((r) => {
+        if (!scan.controller.signal.aborted) cleanupCache = { ...r, _at: Date.now() };
+        return r;
+      }).finally(() => { if (cleanupScan === scan) cleanupScan = null; });
+    cleanupScan = scan;
+    return clone(await scan.promise);
   }
   await lag(200);
   return { items: clone(S.cleanup), disk: S.metrics.disk, total: S.host.diskTotal, system: 41, auto: S.autoCleanup, pending: false, scannedAt: Math.floor(Date.now() / 1000), scanned: hhmm() };
+}
+export function cancelCleanupScan() {
+  const scan = cleanupScan;
+  cleanupScan = null;
+  scan?.controller.abort();
 }
 export async function getCleanupVolumes() { sample('getCleanupVolumes');
   if (real('getCleanupVolumes')) return http('/cleanup/volumes');
