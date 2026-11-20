@@ -2269,6 +2269,16 @@ where
         )
     })?;
     let mut staged = tokio::fs::File::from_std(file);
+    // Never rely on the filesystem's default create mode for plaintext dump data.
+    staged
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .await
+        .map_err(|e| {
+            err(
+                PrivErrorCode::Internal,
+                format!("Could not secure the staged database dump: {e}"),
+            )
+        })?;
     let mut child = command.spawn().map_err(|e| {
         err(
             PrivErrorCode::Internal,
