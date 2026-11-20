@@ -1,7 +1,7 @@
 # Status
 
 Last prompt completed: **Fix 32 — Cleanup page width**.
-Released: `v0.1.0-alpha.47` (fix 31). Next release: `v0.1.0-alpha.48` once CI passes.
+Released: `v0.1.0-alpha.48` (CI green; signed musl archives, SBOM and `install.sh` on the GitHub release).
 
 ## Completed
 - Full-width pages (`main`) use `width: min(100%, 1680px)` with `clamp(16px, 2.5vw, 40px)` side padding instead of the 1180 px cap.
@@ -13,6 +13,7 @@ Released: `v0.1.0-alpha.47` (fix 31). Next release: `v0.1.0-alpha.48` once CI pa
 - `timeout 120 node tools/check-responsive-ui.mjs` passes the source and Chrome browser checks.
 - `timeout 120 python3 scripts/gen-index.py --check` passes; no generated map is stale.
 - CI runs the workspace tests, release build, musl targets, cargo-deny and installer checks on the pushed commit.
+- Release workflow `v0.1.0-alpha.48` published both signed musl archives, `install.sh` and the SBOM.
 
 ## Limits and next prompt
 - Prior fixes' Linux owner checks in `docs/QA.md` still need the `opsbox-vm`; none were run here.

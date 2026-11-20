@@ -52,3 +52,4 @@ Order is by importance for the public alpha: 01 to 06 first.
 
 ## Security batch (19-30): do these BEFORE the public alpha post
 Order: 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30. Items 19 to 21 are the must-haves; 22 to 25 are quick hardening; 26 to 28 are the structural root-boundary work (26 before 27); 30 is docs and can run any time. Prompts 01 to 18 can wait until these are done.
+| 33 | New service layout (`33-new-service-layout.md`) | |
