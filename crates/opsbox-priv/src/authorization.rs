@@ -365,19 +365,19 @@ mod tests {
             }
         }
         let captured = Arc::new(Mutex::new(String::new()));
-        tracing::subscriber::with_default(Capture(Arc::clone(&captured)), || {
-            // The callsite may have been cached as disabled before this subscriber existed.
-            tracing::callsite::rebuild_interest_cache();
-            let request = PrivRequest {
-                id: "audit-27".into(),
-                actor: Some("forged-admin".into()),
-                op: PrivOp::SecretOpen {
-                    context: "deploy:key".into(),
-                    sealed: "secret-payload".into(),
-                },
-            };
-            assert!(authorize(Caller::Proxy, &request, 1234, Some(5678)).is_err());
-        });
+        // A thread-local subscriber cannot revive a callsite cached as disabled; install the
+        // capture process-wide (this is the only subscriber in the test binary) and rebuild.
+        let _ = tracing::subscriber::set_global_default(Capture(Arc::clone(&captured)));
+        tracing::callsite::rebuild_interest_cache();
+        let request = PrivRequest {
+            id: "audit-27".into(),
+            actor: Some("forged-admin".into()),
+            op: PrivOp::SecretOpen {
+                context: "deploy:key".into(),
+                sealed: "secret-payload".into(),
+            },
+        };
+        assert!(authorize(Caller::Proxy, &request, 1234, Some(5678)).is_err());
         let logged = captured.lock().unwrap();
         for field in [
             "WARN",
