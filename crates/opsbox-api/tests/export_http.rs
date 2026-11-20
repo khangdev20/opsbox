@@ -625,7 +625,8 @@ async fn both_kinds_of_export_are_audited_without_the_passphrase() {
     let d = |e: &opsbox_store::AuditEntry| -> Value { serde_json::from_str(&e.detail).unwrap() };
     assert_eq!(d(without)["includeSecrets"], false);
     assert_eq!(d(with)["includeSecrets"], true);
-    assert_eq!(d(with)["secretsExported"], 4);
+    // 2 secret service vars + 1 Compose project + 1 backup destination + 1 alert channel.
+    assert_eq!(d(with)["secretsExported"], 5);
     f.h.shutdown().await;
 }
 
