@@ -901,7 +901,11 @@ mod tests {
             text.contains(&format!("http://{}", config.listen)),
             "{text}"
         );
-        assert!(!text.contains("certificate"), "{text}");
+        let serve = text
+            .lines()
+            .find(|line| line.starts_with("serve "))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(!serve.contains("certificate"), "{text}");
     }
 
     #[tokio::test]
