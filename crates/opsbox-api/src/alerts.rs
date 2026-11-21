@@ -59,7 +59,7 @@ fn context(id: &str) -> String {
     format!("alerts:channel:{id}")
 }
 fn valid_id(id: &str) -> Result<(), HttpError> {
-    if ["c1", "c2", "c3", "c4"].contains(&id) {
+    if ["c1", "c2", "c3", "c4", "c5"].contains(&id) {
         Ok(())
     } else {
         Err(HttpError::new(
@@ -85,13 +85,16 @@ fn encode(s: &str) -> String {
         })
         .collect()
 }
-async fn deliver(s: &AppState, c: &Channel, p: Value) -> Result<(), HttpError> {
+async fn deliver(s: &AppState, c: &Channel, mut p: Value) -> Result<(), HttpError> {
     let secret = s
         .priv_client
         .secret_open("alert-delivery", None, &context(&c.id), &c.sealed)
         .await?;
     let config: Settings =
         serde_json::from_str(secret.expose()).map_err(|_| HttpError::internal())?;
+    if matches!(config, Settings::Discord { .. }) {
+        p["host"] = json!(crate::panel::active_panel_domain(s).unwrap_or_else(|| "opsbox".into()));
+    }
     tokio::task::spawn_blocking(move || channels::send(config, p, now()))
         .await
         .map_err(|_| HttpError::internal())?
@@ -463,11 +466,39 @@ pub(crate) async fn get(
 ) -> Result<Json<Value>, HttpError> {
     let _guard = s.alerts.lock.lock().await;
     let e = load(&s)?;
+    let discord_display = if let Some(c) = e.channels.get("c5") {
+        s.priv_client
+            .secret_open("alert-list", None, &context("c5"), &c.sealed)
+            .await
+            .ok()
+            .and_then(|opened| serde_json::from_str::<Settings>(opened.expose()).ok())
+            .and_then(|settings| {
+                if let Settings::Discord { url } = settings {
+                    let token = url.expose().rsplit('/').next().unwrap_or("");
+                    Some(format!(
+                        "…/{}",
+                        token
+                            .chars()
+                            .rev()
+                            .take(4)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect::<String>()
+                    ))
+                } else {
+                    None
+                }
+            })
+    } else {
+        None
+    };
     let channels: Vec<_> = [
         ("c1", "Email"),
         ("c2", "Slack"),
         ("c3", "Telegram"),
         ("c4", "Webhook"),
+        ("c5", "Discord"),
     ]
     .into_iter()
     .map(|(id, name)| {
@@ -478,7 +509,7 @@ pub(crate) async fn get(
             "on": c.is_some(),
             "verified": c.is_some_and(|c| c.verified),
             "error": c.and_then(|c| c.error.clone()),
-            "to": if c.is_some() { "Configured" } else { "" },
+            "to": if id == "c5" { discord_display.as_deref().unwrap_or(if c.is_some() { "Configured" } else { "" }) } else if c.is_some() { "Configured" } else { "" },
             "for": "all alerts",
             "hasValue": c.is_some(),
         })
@@ -613,6 +644,12 @@ pub(crate) async fn reveal_channel(
 ) -> Result<(HeaderMap, Json<Value>), HttpError> {
     deny_token(&who)?;
     valid_id(&id)?;
+    if id == "c5" {
+        return Err(invalid(
+            "channel",
+            "Discord webhook URLs cannot be revealed. Paste a new URL to replace it.",
+        ));
+    }
     if let Err(e) = begin_reveal(&s, &who, &rid, &client.ip, &body).await {
         secrets::audit_reveal_denied(
             &s,

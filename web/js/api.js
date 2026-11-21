@@ -1646,6 +1646,7 @@ const AL = {
     { id: 'c2', name: 'Slack', to: '#ops-alerts', for: 'critical only', on: true },
     { id: 'c3', name: 'Telegram', to: '', for: '', on: false },
     { id: 'c4', name: 'Webhook', to: '', for: '', on: false },
+    { id: 'c5', name: 'Discord', to: '', for: '', on: false },
   ],
   rules: [
     ['r1', 'Disk full', 'disk / above 85% for 5 min', 'critical', 'Slack + email', true], ['r2', 'Disk filling', 'disk / above 75% for 5 min', 'warning', 'email', true],
@@ -1668,7 +1669,12 @@ export async function connectChannel(id, config) { if (real('connectChannel')) r
   await lag(400); const c = AL.channels.find((x) => x.id === id); if (!c) throw new Error('No such channel');
   if (id === 'c4' && !/^https:\/\//.test(to || '')) throw new Error('Webhook URL must start with https://');
   if (id === 'c3' && !/^-?\d{5,}$/.test(to || '')) throw new Error('Enter your Telegram chat id (digits only).');
-  c.to = to; c.for = 'all alerts'; c.on = true; audit(`connect ${c.name}`);
+  if (id === 'c5') {
+    let url; try { url = new URL(config.url); } catch { throw new Error('Enter a Discord webhook URL copied from Server settings → Integrations → Webhooks.'); }
+    if (url.protocol !== 'https:' || !['discord.com', 'discordapp.com'].includes(url.hostname) || url.port || url.username || url.password || url.search || url.hash || !/^\/api\/webhooks\/\d+\/[A-Za-z0-9_-]+$/.test(url.pathname)) throw new Error('Enter a Discord webhook URL copied from Server settings → Integrations → Webhooks.');
+    c.to = `…/${url.pathname.split('/').pop().slice(-4)}`;
+  } else c.to = to;
+  c.for = 'all alerts'; c.on = true; audit(`connect ${c.name}`);
 }
 export async function disconnectChannel(id) { if (real('disconnectChannel')) return http(`/alerts/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }); sample('disconnectChannel'); const c = AL.channels.find((c) => c.id === id); if (c) c.on = false; return { ok: true }; }
 export async function silenceAlert(id, seconds = 3600) { if (real('silenceAlert')) return http('/alerts/silence', { method: 'POST', body: { id, seconds } }); sample('silenceAlert'); await lag(150); AL.firing = false; const incident = AL.incidents.find((i) => i.id === id); if (incident) incident.silenceUntil = Math.floor(now() / 1000) + seconds; AL.history[0].state = 'silenced'; audit('silence alert 1 h'); }

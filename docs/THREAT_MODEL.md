@@ -72,7 +72,7 @@ What we defend against: secrets appearing in list/detail JSON when they are not 
 | API tokens (`ops_…`) | Hash only | Metadata on `GET /settings` | Shown once on `POST /tokens`; not recoverable |
 | Backup S3 access keys / SFTP private keys | Sealed (`backup:dest:<id>`) | `hasCredentials` / `hasValue: true` on destinations | `POST /backups/destinations/{id}/reveal` |
 | Restic recovery password | Derived from master key (not stored) | Not listed | `POST /backups/recovery-key` after re-auth |
-| Alert channel credentials (SMTP password, Slack/Telegram/webhook secrets) | Sealed (`alerts:channel:<id>`) | `hasValue: true`, `to: "Configured"` | `POST /alerts/channels/{id}/reveal` |
+| Alert channel credentials (SMTP password, Slack/Discord/Telegram/webhook secrets) | Sealed (`alerts:channel:<id>`) | `hasValue: true`; Discord shows only the token's last four characters | `POST /alerts/channels/{id}/reveal` for other channels; Discord cannot be revealed |
 | GitHub App webhook secret | Sealed (`deploy:github_app:webhook_secret`) | `hasWebhookSecret: true` | `POST /github/webhook-secret/reveal` |
 | GitHub App private key / deploy-key private keys | Sealed | `hasPrivateKey: true` / public key + fingerprint only | Never over HTTP (used only inside `priv`) |
 | TOTP secrets | Sealed on the user row | Not listed after enrolment | Shown once at enrol (`/auth/totp/enroll`); thereafter only verified in `priv` |

@@ -24,6 +24,9 @@ pub enum Settings {
     Slack {
         url: Secret,
     },
+    Discord {
+        url: Secret,
+    },
     Telegram {
         token: Secret,
         chat: String,
@@ -38,6 +41,7 @@ impl Settings {
         match self {
             Self::Email { .. } => "c1",
             Self::Slack { .. } => "c2",
+            Self::Discord { .. } => "c5",
             Self::Telegram { .. } => "c3",
             Self::Webhook { .. } => "c4",
         }
@@ -76,6 +80,28 @@ impl Settings {
                 ) || !u.path().starts_with("/services/")
                 {
                     return Err("Enter a Slack incoming webhook URL.");
+                }
+            }
+            Self::Discord { url } => {
+                let u = secure_url(url.expose())?;
+                let parts: Vec<_> = u.path().split('/').collect();
+                if !matches!(u.host_str(), Some("discord.com" | "discordapp.com"))
+                    || u.port().is_some()
+                    || u.query().is_some()
+                    || parts.len() != 5
+                    || !parts[0].is_empty()
+                    || parts[1] != "api"
+                    || parts[2] != "webhooks"
+                    || parts[3].is_empty()
+                    || !parts[3].bytes().all(|b| b.is_ascii_digit())
+                    || parts[4].is_empty()
+                    || !parts[4]
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                {
+                    return Err(
+                        "Enter a Discord webhook URL copied from Server settings → Integrations → Webhooks.",
+                    );
                 }
             }
             Self::Telegram { token, chat } => {
@@ -134,9 +160,11 @@ pub fn signature(secret: &str, timestamp: i64, body: &[u8]) -> String {
 }
 
 pub fn send(settings: Settings, payload: Value, now: i64) -> Result<(), &'static str> {
+    let discord = matches!(settings, Settings::Discord { .. });
     let agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(10)))
         .max_redirects(0)
+        .http_status_as_error(!discord)
         .build()
         .new_agent();
     send_with_agent(settings, payload, now, agent)
@@ -187,8 +215,10 @@ fn send_with_agent(
             .map_err(|_| "SMTP delivery failed. Check the host, credentials and recipient.")?;
         return Ok(());
     }
+    let discord = matches!(settings, Settings::Discord { .. });
     let (url, body, key) = match settings {
         Settings::Slack { url } => (url, json!({"text":text}), None),
+        Settings::Discord { url } => (url, discord_body(&payload, now), None),
         Settings::Telegram { token, chat } => (
             Secret::new(format!(
                 "https://api.telegram.org/bot{}/sendMessage",
@@ -201,6 +231,9 @@ fn send_with_agent(
         Settings::Email { .. } => unreachable!(),
     };
     let body = serde_json::to_vec(&body).map_err(|_| "Could not build notification.")?;
+    if discord {
+        return post_discord(&agent, url.expose(), &body);
+    }
     let mut request = agent
         .post(url.expose())
         .header("Content-Type", "application/json");
@@ -218,6 +251,76 @@ fn send_with_agent(
     Ok(())
 }
 
+fn post_discord(agent: &ureq::Agent, url: &str, body: &[u8]) -> Result<(), &'static str> {
+    let mut response = agent
+        .post(url)
+        .header("Content-Type", "application/json")
+        .send(body)
+        .map_err(|_| "Discord delivery failed. Check the webhook URL.")?;
+    if response.status().as_u16() == 429 {
+        let retry_text = response
+            .body_mut()
+            .with_config()
+            .limit(1024)
+            .read_to_string()
+            .map_err(|_| "Discord rate limit response was invalid.")?;
+        let retry: Value = serde_json::from_str(&retry_text)
+            .map_err(|_| "Discord rate limit response was invalid.")?;
+        let wait = retry["retry_after"].as_f64().unwrap_or(0.0);
+        if !(0.0..=5.0).contains(&wait) {
+            return Err("Discord rate limit was too long. Try again later.");
+        }
+        std::thread::sleep(Duration::from_secs_f64(wait));
+        response = agent
+            .post(url)
+            .header("Content-Type", "application/json")
+            .send(body)
+            .map_err(|_| "Discord delivery failed. Check the webhook URL.")?;
+    }
+    if !response.status().is_success() {
+        return Err("The channel refused the notification.");
+    }
+    Ok(())
+}
+
+fn truncate_discord(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value.to_owned();
+    }
+    let mut out: String = value.chars().take(max - 1).collect();
+    out.push('…');
+    out
+}
+
+fn discord_body(payload: &Value, now: i64) -> Value {
+    let title = payload["name"].as_str().unwrap_or("Alert");
+    let description = format!(
+        "{}\n{}",
+        payload["message"].as_str().unwrap_or("Test notification"),
+        payload["link"].as_str().unwrap_or("#/alerts")
+    );
+    let color = match payload["level"].as_str().unwrap_or("info") {
+        "critical" => 0xED4245,
+        "warning" => 0xF59E0B,
+        _ => 0x3498DB,
+    };
+    let timestamp = time::OffsetDateTime::from_unix_timestamp(now)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let host = payload["host"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| {
+            payload["link"]
+                .as_str()
+                .and_then(|link| Url::parse(link).ok())
+                .and_then(|url| url.host_str().map(str::to_owned))
+        })
+        .unwrap_or_else(|| "opsbox".into());
+    json!({"embeds":[{"title":truncate_discord(title,256),"description":truncate_discord(&description,4096),"color":color,"timestamp":timestamp,"footer":{"text":host}}]})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +329,27 @@ mod tests {
 
     fn receiver(
         status: &str,
+    ) -> (
+        String,
+        ureq::Agent,
+        mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        receiver_body(status, "ok")
+    }
+    fn receiver_body(
+        status: &str,
+        reply_body: &str,
+    ) -> (
+        String,
+        ureq::Agent,
+        mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        receiver_replies(&[(status, reply_body)])
+    }
+    fn receiver_replies(
+        replies: &[(&str, &str)],
     ) -> (
         String,
         ureq::Agent,
@@ -252,47 +376,54 @@ mod tests {
         let agent = ureq::Agent::config_builder()
             .proxy(None)
             .max_redirects(0)
+            .http_status_as_error(false)
             .timeout_global(Some(Duration::from_secs(5)))
             .tls_config(ureq::tls::TlsConfig::builder().root_certs(roots).build())
             .build()
             .new_agent();
         let (tx, rx) = mpsc::channel();
-        let status = status.to_owned();
+        let replies: Vec<_> = replies
+            .iter()
+            .map(|(s, b)| (s.to_string(), b.to_string()))
+            .collect();
+        let config = Arc::new(config);
         let handle = std::thread::spawn(move || {
-            let (socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut stream = rustls::StreamOwned::new(
-                rustls::ServerConnection::new(Arc::new(config)).unwrap(),
-                socket,
-            );
-            let mut data = Vec::new();
-            let mut chunk = [0u8; 4096];
-            loop {
-                let n = stream.read(&mut chunk).unwrap();
-                assert!(n > 0);
-                data.extend_from_slice(&chunk[..n]);
-                if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
-                    let head = String::from_utf8_lossy(&data[..pos]);
-                    let size: usize = head
-                        .lines()
-                        .find_map(|l| {
-                            l.to_ascii_lowercase()
-                                .strip_prefix("content-length:")
-                                .map(|s| s.trim().parse().unwrap())
-                        })
-                        .unwrap();
-                    if data.len() >= pos + 4 + size {
-                        break;
+            for (status, reply_body) in replies {
+                let (socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut stream = rustls::StreamOwned::new(
+                    rustls::ServerConnection::new(config.clone()).unwrap(),
+                    socket,
+                );
+                let mut data = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    data.extend_from_slice(&chunk[..n]);
+                    if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let head = String::from_utf8_lossy(&data[..pos]);
+                        let size: usize = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|s| s.trim().parse().unwrap())
+                            })
+                            .unwrap();
+                        if data.len() >= pos + 4 + size {
+                            break;
+                        }
                     }
                 }
+                tx.send(String::from_utf8(data).unwrap()).unwrap();
+                let body = reply_body.as_bytes();
+                write!(stream,"HTTP/1.1 {status}\r\nContent-Length: {}\r\nLocation: https://example.com/stolen\r\nConnection: close\r\n\r\n",body.len()).unwrap();
+                stream.write_all(body).unwrap();
+                stream.flush().unwrap();
             }
-            tx.send(String::from_utf8(data).unwrap()).unwrap();
-            let body = b"ok";
-            write!(stream,"HTTP/1.1 {status}\r\nContent-Length: {}\r\nLocation: https://example.com/stolen\r\nConnection: close\r\n\r\n",body.len()).unwrap();
-            stream.write_all(body).unwrap();
-            stream.flush().unwrap();
         });
         (url, agent, rx, handle)
     }
@@ -374,5 +505,75 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+    #[test]
+    fn discord_embed_limits_colours_and_url_validation() {
+        for (level, colour) in [
+            ("critical", 0xED4245),
+            ("warning", 0xF59E0B),
+            ("info", 0x3498DB),
+        ] {
+            let embed = discord_body(
+                &json!({"name":"x".repeat(300),"message":"y".repeat(5000),"level":level,"host":"box.example"}),
+                12345,
+            );
+            let item = &embed["embeds"][0];
+            assert_eq!(item["color"], colour);
+            assert_eq!(item["footer"]["text"], "box.example");
+            assert!(item["title"].as_str().unwrap().chars().count() <= 256);
+            assert!(item["description"].as_str().unwrap().chars().count() <= 4096);
+            assert!(item["title"].as_str().unwrap().ends_with('…'));
+            assert!(item["description"].as_str().unwrap().ends_with('…'));
+            assert!(item["timestamp"].as_str().unwrap().contains('T'));
+        }
+        for url in [
+            "http://discord.com/api/webhooks/1/token",
+            "https://discord.com.evil.test/api/webhooks/1/token",
+            "https://discord.com/api/webhooks/1",
+            "https://discord.com/api/webhooks/1/token/extra",
+            "https://discord.com:444/api/webhooks/1/token",
+            "https://discord.com/api/webhooks/1/token?wait=true",
+        ] {
+            assert!(
+                Settings::Discord {
+                    url: Secret::new(url)
+                }
+                .validate()
+                .is_err(),
+                "{url}"
+            );
+        }
+        assert!(
+            Settings::Discord {
+                url: Secret::new("https://discordapp.com/api/webhooks/123/abc_DEF-123")
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+    #[test]
+    fn discord_posts_embed_and_retries_rate_limit_once() {
+        let (url, agent, rx, handle) = receiver("204 No Content");
+        let body = serde_json::to_vec(&discord_body(
+            &json!({"name":"Test alert","message":"Hello","level":"info","host":"box.example"}),
+            12345,
+        ))
+        .unwrap();
+        assert!(post_discord(&agent, &url, &body).is_ok());
+        let raw = rx.recv().unwrap();
+        handle.join().unwrap();
+        assert!(raw.starts_with("POST /notify HTTP/1.1"));
+        let sent: Value = serde_json::from_str(raw.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(sent["embeds"][0]["title"], "Test alert");
+        let (url, agent, rx, handle) = receiver_replies(&[
+            ("429 Too Many Requests", "{\"retry_after\":0.05}"),
+            ("429 Too Many Requests", "{\"retry_after\":0.05}"),
+        ]);
+        let start = std::time::Instant::now();
+        assert!(post_discord(&agent, &url, &body).is_err());
+        assert!(start.elapsed() >= Duration::from_millis(50));
+        assert!(rx.recv().unwrap().starts_with("POST /notify"));
+        assert!(rx.recv().unwrap().starts_with("POST /notify"));
+        handle.join().unwrap();
     }
 }

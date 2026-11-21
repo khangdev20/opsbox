@@ -107,6 +107,53 @@ async fn secrets_are_sealed_redacted_context_bound_and_configuration_survives_re
 }
 
 #[tokio::test]
+async fn discord_url_is_validated_sealed_and_redacted() {
+    let h = Harness::new(true);
+    let mut admin = h.signed_in("discord-admin", Role::Admin);
+    for url in [
+        "http://discord.com/api/webhooks/123/private-token",
+        "https://127.0.0.1/api/webhooks/123/private-token",
+        "https://discord.com.evil.test/api/webhooks/123/private-token",
+        "https://discord.com/api/webhooks/123/private-token/extra",
+    ] {
+        let reply = admin
+            .send(
+                Method::PUT,
+                "/api/v1/alerts/channels/c5",
+                Some(json!({"kind":"discord","url":url})),
+                Opts::default(),
+            )
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{url}: {}",
+            reply.text()
+        );
+    }
+    let url = "https://discord.com/api/webhooks/123/private-token";
+    let reply = admin
+        .send(
+            Method::PUT,
+            "/api/v1/alerts/channels/c5",
+            Some(json!({"kind":"discord","url":url})),
+            Opts::default(),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    let stored = h.store.get_setting("alerts.engine.v1").unwrap().unwrap();
+    assert!(!stored.to_string().contains("private-token"));
+    let listed = admin.get("/api/v1/alerts").await;
+    assert!(!listed.text().contains("private-token"));
+    assert_eq!(listed.json()["channels"][4]["to"], "…/oken");
+    let reveal = admin
+        .post("/api/v1/alerts/channels/c5/reveal", json!({}))
+        .await;
+    assert_eq!(reveal.status, StatusCode::BAD_REQUEST);
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn roles_validation_missing_channel_and_priv_outage_fail_safely() {
     let h = Harness::new(false);
     let mut anonymous = h.browser();

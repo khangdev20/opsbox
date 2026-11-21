@@ -374,10 +374,10 @@ Lexical direct calls reachable from route handlers, including background functio
 | alerts::canonical_attention_id | crates/opsbox-api/src/alerts.rs | — | — | — | get_service |
 | alerts::connect | crates/opsbox-api/src/alerts.rs | Settings, Value | alerts::context, alerts::load, alerts::save, alerts::valid_id, session::deny_token | secret_seal | lock |
 | alerts::context | crates/opsbox-api/src/alerts.rs | — | — | — | — |
-| alerts::deliver | crates/opsbox-api/src/alerts.rs | — | alerts::context, alerts::now | secret_open | — |
+| alerts::deliver | crates/opsbox-api/src/alerts.rs | — | alerts::context, alerts::now, panel::active_panel_domain | secret_open | — |
 | alerts::disconnect | crates/opsbox-api/src/alerts.rs | Value | alerts::load, alerts::save, alerts::valid_id, session::deny_token | — | lock |
 | alerts::encode | crates/opsbox-api/src/alerts.rs | — | — | — | — |
-| alerts::get | crates/opsbox-api/src/alerts.rs | Value | alerts::load | — | lock |
+| alerts::get | crates/opsbox-api/src/alerts.rs | Value | alerts::context, alerts::load | secret_open | lock |
 | alerts::load | crates/opsbox-api/src/alerts.rs | — | — | — | get_setting |
 | alerts::merge_alert_attention | crates/opsbox-api/src/alerts.rs | — | alerts::canonical_attention_id, alerts::encode, alerts::load | — | lock |
 | alerts::now | crates/opsbox-api/src/alerts.rs | — | — | — | — |

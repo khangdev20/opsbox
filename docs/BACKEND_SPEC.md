@@ -372,7 +372,7 @@ Every `ServiceRecord` field is either exported or listed in `SERVICE_EXCLUDED` w
 
 - Rule kinds: metric threshold with duration (CPU, memory, disk), state (unit failed, container stopped or restarting), events (deploy failed, backup failed or missed, cert expiring, security updates waiting N days, repeated failed sign-ins, emergency SSH open, opsbox unhealthy).
 - Evaluation every 15 s over in-memory metrics; state machine per rule and target: ok → pending (duration) → firing → resolved. Notify on firing, on worsening, on resolve; repeat at most every 4 h while firing. Silence for a period.
-- Channels: email (SMTP via `lettre`, or a provider API later), Slack incoming webhook, Telegram bot, generic webhook (JSON, HMAC-signed). Secrets encrypted.
+- Channels: email (SMTP via `lettre`, or a provider API later), Slack incoming webhook, Discord webhook, Telegram bot, generic webhook (JSON, HMAC-signed). Secrets encrypted.
 - Quiet hours delay warnings, never critical alerts.
 
 ### 7.14 Security checks and audit

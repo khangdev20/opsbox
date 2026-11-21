@@ -54,6 +54,10 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 35 | Capacity result structured ([35-capacity-structured-result.md](archive/35-capacity-structured-result.md)) | Fixed in fix 35 |
 | 36 | Capacity blocked card ([36-capacity-blocked-card.md](archive/36-capacity-blocked-card.md)) | Fixed in fix 36 |
 | 37 | Capacity message matches verdict ([37-capacity-message-matches-verdict.md](archive/37-capacity-message-matches-verdict.md)) | Fixed in fix 37 |
+| 39 | Discord alert channel ([39-alert-channel-discord.md](archive/39-alert-channel-discord.md)) | Fixed in fix 39 |
 
 ## Security batch (19-30): do these BEFORE the public alpha post
 Order: 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30. Items 19 to 21 are the must-haves; 22 to 25 are quick hardening; 26 to 28 are the structural root-boundary work (26 before 27); 30 is docs and can run any time. Prompts 01 to 18 can wait until these are done.
+| 38 | Proxy port conflict (`38-proxy-port-conflict.md`) | |
+| 40 | Server size guide (`40-server-size-guide.md`) | |
+| 40 | Server size guide (`40-server-size-guide.md`), docs only | |

@@ -100,7 +100,7 @@ Alert configuration and history require an administrator. Channel connect/discon
 | `PUT /alerts/rules/{id}` | `{on:bool}`. IDs: `disk`, `cpu`, `memory`, `units`, `containers`, `deploy`, `backup`, `missed`, `tls`, `security`, `signins`, `ssh`, `health`. Disabling resolves an active incident on the next successful evaluation. |
 | `PUT /alerts/channels/{id}` | Full replacement configuration below. Sealed via `PrivOp::SecretSeal`, context `alerts:channel:<id>`. Saving does not claim a successful test. |
 | `DELETE /alerts/channels/{id}` | Removes configuration and stops subsequent deliveries. An already in-flight request may finish. |
-| `POST /alerts/test` | `{channel:"c1"|"c2"|"c3"|"c4"|null}`; null tests all configured channels concurrently. Explicitly bypasses silences/quiet hours. Returns `{ok:true}` only after delivery; `400` for no selected channel, `503` on delivery/helper failure. |
+| `POST /alerts/test` | `{channel:"c1"|"c2"|"c3"|"c4"|"c5"|null}`; null tests all configured channels concurrently. Explicitly bypasses silences/quiet hours. Returns `{ok:true}` only after delivery; `400` for no selected channel, `503` on delivery/helper failure. |
 | `POST /alerts/silence` | `{id:"disk:/",seconds:3600}`. Exact rule/target ID from `incidents`; 0 ends silence, maximum 604800 (7 days). State remains visible while notifications wait. |
 | `PUT /alerts/quiet` | `{from:"23:00",to:"07:00"}` in UTC. Equal times disable quiet hours. Invalid HH:MM returns `400`. |
 
@@ -110,6 +110,7 @@ Channel bodies (secret fields are accepted on write only):
 - `c2`: `{kind:"slack",url:"https://hooks.slack.com/services/…"}` (also accepts `hooks.slack-gov.com`). The entire bearer URL is sealed.
 - `c3`: `{kind:"telegram",token:"12345:…",chat:"-100123456789"}`. Uses the fixed Telegram Bot API endpoint.
 - `c4`: `{kind:"webhook",url:"https://example.com/alerts",secret:"at-least-16-characters"}`. HTTPS only; embedded user information and fragments refused. All HTTP channels refuse redirects and time out after 10 seconds. SMTP uses the same 10-second transport timeout. Transport errors never return provider bodies or credential-bearing URLs.
+- `c5`: `{kind:"discord",url:"https://discord.com/api/webhooks/<id>/<token>"}`. Also accepts `discordapp.com`; the entire URL is sealed. The list shows only `…/<last four token characters>` and this channel cannot be revealed. Discord embeds use severity colours and retry one rate limit response.
 
 Generic webhooks send UTF-8 JSON `{id,name,rule,target,state,level,message,link,alertsLink}` with `Content-Type: application/json`, `X-Opsbox-Timestamp: <unix-seconds>` and `X-Opsbox-Signature: sha256=<lowercase-hex>`. Verify HMAC-SHA256 over ASCII timestamp + `.` + the **exact request body bytes**, compare in constant time, and reject old timestamps. `id` is stable for retries of a rule/target revision; consumers should deduplicate it. When a panel domain is configured, links are absolute HTTPS URLs.
 

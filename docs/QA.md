@@ -1183,3 +1183,13 @@ Added Alpha status to docs/THREAT_MODEL.md and SECURITY.md and aligned README/si
 Validation: reviewed current helper caller authorization, server peer-credential/dispatch gates, Compose authorization, token denial/scope text and watchdog configuration against the prose. `timeout 120 python3 scripts/gen-index.py --check` and `timeout 120 git diff --check` pass; index regeneration produces no changes. No runtime test was added or claimed: this fix changes prose only and manual source/document comparison is the relevant check. The prompt is archived and the fix index is marked complete.
 
 Owner checks: no new runtime checks for this docs-only fix. Existing Linux install, proxy separation, token/Compose and Safe Mode acceptance checks in fixes 19–29 remain pending where recorded; no VM installation or release verification is claimed. No commit, push or tag was attempted.
+
+## Fix 39 — Discord alert channel (2026-11-21)
+
+Added a Discord channel beside Slack. The URL is restricted to HTTPS `discord.com` or `discordapp.com` `/api/webhooks/<id>/<token>`, sealed with the existing channel secret flow, and never returned by the list or reveal API. The list shows only the token's last four characters. Alerts send severity-coloured embeds with Discord length limits, host footer and timestamp. A 429 response waits its `retry_after` once, then retries once. The panel includes Connect, status and Send test.
+
+Test-first evidence: `discord_embed_limits_colours_and_url_validation` initially failed to compile because the Discord setting and formatter were absent; it now passes. `cargo test -p opsbox-alerts` passes all four tests, including the fake-server embed and 429-retry tests; `cargo test -p opsbox-api --test alerts_http` passes all five tests, including URL validation, sealing and redaction; `node tools/check-alerts-ui.mjs`, `cargo clippy -p opsbox-alerts -p opsbox-api --all-targets -- -D warnings`, `cargo fmt --all --check` and `gen-index.py --check` pass. The export schema needs no change: its channel entries include only ID and verification state; configuration is included only in sealed export secrets.
+
+### Owner checks — 39
+
+1. On a disposable installed host, connect a real Discord webhook from Alerts → Channels → Discord, then click Send test. Confirm one embed arrives with the host footer, amber warning colour and timestamp; the panel status changes to delivery working. Confirm the list shows `…/<last four token characters>` and never the complete URL. Try an HTTP URL, an internal address, a lookalike hostname and an extra path segment; each must be refused.
