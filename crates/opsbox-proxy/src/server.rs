@@ -329,30 +329,20 @@ impl ProxyServer {
         let allowed_uids: Arc<[u32]> = allowed_uids.into();
 
         let (commands, mut command_rx) = mpsc::channel::<ListenerCommand>(4);
-        let mut retry = tokio::time::interval(self.config.retry_interval);
-        retry.tick().await;
+        let mut retry = busy_retry_interval(self.config.retry_interval);
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
                 _ = retry.tick() => {
-                    // Replacing only the accept sockets lets already accepted requests drain.
+                    // Replacing only accept sockets lets accepted requests drain.
                     let mut network = self.network.write().await;
-                    for https in [false, true] {
-                        let (listener, primary, actual) = if https {
-                            (&mut self.https_listener, &mut self.config.listen_https, &mut network.listen_https)
-                        } else {
-                            (&mut self.http_listener, &mut self.config.listen_http, &mut network.listen_http)
-                        };
-                        if actual.is_some_and(|a| a != *primary && primary.port() != 0) {
-                            match TcpListener::bind(*primary).await {
-                                Ok(new) => { *actual = new.local_addr().ok(); *listener = new; }
-                                Err(e) if is_port_conflict(&e) => {},
-                                Err(source) => return Err(ProxyServerError::Bind {addr: *primary, source}),
-                            }
-                        }
+                    for (https, listener) in retry_busy_ports(
+                        &mut network, &self.config, TcpListener::bind,
+                    ).await? {
+                        if https { self.https_listener = listener; }
+                        else { self.http_listener = listener; }
                     }
-                    refresh_conflicts(&mut network, &self.config);
                 }
                 Some(command) = command_rx.recv() => {
                     let result = self.change_listeners(command.action).await;
@@ -567,6 +557,10 @@ async fn handle_ctrl_conn(
                     .await
             {
                 snapshot.holders = holders;
+                let mut current = network.write().await;
+                if current.conflict_ports == snapshot.conflict_ports {
+                    current.holders = snapshot.holders.clone();
+                }
             }
             dispatch_ctrl(req, &routes, &acme, state_dir, staging, snapshot).await
         };
@@ -618,6 +612,7 @@ async fn dispatch_ctrl(
         ProxyOp::Status => ProxyResponse::success(
             id,
             ProxyReply::Status(ProxyStatus {
+                state: port_state(&network).to_owned(),
                 version: VERSION.to_owned(),
                 routes_count: routes.count(),
                 certs: acme.list_certs(),
@@ -778,6 +773,60 @@ fn refresh_conflicts(network: &mut ProxyNetwork, config: &ProxyConfig) {
     })
     .collect();
     network.port_conflict = !network.conflict_ports.is_empty();
+    network
+        .holders
+        .retain(|holder| network.conflict_ports.contains(&holder.port));
+}
+
+/// Stable control status; fallback listeners remain available while ports are busy.
+pub fn port_state(network: &ProxyNetwork) -> &'static str {
+    if network.port_conflict {
+        "ports_busy"
+    } else {
+        "running"
+    }
+}
+
+/// Start retries after one full interval, without catch-up bursts after a stall.
+pub fn busy_retry_interval(period: Duration) -> tokio::time::Interval {
+    let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+}
+
+/// Retry only displaced listeners. The binder is injectable for fake port tables.
+pub async fn retry_busy_ports<T, F, Fut>(
+    network: &mut ProxyNetwork,
+    config: &ProxyConfig,
+    mut bind: F,
+) -> Result<Vec<(bool, T)>, ProxyServerError>
+where
+    F: FnMut(SocketAddr) -> Fut,
+    Fut: Future<Output = io::Result<T>>,
+{
+    let mut replacements = Vec::new();
+    for (https, primary, actual) in [
+        (false, config.listen_http, &mut network.listen_http),
+        (true, config.listen_https, &mut network.listen_https),
+    ] {
+        if actual.is_some_and(|addr| addr != primary && primary.port() != 0) {
+            match bind(primary).await {
+                Ok(listener) => {
+                    *actual = Some(primary);
+                    replacements.push((https, listener));
+                }
+                Err(e) if is_port_conflict(&e) => {}
+                Err(source) => {
+                    return Err(ProxyServerError::Bind {
+                        addr: primary,
+                        source,
+                    });
+                }
+            }
+        }
+    }
+    refresh_conflicts(network, config);
+    Ok(replacements)
 }
 async fn bind_cutover(
     addr: SocketAddr,
@@ -801,10 +850,24 @@ async fn bind_or_fallback(
     preferred: u16,
     range: std::ops::RangeInclusive<u16>,
 ) -> Result<(TcpListener, bool), ProxyServerError> {
-    match TcpListener::bind(primary).await {
+    bind_or_fallback_with(primary, preferred, range, TcpListener::bind).await
+}
+
+/// Startup binding with an injectable port table; production uses real TCP sockets.
+pub async fn bind_or_fallback_with<T, F, Fut>(
+    primary: SocketAddr,
+    preferred: u16,
+    range: std::ops::RangeInclusive<u16>,
+    mut bind: F,
+) -> Result<(T, bool), ProxyServerError>
+where
+    F: FnMut(SocketAddr) -> Fut,
+    Fut: Future<Output = io::Result<T>>,
+{
+    match bind(primary).await {
         Ok(listener) => Ok((listener, false)),
         Err(e) if is_port_conflict(&e) => Ok((
-            bind_fallback(primary, preferred, range, None)
+            bind_fallback_with(primary, preferred, range, None, bind)
                 .await?
                 .expect("no current listener"),
             true,
@@ -821,6 +884,20 @@ async fn bind_fallback(
     range: std::ops::RangeInclusive<u16>,
     current: Option<SocketAddr>,
 ) -> Result<Option<TcpListener>, ProxyServerError> {
+    bind_fallback_with(primary, preferred, range, current, TcpListener::bind).await
+}
+
+async fn bind_fallback_with<T, F, Fut>(
+    primary: SocketAddr,
+    preferred: u16,
+    range: std::ops::RangeInclusive<u16>,
+    current: Option<SocketAddr>,
+    mut bind: F,
+) -> Result<Option<T>, ProxyServerError>
+where
+    F: FnMut(SocketAddr) -> Fut,
+    Fut: Future<Output = io::Result<T>>,
+{
     if current.is_some_and(|addr| addr != primary && addr.port() != 0) {
         return Ok(None);
     }
@@ -830,7 +907,7 @@ async fn bind_fallback(
             continue;
         }
         let addr = SocketAddr::new(primary.ip(), port);
-        match TcpListener::bind(addr).await {
+        match bind(addr).await {
             Ok(listener) => return Ok(Some(listener)),
             Err(e) if is_port_conflict(&e) => last = e,
             Err(source) => return Err(ProxyServerError::Bind { addr, source }),

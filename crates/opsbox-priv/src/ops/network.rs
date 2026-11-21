@@ -162,18 +162,37 @@ pub(crate) fn holders(env: &Env, ports: &[u16]) -> Result<Vec<PortHolder>, PrivE
     if ports.len() > 4 || ports.contains(&0) {
         return Err(invalid());
     }
-    let root = &env.network_proc_root;
+    let mut result = proc_holders(&env.network_proc_root, ports)?;
+    for holder in &mut result {
+        let candidates = if holder.process == "docker-proxy" {
+            containers(env, holder.port)
+        } else {
+            vec![]
+        };
+        // Ambiguous publication is informational only; never stop an arbitrary match.
+        holder.container = (candidates.len() == 1).then(|| candidates[0].clone());
+        if holder.container.is_some() {
+            holder.unit = None;
+        }
+    }
+    Ok(result)
+}
+
+fn proc_holders(root: &Path, ports: &[u16]) -> Result<Vec<PortHolder>, PrivError> {
+    let mut readable = false;
     let mut inodes = BTreeMap::new();
     for table in ["net/tcp", "net/tcp6"] {
         if let Ok(raw) = fs::read_to_string(root.join(table)) {
+            readable = true;
             inodes.extend(listening_inodes(&raw, ports));
         }
     }
+    if !readable {
+        return Err(internal());
+    }
     let mut result = Vec::new();
     let mut seen = BTreeSet::new();
-    let Ok(entries) = fs::read_dir(root) else {
-        return Ok(result);
-    };
+    let entries = fs::read_dir(root).map_err(|_| internal())?;
     for entry in entries.flatten() {
         let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
             continue;
@@ -206,19 +225,12 @@ pub(crate) fn holders(env: &Env, ports: &[u16]) -> Result<Vec<PortHolder>, PrivE
             let unit = fs::read_to_string(base.join("cgroup"))
                 .ok()
                 .and_then(|s| service_unit(&s));
-            let candidates = if process == "docker-proxy" {
-                containers(env, port)
-            } else {
-                vec![]
-            };
-            // Ambiguous Docker publication is informational only; never stop an arbitrary match.
-            let container = (candidates.len() == 1).then(|| candidates[0].clone());
             result.push(PortHolder {
                 port,
                 pid,
                 process,
-                unit: if container.is_some() { None } else { unit },
-                container,
+                unit,
+                container: None,
             });
         }
     }
@@ -546,6 +558,44 @@ mod tests {
         assert_eq!(
             confirmed(false).unwrap_err().code,
             PrivErrorCode::ConfirmRequired
+        );
+    }
+    #[test]
+    fn fake_port_table_holders_and_unavailable_proc() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("net")).unwrap();
+        fs::create_dir_all(root.join("321/fd")).unwrap();
+        fs::write(
+            root.join("net/tcp"),
+            "0: 00000000:0050 0:0 0A 0:0 0:0 0 0 0 1234 1",
+        )
+        .unwrap();
+        fs::write(
+            root.join("net/tcp6"),
+            "0: 00000000000000000000000000000000:01BB 0:0 0A 0:0 0:0 0 0 0 5678 1",
+        )
+        .unwrap();
+        fs::write(root.join("321/comm"), "caddy\n").unwrap();
+        for (fd, inode) in [(3, 1234), (4, 1234), (5, 5678)] {
+            std::os::unix::fs::symlink(
+                format!("socket:[{inode}]"),
+                root.join(format!("321/fd/{fd}")),
+            )
+            .unwrap();
+        }
+        let holders = proc_holders(root, &[80, 443]).unwrap();
+        assert_eq!(
+            holders
+                .iter()
+                .map(|h| (h.port, h.pid, h.process.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(80, 321, "caddy"), (443, 321, "caddy")]
+        );
+        fs::remove_dir_all(root.join("net")).unwrap();
+        assert!(
+            proc_holders(root, &[80, 443]).is_err(),
+            "unavailable ownership data must not look like an empty table"
         );
     }
     #[test]

@@ -87,6 +87,9 @@ pub struct CertInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProxyStatus {
+    /// `ports_busy` while a primary listener is displaced; otherwise `running`.
+    #[serde(default)]
+    pub state: String,
     pub version: String,
     pub routes_count: usize,
     pub certs: Vec<CertInfo>,

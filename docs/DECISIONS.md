@@ -671,3 +671,7 @@ Label the unchanged PrivRequest.actor string claimed_actor (or - when absent): a
 ## Fix 30 — Describe the implemented alpha security boundary
 Treat panel UID compromise as host root; distinguish the proxy UID/socket/operation restrictions in fixes 26/27 from the panel's unrestricted typed helper access.
 Align policy, threat model, README and site on trusted deployers, Full-token exclusions and the opt-in Safe Mode allowlist; support only the latest alpha and retain private GitHub advisory reporting.
+
+## Fix 38 part 1 — Stable proxy busy state
+Expose additive proxy status `state: ports_busy` with existing holder details; keep fallback serving and default to running when primary ports are available.
+Keep the injectable 30-second retry, delay missed ticks, retain cached holders on ownership lookup failure, and clear them on promotion; mode/installer/UI work stays in parts 2–3.

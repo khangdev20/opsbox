@@ -1,9 +1,10 @@
 # Status
 
 Last prompt completed: **Fix 39 — Discord alert channel**.
-Released: `v0.1.0-alpha.49` (fixes 33–34). Next release: `v0.1.0-alpha.50` after fix 38; fix 38 needs the split recorded in `docs/QA.md`.
+Released: `v0.1.0-alpha.49` (fixes 33–34). Next release: `v0.1.0-alpha.50` after fix 38; fix 38 part 1 is done; parts 2–3 remain in `docs/QA.md`.
 
 ## Completed
+- Fix 38 part 1: additive `ports_busy` proxy status with holder name/PID, stable fallback serving and injectable 30-second retries without catch-up bursts; unreadable helper port tables preserve cached holder details.
 - Full-width pages (`main`) use `width: min(100%, 1680px)` with `clamp(16px, 2.5vw, 40px)` side padding instead of the 1180 px cap.
 - Settings and other `.narrow` pages keep an 880 px left-aligned inner block; the Security checks column is capped at 880 px; dialogs keep their compact width.
 - Cleanup no longer uses `main.narrow`: the page matches Overview's width and the "Weekly auto-clean" switch aligns with the list edge; 390/768/1024 are unchanged.
@@ -16,6 +17,7 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Next release: `v0.1.0-alpha.50` aft
 - Extended `tools/check-responsive-ui.mjs` with 1440/1920/2560 width assertions, Cleanup geometry, all New service tabs, Settings columns/alignment and the existing no-scroll checks.
 
 ## Verification
+- Fix 38: socket-free fake startup/retry test and 3 helper network tests pass; fmt/clippy pass and maps regenerated. Full proxy tests hit sandbox socket-bind denial (9 pass, 4 existing library tests fail); rerun outside the sandbox.
 - `cargo test -p opsbox-api --lib capacity` and `--test capacity_http` pass: one disk check for four paths on one device, two for two devices, single disk sentence, grouped `checks`/`actions`/`breakdown`.
 - `node tools/check-capacity-ui.mjs` and `node tools/check-responsive-ui.mjs` pass, including the blocked card rows, single disk-path line, collapsed details, five 44 px actions at 390, the legacy fallback and the Overview disk label.
 - `cargo test -p opsbox-api --lib capacity` covers the contradictory case: allocatable 680, requested 768, disk free 3484; disk failure shows only the disk line and memory failure names the requested limit and top reservations.
@@ -27,7 +29,7 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Next release: `v0.1.0-alpha.50` aft
 
 ## Limits and next prompt
 - Prior fixes' Linux owner checks in `docs/QA.md` still need the `opsbox-vm`; none were run here.
-- Fix prompts 01–37 and 39 are complete; 38 is split into three parts in `docs/QA.md` (proxy busy state, `proxy.mode`/installer/status, panel switch) and is not implemented.
+- Fix prompts 01–37 and 39 are complete; 38 part 1 (proxy busy state) is done; parts 2–3 (`proxy.mode`/installer/status, panel switch) remain. Prompt stays unarchived; no commit or push requested.
 
 ## Found, not fixed
 - The Security width rule uses `main:has(> .hdr a[href="#/security/access"])`, coupled to the header link; a header or page change can silently drop the 880 px cap.

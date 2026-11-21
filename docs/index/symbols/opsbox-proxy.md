@@ -114,9 +114,13 @@ crates/opsbox-proxy/src/proxy.rs: type ProxyBody
 crates/opsbox-proxy/src/server.rs: enum ProxyServerError
 crates/opsbox-proxy/src/server.rs: fn acme
 crates/opsbox-proxy/src/server.rs: fn bind
+crates/opsbox-proxy/src/server.rs: fn bind_or_fallback_with  Startup binding with an injectable port table; production uses real TCP sockets.
+crates/opsbox-proxy/src/server.rs: fn busy_retry_interval  Start retries after one full interval, without catch-up bursts after a stall.
 crates/opsbox-proxy/src/server.rs: fn http_addr
 crates/opsbox-proxy/src/server.rs: fn https_addr
 crates/opsbox-proxy/src/server.rs: fn new
+crates/opsbox-proxy/src/server.rs: fn port_state  Stable control status; fallback listeners remain available while ports are busy.
+crates/opsbox-proxy/src/server.rs: fn retry_busy_ports  Retry only displaced listeners. The binder is injectable for fake port tables.
 crates/opsbox-proxy/src/server.rs: fn routes
 crates/opsbox-proxy/src/server.rs: fn run
 crates/opsbox-proxy/src/server.rs: fn socket_path
