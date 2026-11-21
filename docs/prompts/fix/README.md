@@ -51,6 +51,9 @@ Order is by importance for the public alpha: 01 to 06 first.
 | 32 | Cleanup page width ([32-cleanup-page-width.md](archive/32-cleanup-page-width.md)) | Fixed in fix 32 |
 | 33 | New service layout ([33-new-service-layout.md](archive/33-new-service-layout.md)) | Fixed in fix 33 |
 | 34 | Settings width ([34-settings-width.md](archive/34-settings-width.md)) | Fixed in fix 34 |
+| 35 | Capacity result structured ([35-capacity-structured-result.md](archive/35-capacity-structured-result.md)) | Fixed in fix 35 |
 
 ## Security batch (19-30): do these BEFORE the public alpha post
 Order: 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30. Items 19 to 21 are the must-haves; 22 to 25 are quick hardening; 26 to 28 are the structural root-boundary work (26 before 27); 30 is docs and can run any time. Prompts 01 to 18 can wait until these are done.
+| 36 | Capacity blocked card (`36-capacity-blocked-card.md`), after 35 | |
+| 37 | Capacity message matches verdict (`37-capacity-message-matches-verdict.md`), after 35 | |

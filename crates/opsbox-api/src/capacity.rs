@@ -12,6 +12,129 @@ use axum::{
 use opsbox_capacity::{Feature, Fit, Request as CapacityRequest, Snapshot, requirements};
 use opsbox_proto::{ErrorCode, PrivOp, Role};
 use serde_json::{Value, json};
+use std::os::unix::fs::MetadataExt;
+
+fn device_id(path: &str) -> Option<u64> {
+    let mut probe = std::path::Path::new(path);
+    loop {
+        if let Ok(metadata) = std::fs::metadata(probe) {
+            return Some(metadata.dev());
+        }
+        probe = probe.parent()?;
+    }
+}
+
+fn capacity_result_with_devices(
+    s: &Snapshot,
+    r: &CapacityRequest,
+    fit: &Fit,
+    device_of: impl Fn(&str) -> Option<u64>,
+) -> Value {
+    let b = s.budget(r.replacing.as_deref());
+    let (_, min, _, disk) = requirements::FEATURES
+        .iter()
+        .find(|entry| entry.0 == r.feature)
+        .expect("all features have requirements");
+    let minimum = (*min).max(r.min_memory_mb);
+    let needed = r.memory_mb.max(minimum);
+    let total = matches!(r.feature, Feature::Install | Feature::Docker);
+    let database = r.feature == Feature::Database || r.database;
+    let have = if total {
+        s.profile.memory_mb
+    } else if database {
+        b.database_allocatable_mb
+            .min(s.profile.available_mb.saturating_sub(b.os_mb))
+    } else {
+        b.allocatable_mb.min(
+            s.profile
+                .available_mb
+                .saturating_sub(b.os_mb)
+                .saturating_add(b.swap_credit_mb),
+        )
+    };
+    let memory_ok = have >= needed && (r.memory_mb == 0 || r.memory_mb >= minimum);
+    let mut checks = vec![json!({
+        "kind":"memory", "need_mb":needed, "have_mb":have, "ok":memory_ok,
+        "paths":[], "reserve_mb":0,
+        "breakdown":[
+            {"label":"RAM","mb":s.profile.memory_mb},
+            {"label":"OS","mb":b.os_mb},
+            {"label":"opsbox","mb":b.opsbox_mb},
+            {"label":"Docker","mb":b.docker_mb},
+            {"label":"workloads","mb":b.reserved_mb},
+            {"label":"swap credit","mb":if database { 0 } else { b.swap_credit_mb }}
+        ]
+    })];
+    let mut groups: Vec<(Option<u64>, Vec<String>, u64, u64, u64)> = Vec::new();
+    for d in &s.profile.disks {
+        let id = device_of(&d.path);
+        let reserve = requirements::disk_mb(d.total_mb);
+        let required = if r.feature == Feature::Install {
+            *disk
+        } else {
+            reserve.saturating_add((*disk).max(r.disk_mb))
+        };
+        if let Some(group) = groups.iter_mut().find(|g| id.is_some() && g.0 == id) {
+            group.1.push(d.path.clone());
+            group.2 = group.2.max(required);
+            group.3 = group.3.min(d.free_mb);
+            group.4 = group.4.max(reserve);
+        } else {
+            groups.push((id, vec![d.path.clone()], required, d.free_mb, reserve));
+        }
+    }
+    let mut disk_reasons = Vec::new();
+    let mut disk_blocked = false;
+    for (_, paths, required, free, reserve) in groups {
+        if free < required {
+            disk_blocked = true;
+            disk_reasons.push(format!(
+                "{} needs {required} MB free including {reserve} MB disk reserve; {free} MB free.",
+                paths.join(", ")
+            ));
+        }
+        checks.push(json!({"kind":"disk","need_mb":required,"have_mb":free,"ok":free >= required,"paths":paths,"reserve_mb":reserve}));
+    }
+    let mut reasons: Vec<String> = fit
+        .reasons()
+        .iter()
+        .filter(|reason| {
+            !s.profile
+                .disks
+                .iter()
+                .any(|d| reason.starts_with(&format!("{} needs ", d.path)))
+        })
+        .cloned()
+        .collect();
+    reasons.extend(disk_reasons);
+    let mut actions = Vec::new();
+    if !memory_ok {
+        let suggested = have.min(r.memory_mb);
+        if suggested >= minimum {
+            actions.push(json!({"id":"lower_limit","label":format!("Lower the memory limit to {suggested} MB"),"effect_mb":suggested}));
+        }
+        if let Some(reservation) = s.reservations.iter().max_by_key(|item| item.memory_mb) {
+            actions.push(json!({"id":"stop_service","label":format!("Stop or remove {}", reservation.name),"effect_mb":reservation.memory_mb,"target":reservation.name}));
+        }
+        actions.push(json!({"id":"upgrade_instance","label":"Upgrade the instance"}));
+    }
+    if fit.blocked() && r.feature == Feature::Build {
+        actions
+            .push(json!({"id":"build_in_ci","label":"Build in GitHub Actions and pull the image"}));
+    }
+    if disk_blocked {
+        actions.push(json!({"id":"cleanup_disk","label":"Free disk space"}));
+    }
+    let mut fit_value = json!(fit);
+    if fit_value.get("reasons").is_some() {
+        fit_value["reasons"] = json!(reasons);
+    }
+    json!({"checks":checks,"actions":actions,"text":reasons.join(" "),"fit":fit_value})
+}
+
+fn capacity_result(s: &Snapshot, r: &CapacityRequest, fit: &Fit) -> Value {
+    capacity_result_with_devices(s, r, fit, device_id)
+}
 
 pub(crate) struct Pending {
     reservation: opsbox_capacity::Reservation,
@@ -55,10 +178,16 @@ pub(crate) async fn snapshot(state: &AppState, rid: &str) -> Result<Snapshot, Ht
     Ok(s)
 }
 pub(crate) fn conflict(s: &Snapshot, r: &CapacityRequest, fit: &Fit) -> HttpError {
-    let mut err = HttpError::new(ErrorCode::Conflict, fit.reasons().join(" "));
-    err.0.error.capacity = Some(
-        json!({"asked":r,"free":s.budget(r.replacing.as_deref()),"reserves":s.budget(None),"reservations":s.reservations,"fit":fit}),
+    let mut result = capacity_result(s, r, fit);
+    let mut err = HttpError::new(
+        ErrorCode::Conflict,
+        result["text"].as_str().unwrap_or_default(),
     );
+    result["asked"] = json!(r);
+    result["free"] = json!(s.budget(r.replacing.as_deref()));
+    result["reserves"] = json!(s.budget(None));
+    result["reservations"] = json!(s.reservations);
+    err.0.error.capacity = Some(result);
     err
 }
 pub(crate) async fn get(
@@ -79,9 +208,10 @@ pub(crate) async fn check(
     Query(r): Query<CapacityRequest>,
 ) -> Result<Json<Value>, HttpError> {
     let s = snapshot(&state, &rid).await?;
-    Ok(Json(
-        json!({"request":r,"fit":s.admit(&r),"free":s.budget(r.replacing.as_deref())}),
-    ))
+    let mut result = capacity_result(&s, &r, &s.admit(&r));
+    result["request"] = json!(r);
+    result["free"] = json!(s.budget(r.replacing.as_deref()));
+    Ok(Json(result))
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct SwapBody {
@@ -684,6 +814,142 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use opsbox_capacity::Disk;
+
+    #[test]
+    fn four_paths_on_one_device_produce_one_disk_check() {
+        let mut s = profile(false);
+        s.profile.disks = [
+            "/",
+            "/var/lib/opsbox",
+            "/var/lib/opsbox/apps",
+            "/var/lib/docker",
+        ]
+        .into_iter()
+        .map(|path| Disk {
+            path: path.into(),
+            total_mb: 102400,
+            free_mb: 3000,
+        })
+        .collect();
+        let r = CapacityRequest {
+            feature: Feature::Build,
+            ..Default::default()
+        };
+        let result = capacity_result_with_devices(&s, &r, &s.admit(&r), |_| Some(1));
+        let disks: Vec<_> = result["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|check| check["kind"] == "disk")
+            .collect();
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0]["need_mb"], 15360);
+        assert_eq!(disks[0]["have_mb"], 3000);
+        assert_eq!(disks[0]["reserve_mb"], 10240);
+        assert_eq!(disks[0]["ok"], false);
+        assert_eq!(
+            disks[0]["paths"],
+            json!([
+                "/",
+                "/var/lib/opsbox",
+                "/var/lib/opsbox/apps",
+                "/var/lib/docker"
+            ])
+        );
+        assert_eq!(
+            result["text"]
+                .as_str()
+                .unwrap()
+                .matches("disk reserve")
+                .count(),
+            1
+        );
+        assert!(
+            result["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == "cleanup_disk")
+        );
+        assert_eq!(
+            result["checks"][0]["breakdown"].as_array().unwrap().len(),
+            6
+        );
+    }
+
+    #[test]
+    fn memory_actions_include_suggested_limit_and_service_to_stop() {
+        let mut s = profile(false);
+        s.profile.memory_mb = 1024;
+        s.profile.available_mb = 1024;
+        s.reservations.push(opsbox_capacity::Reservation {
+            name: "worker".into(),
+            memory_mb: 100,
+            cpu_millis: 0,
+            database: false,
+        });
+        let r = CapacityRequest {
+            memory_mb: 700,
+            ..Default::default()
+        };
+        let result = capacity_result_with_devices(&s, &r, &s.admit(&r), |_| None);
+        assert_eq!(result["checks"][0]["kind"], "memory");
+        assert_eq!(result["checks"][0]["need_mb"], 700);
+        assert_eq!(result["checks"][0]["ok"], false);
+        let actions = result["actions"].as_array().unwrap();
+        assert!(
+            actions
+                .iter()
+                .any(|a| a["id"] == "lower_limit" && a["effect_mb"].is_number())
+        );
+        assert!(actions.iter().any(|a| a["id"] == "stop_service"
+            && a["target"] == "worker"
+            && a["effect_mb"] == 100));
+        assert!(actions.iter().any(|a| a["id"] == "upgrade_instance"));
+    }
+
+    #[test]
+    fn two_devices_produce_two_disk_checks() {
+        let mut s = profile(false);
+        s.profile.disks = [
+            "/",
+            "/var/lib/opsbox",
+            "/var/lib/opsbox/apps",
+            "/var/lib/docker",
+        ]
+        .into_iter()
+        .map(|path| Disk {
+            path: path.into(),
+            total_mb: 102400,
+            free_mb: 3000,
+        })
+        .collect();
+        let r = CapacityRequest {
+            feature: Feature::Build,
+            ..Default::default()
+        };
+        let result = capacity_result_with_devices(&s, &r, &s.admit(&r), |path| {
+            Some(if path == "/var/lib/docker" { 2 } else { 1 })
+        });
+        let disks: Vec<_> = result["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|check| check["kind"] == "disk")
+            .collect();
+        assert_eq!(disks.len(), 2);
+        assert_eq!(disks[0]["paths"].as_array().unwrap().len(), 3);
+        assert_eq!(disks[1]["paths"], json!(["/var/lib/docker"]));
+        assert_eq!(
+            result["text"]
+                .as_str()
+                .unwrap()
+                .matches("disk reserve")
+                .count(),
+            2
+        );
+    }
     fn profile(blocked: bool) -> Snapshot {
         Snapshot {
             profile: opsbox_capacity::Profile {

@@ -442,8 +442,10 @@ Lexical direct calls reachable from route handlers, including background functio
 | backups::test_snapshot_restore | crates/opsbox-api/src/backups.rs | Value | backups::run_single_restore_test | — | get_backup_destination, get_backup_snapshot_by_any_id, lock |
 | backups::update_job | crates/opsbox-api/src/backups.rs | UpdateJobBody, Value | backups::job_json, backups::next_run_after_safe, backups::now_unix | — | get_backup_destination, get_backup_job, set_backup_job_destination, update_backup_job |
 | capacity::admit_service | crates/opsbox-api/src/capacity.rs | — | capacity::conflict, capacity::snapshot, capacity::template_request | — | — |
-| capacity::check | crates/opsbox-api/src/capacity.rs | Value | capacity::snapshot | — | — |
-| capacity::conflict | crates/opsbox-api/src/capacity.rs | — | — | — | — |
+| capacity::capacity_result | crates/opsbox-api/src/capacity.rs | — | capacity::capacity_result_with_devices | — | — |
+| capacity::capacity_result_with_devices | crates/opsbox-api/src/capacity.rs | — | — | — | — |
+| capacity::check | crates/opsbox-api/src/capacity.rs | Value | capacity::capacity_result, capacity::snapshot | — | — |
+| capacity::conflict | crates/opsbox-api/src/capacity.rs | — | capacity::capacity_result | — | — |
 | capacity::get | crates/opsbox-api/src/capacity.rs | Value | capacity::snapshot | — | — |
 | capacity::snapshot | crates/opsbox-api/src/capacity.rs | — | — | capacity | list_all_services, lock |
 | capacity::swap | crates/opsbox-api/src/capacity.rs | SwapBody, Value | deploy::audit_user, session::deny_token | call(PrivOp::CapacityAddSwap) | — |

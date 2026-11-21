@@ -14,6 +14,59 @@ fn image(name: &str) -> serde_json::Value {
     json!({"name":name,"sourceKind":"docker_image","image":"nginx:1.27-alpine","deployNow":false})
 }
 #[tokio::test]
+async fn blocked_capacity_exposes_grouped_checks_actions_and_text() {
+    let mut profile = small(1024);
+    profile.disks = [
+        "/",
+        "/var/lib/opsbox",
+        "/var/lib/opsbox/apps",
+        "/var/lib/docker",
+    ]
+    .into_iter()
+    .map(|path| opsbox_capacity::Disk {
+        path: path.into(),
+        total_mb: 102400,
+        free_mb: 3000,
+    })
+    .collect();
+    let h = Harness::with_capacity(profile);
+    let mut b = h.signed_in("owner", Role::Admin);
+    let dry = b.get("/api/v1/capacity/check?feature=build").await.json();
+    assert_eq!(dry["fit"]["status"], "blocked");
+    assert_eq!(dry["checks"][0]["kind"], "memory");
+    assert_eq!(dry["checks"][0]["breakdown"].as_array().unwrap().len(), 6);
+    assert_eq!(dry["checks"][1]["kind"], "disk");
+    assert_eq!(dry["checks"][1]["paths"].as_array().unwrap().len(), 4);
+    assert_eq!(dry["checks"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        dry["text"]
+            .as_str()
+            .unwrap()
+            .matches("disk reserve")
+            .count(),
+        1
+    );
+    assert!(
+        dry["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "build_in_ci")
+    );
+    let blocked = b
+        .post(
+            "/api/v1/services",
+            json!({"name":"built","sourceKind":"git"}),
+        )
+        .await;
+    assert_eq!(blocked.status, StatusCode::CONFLICT, "{}", blocked.text());
+    let capacity = &blocked.json()["error"]["capacity"];
+    assert!(capacity["checks"].is_array());
+    assert!(capacity["actions"].is_array());
+    assert!(capacity["text"].is_string());
+    h.shutdown().await;
+}
+#[tokio::test]
 async fn dry_run_and_structured_conflict_have_the_same_policy() {
     let h = Harness::with_capacity(small(1024));
     let mut b = h.signed_in("owner", Role::Admin);
