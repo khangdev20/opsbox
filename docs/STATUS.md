@@ -1,7 +1,7 @@
 # Status
 
 Last prompt completed: **Fix 40 — Server size guide (proposed sizes)**.
-Released: `v0.1.0-alpha.49` (fixes 33–34). Fix 38 implementation is complete; next release follows CI. Live Linux owner checks remain in `docs/QA.md`.
+Released: `v0.1.0-alpha.50` (fix 38 completion, including changes since alpha.49). Live Linux installation and clean 1 GB/2 GB measurements remain owner checks in `docs/QA.md`.
 
 ## Completed
 - Fix 40: single proposed workload/RAM/disk guide in INSTALL; matching README/site requirements and links. VM 1 GB/2 GB measurements remain explicitly NOT RUN in QA owner checks.
@@ -20,10 +20,9 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Fix 38 implementation is complete; 
 - Extended `tools/check-responsive-ui.mjs` with 1440/1920/2560 width assertions, Cleanup geometry, all New service tabs, Settings columns/alignment and the existing no-scroll checks.
 
 ## Verification
-- Fix 38 CI follow-up: corrected the authorization test fixture to provide readable empty TCP tables and added proxy-UID refusal coverage for mode get/set; first CI run failed at that stale fixture, so release waits for the corrected run.
+- Fix 38 CI follow-ups corrected the readable empty-TCP fixture and the location of mode refusal cases. Both server tests pass; corrected CI `9f04660` is green, including workspace tests, release/static musl builds, memory budget, installer and dependency checks.
 - Fix 38 completion: focused domain/network/panel/token HTTP suites, proxy mode/startup, real/fake port conflicts, helper network and watchdog mode tests pass outside socket restrictions. UI/API/installer fixtures and Chrome 390 px checks pass; fmt, focused all-target clippy, index/API inventories and release build pass (non-fatal local libLLVM strip warning).
-- Fix 38 part 2: test-first config/startup/status and installer checks pass; workspace check passes. Status suite has 9 passing tests and 6 sandbox socket-bind failures; fmt/clippy and index checks pass; release-build result in QA handoff.
-- Fix 38: socket-free fake startup/retry test and 3 helper network tests pass; fmt/clippy pass and maps regenerated. Full proxy tests hit sandbox socket-bind denial (9 pass, 4 existing library tests fail); rerun outside the sandbox.
+- Full local proxy suite (21 tests) and watchdog library suite (28 tests) pass outside the sandbox, including real socket/ACME cases. Four helper network tests and both server authorization/logging tests pass.
 - `cargo test -p opsbox-api --lib capacity` and `--test capacity_http` pass: one disk check for four paths on one device, two for two devices, single disk sentence, grouped `checks`/`actions`/`breakdown`.
 - `node tools/check-capacity-ui.mjs` and `node tools/check-responsive-ui.mjs` pass, including the blocked card rows, single disk-path line, collapsed details, five 44 px actions at 390, the legacy fallback and the Overview disk label.
 - `cargo test -p opsbox-api --lib capacity` covers the contradictory case: allocatable 680, requested 768, disk free 3484; disk failure shows only the disk line and memory failure names the requested limit and top reservations.
@@ -31,10 +30,10 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Fix 38 implementation is complete; 
 - `timeout 120 node tools/check-responsive-ui.mjs` passes the source and Chrome browser checks, including every New service tab, Settings two-column alignment and 1440/390 row geometry.
 - `timeout 120 python3 scripts/gen-index.py --check` passes; no generated map is stale.
 - CI runs the workspace tests, release build, musl targets, cargo-deny and installer checks on the pushed commit.
-- Release workflow `v0.1.0-alpha.49` published both signed musl archives, `install.sh` and the SBOM.
+- Release workflow `v0.1.0-alpha.50` passed; GitHub Release has both musl archives, their SHA-256 files/minisign signatures, `install.sh` and the SBOM.
 
 ## Limits and next prompt
-- Prior fixes' Linux owner checks in `docs/QA.md` still need the `opsbox-vm`; none were run here.
+- Linux installation/workload owner checks remain. A read-only VM check found alpha.42, 4 GB RAM/4 GB swap, an existing nginx app and about 3 GB free disk; no installed-host changes were made.
 - Fix prompts 01–39 are implemented; fix 38 Linux installation/restart owner checks remain. Fix 40 documentation is complete with proposed sizes; live 1 GB/2 GB measurements remain.
 
 ## Found, not fixed
