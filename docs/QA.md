@@ -476,6 +476,14 @@ timeout 120 git push origin dev
 
 ### 15 — Owner checks: live port conflicts and reversible actions
 
+#### Fix 38 handoff (2026-11-21)
+
+- Root cause: the proxy always attempts its configured `:80`/`:443` listeners, with fallback/promotion but no `proxy.mode`; an app-owned Caddy and the built-in proxy therefore cannot intentionally share those ports. The existing conflict path reports `port_conflict` and resolves holders through `PortHolders`, rather than exposing the requested `ports_busy` mode choice on the Domains page.
+- Product files touched: none. This handoff changes only `docs/QA.md`; the pre-existing changes to `.agent-rules.md` and `docs/prompts/fix/` were left untouched. No half-applied migration or source change was left behind.
+- Existing test result: `PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH" timeout 120 cargo test -p opsbox-proxy --test port_conflict` compiled but failed before the fixture ran: sandbox TCP bind returned `Operation not permitted` at `port_conflict.rs:25`. No new test was added because the mode change could not be completed within the fix time box. `timeout 120 cargo check -p opsbox-proxy -p opsbox-priv -p opsbox-api -p opsbox` and `timeout 120 cargo fmt --all --check` passed with the toolchain on `PATH`.
+- Suggested split: (1) add a failing fake-port-table test to `crates/opsbox-proxy/tests/port_conflict.rs`, then implement explicit busy state and stable 30-second retry in `crates/opsbox-proxy/src/server.rs` and the port-holder path in `crates/opsbox-priv/src/ops/network.rs`; (2) add validated `proxy.mode` to `crates/opsbox/src/config.rs`, make external/off avoid public binds in `cmd/proxy.rs`, and wire `install.sh --proxy=external|off` plus `cmd/status.rs`; (3) add a privileged mode-switch operation that safely writes config and restarts the proxy, then expose mode, busy holder, and the service's `active_host_port` through the API for `web/js/pages/apps.js`, with focused API/UI tests. `active_host_port` is the real loopback upstream; `svc.port` is the container port and cannot safely be shown as `127.0.0.1:<port>`. Document modes in `docs/CONFIG.md`.
+- Do not offer a switch button until its privileged operation is wired. The current installer preflight, fallback, and Settings → Network guidance remain available while this feature is incomplete.
+
 Local checks on 2026-11-19:
 
 - `timeout 120 node tools/check-network-ui.mjs` passed network action visibility, escaping, CSRF, adoption API mapping and task polling assertions. Additional temporary fixtures verified the conflict banner contains `8080`, `8445`, `Web ports are busy`, and `Move behind opsbox` for both Docker and nginx holders. This verifies generated markup, not a live browser session.
