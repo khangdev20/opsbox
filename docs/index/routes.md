@@ -216,6 +216,7 @@ Auth lists signature extractors (Viewer included); Client records IP/user-agent,
 | POST | /api/v1/domains/{domain}/adopted-tls | network::adopted_tls | crates/opsbox-api/src/network.rs | Admin, Client |
 | POST | /api/v1/network/proxy/discover | network::discover | crates/opsbox-api/src/network.rs | Admin, token refused |
 | POST | /api/v1/network/proxy/keep | network::keep | crates/opsbox-api/src/network.rs | Admin, Client |
+| POST | /api/v1/network/proxy/mode | network::set_mode | crates/opsbox-api/src/network.rs | Admin, Client |
 | POST | /api/v1/network/proxy/move | network::move_web | crates/opsbox-api/src/network.rs | Admin, Client |
 | POST | /api/v1/network/proxy/takeover | network::takeover | crates/opsbox-api/src/network.rs | Admin, Client |
 | POST | /api/v1/network/proxy/undo | network::undo | crates/opsbox-api/src/network.rs | Admin, Client |
@@ -544,8 +545,8 @@ Lexical direct calls reachable from route handlers, including background functio
 | domains::conflict_err | crates/opsbox-api/src/domains.rs | — | — | — | — |
 | domains::domain_json | crates/opsbox-api/src/domains.rs | — | panel::cert_state_str | — | — |
 | domains::fetch_cert_map | crates/opsbox-api/src/domains.rs | — | — | — | — |
-| domains::get_domains | crates/opsbox-api/src/domains.rs | Value | deploy::service_readable, domains::domain_json, domains::fetch_cert_map, panel::detect_server_public_ips | — | get_service, list_service_domains, resolve_project |
-| domains::issue_cert | crates/opsbox-api/src/domains.rs | Value | deploy::service_writable, domains::load_domain_and_service, panel::map_proxy_err, panel::sync_proxy_routes | ping | ping |
+| domains::get_domains | crates/opsbox-api/src/domains.rs | Value | deploy::service_readable, domains::domain_json, domains::fetch_cert_map, network::proxy_mode, panel::detect_server_public_ips | — | get_service, list_service_domains, resolve_project |
+| domains::issue_cert | crates/opsbox-api/src/domains.rs | Value | deploy::service_writable, domains::load_domain_and_service, network::require_builtin, panel::map_proxy_err, panel::sync_proxy_routes | ping | ping |
 | domains::load_domain_and_service | crates/opsbox-api/src/domains.rs | — | domains::normalize_domain_field | — | get_service, get_service_domain |
 | domains::make_primary | crates/opsbox-api/src/domains.rs | Value | deploy::audit_user, deploy::service_writable, domains::domain_json, domains::fetch_cert_map, domains::load_domain_and_service, domains::val_err, panel::sync_proxy_routes | — | make_primary_service_domain |
 | domains::normalize_domain_field | crates/opsbox-api/src/domains.rs | — | domains::val_err | — | — |
@@ -617,7 +618,7 @@ Lexical direct calls reachable from route handlers, including background functio
 | github::webhook | crates/opsbox-api/src/github.rs | — | deploy::trigger_webhook_deploys, github::now_secs | secret_open | append_audit, get_github_app, record_github_webhook_delivery, update_github_installation |
 | health::healthz | crates/opsbox-api/src/health.rs | Health | — | — | — |
 | health::label | crates/opsbox-api/src/health.rs | — | — | — | — |
-| health::readyz | crates/opsbox-api/src/health.rs | Readiness | health::label, panel::active_panel_domain | ping | ping |
+| health::readyz | crates/opsbox-api/src/health.rs | Readiness | health::label, network::proxy_mode, panel::active_panel_domain | ping | ping |
 | host::get_host | crates/opsbox-api/src/host.rs | HostView | — | host_info | — |
 | import::apply | crates/opsbox-api/src/import.rs | ImportBody, Value | import::build_plan, import::run_import, import::verify_password, session::deny_token | — | — |
 | import::bool_val | crates/opsbox-api/src/import.rs | — | — | — | — |
@@ -661,6 +662,9 @@ Lexical direct calls reachable from route handlers, including background functio
 | network::get_network | crates/opsbox-api/src/network.rs | Value | — | call(PrivOp::ProxyNetwork), call(PrivOp::WebMoves) | — |
 | network::keep | crates/opsbox-api/src/network.rs | KeepBody, Value | network::change | call(PrivOp::ProxyKeepPorts) | — |
 | network::move_web | crates/opsbox-api/src/network.rs | MoveBody, Value | network::web_task | call(PrivOp::WebMove) | — |
+| network::proxy_mode | crates/opsbox-api/src/network.rs | — | — | call(PrivOp::ProxyModeGet) | — |
+| network::require_builtin | crates/opsbox-api/src/network.rs | — | network::proxy_mode | — | — |
+| network::set_mode | crates/opsbox-api/src/network.rs | ModeBody, Value | network::change, panel::sync_proxy_routes | call(PrivOp::ProxyModeSet) | — |
 | network::takeover | crates/opsbox-api/src/network.rs | TakeoverBody, Value | network::change | call(PrivOp::ProxyTakeover) | — |
 | network::undo | crates/opsbox-api/src/network.rs | UndoBody, Value | network::change | call(PrivOp::ProxyUndo) | — |
 | network::undo_move | crates/opsbox-api/src/network.rs | UndoBody, Value | network::web_task | call(PrivOp::WebUndo) | — |
@@ -673,15 +677,15 @@ Lexical direct calls reachable from route handlers, including background functio
 | panel::detect_server_public_ips | crates/opsbox-api/src/panel.rs | — | — | — | lock |
 | panel::draft_panel_domain | crates/opsbox-api/src/panel.rs | — | — | — | get_setting |
 | panel::ensure_not_service_domain | crates/opsbox-api/src/panel.rs | — | — | — | get_service_domain |
-| panel::issue_cert | crates/opsbox-api/src/panel.rs | DomainBody, Value | github::sync_webhook_on_domain_change, panel::build_proxy_routes, panel::ensure_not_service_domain, panel::map_proxy_err, panel::panel_route, panel::sync_proxy_routes | ping | delete_setting, ping, set_setting |
+| panel::issue_cert | crates/opsbox-api/src/panel.rs | DomainBody, Value | github::sync_webhook_on_domain_change, network::require_builtin, panel::build_proxy_routes, panel::ensure_not_service_domain, panel::map_proxy_err, panel::panel_route, panel::sync_proxy_routes | ping | delete_setting, ping, set_setting |
 | panel::map_proxy_err | crates/opsbox-api/src/panel.rs | — | — | — | — |
 | panel::panel_route | crates/opsbox-api/src/panel.rs | — | panel::upstream_addr | — | — |
 | panel::remove_domain | crates/opsbox-api/src/panel.rs | ConfirmBody, Value | panel::active_panel_domain, panel::sync_proxy_routes | — | delete_setting |
 | panel::run_dns_check | crates/opsbox-api/src/panel.rs | — | panel::detect_server_public_ips | — | — |
 | panel::set_local_only | crates/opsbox-api/src/panel.rs | LocalOnlyBody, Value | panel::active_panel_domain, session::deny_token | web_local_only | — |
-| panel::snapshot | crates/opsbox-api/src/panel.rs | — | panel::active_panel_domain, panel::cert_state_str, panel::draft_panel_domain | — | — |
+| panel::snapshot | crates/opsbox-api/src/panel.rs | — | network::proxy_mode, panel::active_panel_domain, panel::cert_state_str, panel::draft_panel_domain | — | — |
 | panel::status | crates/opsbox-api/src/panel.rs | Value | panel::snapshot | — | — |
-| panel::sync_proxy_routes | crates/opsbox-api/src/panel.rs | — | panel::build_proxy_routes | — | — |
+| panel::sync_proxy_routes | crates/opsbox-api/src/panel.rs | — | network::proxy_mode, panel::build_proxy_routes | — | — |
 | panel::upstream_addr | crates/opsbox-api/src/panel.rs | — | — | — | — |
 | recovery::get | crates/opsbox-api/src/recovery.rs | Value | system::patient | journal, watchdog_status | — |
 | secrets::audit_reveal | crates/opsbox-api/src/secrets.rs | — | — | — | append_audit |

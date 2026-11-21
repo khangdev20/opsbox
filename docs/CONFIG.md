@@ -38,6 +38,7 @@ The allow-lists (`allowed_users`, `allowed_uids`) are the exception to "highest 
 | `[terminal] idle_timeout_min` | `30` | | | serve |
 | `[backup] dir` | `/var/backups/opsbox` | | | serve, priv, CLI |
 | `[backup] cache_dir` | `/var/cache/opsbox/restic` | | | priv |
+| `[proxy] mode` | `"builtin"` | | | proxy, status |
 | `[proxy] listen_http` | `0.0.0.0:80` | `--http ADDR` | `OPSBOX_PROXY_HTTP` | proxy |
 | `[proxy] fallback_http` | `8080` | | | proxy |
 | `[proxy] fallback_https` | `8445` | | | proxy |
@@ -176,7 +177,28 @@ API responses are `no-store`; responses include request IDs, MIME-sniffing/frame
 
 In Settings, host name/time zone/swap, API tokens, self-update settings, the panel domain (DNS check, ACME certificate, and local-only `:8443` toggle), disk growth, GitHub, export configuration, and uninstall are real. Tokens use `read`, `deploy`, or `full` scopes and are hashed at rest; copy the secret at creation. They have no expiry setting in Phase 1; revoke them explicitly. See [API.md](API.md) for exact capabilities. Host name/time zone changes use hostnamectl/timedatectl through priv and persist in the operating system; they are not duplicated in config.toml.
 
-### Busy proxy ports
+### Proxy modes
+
+Set the mode in `/etc/opsbox/config.toml` and restart `opsbox-proxy`:
+
+```toml
+[proxy]
+mode = "external"
+```
+
+- `builtin` (default): opsbox binds its configured HTTP/HTTPS addresses (normally 80/443), manages certificates and routes domains. Busy-port fallback and 30-second retries are unchanged.
+- `external`: opsbox binds no proxy TCP listeners, including fallback ports, and does not run ACME. Service domains remain stored; configure routing and TLS in your own Caddy/nginx. Use the service's active host port as the loopback upstream, rather than its container port.
+- `off`: disables opsbox proxy listeners and ACME without deleting stored domains or certificates.
+
+Only these three lowercase strings are accepted; an invalid value prevents startup. Listener flags and environment overrides do not enable listeners in `external` or `off`. The proxy service waits for shutdown in these modes because its systemd unit uses `Restart=always`. The panel's own HTTPS listener on 8443 is separate.
+
+The installer accepts `--proxy=external`, `--proxy=off` and explicit `--proxy=builtin`. An omitted flag preserves the existing mode; a fresh installation defaults to `builtin`. Repeating a flag updates only `[proxy] mode` without duplicate sections. `opsbox status` prints the configured mode and, in builtin mode when busy, each known holder's name and PID.
+
+Admins can switch modes in Apps → Domains & SSL or Settings → Network. The confirmed, session-only action uses the root helper to update only the mode and restart the proxy; a failed restart restores the previous configuration. Undo existing web moves or port takeovers before disabling the proxy. In external/off mode, the Domains page shows the deployed service's actual `127.0.0.1:<active_host_port>` upstream when available, and certificate requests are refused with instructions to use your own proxy. Domain policies are stored for later builtin use; configure redirects and HTTPS in your external proxy.
+
+The watchdog reads the current mode from the helper each tick and skips disabled proxy checks/restart counters. Readiness also skips the proxy in external/off even when a panel domain remains stored. Installer preflight leaves public ports to your server in those modes. If editing the file manually, restart `opsbox-proxy`; running serve/watchdog read the helper's current mode. Live Linux installation and restart-count checks remain in `docs/QA.md`.
+
+### Busy proxy ports (builtin mode)
 
 An occupied or inaccessible configured proxy port uses `fallback_http` / `fallback_https` on the same bind IP. If the preferred port is busy, HTTP searches 8080–8099 and HTTPS 8445–8464. Zero is invalid for fallback settings. If the entire fallback range is unavailable, startup fails with the bind error; inspect `journalctl -u opsbox-proxy -n 50`.
 

@@ -1,4 +1,4 @@
-import { adoptedDomains } from '../network.js';
+import { adoptedDomains, proxyModeNotice, networkActions } from '../network.js';
 import { html, raw, ago, st, btn, tabs, table, section, header, sw, bindActions, confirmDialog, askForm, toast, patch, empty, announce, iconAct } from '../ui.js';
 import { editMemory, withCapacityOverride } from '../capacity.js';
 import * as api from '../api.js';
@@ -159,7 +159,8 @@ export async function view({ query }) {
     const pend = publicDoms.find((d) => d.dns === 'pending');
     const needCert = publicDoms.find((d) => d.dns === 'ok' && d.cert !== 'valid' && d.cert !== 'expiring');
     const tag = (x) => html`<span class="tag-sm">${x}</span>`;
-    const proxyDown = api.MODE === 'http' && doms.proxyReachable === false;
+    const proxyDisabled = doms.proxyMode && doms.proxyMode !== 'builtin';
+    const proxyDown = proxyDisabled || (api.MODE === 'http' && doms.proxyReachable === false);
     const isWorker = s.port === 0;
     const internalTarget = doms.internalUrl || doms.internalHost || s.id;
     const internalRow = [
@@ -196,10 +197,11 @@ export async function view({ query }) {
           ? html`<section class="sec"><div class="sec-h"><h2>Issue TLS certificate</h2></div><p class="muted sm">DNS for <span class="mono">${needCert.name}</span> points here. Issue its Let's Encrypt certificate to enable HTTPS.</p><div class="row">${btn(`Issue certificate for ${needCert.name}`, { act: 'issuecert', data: { n: needCert.name }, kind: 'primary', disabled: !!domBusy || proxyDown })}</div></section>`
           : html`<section class="sec"><div class="sec-h"><h2>All domains are live</h2></div><p class="muted sm">Every domain points here and has a valid certificate.</p></section>`;
     return html`<div style="display:flex;flex-direction:column;gap:28px">
+      ${api.MODE === 'http' ? proxyModeNotice(doms, !!domBusy) : ''}
       ${adoptedDomains(doms.adopted || [])}
       ${table('Domains', [['Domain'], ['DNS'], ['HTTPS'], ['Policy'], ['', 'r']], [...domainRows, internalRow])}
       <div class="cols">
-        <div class="w3">${statusCard}</div>
+        <div class="w3">${proxyDisabled ? html`<p>Configure domains, redirects and HTTPS in your external proxy. Changes here are stored for later use.</p>` : statusCard}</div>
         <div><section class="sec"><div class="sec-h"><h2>Add a domain</h2></div>
           ${isWorker ? html`<div class="note">This service runs on port 0 (background worker) and has no HTTP port for public domains.</div>` : ''}
           <div class="field"><label for="nd">Domain</label><input class="input" id="nd" placeholder="app.acme.co"${isWorker || !!domBusy ? ' disabled' : ''}><span class="hint">A whole domain or a subdomain. No https://.</span></div>
@@ -210,7 +212,7 @@ export async function view({ query }) {
           <p id="derr" class="form-err" role="alert">${domErr}</p>
           <div>${btn('Add domain', { act: 'adddom', kind: 'primary', disabled: isWorker || !!domBusy })}</div></section>
           <section class="sec"><div class="sec-h"><h2>Certificates</h2></div>
-          ${proxyDown ? html`<div class="row mb10">${st('fail', 'Reverse proxy unavailable')}<span class="sm muted">Start opsbox-proxy to issue or renew TLS certificates.</span></div>` : ''}
+          ${proxyDown ? html`<div class="row mb10">${st('fail', 'Reverse proxy unavailable')}<span class="sm muted">${proxyDisabled ? 'Manage certificates in your external proxy.' : 'Start opsbox-proxy to issue or renew TLS certificates.'}</span></div>` : ''}
           <dl class="sm" style="display:grid;grid-template-columns:1fr auto;gap:10px;margin:0"><dt class="muted">Issuer</dt><dd style="margin:0">Let's Encrypt (HTTP-01)</dd><dt class="muted">Renewal</dt><dd style="margin:0">30 days before expiry</dd><dt class="muted">If renewal fails</dt><dd style="margin:0">Shown on Overview</dd></dl></section></div>
       </div></div>`;
   };
@@ -362,6 +364,7 @@ export async function view({ query }) {
         }
       });
       bindActions(root, {
+        ...networkActions(refreshDomainsAndProj, (busy) => { domBusy = busy ? 'proxy' : ''; paint(); }),
         memory: async () => { await editMemory(svc()); await reload(); },
         select: (el) => { fresh = true; sel = el.dataset.id; tab = 0; stopWs(); logDeploy = null; logLines = []; revealedVars = {}; hideRevealed(); doms = null; domBusy = ''; domErr = ''; lastDns = null; paint(); },
         tab: (el) => { fresh = true; tab = +el.dataset.i; paint(); },

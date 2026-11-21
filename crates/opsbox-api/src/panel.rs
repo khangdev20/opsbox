@@ -146,6 +146,9 @@ pub(crate) fn build_proxy_routes(state: &AppState) -> Vec<Route> {
 
 /// Push the current routing table (panel domain + active service routes) to `opsbox-proxy`.
 pub async fn sync_proxy_routes(state: &AppState) -> Result<(), ProxyClientError> {
+    if crate::network::proxy_mode(state).await != opsbox_proto::ProxyMode::Builtin {
+        return Ok(());
+    }
     let Some(ref client) = state.proxy else {
         return Ok(());
     };
@@ -173,11 +176,13 @@ pub async fn snapshot(state: &AppState) -> Value {
     let draft = draft_panel_domain(state);
     let shown = active.clone().or(draft);
 
+    let proxy_mode = crate::network::proxy_mode(state).await;
     let mut proxy_reachable = false;
     let mut cert_info: Option<CertInfo> = None;
     let mut acme_staging = false;
 
-    if let Some(ref client) = state.proxy
+    if proxy_mode == opsbox_proto::ProxyMode::Builtin
+        && let Some(ref client) = state.proxy
         && let Ok(st) = client
             .clone()
             .with_timeout(Duration::from_secs(2))
@@ -205,6 +210,7 @@ pub async fn snapshot(state: &AppState) -> Value {
         "certStaging": cert_info.as_ref().map_or(acme_staging, |c| c.staging),
         "certError": cert_info.as_ref().and_then(|c| c.last_error.as_deref()),
         "proxyReachable": proxy_reachable,
+        "proxyMode": proxy_mode,
         "rawPortOpen": !state.listen.ip().is_loopback(),
         "listen": state.listen.to_string(),
     })
@@ -308,6 +314,7 @@ pub(crate) async fn issue_cert(
         )
     })?;
     ensure_not_service_domain(&state, &domain)?;
+    crate::network::require_builtin(&state).await?;
     let proxy = state.proxy.clone().ok_or_else(|| {
         HttpError::new(
             ErrorCode::Unavailable,

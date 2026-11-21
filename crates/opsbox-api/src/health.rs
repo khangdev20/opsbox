@@ -97,9 +97,13 @@ pub(crate) async fn readyz(
             }
         }
     };
+    let builtin = crate::network::proxy_mode(&state).await == opsbox_proto::ProxyMode::Builtin;
     let proxy_required =
-        state.proxy.is_some() && crate::panel::active_panel_domain(&state).is_some();
+        builtin && state.proxy.is_some() && crate::panel::active_panel_domain(&state).is_some();
     let proxy_check = async {
+        if !builtin {
+            return None;
+        }
         let client = state.proxy.as_ref()?;
         match client
             .clone()

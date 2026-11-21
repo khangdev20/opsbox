@@ -24,6 +24,8 @@ pub enum LogFormat {
     Json,
 }
 
+pub use opsbox_proto::ProxyMode;
+
 /// When session cookies get the `Secure` attribute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -178,6 +180,7 @@ impl Default for BackupSection {
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ProxySection {
+    mode: ProxyMode,
     listen_http: SocketAddr,
     listen_https: SocketAddr,
     fallback_http: u16,
@@ -193,6 +196,7 @@ struct ProxySection {
 impl Default for ProxySection {
     fn default() -> Self {
         Self {
+            mode: ProxyMode::Builtin,
             listen_http: opsbox_proxy::DEFAULT_HTTP_ADDR
                 .parse()
                 .expect("valid default"),
@@ -290,6 +294,7 @@ pub struct Config {
     pub terminal_idle_min: u64,
     pub backup_dir: PathBuf,
     pub backup_cache_dir: PathBuf,
+    pub proxy_mode: ProxyMode,
     pub proxy_listen_http: SocketAddr,
     pub proxy_listen_https: SocketAddr,
     pub proxy_fallback_http: u16,
@@ -445,6 +450,7 @@ impl Config {
             terminal_idle_min: file.terminal.idle_timeout_min.clamp(1, 24 * 60),
             backup_dir: file.backup.dir,
             backup_cache_dir: file.backup.cache_dir,
+            proxy_mode: file.proxy.mode,
             proxy_listen_http: o.proxy_listen_http.unwrap_or(file.proxy.listen_http),
             proxy_listen_https: o.proxy_listen_https.unwrap_or(file.proxy.listen_https),
             proxy_fallback_http: file.proxy.fallback_http,
@@ -516,6 +522,35 @@ mod tests {
     fn load_str(toml_text: &str, o: Overrides) -> Result<Config> {
         let file: FileConfig = toml::from_str(toml_text)?;
         Config::resolve(file, None, o)
+    }
+
+    #[test]
+    fn proxy_mode_defaults_and_validates() {
+        assert_eq!(
+            load_str("", Overrides::default()).unwrap().proxy_mode,
+            ProxyMode::Builtin
+        );
+        assert_eq!(
+            load_str("[proxy]", Overrides::default())
+                .unwrap()
+                .proxy_mode,
+            ProxyMode::Builtin
+        );
+        for (text, mode) in [
+            ("builtin", ProxyMode::Builtin),
+            ("external", ProxyMode::External),
+            ("off", ProxyMode::Off),
+        ] {
+            let config =
+                load_str(&format!("[proxy]\nmode = {text:?}\n"), Overrides::default()).unwrap();
+            assert_eq!(config.proxy_mode, mode);
+        }
+        for text in ["invalid", "Builtin", "", "EXTERNAL"] {
+            let error =
+                load_str(&format!("[proxy]\nmode = {text:?}\n"), Overrides::default()).unwrap_err();
+            assert!(error.to_string().contains("unknown variant"), "{error}");
+        }
+        assert!(load_str("[proxy]\nmode = false", Overrides::default()).is_err());
     }
 
     #[test]

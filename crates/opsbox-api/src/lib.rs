@@ -114,6 +114,7 @@ pub struct AppState {
     pub proxy_secret: Option<Arc<str>>,
     pub tls_cert_sha256: Option<String>,
     pub proxy: Option<opsbox_proxy::ProxyClient>,
+    pub proxy_mode: opsbox_proto::ProxyMode,
     pub public_ips: Vec<std::net::IpAddr>,
     pub dns_nameservers: Option<Vec<std::net::SocketAddr>>,
     pub(crate) public_ip_cache: PublicIpCache,
@@ -170,6 +171,7 @@ impl AppState {
             proxy_secret: None,
             tls_cert_sha256: None,
             proxy: None,
+            proxy_mode: opsbox_proto::ProxyMode::Builtin,
             public_ips: Vec::new(),
             dns_nameservers: None,
             public_ip_cache: Arc::new(tokio::sync::Mutex::new(None)),
@@ -624,6 +626,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/network/proxy/takeover", post(network::takeover))
         .route("/api/v1/network/proxy/undo", post(network::undo))
         .route("/api/v1/network/proxy/keep", post(network::keep))
+        .route("/api/v1/network/proxy/mode", post(network::set_mode))
         .route("/api/v1/network/proxy/discover", post(network::discover))
         .route("/api/v1/network/proxy/move", post(network::move_web))
         .route("/api/v1/network/proxy/undo-move", post(network::undo_move))

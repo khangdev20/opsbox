@@ -32,6 +32,7 @@ PROXY_STATE_DIR="$STATE_DIR/proxy"
 
 VERSION=""
 CHANNEL=""
+PROXY_MODE=""
 LOCAL_BINARY=""
 UNITS_DIR=""
 DEV=0
@@ -75,6 +76,7 @@ Usage: install.sh [options]
 
   --version VERSION   install this release (default: the latest)
   --channel NAME      stable or beta; beta is kept in config.toml so updates stay on it
+  --proxy=MODE        builtin (default), external or off; preserves existing mode unless given
   --pair SECRET       pairing secret from the desktop app, passed on to opsbox
   --web               turn the web panel on, passed on to opsbox
   --force             install below minimum (512 MB RAM / 2 GB free disk)
@@ -98,6 +100,18 @@ EOF
 # BEGIN proxy-port-preflight
 # Read-only: busy ports never block an install. `ss` includes process names as root.
 check_proxy_ports() {
+  proxy_effective_mode="$PROXY_MODE"
+  if [ -z "$proxy_effective_mode" ] && [ -r "$CONF_DIR/config.toml" ]; then
+    proxy_effective_mode=$(awk '
+      /^[[:space:]]*\[/ { section=$0; sub(/#.*/, "", section); gsub(/[[:space:]]/, "", section) }
+      section == "[proxy]" && /^[[:space:]]*mode[[:space:]]*=/ {
+        value=$0; sub(/^[^=]*=[[:space:]]*/, "", value); sub(/#.*/, "", value)
+        gsub(/[[:space:]\042\047]/, "", value); print value; exit
+      }' "$CONF_DIR/config.toml")
+  fi
+  case "$proxy_effective_mode" in
+    external|off) say "proxy mode $proxy_effective_mode: ports 80/443 are left for your own web server"; return ;;
+  esac
   for port in 80 443; do
     if [ "$port" -eq 80 ]; then fallback=8080; else fallback=8445; fi
     holder=""
@@ -126,6 +140,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version) [ $# -ge 2 ] || die "--version needs a value"; VERSION="$2"; shift 2 ;;
     --channel) [ $# -ge 2 ] || die "--channel needs a value"; CHANNEL="$2"; shift 2 ;;
+    --proxy=*)
+      PROXY_MODE="${1#--proxy=}"
+      case "$PROXY_MODE" in builtin|external|off) ;; *) die "--proxy must be builtin, external or off" ;; esac
+      shift ;;
     --pair) [ $# -ge 2 ] || die "--pair needs a value"; PAIR="$2"; shift 2 ;;
     --web) WEB=1; shift ;;
     --force) FORCE=1; shift ;;
@@ -297,6 +315,33 @@ channel = \"$2\"" "$1" >"$1.new" || return 1
   fi
 }
 # END update-channel
+
+# BEGIN proxy-mode
+# An omitted flag preserves the existing choice (missing mode defaults to builtin).
+write_proxy_mode() { # write_proxy_mode FILE MODE_OR_EMPTY
+  [ -n "$2" ] || return 0
+  case "$2" in builtin|external|off) ;; *) return 1 ;; esac
+  cp -p "$1" "$1.new" || return 1
+  awk -v mode="$2" '
+    function add_mode() { print "mode = \"" mode "\""; written = 1 }
+    /^[[:space:]]*\[/ {
+      if (in_proxy && !written) add_mode()
+      in_proxy = ($0 ~ /^[[:space:]]*\[proxy\][[:space:]]*(#.*)?$/)
+      if (in_proxy) found = 1
+    }
+    in_proxy && /^[[:space:]]*mode[[:space:]]*=/ {
+      if (!written) add_mode()
+      next
+    }
+    { print }
+    END {
+      if (!found) print "\n[proxy]"
+      if (!written) add_mode()
+    }
+  ' "$1" >"$1.new" || { rm -f "$1.new"; return 1; }
+  mv "$1.new" "$1"
+}
+# END proxy-mode
 
 ensure_minisign() {
   command -v minisign >/dev/null 2>&1 && return 0
@@ -532,6 +577,7 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 # allowed_users = ["opsbox", "root"]
 
 # [proxy]
+# mode = "builtin"   # external or off leaves public ports free
 # listen_http = "0.0.0.0:80"
 # listen_https = "0.0.0.0:443"
 # fallback_http = 8080
@@ -559,6 +605,15 @@ if [ ! -e "$CONF_DIR/config.toml" ]; then
 # format = "text"
 EOF
     chmod 0644 "$CONF_DIR/config.toml"
+  fi
+fi
+
+if [ -n "$PROXY_MODE" ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    say "+ set [proxy] mode = \"$PROXY_MODE\" in $CONF_DIR/config.toml"
+  else
+    write_proxy_mode "$CONF_DIR/config.toml" "$PROXY_MODE" ||
+      die "could not write the proxy mode to $CONF_DIR/config.toml"
   fi
 fi
 

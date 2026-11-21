@@ -199,7 +199,21 @@ pub(crate) async fn get_domains(
     .map_err(|_| HttpError::internal())?
     .map_err(|_| HttpError::internal())?;
 
-    let (proxy_reachable, cert_map) = fetch_cert_map(&state).await;
+    let proxy_mode = crate::network::proxy_mode(&state).await;
+    let (proxy_reachable, cert_map) = if proxy_mode == opsbox_proto::ProxyMode::Builtin {
+        fetch_cert_map(&state).await
+    } else {
+        (false, HashMap::new())
+    };
+    let proxy_network = if proxy_mode == opsbox_proto::ProxyMode::Builtin {
+        if let Some(proxy) = &state.proxy {
+            proxy.status("domain-network").await.ok().map(|s| s.network)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let has_pending = records.iter().any(|r| r.dns_status == "pending");
     let server_ips = if has_pending {
         detect_server_public_ips(&state)
@@ -243,6 +257,10 @@ pub(crate) async fn get_domains(
         "internalHost": svc.name,
         "internalUrl": internal_url,
         "proxyReachable": proxy_reachable,
+        "proxyMode": proxy_mode,
+        "proxyNetwork": proxy_network,
+        "canManageProxy": who.user.role == opsbox_proto::Role::Admin,
+        "externalUpstream": svc.active_host_port.filter(|p| *p > 0).map(|p| format!("127.0.0.1:{p}")),
         "serverIps": server_ips,
         "domains": rendered,
         "adopted": adopted,
@@ -586,6 +604,7 @@ pub(crate) async fn issue_cert(
         ));
     }
 
+    crate::network::require_builtin(&state).await?;
     let proxy = state.proxy.clone().ok_or_else(|| {
         HttpError::new(
             ErrorCode::Unavailable,

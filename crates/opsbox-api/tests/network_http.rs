@@ -305,3 +305,102 @@ fn read_only_state(root: &std::path::Path) -> bool {
         serde_json::from_slice(&std::fs::read(root.join("state.json")).unwrap()).unwrap();
     s["running"] == true && s["policy"] == "always" && !root.join("web-moves").exists()
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn proxy_mode_is_confirmed_admin_only_and_rolls_back_failed_restart() {
+    let h = Harness::new(false);
+    let root = &h.root;
+    let config = root.join("mode.toml");
+    let original = "[log]\nlevel = 'info'\n[proxy]\nmode = 'builtin'\n";
+    std::fs::write(&config, original).unwrap();
+    let ctl = root.join("systemctl-mode");
+    std::fs::write(
+        &ctl,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n[ ! -f '{}' ]\n",
+            root.join("mode-commands").display(),
+            root.join("fail-restart").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut cfg = PrivConfig::new(
+        root.join("mode-priv.sock"),
+        vec![std::fs::metadata(root).unwrap().uid()],
+    );
+    cfg.config_path = config.clone();
+    cfg.network_systemctl = Some(ctl);
+    let server = PrivServer::bind(cfg).unwrap();
+    let (stop, rx) = oneshot::channel();
+    let task = tokio::spawn(server.run(async {
+        let _ = rx.await;
+    }));
+    let mut state = h.state.clone();
+    state.priv_client = PrivClient::new(root.join("mode-priv.sock"));
+    state.version = opsbox_priv::VERSION;
+    state.proxy = Some(opsbox_proxy::ProxyClient::new(
+        root.join("absent-proxy.sock"),
+    ));
+    state
+        .store
+        .set_setting("opsbox.panel.domain", &json!("panel.example.test"))
+        .unwrap();
+    let app = router(state);
+    let mut admin = h.signed_in("mode-owner", Role::Admin);
+    admin.app = app.clone();
+    let mut viewer = h.signed_in("mode-reader", Role::Viewer);
+    viewer.app = app;
+    let path = "/api/v1/network/proxy/mode";
+    assert_eq!(
+        post(&mut viewer, path, json!({"mode":"external","confirm":true}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(&mut admin, path, json!({"mode":"external"}))
+            .await
+            .status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+    assert!(!root.join("mode-commands").exists());
+    assert_eq!(
+        post(&mut admin, path, json!({"mode":"invalid","confirm":true}))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let success = post(&mut admin, path, json!({"mode":"external","confirm":true})).await;
+    assert_eq!(success.status, StatusCode::OK, "{}", success.text());
+    let saved = std::fs::read_to_string(&config).unwrap();
+    assert!(saved.contains("external") && saved.contains("level = 'info'"));
+    let summary = admin.get("/api/v1/network/proxy").await;
+    assert_eq!(summary.status, StatusCode::OK, "{}", summary.text());
+    assert_eq!(summary.json()["mode"], "external");
+    assert_eq!(summary.json()["network"]["running"], false);
+    let readiness = admin.get("/readyz").await;
+    assert_eq!(readiness.status, StatusCode::OK, "{}", readiness.text());
+    assert_eq!(
+        post(
+            &mut admin,
+            "/api/v1/panel/certificate",
+            json!({"domain":"panel.example.test"})
+        )
+        .await
+        .status,
+        StatusCode::CONFLICT
+    );
+
+    std::fs::write(root.join("fail-restart"), "").unwrap();
+    assert_eq!(
+        post(&mut admin, path, json!({"mode":"off","confirm":true}))
+            .await
+            .status,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), saved);
+    stop.send(()).unwrap();
+    task.await.unwrap();
+    h.shutdown().await;
+}

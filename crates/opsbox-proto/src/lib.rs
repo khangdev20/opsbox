@@ -82,5 +82,5 @@ pub use watchdog::{WatchdogCheck, WatchdogStatus};
 pub mod network;
 pub use network::{
     AdoptedDomain, AdoptedRoutes, ListenerAction, PortContainer, PortHolder, PortTakeover,
-    PortTarget, ProxyNetwork, WebDiff, WebMove, WebPlan,
+    PortTarget, ProxyMode, ProxyNetwork, WebDiff, WebMove, WebPlan,
 };

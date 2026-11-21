@@ -73,7 +73,7 @@ async fn serve(config: Config) -> Result<()> {
         SecureCookiesSetting::Auto => SecureCookies::Auto,
         SecureCookiesSetting::Always => SecureCookies::Always,
     };
-    let state = AppState::new(
+    let mut state = AppState::new(
         store,
         PrivClient::new(&config.priv_socket),
         VERSION,
@@ -97,6 +97,8 @@ async fn serve(config: Config) -> Result<()> {
         cert_sha256,
         config.public_ips.clone(),
     );
+
+    state.proxy_mode = config.proxy_mode;
 
     // Push the panel route table to `opsbox-proxy` on startup (with brief retries if proxy is still starting).
     let sync_state = state.clone();

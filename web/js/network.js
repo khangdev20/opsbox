@@ -7,10 +7,21 @@ export function networkBanner(data) {
   if (!n?.port_conflict) return '';
   return section('Web ports are busy', html`<div role="status"><p>opsbox is running on ${n.listen_http} and ${n.listen_https}. ${n.holders.map((h) => `Port ${h.port}: ${holderName(h)}.`).join(' ')}</p>${n.holders.filter((h, i, all) => (h.container || h.unit) && all.findIndex((x) => (x.container?.id || x.unit) === (h.container?.id || h.unit)) === i).map((h) => btn('Move behind opsbox · recommended', { act: 'webMove', kind: 'primary', data: { kind: h.container ? 'container' : 'unit', id: h.container?.id || h.unit } }))}<a class="btn" href="#/settings?section=network">Let opsbox take ports 80/443</a>${btn('Keep it and use other ports', { act: 'proxyKeep' })}<a class="btn link" href="#/settings?section=network">Fix in Settings → Network</a></div>`);
 }
+export function proxyModeNotice(data, busy = false) {
+  const mode = data?.proxyMode || data?.mode || 'builtin';
+  const n = data?.proxyNetwork || data?.network;
+  const admin = data?.canManageProxy !== false;
+  const controls = admin ? html`<div class="row" style="flex-wrap:wrap">${['builtin', 'external', 'off'].filter((m) => m !== mode).map((m) => btn(m === 'external' ? 'Switch to external proxy' : m === 'builtin' ? 'Use builtin proxy' : 'Turn proxy off', { act: 'proxyMode', data: { mode: m }, disabled: busy }))}</div>` : '';
+  if (mode !== 'builtin') return html`<div class="note"><p>${mode === 'external' ? 'Your external proxy handles routing and HTTPS.' : 'opsbox proxy is off.'} Domains are stored; opsbox does not listen on ports 80/443.</p>${data?.externalUpstream ? html`<p>Upstream for Caddy/nginx: <code>${data.externalUpstream}</code></p>` : data?.service ? html`<p>No active host port is available. Deploy this service before configuring its upstream.</p>` : ''}${controls}</div>`;
+  if (!n?.port_conflict) return html`<div class="note"><p>opsbox handles routing and HTTPS.</p>${controls}</div>`;
+  const holders = n.holders || [];
+  return html`<div class="note" role="status"><p>Ports 80/443 are used by ${holders.length ? holders.map((h) => `${h.process} (pid ${h.pid})`).join('; ') : 'another process (holder unavailable)'}. Switch to external proxy, or stop that service.</p>${controls}${admin ? holders.filter((h, i, all) => (h.container || h.unit) && all.findIndex((x) => (x.container?.id || x.unit) === (h.container?.id || h.unit)) === i).map((h) => btn('Stop that service', { act: 'proxyTakeover', data: { port: h.port, kind: h.container ? 'container' : 'unit', id: h.container?.id || h.unit, name: h.container?.name || h.unit }, disabled: busy })) : ''}</div>`;
+}
 export function networkCard(data, busy = false) {
   const n = data?.network;
   return section('Network', html`<div id="network" class="col gap12">
-    ${!n ? html`<p role="status">${data?.error || 'Proxy status is unavailable.'}</p>` : html`
+    ${proxyModeNotice(data, busy)}
+    ${data?.mode && data.mode !== 'builtin' ? '' : !n ? html`<p role="status">${data?.error || 'Proxy status is unavailable.'}</p>` : html`
       ${st(n.port_conflict ? 'warn' : 'ok', n.port_conflict ? 'Web ports are busy; apps are running on other ports' : 'Web proxy is running')}
       <p class="sm">Serving HTTP at ${n.listen_http} and HTTPS at ${n.listen_https}.</p>
       ${n.port_conflict ? html`${n.holders.filter((h, i, all) => (h.container || h.unit) && all.findIndex((x) => (x.container?.id || x.unit) === (h.container?.id || h.unit)) === i).map((h) => btn('Move behind opsbox · recommended', { act: 'webMove', kind: 'primary', data: { kind: h.container ? 'container' : 'unit', id: h.container?.id || h.unit }, disabled: busy }))}<p class="sm muted">opsbox checks the usual ports every 30 seconds and switches back when they are free.</p>
@@ -34,6 +45,11 @@ export function networkActions(refresh, setBusy) {
   };
   return {
     proxyRefresh: refresh,
+    proxyMode: async (el) => {
+      const mode = el.dataset.mode;
+      if (!await confirmDialog({ title: `Switch proxy to ${mode}?`, body: mode === 'builtin' ? 'opsbox will handle routing and certificates. Your external proxy must release its public ports.' : 'opsbox will stop handling public domains and certificates. Configure your own proxy to keep those sites reachable. The panel remains available on its own HTTPS port.', confirm: 'Switch proxy' })) return;
+      await perform(() => api.setProxyMode(mode, true), 'Proxy mode saved.');
+    },
     webMove: async (el) => {
       setBusy(true);
       try { const { plan } = await api.discoverWeb({ kind: el.dataset.kind, id: el.dataset.id }); await moveDialog(plan); }

@@ -47,6 +47,7 @@ export async function view({ query = {} } = {}) {
     return dnsOk || activeLive;
   };
   const renderCertStatus = (pi) => {
+    if (pi.proxyMode && pi.proxyMode !== 'builtin') return html`<p class="sm muted">Manage routing and certificates in your external proxy. The panel is available on its own HTTPS port.</p>`;
     if (LIVE && pi.proxyReachable === false) {
       return html`<div class="row">${st('fail', 'Reverse proxy unavailable')}<span class="sm muted">Start opsbox-proxy to check proxy status or issue certificates.</span></div>`;
     }

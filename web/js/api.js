@@ -35,7 +35,7 @@ function pickMode() {
 const REAL = new Set([
   'getCapacity', 'checkCapacity', 'addCapacitySwap',
   'discoverWeb', 'moveWeb', 'undoWebMove', 'adoptedTls',
-  'getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts',
+  'setProxyMode', 'getProxyNetwork', 'takeProxyPort', 'undoProxyTakeover', 'keepProxyPorts',
   'getHost',
   'getAlerts', 'setRule', 'testAlert', 'connectChannel', 'disconnectChannel', 'silenceAlert', 'setQuiet',
   'auth.session', 'auth.login', 'auth.logout', 'auth.reauth', 'auth.claim', 'auth.setupAdmin', 'auth.setupConfirm',
@@ -2212,4 +2212,9 @@ export async function undoWebMove(id) {
 export async function adoptedTls(domain) {
   if (real('adoptedTls')) { const { task } = await http(`/domains/${enc(domain)}/adopted-tls`, { method: 'POST' }); return waitTask(task, { every: 400 }); }
   throw new Error('Certificates need a connected server.');
+}
+
+export async function setProxyMode(mode, confirm = false) {
+  if (real('setProxyMode')) return http('/network/proxy/mode', { method: 'POST', body: { mode, confirm } }); // POST /api/v1/network/proxy/mode
+  throw new Error('Proxy changes require a connected server.');
 }

@@ -34,7 +34,7 @@ pub(crate) async fn get_network(
                 None
             };
             Ok(Json(
-                json!({"network":network,"undo":undo,"moves":moves,"adopted":adopted}),
+                json!({"mode":proxy_mode(&state).await,"network":network,"undo":undo,"moves":moves,"adopted":adopted}),
             ))
         }
         _ => Err(HttpError::internal()),
@@ -291,4 +291,70 @@ pub(crate) async fn adopted_tls(
     axum::extract::Path(domain): axum::extract::Path<String>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), HttpError> {
     web_task(state, who, client, rid, PrivOp::WebTls { domain }).await
+}
+
+/// Query the helper's current file setting, including changes made without restarting serve.
+pub(crate) async fn proxy_mode(state: &AppState) -> opsbox_proto::ProxyMode {
+    match state
+        .priv_client
+        .call("proxy-mode", None, PrivOp::ProxyModeGet)
+        .await
+    {
+        Ok(PrivReply::ProxyMode(mode)) => mode,
+        _ => state.proxy_mode,
+    }
+}
+
+pub(crate) async fn require_builtin(state: &AppState) -> Result<(), HttpError> {
+    if proxy_mode(state).await == opsbox_proto::ProxyMode::Builtin {
+        Ok(())
+    } else {
+        Err(HttpError::new(
+            ErrorCode::Conflict,
+            "opsbox proxy is disabled. Configure routing and certificates in your external proxy, or switch to builtin in Network settings.",
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModeBody {
+    mode: opsbox_proto::ProxyMode,
+    #[serde(default)]
+    confirm: bool,
+}
+pub(crate) async fn set_mode(
+    State(state): State<AppState>,
+    Admin(who): Admin,
+    client: Client,
+    Extension(RequestId(rid)): Extension<RequestId>,
+    ApiJson(body): ApiJson<ModeBody>,
+) -> Result<Json<Value>, HttpError> {
+    let response = change(
+        state.clone(),
+        who,
+        client,
+        rid,
+        PrivOp::ProxyModeSet {
+            mode: body.mode,
+            confirm: body.confirm,
+        },
+    )
+    .await?;
+    if body.mode == opsbox_proto::ProxyMode::Builtin {
+        for attempt in 0..10 {
+            if crate::panel::sync_proxy_routes(&state).await.is_ok() {
+                break;
+            }
+            if attempt < 9 {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            } else {
+                return Err(HttpError::new(
+                    ErrorCode::Unavailable,
+                    "Proxy mode was saved, but routes could not be loaded. Refresh Network settings and check the proxy service logs.",
+                ));
+            }
+        }
+    }
+    Ok(response)
 }

@@ -198,6 +198,7 @@ Exports from `web/js/api.js`, including auth object methods. REAL means an HTTP-
 | setOpsboxAutoUpdate | REAL | PUT /api/v1/updates/auto | settings |
 | setPanelLocalOnly | REAL | POST /api/v1/panel/local-only | settings |
 | setPooler | REAL | PUT /api/v1/databases/{dbId}/pooler | database |
+| setProxyMode | REAL | POST /api/v1/network/proxy/mode | — |
 | setQuiet | REAL | PUT /api/v1/alerts/quiet | alerts |
 | setRule | REAL | PUT /api/v1/alerts/rules/{id} | alerts |
 | setServiceExposure | REAL | PUT /api/v1/services/{svc}/exposure | apps |

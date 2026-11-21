@@ -271,6 +271,31 @@ pub async fn probe_priv(socket: &Path) -> ServiceHealth {
     }
 }
 
+/// Read the helper's current mode each tick. A failed query retains normal health checks.
+pub async fn proxy_disabled(socket: &Path) -> bool {
+    tokio::time::timeout(PROBE_TIMEOUT, async {
+        let mut stream = UnixStream::connect(socket).await.ok()?;
+        let req = PrivRequest {
+            id: "watchdog-mode".into(),
+            actor: None,
+            op: PrivOp::ProxyModeGet,
+        };
+        stream.write_all(&frame::encode(&req).ok()?).await.ok()?;
+        let body = read_unix_body(&mut stream).await.ok()?;
+        let response: PrivResponse = frame::decode(&body).ok()?;
+        match response.result {
+            PrivResult::Success {
+                reply: PrivReply::ProxyMode(mode),
+            } => Some(mode != opsbox_proto::ProxyMode::Builtin),
+            _ => None,
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+
 pub async fn probe_proxy(socket: &Path, expected: bool) -> ServiceHealth {
     let started = Instant::now();
     let res = tokio::time::timeout(PROBE_TIMEOUT, async {
@@ -431,6 +456,38 @@ pub fn human_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn proxy_disabled_reads_mode_and_keeps_probing_on_helper_failure() {
+        use super::*;
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("mode.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            for mode in [
+                opsbox_proto::ProxyMode::Builtin,
+                opsbox_proto::ProxyMode::External,
+                opsbox_proto::ProxyMode::Off,
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let body = read_unix_body(&mut stream).await.unwrap();
+                let req: PrivRequest = frame::decode(&body).unwrap();
+                assert!(matches!(req.op, PrivOp::ProxyModeGet));
+                stream
+                    .write_all(
+                        &frame::encode(&PrivResponse::success(req.id, PrivReply::ProxyMode(mode)))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            }
+        });
+        assert!(!proxy_disabled(&socket).await);
+        assert!(proxy_disabled(&socket).await);
+        assert!(proxy_disabled(&socket).await);
+        server.await.unwrap();
+        assert!(!proxy_disabled(&dir.path().join("missing.sock")).await);
+    }
+
     use super::*;
 
     #[test]

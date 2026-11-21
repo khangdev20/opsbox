@@ -105,6 +105,8 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         | PrivOp::WebUndo { .. }
         | PrivOp::WebMoves
         | PrivOp::WebTls { .. }
+        | PrivOp::ProxyModeGet
+        | PrivOp::ProxyModeSet { .. }
         | PrivOp::ProxyNetwork
         | PrivOp::ProxyTakeover { .. }
         | PrivOp::ProxyUndo { .. }

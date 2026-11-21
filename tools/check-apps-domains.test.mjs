@@ -59,7 +59,7 @@ async function panel({ delay = 10, requestLimit = Infinity, imageService = false
     '../ui.js': { ...ui, patch: (node, markup) => { node.innerHTML = markup; },
       askForm: async (form, submit) => { forms.push(form); return submit({ image: ' nginx:1.27-alpine ' }); },
       toast() {} },
-    '../network.js': { adoptedDomains: () => '' },
+    '../network.js': { adoptedDomains: () => '', proxyModeNotice: () => '', networkActions: () => ({}) },
     '../capacity.js': { editMemory() {}, withCapacityOverride: (fn, body) => fn(body) },
     '../store.js': { listeners },
     '../secrets.js': { withReveal() {}, copyPlain() {}, hideRevealed() {} },

@@ -460,11 +460,18 @@ pub async fn run_with_listener(
             policy.clear_failures();
         }
 
+        let proxy_disabled = probes::proxy_disabled(&cfg.priv_socket).await;
         let proxy_expected = actions::proxy_unit_installed();
         let (serve_h, priv_h, proxy_h) = tokio::join!(
             probes::probe_serve(cfg.serve_listen),
             probes::probe_priv(&cfg.priv_socket),
-            probes::probe_proxy(&cfg.proxy_socket, proxy_expected),
+            async {
+                if proxy_disabled {
+                    ServiceHealth::Off
+                } else {
+                    probes::probe_proxy(&cfg.proxy_socket, proxy_expected).await
+                }
+            },
         );
 
         let disk_root_path = PathBuf::from("/");
@@ -481,6 +488,10 @@ pub async fn run_with_listener(
             .await
             .unwrap_or_else(|_| (probes::probe_disk(Path::new("/")), None, None, [None; 3]));
 
+        let mut restart_counts = restart_counts;
+        if proxy_disabled {
+            restart_counts[1] = None;
+        }
         let now = now_secs();
         let disk_critical =
             disk_root.critical || disk_data.as_ref().is_some_and(|(_, d)| d.critical);

@@ -39,7 +39,7 @@ PUBLIC = {
 }
 # Session-only policy delegated to a shared guard; assert the call remains.
 DELEGATED = {
-    "network::takeover": "change", "network::undo": "change", "network::keep": "change",
+    "network::set_mode": "change", "network::takeover": "change", "network::undo": "change", "network::keep": "change",
     "network::move_web": "web_task", "network::undo_move": "web_task", "network::adopted_tls": "web_task",
     "databases::reveal_connection_string": "begin_reveal",
     "deploy::reveal_var": "begin_reveal",

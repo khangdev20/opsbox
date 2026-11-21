@@ -538,6 +538,25 @@ async function runBrowserChecks() {
     await browser.send('Page.navigate', { url: `${base}/kit.html` });
     await waitFor(browser.evalJs, `!!document.querySelector('.kit-card-table') && !!document.querySelector('.kit-sheet-demo') && !!document.querySelector('.kit-drawer')`, 'kit responsive demos');
 
+    await browser.send('Page.navigate', { url: `${base}/index.html` });
+    await waitFor(browser.evalJs, `!!document.querySelector('.content main')`, 'proxy mode fixture');
+    await setViewport(browser, 390);
+    const proxyModeGeometry = await browser.evalJs(`(async () => {
+      const { proxyModeNotice } = await import('/js/network.js');
+      const main = document.querySelector('.content main');
+      const results = [];
+      for (const mode of ['builtin', 'external', 'off']) {
+        main.innerHTML = proxyModeNotice({ proxyMode: mode, service: 'web', externalUpstream: '127.0.0.1:32123', proxyNetwork: { port_conflict: true, holders: [{ port: 80, pid: 45, process: 'caddy', unit: 'caddy.service' }] } }).toString();
+        results.push({ mode, width: document.documentElement.scrollWidth, viewport: innerWidth, heights: [...main.querySelectorAll('button')].map((b) => b.getBoundingClientRect().height), text: main.textContent });
+      }
+      return results;
+    })()`);
+    for (const row of proxyModeGeometry) {
+      assert(row.width <= row.viewport + 1, `proxy mode ${row.mode} overflows at 390px`);
+      assert(row.heights.length && row.heights.every((h) => h >= 43.5), `proxy mode ${row.mode} touch targets`);
+      assert(row.mode === 'builtin' ? row.text.includes('pid 45') : row.text.includes('127.0.0.1:32123'), `proxy mode ${row.mode} guidance`);
+    }
+    console.log('Proxy builtin/external/off notices: 390px layout and 44px actions passed.');
     console.log('responsive browser checks (scroll, wide layout, drawer, sheets, 44px targets, kit) passed.');
   } finally {
     await browser.close();

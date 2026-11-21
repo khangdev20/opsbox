@@ -84,6 +84,8 @@ Protocol: `crates/opsbox-proto/src/privilege.rs`. Client: `crates/opsbox-priv/sr
 | PkgList | unit | pkg::list | crates/opsbox-priv/src/ops/pkg.rs | pkg_list |
 | PortHolders | inline { ports: Vec<u16>, } | network::dispatch | crates/opsbox-priv/src/ops/network.rs | — |
 | ProxyKeepPorts | inline { confirm: bool, } | network::dispatch | crates/opsbox-priv/src/ops/network.rs | — |
+| ProxyModeGet | unit | network::dispatch | crates/opsbox-priv/src/ops/network.rs | — |
+| ProxyModeSet | inline { mode: crate::ProxyMode, confirm: bool, } | network::dispatch | crates/opsbox-priv/src/ops/network.rs | — |
 | ProxyNetwork | unit | network::dispatch | crates/opsbox-priv/src/ops/network.rs | — |
 | ProxyTakeover | inline { port: u16, target: crate::PortTarget, confirm: bool, } | network::dispatch | crates/opsbox-priv/src/ops/network.rs | — |
 | ProxyUndo | inline { id: String, confirm: bool, } | network::dispatch | crates/opsbox-priv/src/ops/network.rs | — |
@@ -130,6 +132,8 @@ No dedicated client method does not mean unreachable: callers can use `PrivClien
 - ConsoleNotice: no client method
 - PortHolders: no client method
 - ProxyKeepPorts: no client method
+- ProxyModeGet: no client method
+- ProxyModeSet: no client method
 - ProxyNetwork: no client method
 - ProxyTakeover: no client method
 - ProxyUndo: no client method

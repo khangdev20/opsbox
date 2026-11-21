@@ -59,3 +59,15 @@ assert.equal(mutations[0].body.confirmation, 'move');
 assert.equal(mutations[1].body.confirm, true);
 assert.equal(calls.filter((c) => c.url === '/api/v1/tasks/adopt-task').length, 3);
 console.log('Adoption task polling, typed confirmation, Undo and TLS API mappings passed.');
+
+await api.setProxyMode('external', true);
+assert.equal(calls.at(-1).url, '/api/v1/network/proxy/mode');
+assert.deepEqual(calls.at(-1).body, { mode: 'external', confirm: true });
+const { proxyModeNotice } = await import(dataUrl(networkSource));
+const external = proxyModeNotice({ proxyMode: 'external', service: 'web', externalUpstream: '127.0.0.1:32123', canManageProxy: true }).toString();
+assert(external.includes('127.0.0.1:32123') && external.includes('Use builtin proxy'));
+const conflict = proxyModeNotice({ proxyMode: 'builtin', proxyNetwork: { port_conflict: true, holders: [{ process: '<caddy>', pid: 45, port: 80, unit: 'caddy.service' }] } }).toString();
+assert(conflict.includes('&lt;caddy&gt; (pid 45)') && conflict.includes('Switch to external proxy') && conflict.includes('Stop that service'));
+assert(!proxyModeNotice({ proxyMode: 'external', canManageProxy: false }).toString().includes('data-act'));
+assert(!proxyModeNotice({ proxyMode: 'external', service: 'web' }).toString().includes('127.0.0.1:undefined'));
+console.log('Proxy mode, active upstream, escaped holder PID and Admin action checks passed.');

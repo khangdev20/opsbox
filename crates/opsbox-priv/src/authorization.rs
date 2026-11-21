@@ -21,6 +21,8 @@ pub(crate) fn allowed(caller: Caller, op: &PrivOp) -> bool {
         | PrivOp::CapacityImageSize { .. }
         | PrivOp::WorkloadMemory { .. }
         | PrivOp::CapacityAddSwap { .. }
+        | PrivOp::ProxyModeGet
+        | PrivOp::ProxyModeSet { .. }
         | PrivOp::ProxyNetwork
         | PrivOp::WebDiscover { .. }
         | PrivOp::WebMove { .. }

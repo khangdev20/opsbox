@@ -192,7 +192,7 @@ crates/opsbox-proto/src/lib.rs: use docker::{ DockerContainer, DockerContainerAc
 crates/opsbox-proto/src/lib.rs: use doctor::{CheckStatus, DoctorCheck, DoctorReport}
 crates/opsbox-proto/src/lib.rs: use files::{DirListing, FileContent, FileEntry, FileKind, Staged}
 crates/opsbox-proto/src/lib.rs: use metrics::{CpuTimes, DiskIo, DiskUsage, MemInfo, NetIf, RawProc, RawSample, SystemFacts}
-crates/opsbox-proto/src/lib.rs: use network::{ AdoptedDomain, AdoptedRoutes, ListenerAction, PortContainer, PortHolder, PortTakeover, PortTarget, ProxyNetwork, WebDiff, WebMove, WebPlan, }
+crates/opsbox-proto/src/lib.rs: use network::{ AdoptedDomain, AdoptedRoutes, ListenerAction, PortContainer, PortHolder, PortTakeover, PortTarget, ProxyMode, ProxyNetwork, WebDiff, WebMove, WebPlan, }
 crates/opsbox-proto/src/lib.rs: use privilege::{ HostInfo, PrivError, PrivErrorCode, PrivOp, PrivReply, PrivRequest, PrivResponse, PrivResult, Secret, UpdateVerification, }
 crates/opsbox-proto/src/lib.rs: use pty::{MAX_PTY_DIM, MAX_PTY_PAYLOAD, PtyFrame, PtyFrameError, SystemUser, clamp_size}
 crates/opsbox-proto/src/lib.rs: use role::Role
@@ -212,6 +212,7 @@ crates/opsbox-proto/src/metrics.rs: struct RawSample
 crates/opsbox-proto/src/metrics.rs: struct SystemFacts  Cheap facts for the "needs attention" list (docs/BACKEND_SPEC.md 7.3).
 crates/opsbox-proto/src/network.rs: enum ListenerAction
 crates/opsbox-proto/src/network.rs: enum PortTarget
+crates/opsbox-proto/src/network.rs: enum ProxyMode  Whether opsbox owns public proxy listeners and certificate management.
 crates/opsbox-proto/src/network.rs: struct AdoptedDomain
 crates/opsbox-proto/src/network.rs: struct AdoptedRoutes  Independent of app routes: app/panel routes always take precedence.
 crates/opsbox-proto/src/network.rs: struct PortContainer

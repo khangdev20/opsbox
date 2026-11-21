@@ -99,3 +99,23 @@ pub struct WebMove {
     pub steps: Vec<String>,
     pub active: bool,
 }
+
+/// Whether opsbox owns public proxy listeners and certificate management.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    #[default]
+    Builtin,
+    External,
+    Off,
+}
+
+impl std::fmt::Display for ProxyMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Builtin => "builtin",
+            Self::External => "external",
+            Self::Off => "off",
+        })
+    }
+}

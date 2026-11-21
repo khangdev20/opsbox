@@ -318,6 +318,7 @@ A conflict leaves `/readyz` healthy and watchdog update verification successful.
 | `GET` | `/api/v1/network/proxy` | [network::get_network](../crates/opsbox-api/src/network.rs) |
 | `POST` | `/api/v1/network/proxy/discover` | [network::discover](../crates/opsbox-api/src/network.rs) |
 | `POST` | `/api/v1/network/proxy/keep` | [network::keep](../crates/opsbox-api/src/network.rs) |
+| `POST` | `/api/v1/network/proxy/mode` | [network::set_mode](../crates/opsbox-api/src/network.rs) |
 | `POST` | `/api/v1/network/proxy/move` | [network::move_web](../crates/opsbox-api/src/network.rs) |
 | `POST` | `/api/v1/network/proxy/takeover` | [network::takeover](../crates/opsbox-api/src/network.rs) |
 | `POST` | `/api/v1/network/proxy/undo` | [network::undo](../crates/opsbox-api/src/network.rs) |
@@ -420,3 +421,7 @@ All adoption endpoints require an interactive administrator session; mutations u
 | `POST /api/v1/domains/{domain}/adopted-tls` | → `202 {task}`. Import a valid existing certificate, otherwise issue one; change routing only when ready. Restore passthrough on response regression. |
 
 Poll `GET /api/v1/tasks/{id}` for live `log` steps and final `status/error/result`. Move results contain `receipt:{id,holder,files,http_port,https_port,steps,active}`; failed moves report the failed step and rollback result and are audited with public receipt details. No secret configuration, certificate key or environment value is returned. Per-service domain responses include an administrator-only `adopted` list with `terminate_tls` so the panel can label passthrough domains and offer TLS handoff. The `REAL` API map includes `discoverWeb`, `moveWeb`, `undoWebMove` and `adoptedTls`.
+
+### Proxy mode
+
+`POST /api/v1/network/proxy/mode` accepts `{"mode":"builtin|external|off","confirm":true}` (choose one literal mode). Requires an Admin browser session; tokens are refused. The helper atomically changes its configuration and restarts only the proxy; a failed restart restores the previous configuration. Active web moves/takeovers must be undone first. Returning to builtin reloads stored routes. `GET /api/v1/network/proxy` includes `mode`; service-domain responses include `proxyMode`, `proxyNetwork`, `canManageProxy`, and nullable `externalUpstream` from the active host port. External/off retain domain records, skip proxy readiness/ACME, and reject certificate issuance with HTTP 409.

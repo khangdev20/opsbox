@@ -68,6 +68,11 @@ pub enum PrivOp {
     PortHolders {
         ports: Vec<u16>,
     },
+    ProxyModeGet,
+    ProxyModeSet {
+        mode: crate::ProxyMode,
+        confirm: bool,
+    },
     ProxyNetwork,
     WebDiscover {
         target: crate::PortTarget,
@@ -475,6 +480,8 @@ impl PrivOp {
             Self::WorkloadMemory { .. } => "workload_memory",
             Self::CapacityAddSwap { .. } => "capacity_add_swap",
             Self::PortHolders { .. } => "port_holders",
+            Self::ProxyModeGet => "proxy_mode_get",
+            Self::ProxyModeSet { .. } => "proxy_mode_set",
             Self::ProxyNetwork => "proxy_network",
             Self::WebDiscover { .. } => "web_discover",
             Self::WebMove { .. } => "web_move",
@@ -641,6 +648,7 @@ pub enum PrivReply {
     WebPlan(Box<crate::WebPlan>),
     WebMove(crate::WebMove),
     WebMoves(Vec<crate::WebMove>),
+    ProxyMode(crate::ProxyMode),
     PortHolders(Vec<crate::PortHolder>),
     ProxyNetwork {
         network: Box<crate::ProxyNetwork>,

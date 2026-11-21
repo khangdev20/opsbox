@@ -675,3 +675,11 @@ Align policy, threat model, README and site on trusted deployers, Full-token exc
 ## Fix 38 part 1 — Stable proxy busy state
 Expose additive proxy status `state: ports_busy` with existing holder details; keep fallback serving and default to running when primary ports are available.
 Keep the injectable 30-second retry, delay missed ticks, retain cached holders on ownership lookup failure, and clear them on promotion; mode/installer/UI work stays in parts 2–3.
+
+## Fix 38 part 2 — File-configured proxy modes
+Validate lowercase builtin/external/off; default builtin, while external/off skip all proxy binds and ACME and wait for shutdown under Restart=always.
+Installer writes only an explicit --proxy flag and preserves other sections; status reports mode and holder PID. Panel switching and watchdog mode awareness remain follow-ups.
+
+### Fix 38 completion — 2026-11-22
+
+`ProxyMode` is shared by configuration and typed helper operations. `ProxyModeGet` reads the current file setting so serve and watchdog see mode changes without being restarted. `ProxyModeSet` is unavailable to the proxy UID and exposed only to confirmed Admin sessions (Full tokens are refused). Writes preserve unrelated TOML text and are checked for semantic equivalence outside `proxy.mode`; unsupported layouts are refused. Failed restarts restore the original configuration. Active adoption/takeover receipts block disabling the proxy until undone. External upstreams use `active_host_port`, never the container port.

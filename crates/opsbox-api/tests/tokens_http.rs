@@ -351,6 +351,11 @@ async fn full_tokens_cannot_reach_root_equivalent_actions() {
     let cases = vec![
         (
             Method::POST,
+            "/api/v1/network/proxy/mode",
+            Some(json!({"mode":"external","confirm":true})),
+        ),
+        (
+            Method::POST,
             "/api/v1/jobs",
             Some(json!({"name":"probe","cron":"0 2 * * *","command":"true"})),
         ),

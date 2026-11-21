@@ -18,7 +18,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::VERSION;
-use crate::config::Config;
+use crate::config::{Config, ProxyMode};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -93,6 +93,7 @@ pub struct Report {
     pub serve_transport: ServeTransport,
     pub priv_socket: PathBuf,
     pub privileged: PrivState,
+    pub proxy_mode: ProxyMode,
     pub proxy_socket: PathBuf,
     pub proxy: ProxyState,
     pub watchdog_addr: SocketAddr,
@@ -155,6 +156,7 @@ impl Report {
         };
         let _ = writeln!(out, "priv     {tag} {}  {text}", self.priv_socket.display());
 
+        let _ = writeln!(out, "proxy mode: {}", self.proxy_mode);
         let (tag, text) = match &self.proxy {
             ProxyState::Conflict(network) => {
                 let holders = network
@@ -167,8 +169,9 @@ impl Report {
                             .filter(|h| h.port == *port)
                             .map(|h| {
                                 format!(
-                                    "{}{}",
+                                    "{} (pid {}){}",
                                     h.process,
+                                    h.pid,
                                     h.container.as_ref().map_or_else(
                                         || h.unit
                                             .as_ref()
@@ -211,6 +214,14 @@ impl Report {
             } => (
                 "ok      ",
                 format!("v{version}, {routes} route(s), {certs} cert(s)"),
+            ),
+            ProxyState::NotConfigured if self.proxy_mode != ProxyMode::Builtin => (
+                "off     ",
+                if self.proxy_mode == ProxyMode::External {
+                    "external proxy; domains stored only, no public listeners".to_owned()
+                } else {
+                    "proxy disabled; no public listeners".to_owned()
+                },
             ),
             ProxyState::NotConfigured => (
                 "off     ",
@@ -331,7 +342,7 @@ pub async fn collect(config: &Config) -> Report {
     let ((mut serve, serve_transport), privileged, proxy, watchdog) = tokio::join!(
         probe_serve(serve_addr),
         probe_priv(&config.priv_socket),
-        probe_proxy(&config.proxy_socket, proxy_expected),
+        probe_proxy(&config.proxy_socket, proxy_expected, config.proxy_mode),
         probe_watchdog(config, watchdog_expected),
     );
     if matches!(serve, ServeState::Degraded { ref detail, .. } if detail == "/readyz answered HTTP 403")
@@ -358,6 +369,7 @@ pub async fn collect(config: &Config) -> Report {
         serve_transport,
         priv_socket: config.priv_socket.clone(),
         privileged,
+        proxy_mode: config.proxy_mode,
         proxy_socket: config.proxy_socket.clone(),
         proxy,
         watchdog_addr,
@@ -447,7 +459,10 @@ async fn probe_watchdog(config: &Config, expected: bool) -> WatchdogState {
     }
 }
 
-async fn probe_proxy(socket: &Path, expected: bool) -> ProxyState {
+async fn probe_proxy(socket: &Path, expected: bool, mode: ProxyMode) -> ProxyState {
+    if mode != ProxyMode::Builtin {
+        return ProxyState::NotConfigured;
+    }
     let client = ProxyClient::new(socket).with_timeout(PROBE_TIMEOUT);
     match client.status("status").await {
         Ok(st) if st.network.port_conflict => ProxyState::Conflict(*st.network),
@@ -698,6 +713,17 @@ pub fn capacity(config: &Config) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn proxy_mode_disabled_skips_probe_even_when_unit_is_installed() {
+        for mode in [
+            crate::config::ProxyMode::External,
+            crate::config::ProxyMode::Off,
+        ] {
+            let state = probe_proxy(Path::new("/does/not/exist.sock"), true, mode).await;
+            assert_eq!(state, ProxyState::NotConfigured);
+        }
+    }
 
     #[test]
     fn parses_a_response() {
@@ -990,11 +1016,19 @@ mod tests {
                 version: VERSION.into(),
                 millis: 1,
             },
+            proxy_mode: ProxyMode::Builtin,
             proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
             proxy: ProxyState::Conflict(opsbox_proto::ProxyNetwork {
                 running: true,
                 port_conflict: true,
                 conflict_ports: vec![80],
+                holders: vec![opsbox_proto::PortHolder {
+                    port: 80,
+                    process: "caddy".into(),
+                    pid: 4321,
+                    unit: None,
+                    container: None,
+                }],
                 listen_http: Some("0.0.0.0:8080".parse().unwrap()),
                 listen_https: Some("0.0.0.0:443".parse().unwrap()),
                 ..Default::default()
@@ -1015,6 +1049,8 @@ mod tests {
                 && text.contains(":8080")
                 && text.contains("Settings > Network")
         );
+        assert!(text.contains("mode: builtin"), "{text}");
+        assert!(text.contains("caddy (pid 4321)"), "{text}");
         assert!(text.contains("warning") && !text.contains("safe mode"));
         assert!(!text.contains("journalctl"));
     }
@@ -1031,6 +1067,7 @@ mod tests {
                 version: VERSION.into(),
                 millis: 1,
             },
+            proxy_mode: ProxyMode::Builtin,
             proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
             proxy: ProxyState::NotConfigured,
             watchdog_addr: "127.0.0.1:8444".parse().unwrap(),
@@ -1052,6 +1089,12 @@ mod tests {
             "{text}"
         );
         let mut restricted = report;
+        for mode in [ProxyMode::External, ProxyMode::Off] {
+            restricted.proxy_mode = mode;
+            let text = restricted.render();
+            assert!(text.contains(&format!("proxy mode: {mode}")), "{text}");
+            assert!(text.contains("no public listeners"), "{text}");
+        }
         restricted.watchdog_allow_ips = vec!["203.0.113.7".parse().unwrap()];
         restricted.watchdog_cert_sha256 = Some("aabbcc".into());
         let text = restricted.render();
@@ -1079,6 +1122,7 @@ mod tests {
                 version: "0.0.1-old".into(),
                 millis: 1,
             },
+            proxy_mode: ProxyMode::Builtin,
             proxy_socket: "/run/opsbox-proxy/proxy.sock".into(),
             proxy: ProxyState::NotConfigured,
             watchdog_addr: "127.0.0.1:8444".parse().unwrap(),

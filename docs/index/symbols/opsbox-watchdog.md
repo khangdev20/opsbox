@@ -86,6 +86,7 @@ crates/opsbox-watchdog/src/probes.rs: fn probe_disk
 crates/opsbox-watchdog/src/probes.rs: fn probe_priv
 crates/opsbox-watchdog/src/probes.rs: fn probe_proxy
 crates/opsbox-watchdog/src/probes.rs: fn probe_serve
+crates/opsbox-watchdog/src/probes.rs: fn proxy_disabled  Read the helper's current mode each tick. A failed query retains normal health checks.
 crates/opsbox-watchdog/src/probes.rs: struct DiskHealth
 crates/opsbox-watchdog/src/server.rs: fn handle_request
 crates/opsbox-watchdog/src/server.rs: fn load_or_create_tls_acceptor  Load only the watchdog's dedicated certificate; never reuse panel credentials.

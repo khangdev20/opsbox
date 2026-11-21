@@ -420,7 +420,101 @@ fn replace_ports(
     let _: toml::Value = toml::from_str(&result).map_err(|_| invalid())?;
     Ok(result)
 }
+fn mode(env: &Env) -> Result<opsbox_proto::ProxyMode, PrivError> {
+    let (_, parsed) = config(env)?;
+    parsed
+        .get("proxy")
+        .and_then(|p| p.get("mode"))
+        .map(|v| v.clone().try_into().map_err(|_| invalid()))
+        .unwrap_or(Ok(opsbox_proto::ProxyMode::Builtin))
+}
+
+/// Preserve source text and verify that the requested value is the only semantic change.
+fn replace_mode(raw: &str, mode: opsbox_proto::ProxyMode) -> Result<String, PrivError> {
+    let mut expected: toml::Value = toml::from_str(raw).map_err(|_| invalid())?;
+    let table = expected.as_table_mut().ok_or_else(invalid)?;
+    let proxy = table
+        .entry("proxy")
+        .or_insert_with(|| toml::Value::Table(Default::default()));
+    proxy
+        .as_table_mut()
+        .ok_or_else(invalid)?
+        .insert("mode".into(), toml::Value::String(mode.to_string()));
+    let mut out = Vec::new();
+    let mut inside = false;
+    let mut found = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            inside = trimmed.split('#').next().unwrap_or("").trim() == "[proxy]";
+            if inside {
+                found = true;
+                out.push(line.to_owned());
+                out.push(format!("mode = \"{mode}\""));
+                continue;
+            }
+        }
+        if inside
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "mode")
+        {
+            continue;
+        }
+        out.push(line.to_owned());
+    }
+    if !found {
+        out.extend(["[proxy]".into(), format!("mode = \"{mode}\"")]);
+    }
+    let updated = out.join("\n") + "\n";
+    let parsed: toml::Value = toml::from_str(&updated).map_err(|_| invalid())?;
+    if parsed != expected {
+        return Err(invalid());
+    }
+    Ok(updated)
+}
+
+fn set_mode(
+    env: &Env,
+    desired: opsbox_proto::ProxyMode,
+    confirm: bool,
+) -> Result<PrivReply, PrivError> {
+    confirmed(confirm)?;
+    // An active adoption/takeover must first be undone; disabling its proxy would strand sites.
+    if desired != opsbox_proto::ProxyMode::Builtin
+        && (!receipts(env)?.is_empty()
+            || matches!(super::adoption::dispatch(&PrivOp::WebMoves, env)?, PrivReply::WebMoves(rows) if rows.iter().any(|r| r.active)))
+    {
+        return Err(error(
+            PrivErrorCode::Invalid,
+            "Undo active web moves and port takeovers in Network settings before disabling the proxy.",
+        ));
+    }
+    let (raw, _) = config(env)?;
+    let existed = env.config_path.exists();
+    let updated = replace_mode(&raw, desired)?;
+    let permissions =
+        fs::metadata(&env.config_path).map_or(0o644, |m| m.permissions().mode() & 0o777);
+    atomic_write(&env.config_path, updated.as_bytes(), permissions)?;
+    if command(&systemctl_bin(env), &["restart", "opsbox-proxy.service"]).is_err() {
+        if existed {
+            atomic_write(&env.config_path, raw.as_bytes(), permissions)?;
+        } else {
+            fs::remove_file(&env.config_path).map_err(|_| internal())?;
+        }
+        let _ = command(&systemctl_bin(env), &["restart", "opsbox-proxy.service"]);
+        return Err(error(
+            PrivErrorCode::Internal,
+            "The proxy could not restart. The previous configuration was restored; check the proxy service logs.",
+        ));
+    }
+    Ok(PrivReply::Done)
+}
+
 pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
+    if matches!(op, PrivOp::ProxyModeGet) {
+        return mode(env).map(PrivReply::ProxyMode);
+    }
     if let PrivOp::PortHolders { ports } = op {
         return holders(env, ports).map(PrivReply::PortHolders);
     }
@@ -432,8 +526,13 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
         PrivOp::WebMove { .. } | PrivOp::WebUndo { .. } | PrivOp::WebTls { .. } => {
             super::adoption::dispatch(op, env)
         }
+        PrivOp::ProxyModeSet { mode, confirm } => set_mode(env, *mode, *confirm),
         PrivOp::ProxyNetwork => Ok(PrivReply::ProxyNetwork {
-            network: Box::new(network(env)?),
+            network: Box::new(if mode(env)? == opsbox_proto::ProxyMode::Builtin {
+                network(env)?
+            } else {
+                ProxyNetwork::default()
+            }),
             undo: receipts(env)?,
         }),
         PrivOp::ProxyTakeover {
@@ -522,6 +621,24 @@ pub(crate) fn dispatch(op: &PrivOp, env: &Env) -> Result<PrivReply, PrivError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn proxy_mode_edit_preserves_settings_and_rejects_unsupported_layouts() {
+        let raw = "[log]\nmode = 'keep'\n[proxy] # public proxy\nmode = 'builtin'\nlisten_http = '0.0.0.0:80'\n";
+        let edited = replace_mode(raw, opsbox_proto::ProxyMode::External).unwrap();
+        let parsed: toml::Value = toml::from_str(&edited).unwrap();
+        assert_eq!(parsed["proxy"]["mode"].as_str(), Some("external"));
+        assert_eq!(parsed["log"]["mode"].as_str(), Some("keep"));
+        assert!(edited.contains("# public proxy"));
+        assert_eq!(
+            replace_mode(&edited, opsbox_proto::ProxyMode::External).unwrap(),
+            edited
+        );
+        assert!(
+            replace_mode("proxy = { mode = 'builtin' }", opsbox_proto::ProxyMode::Off).is_err()
+        );
+        let empty = replace_mode("", opsbox_proto::ProxyMode::Off).unwrap();
+        assert!(empty.contains("mode = \"off\""));
+    }
     #[test]
     fn tcp_v4_v6_listeners_only_and_units() {
         for local in ["00000000:0050", "00000000000000000000000000000000:0050"] {
