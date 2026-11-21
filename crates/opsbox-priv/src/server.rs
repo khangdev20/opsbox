@@ -572,8 +572,6 @@ mod tests {
         let env = test_env(dir.path());
         for op in [
             serde_json::json!({"type":"ping"}),
-            serde_json::json!({"type":"proxy_mode_get"}),
-            serde_json::json!({"type":"proxy_mode_set","args":{"mode":"external","confirm":true}}),
             serde_json::json!({"type":"pty_open","args":{"user":"no-such-user-fix29","cols":80,"rows":24}}),
             serde_json::json!({"type":"docker_logs_follow","args":{"id":"","tail":1}}),
             serde_json::json!({"type":"deploy_build","args":{
@@ -684,6 +682,8 @@ mod tests {
         let written = dir.path().join("must-not-exist");
         for op in [
             serde_json::json!({"type":"ping"}),
+            serde_json::json!({"type":"proxy_mode_get"}),
+            serde_json::json!({"type":"proxy_mode_set","args":{"mode":"external","confirm":true}}),
             serde_json::json!({"type":"job_add","args":{"name":"test","cron":"invalid","command":"true"}}),
             serde_json::json!({"type":"pty_open","args":{"user":"no-such-user-fix27","cols":80,"rows":24}}),
             serde_json::json!({"type":"reboot","args":{"delay_min":999999}}),

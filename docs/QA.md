@@ -1230,3 +1230,8 @@ From `/home/ubuntu/opsbox`, build with `CARGO_TARGET_DIR=~/target cargo build --
 
 
 Fix 38 CI follow-up (2026-11-22): the workspace run exposed a stale fix-27 authorization fixture: its allowed empty `PortHolders` query had no readable fake TCP tables, so fix 38 correctly returned an Internal error. The fixture now provides empty TCP/TCP6 files and also explicitly asserts that the proxy caller cannot read or change proxy mode. Product privilege/port-holder behavior is unchanged.
+
+
+VM read-only follow-up (2026-11-22): escalation allowed `multipass info/exec` after the sandbox socket denial. The existing `opsbox-vm` is Ubuntu 24.04.5, 2 CPUs, 3901 MiB total RAM, 4095 MiB swap and about 3.0 GiB free disk (90% used), running alpha.42 and an existing nginx container named `web`. The measured `free -m` used-memory reading was 840 MiB with that workload present; it is not an idle OS/opsbox/Docker baseline and is not used for the server-size guide. No VM sizing, containers, services or files were changed. Clean 1 GB/2 GB workload measurements and installation of this fix remain owner checks.
+
+Fix 38 CI test correction: the first fixture follow-up accidentally inserted the new mode refusal cases into the Serve logging test, which legitimately permits `ProxyModeGet`. CI caught its incorrect success assertion. The cases now belong to the Proxy connection authorization test, and the entire `server::tests` group passes locally. No runtime behavior changed in either follow-up.
