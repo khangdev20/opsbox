@@ -20,6 +20,7 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Fix 38 implementation is complete; 
 - Extended `tools/check-responsive-ui.mjs` with 1440/1920/2560 width assertions, Cleanup geometry, all New service tabs, Settings columns/alignment and the existing no-scroll checks.
 
 ## Verification
+- Fix 38 CI follow-up: corrected the authorization test fixture to provide readable empty TCP tables and added proxy-UID refusal coverage for mode get/set; first CI run failed at that stale fixture, so release waits for the corrected run.
 - Fix 38 completion: focused domain/network/panel/token HTTP suites, proxy mode/startup, real/fake port conflicts, helper network and watchdog mode tests pass outside socket restrictions. UI/API/installer fixtures and Chrome 390 px checks pass; fmt, focused all-target clippy, index/API inventories and release build pass (non-fatal local libLLVM strip warning).
 - Fix 38 part 2: test-first config/startup/status and installer checks pass; workspace check passes. Status suite has 9 passing tests and 6 sandbox socket-bind failures; fmt/clippy and index checks pass; release-build result in QA handoff.
 - Fix 38: socket-free fake startup/retry test and 3 helper network tests pass; fmt/clippy pass and maps regenerated. Full proxy tests hit sandbox socket-bind denial (9 pass, 4 existing library tests fail); rerun outside the sandbox.
@@ -37,6 +38,7 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Fix 38 implementation is complete; 
 - Fix prompts 01–39 are implemented; fix 38 Linux installation/restart owner checks remain. Fix 40 documentation is complete with proposed sizes; live 1 GB/2 GB measurements remain.
 
 ## Found, not fixed
+- INSTALL still has legacy Phase 0 prose about releases, ignored flags and manual uninstall; the new server-size guide does not refresh those unrelated sections.
 - The Security width rule uses `main:has(> .hdr a[href="#/security/access"])`, coupled to the header link; a header or page change can silently drop the 880 px cap.
 - Existing recursive delete/Trash policy checks only selected roots, not protected descendants; deleting an ancestor such as `/etc/systemd/system` can bypass descendant protection. Do not try it on an installed host.
 - This environment strips setuid bits from temporary files, preventing the existing mode-display test from passing; rerun the complete file tests on Linux.

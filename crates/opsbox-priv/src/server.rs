@@ -572,6 +572,8 @@ mod tests {
         let env = test_env(dir.path());
         for op in [
             serde_json::json!({"type":"ping"}),
+            serde_json::json!({"type":"proxy_mode_get"}),
+            serde_json::json!({"type":"proxy_mode_set","args":{"mode":"external","confirm":true}}),
             serde_json::json!({"type":"pty_open","args":{"user":"no-such-user-fix29","cols":80,"rows":24}}),
             serde_json::json!({"type":"docker_logs_follow","args":{"id":"","tail":1}}),
             serde_json::json!({"type":"deploy_build","args":{
@@ -669,6 +671,10 @@ mod tests {
     #[tokio::test]
     async fn connection_policy_precedes_dispatch_and_all_streams() {
         let dir = tempfile::tempdir().unwrap();
+        // Successful empty ownership data is distinct from unreadable proc tables.
+        std::fs::create_dir_all(dir.path().join("net")).unwrap();
+        std::fs::write(dir.path().join("net/tcp"), "").unwrap();
+        std::fs::write(dir.path().join("net/tcp6"), "").unwrap();
         let env = test_env(dir.path());
         let (mut client, helper) = UnixStream::pair().unwrap();
         let uid = helper.peer_cred().unwrap().uid();

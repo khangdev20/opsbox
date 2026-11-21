@@ -1227,3 +1227,6 @@ For each RAM size, record app/image versions, memory limits, swap, free disk bef
 | Same workload + GitHub Actions-built image: health, memory, disk | NOT RUN | NOT RUN |
 
 From `/home/ubuntu/opsbox`, build with `CARGO_TARGET_DIR=~/target cargo build --release`, reinstall with `sudo sh install.sh --dev --binary ~/target/release/opsbox`, and open the panel through `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`. Capture the measurements above, replace proposed guide entries only when supported by the recorded workload, and leave the 4 GB/50 GB row proposed until separately measured. Restore snapshots between workloads and after testing.
+
+
+Fix 38 CI follow-up (2026-11-22): the workspace run exposed a stale fix-27 authorization fixture: its allowed empty `PortHolders` query had no readable fake TCP tables, so fix 38 correctly returned an Internal error. The fixture now provides empty TCP/TCP6 files and also explicitly asserts that the proxy caller cannot read or change proxy mode. Product privilege/port-holder behavior is unchanged.
