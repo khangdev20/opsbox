@@ -326,8 +326,8 @@ export function capacityPage(c, { usageByName = {}, sortBy = 'name', sortDir = 1
 }
 
 /**
- * One-line footer for the Overview Memory KPI.
- * Returns { html, warn } so the tile can tint when builds are blocked or pressure is high.
+ * One-line footer for the Overview resource KPI.
+ * Returns the blocking resource so the matching tile can show the warning.
  */
 export function capacityFooter(c) {
   if (!c) {
@@ -336,13 +336,15 @@ export function capacityFooter(c) {
   const free = c.allocatable?.allocatable_mb ?? 0;
   const blocked = (c.features || []).filter((f) => f.fit?.status === 'blocked');
   const likely = blocked.find((f) => ['build', 'app', 'database', 'docker'].includes(f.feature));
+  const diskBlocked = likely?.fit?.reasons?.some((reason) => reason.includes('disk reserve'));
   const press = c.pressure || c.allocatable?.pressure;
+  const resource = !press && diskBlocked ? 'disk' : 'memory';
   let warn = false;
   let text = `${free} MB free to allocate`;
   if (press) { warn = true; text = 'memory pressure high'; }
   else if (likely) {
     warn = true;
-    text = likely.feature === 'build' ? 'builds blocked'
+    text = likely.feature === 'build' ? `builds blocked${diskBlocked ? ': not enough disk' : ': not enough memory'}`
       : likely.feature === 'database' ? 'databases blocked'
         : likely.feature === 'app' ? 'new apps blocked'
           : `${featureLabel(likely.feature)} blocked`;
@@ -352,6 +354,7 @@ export function capacityFooter(c) {
   }
   return {
     warn,
+    resource,
     html: html`<a class="kpi-foot${warn ? ' warn' : ''}" href="#/system/capacity">${text} · Capacity →</a>`,
   };
 }

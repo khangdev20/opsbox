@@ -98,13 +98,34 @@ fn capacity_result_with_devices(
     let mut reasons: Vec<String> = fit
         .reasons()
         .iter()
-        .filter(|reason| {
-            !s.profile
+        .filter_map(|reason| {
+            if s.profile
                 .disks
                 .iter()
                 .any(|d| reason.starts_with(&format!("{} needs ", d.path)))
+            {
+                return None;
+            }
+            if reason.starts_with("Needs ") && reason.contains(" MB allocatable (") {
+                if memory_ok {
+                    return None;
+                }
+                let mut reservations: Vec<_> = s.reservations.iter()
+                    .filter(|item| Some(item.name.as_str()) != r.replacing.as_deref())
+                    .collect();
+                reservations.sort_by_key(|item| std::cmp::Reverse(item.memory_mb));
+                let biggest = reservations.iter().take(3)
+                    .map(|item| format!("{}: {} MB reserved", item.name, item.memory_mb))
+                    .collect::<Vec<_>>().join(", ");
+                let detail = if biggest.is_empty() { String::new() } else { format!(" Biggest reservations: {biggest}.") };
+                return Some(if r.memory_mb > 0 && r.memory_mb < minimum {
+                    format!("You asked for {} MB, below the {minimum} MB minimum. Existing services reserve {} MB in total.{detail}", r.memory_mb, b.reserved_mb)
+                } else {
+                    format!("You asked for {} MB, only {have} MB are unreserved. Existing services reserve {} MB in total; this is their reserved limits, not current use.{detail}", r.memory_mb.max(minimum), b.reserved_mb)
+                });
+            }
+            Some(reason.clone())
         })
-        .cloned()
         .collect();
     reasons.extend(disk_reasons);
     let mut actions = Vec::new();
@@ -815,6 +836,74 @@ where
 mod tests {
     use super::*;
     use opsbox_capacity::Disk;
+
+    #[test]
+    fn capacity_reasons_match_failing_checks() {
+        let mut s = profile(false);
+        s.profile.memory_mb = 956;
+        s.profile.available_mb = 956;
+        s.profile.swap_mb = 1796;
+        s.profile.swap_free_mb = 1796;
+        s.profile.docker = true;
+        s.profile.disks = vec![Disk {
+            path: "/var/lib/docker".into(),
+            total_mb: 20480,
+            free_mb: 3484,
+        }];
+        s.reservations = vec![
+            opsbox_capacity::Reservation {
+                name: "greenglish-dev-worker-1".into(),
+                memory_mb: 512,
+                cpu_millis: 0,
+                database: false,
+            },
+            opsbox_capacity::Reservation {
+                name: "other".into(),
+                memory_mb: 192,
+                cpu_millis: 0,
+                database: false,
+            },
+        ];
+        assert_eq!(s.budget(None).allocatable_mb, 680);
+        let disk_request = CapacityRequest {
+            memory_mb: requirements::DEFAULT_MB,
+            disk_mb: 5120,
+            ..Default::default()
+        };
+        let disk_result =
+            capacity_result_with_devices(&s, &disk_request, &s.admit(&disk_request), |_| None);
+        eprintln!("disk fixture: {:?}", disk_result["checks"]);
+        assert_eq!(disk_result["checks"][0]["need_mb"], 128);
+        assert_eq!(disk_result["checks"][0]["have_mb"], 680);
+        assert_eq!(disk_result["checks"][0]["ok"], true);
+        assert_eq!(disk_result["checks"][1]["need_mb"], 7168);
+        assert_eq!(disk_result["checks"][1]["have_mb"], 3484);
+        assert_eq!(disk_result["checks"][1]["ok"], false);
+        let disk_reason =
+            "/var/lib/docker needs 7168 MB free including 2048 MB disk reserve; 3484 MB free.";
+        assert_eq!(disk_result["text"], disk_reason);
+        assert_eq!(disk_result["fit"]["reasons"], json!([disk_reason]));
+
+        s.profile.disks[0].free_mb = 12000;
+        let memory_request = CapacityRequest {
+            memory_mb: 768,
+            ..Default::default()
+        };
+        let memory_result =
+            capacity_result_with_devices(&s, &memory_request, &s.admit(&memory_request), |_| None);
+        eprintln!("memory fixture: {:?}", memory_result["checks"]);
+        assert_eq!(memory_result["checks"][0]["ok"], false);
+        assert_eq!(memory_result["checks"][1]["ok"], true);
+        for reason in [
+            memory_result["text"].as_str().unwrap(),
+            memory_result["fit"]["reasons"][0].as_str().unwrap(),
+        ] {
+            assert!(reason.contains("You asked for 768 MB, only 680 MB are unreserved"));
+            assert!(reason.contains("greenglish-dev-worker-1: 512 MB reserved"));
+            assert!(reason.contains("reserved limits, not current use"));
+            assert!(!reason.contains("disk reserve"));
+        }
+    }
 
     #[test]
     fn four_paths_on_one_device_produce_one_disk_check() {

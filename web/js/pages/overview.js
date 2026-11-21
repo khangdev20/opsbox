@@ -110,12 +110,13 @@ export async function view() {
   const row2 = (x) => html`${containersSection(x.cs || (lastM.containers || []).map((c) => ({ ...c, state: 'running' })))}${reclaimSection(x.cl)}${activitySection(x.audit)}`;
   const x0 = await extras();
   const procBadge = () => liveState().ok ? html`<span class="live-badge">● live</span>` : html`<span class="live-badge stale">● paused</span>`;
-  const memKpi = (m, cap = lastCap) => kpi('Memory', num(m.memUsed, 'dec1'), ` / ${m.memTotal} GB`, m.memUsed / m.memTotal * 100, html`<span class="sm muted mono">cache ${num(m.cache, 'dec1')} GB</span>`, true, capacityFooter(cap), 'mem-kpi');
-  const body = (m, cap = lastCap) => html`
+  const body = (m, cap = lastCap) => {
+    const foot = capacityFooter(cap);
+    return html`
     <div class="kpis" id="kpis">
       ${kpi(`CPU · ${h.cores} cores`, num(m.cpuNow, 'int'), '%', m.cpuNow, html`<span class="sm muted mono">load ${m.load.map((x, i) => html`${i ? ' ' : ''}${num(x, 'dec2')}`)}</span>`)}
-      ${memKpi(m, cap)}
-      ${kpi('Disk /', num(m.disk, 'int'), ` / ${m.diskTotal} GB`, m.disk / m.diskTotal * 100, html`<span class="sm muted mono">${num(m.diskTotal - m.disk, 'gb0')} free</span>`)}
+      ${kpi('Memory', num(m.memUsed, 'dec1'), ` / ${m.memTotal} GB`, m.memUsed / m.memTotal * 100, html`<span class="sm muted mono">cache ${num(m.cache, 'dec1')} GB</span>`, true, foot.resource === 'memory' ? foot : '', 'mem-kpi')}
+      ${kpi('Disk /', num(m.disk, 'int'), ` / ${m.diskTotal} GB`, m.disk / m.diskTotal * 100, html`<span class="sm muted mono">${num(m.diskTotal - m.disk, 'gb0')} free</span>`, true, foot.resource === 'disk' ? foot : '', 'disk-kpi')}
       ${kpi('Network', num(m.netIn, 'dec1'), ' MB/s in', Math.min(100, m.netIn * 8), html`<span class="sm muted mono">out ${num(m.netOut, 'dec1')} MB/s · ${num(m.conns, 'int')} conns</span>`, false)}
     </div>
     <div class="ov-grid">
@@ -123,6 +124,7 @@ export async function view() {
         <div class="chart-legend mono"><span><i class="ln"></i> CPU <b>${num(m.cpuNow, 'pct')}</b></span><span><i class="ln dash"></i> Memory <b>${num(m.memUsed / m.memTotal * 100, 'pct')}</b></span><span class="grow"></span><span class="muted">avg CPU ${num(avg(m.cpu), 'pct')} · peak ${num(Math.max(0, ...m.cpu), 'pct')}</span></div>`, '', 'span3')}
       ${section(html`Top processes ${procBadge()}`, topProcesses(m, sortBy), html`<div class="row">${sortSwitch(sortBy)}<a class="more" href="#/system">All →</a></div>`, 'span3')}
     </div>`;
+  };
   return {
     nav: 'overview', title: 'Overview',
     html: html`<main>${header('Overview', `${h.name} · ${h.os} · kernel ${h.kernel} · up ${h.upDays} days · ${h.cores} cores`, html`<a class="btn primary" href="#/apps/new">New service</a>`)}
@@ -145,17 +147,12 @@ export async function view() {
       const f = async () => { if (!live.isConnected) return; repaint(await api.getMetrics()); };
       listeners.add(f); this._f = f;
       this._stopPoll = poll(async () => {
-        // One capacity fetch per poll; Memory KPI footer shares it (no second request).
+        // One capacity fetch per poll; the resource KPI footer shares it.
         const [data, cap, x] = await Promise.all([api.getProxyNetwork().catch(() => null), api.getCapacity().catch(() => null), extras()]);
         lastCap = cap;
         const b = root.querySelector('#proxy-network-banner'), r2 = root.querySelector('#ov-row2');
-        const footHost = root.querySelector('#cap-foot'), memTile = root.querySelector('#mem-kpi');
-        await refreshing(footHost || r2, async () => {
-          if (footHost && memTile) {
-            const foot = capacityFooter(cap);
-            memTile.classList.toggle('warn-foot', !!foot.warn);
-            patch(footHost, foot.html.toString());
-          }
+        await refreshing(r2, async () => {
+          repaint(lastM, cap);
           if (b) patch(b, networkBanner(data).toString());
           if (r2) patch(r2, row2(x).toString());
         });

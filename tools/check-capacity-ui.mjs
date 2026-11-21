@@ -46,6 +46,11 @@ assert.deepEqual(cap.fitStatus({status:'ok'}),{kind:'ok',label:'Fits',status:'ok
 assert.deepEqual(cap.fitStatus({status:'tight'}),{kind:'warn',label:'Tight',status:'tight'});
 assert.deepEqual(cap.fitStatus({status:'blocked'}),{kind:'fail',label:'Blocked',status:'blocked'});
 const foot=cap.capacityFooter(sample);assert(foot.warn);assert(foot.html.toString().includes('builds blocked'));assert(foot.html.toString().includes('#/system/capacity'));
+const diskBlocked={...sample,features:[{feature:'build',fit:{status:'blocked',reasons:['/var/lib/docker needs 7168 MB free including 2048 MB disk reserve; 3484 MB free.']}}]};
+const diskFoot=cap.capacityFooter(diskBlocked);
+assert.equal(diskFoot.resource,'disk');assert(diskFoot.html.toString().includes('builds blocked: not enough disk'));
+const overviewSource=await readFile(new URL('../web/js/pages/overview.js',import.meta.url),'utf8');
+assert(/kpi\('Disk \/'[^\n]*foot\.resource === 'disk' \? foot/.test(overviewSource),'Overview places the capacity footer under Disk when disk blocks');
 const footOk=cap.capacityFooter({...sample,features:sample.features.map(f=>({...f,fit:{status:'ok'}})),allocatable:{...sample.allocatable,allocatable_mb:400}});
 assert(!footOk.warn);assert(footOk.html.toString().includes('400 MB free'));
 for(const key of Object.keys(cap.FEATURE_LABELS))assert(cap.featureLabel(key));
