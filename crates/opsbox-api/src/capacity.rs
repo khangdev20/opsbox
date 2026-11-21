@@ -24,6 +24,9 @@ fn device_id(path: &str) -> Option<u64> {
     }
 }
 
+/// device id, paths, required MB, free MB, reserve MB
+type DiskGroup = (Option<u64>, Vec<String>, u64, u64, u64);
+
 fn capacity_result_with_devices(
     s: &Snapshot,
     r: &CapacityRequest,
@@ -65,7 +68,7 @@ fn capacity_result_with_devices(
             {"label":"swap credit","mb":if database { 0 } else { b.swap_credit_mb }}
         ]
     })];
-    let mut groups: Vec<(Option<u64>, Vec<String>, u64, u64, u64)> = Vec::new();
+    let mut groups: Vec<DiskGroup> = Vec::new();
     for d in &s.profile.disks {
         let id = device_of(&d.path);
         let reserve = requirements::disk_mb(d.total_mb);
