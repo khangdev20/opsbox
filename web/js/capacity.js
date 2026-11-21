@@ -49,7 +49,7 @@ export function fitReasons(fit) {
 
 export function capacityFields(memory = 128) {
   return html`<div class="field"><label for="cap-mem">Memory limit (MB)</label>${numberField({ id: 'cap-mem', name: 'memoryLimitMb', value: memory, min: 64, max: 1048576, step: 64, label: 'memory limit', attrs: 'data-capacity-memory' })}</div>
-    <p data-capacity-result role="status" aria-live="polite">Checking server capacity…</p>
+    <div data-capacity-result role="status" aria-live="polite">Checking server capacity…</div>
     ${server.role === 'admin' ? html`<div class="field"><label class="opt"><input type="checkbox" data-capacity-override> Override capacity (Owner only)</label></div><div class="field"><label for="cap-confirm">To override, type “${CAPACITY_CONFIRMATION}”</label><input class="input" id="cap-confirm" data-capacity-confirmation autocomplete="off"></div>` : ''}`;
 }
 export function capacityPayload(root) {
@@ -68,7 +68,10 @@ export function bindCapacity(root, request, submit = 'button[type="submit"]') {
     const blocked = !last || last.fit.status === 'blocked';
     const status = last ? fitStatus(last.fit).label : '';
     const reason = last ? [status, ...fitReasons(last.fit)].join(' · ') : 'Checking server capacity…';
-    if (out) out.textContent = reason;
+    if (out) {
+      if (last?.fit?.status === 'blocked' && Array.isArray(last.checks) && Array.isArray(last.actions)) out.innerHTML = blockedCapacityCard(last).toString();
+      else out.textContent = last?.fit?.status === 'blocked' && last.text ? last.text : reason;
+    }
     root.querySelectorAll(submit).forEach((b) => { b.disabled = root.hasAttribute('data-capacity-busy') || (blocked && !allowed); b.title = blocked ? reason : ''; });
   };
   const refresh = async () => {
@@ -85,10 +88,61 @@ export function bindCapacity(root, request, submit = 'button[type="submit"]') {
     if (!e.target.matches('[data-capacity-memory]')) { paint(); return; }
     last = null; paint(); clearTimeout(timer); timer = setTimeout(refresh, 200);
   });
+  root.addEventListener('click', async (e) => {
+    const action = e.target.closest?.('[data-capacity-action]');
+    if (!action || !root.contains(action)) return;
+    const id = action.dataset.capacityAction;
+    if (id === 'lower_limit') {
+      const field = root.querySelector('[data-capacity-memory]');
+      if (field) { field.value = action.dataset.mb; field.dispatchEvent(new Event('input', { bubbles: true })); field.focus(); }
+    } else if (id === 'stop_service') {
+      const name = action.dataset.target;
+      if (!await confirmDialog({ title: `Stop ${name}?`, body: 'Active connections to this service will drop.', confirm: 'Stop service', danger: true })) return;
+      try {
+        const containers = await api.listContainers();
+        const container = containers.find((c) => c.name === name || c.service === name);
+        if (!container) throw new Error(`${name} is not running. Refresh capacity and try again.`);
+        await api.containerAction(container.id, 'stop');
+        toast(`${name} stopped.`); refresh();
+      } catch (err) { toast(err.message, 'err'); }
+    }
+  });
   refresh();
   // `repaint` re-applies the button state (for example after `data-capacity-busy` changed)
   // without a new check, so the result line and the override fields stay as they are.
   return { refresh, repaint: paint, dispose() { clearTimeout(timer); generation++; } };
+}
+const capacityGb = (mb) => `${(Math.max(0, Number(mb) || 0) / 1024).toFixed(1)} GB`;
+
+export function blockedCapacityCard(result) {
+  if (!Array.isArray(result?.checks) || !Array.isArray(result?.actions)) return html`<p class="muted">${result?.text || ''}</p>`;
+  const memory = result.checks.find((c) => c.kind === 'memory');
+  const disks = result.checks.filter((c) => c.kind === 'disk');
+  if (!memory || !disks.length) return html`<p class="muted">${result.text || ''}</p>`;
+  const disk = disks.find((c) => !c.ok) || disks[0];
+  const paths = [...new Set(disks.flatMap((c) => c.paths || []))];
+  const checkRow = (check, label, extra = '') => html`<div class="cap-check">
+    <div class="cap-check-head"><b>${label}</b><span>need ${capacityGb(check.need_mb)}, have ${capacityGb(check.have_mb)}</span></div>
+    ${bar(check.have_mb / Math.max(1, check.need_mb), `${label} available versus needed`, { thresholds: false })}
+    ${!check.ok ? html`<span class="cap-short"><span aria-hidden="true">⚠</span> short by ${capacityGb(check.need_mb - check.have_mb)}</span>` : ''}
+    ${extra}
+  </div>`;
+  const actionIds = ['lower_limit', 'build_in_ci', 'stop_service', 'cleanup_disk', 'upgrade_instance'];
+  const actions = actionIds.map((id) => result.actions.find((a) => a.id === id)).filter(Boolean);
+  const action = (a) => {
+    if (a.id === 'lower_limit') return html`<button type="button" class="cap-action btn" data-capacity-action="lower_limit" data-mb="${a.effect_mb}">Lower the memory limit to ${a.effect_mb} MB <span class="muted">(sets the field)</span></button>`;
+    if (a.id === 'build_in_ci') return html`<a class="cap-action btn" href="https://docs.github.com/en/actions/use-cases-and-examples/publishing-packages/publishing-docker-images" target="_blank" rel="noopener noreferrer">Build in GitHub Actions and pull the image</a>`;
+    if (a.id === 'stop_service') return html`<button type="button" class="cap-action btn" data-capacity-action="stop_service" data-target="${a.target}">Stop ${a.target} <span class="muted">(frees ${a.effect_mb} MB; asks first)</span></button>`;
+    if (a.id === 'cleanup_disk') return html`<a class="cap-action btn" href="#/cleanup">Clean up disk <span class="muted">(opens Cleanup)</span></a>`;
+    return html`<a class="cap-action btn" href="https://github.com/khangdev20/opsbox/blob/dev/docs/INSTALL.md" target="_blank" rel="noopener noreferrer">Upgrade the instance <span class="muted">(opens docs)</span></a>`;
+  };
+  return html`<section class="cap-blocked" aria-label="Capacity blocked">
+    <div class="cap-blocked-title"><h3>Can't build here</h3>${st('fail', 'Blocked')}</div>
+    <p>This build needs ${capacityGb(memory.need_mb)} of memory and ${capacityGb(disk.need_mb)} of free disk. This server has ${capacityGb(memory.have_mb)} memory available and ${capacityGb(disk.have_mb)} free disk.</p>
+    <div class="cap-checks">${checkRow(memory, 'Memory')}${checkRow(disk, 'Disk', html`<span class="sm muted cap-paths">${paths.join(', ')}</span>`)}</div>
+    <details class="cap-details"><summary>Details</summary><table><tbody>${(memory.breakdown || []).map((item) => html`<tr><th scope="row" title="${item.label === 'swap credit' ? 'Swap can help apps and builds; it does not count for databases.' : item.label === 'OS' ? 'Memory kept free for safety.' : ''}">${item.label === 'swap credit' ? 'Swap help' : item.label === 'OS' ? 'Kept free for safety' : item.label}</th><td>${item.mb} MB</td></tr>`)}</tbody></table></details>
+    ${actions.length ? html`<div class="cap-fixes"><h4>How to fix</h4>${actions.map(action)}</div>` : ''}
+  </section>`;
 }
 export async function withCapacityOverride(run, body) {
   try { return await run(body); } catch (e) {

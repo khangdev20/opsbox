@@ -248,7 +248,35 @@ async function runBrowserChecks() {
       source: `try { sessionStorage.setItem('opsbox.user', 'admin'); } catch (e) {}`,
     });
     await browser.send('Page.navigate', { url: `${base}/index.html?mode=mock#/` });
-    await waitFor(browser.evalJs, `!!document.getElementById('nav-btn') && !!document.querySelector('.shell')`, 'shell mounted');
+    await waitFor(browser.evalJs, `!!document.getElementById('nav-btn') && !!document.querySelector('.shell') && !!document.querySelector('.content main')`, 'shell mounted');
+    const blockedCard = await browser.evalJs(`(async () => {
+      const { blockedCapacityCard } = await import('/js/capacity.js');
+      const fixture = { checks: [
+        { kind: 'memory', need_mb: 1536, have_mb: 700, ok: false, breakdown: ['RAM','OS','opsbox','Docker','workloads','swap credit'].map(label => ({ label, mb: 128 })) },
+        { kind: 'disk', need_mb: 7168, have_mb: 3482, ok: false, paths: ['/var/lib/docker','/srv/apps'] }
+      ], actions: [
+        { id: 'lower_limit', effect_mb: 640 }, { id: 'build_in_ci' },
+        { id: 'stop_service', target: 'shop', effect_mb: 256 },
+        { id: 'cleanup_disk' }, { id: 'upgrade_instance' }
+      ] };
+      const host = document.createElement('div');
+      host.innerHTML = blockedCapacityCard(fixture).toString();
+      document.querySelector('.content main').append(host);
+      const card = host.querySelector('.cap-blocked');
+      const result = { rows: card.querySelectorAll('.cap-check').length,
+        paths: (card.textContent.match(/\\/var\\/lib\\/docker/g) || []).length,
+        collapsed: !card.querySelector('details').open,
+        actions: [...card.querySelectorAll('.cap-action')].map(el => ({ tag: el.tagName, height: el.getBoundingClientRect().height })),
+        scrollWidth: document.documentElement.scrollWidth, viewport: innerWidth };
+      host.remove();
+      return result;
+    })()`);
+    assert.equal(blockedCard.rows, 2, 'blocked card has two check rows');
+    assert.equal(blockedCard.paths, 1, 'disk paths appear once');
+    assert(blockedCard.collapsed, 'capacity details start collapsed');
+    assert.equal(blockedCard.actions.length, 5, 'blocked card has five actions');
+    assert(blockedCard.actions.every((a) => ['A', 'BUTTON'].includes(a.tag) && a.height >= 43.5), `capacity action targets at 390px: ${JSON.stringify(blockedCard.actions)}`);
+    assert(blockedCard.scrollWidth <= blockedCard.viewport + 1, `blocked card overflows at 390px: ${blockedCard.scrollWidth}/${blockedCard.viewport}`);
 
     for (const w of [360, 390, 768, 1024]) {
       await setViewport(browser, w, w <= 768 ? 800 : 900);

@@ -1,7 +1,7 @@
 # Status
 
-Last prompt completed: **Fix 35 — Capacity result structured**.
-Released: `v0.1.0-alpha.49` (fixes 33–34). Next release: `v0.1.0-alpha.50` after fixes 36–37.
+Last prompt completed: **Fix 36 — Capacity blocked card**.
+Released: `v0.1.0-alpha.49` (fixes 33–34). Next release: `v0.1.0-alpha.50` after fix 37.
 
 ## Completed
 - Full-width pages (`main`) use `width: min(100%, 1680px)` with `clamp(16px, 2.5vw, 40px)` side padding instead of the 1180 px cap.
@@ -10,10 +10,12 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Next release: `v0.1.0-alpha.50` aft
 - New service uses the wide container for all five tabs; source forms sit in a two-column grid with readable 560 px fields; repository rows are a grid with a straight right-aligned action, 12 px padding, name ellipsis/title and "Choose build" when nothing is detected.
 - Settings uses the wide container with two-column section cards above 1100 px, 560 px field caps inside cards, right-aligned header actions, and one column at or below 1100 px.
 - Capacity responses now carry grouped disk `checks` (one per device), a memory check with a six-row `breakdown`, `actions` with stable ids, and the legacy `text` built from the grouped reasons so a shared disk appears once.
+- The blocked capacity state is a card: plain need/have sentence, two check rows with bars and "short by", disk paths once, collapsed details table, and five effect-labelled fix actions (with legacy text fallback).
 - Extended `tools/check-responsive-ui.mjs` with 1440/1920/2560 width assertions, Cleanup geometry, all New service tabs, Settings columns/alignment and the existing no-scroll checks.
 
 ## Verification
 - `cargo test -p opsbox-api --lib capacity` and `--test capacity_http` pass: one disk check for four paths on one device, two for two devices, single disk sentence, grouped `checks`/`actions`/`breakdown`.
+- `node tools/check-capacity-ui.mjs` and `node tools/check-responsive-ui.mjs` pass, including the blocked card rows, single disk-path line, collapsed details, five 44 px actions at 390 and the legacy fallback.
 - `timeout 120 node tools/check-responsive-ui.mjs` passes the source and Chrome browser checks, including every New service tab, Settings two-column alignment and 1440/390 row geometry.
 - `timeout 120 python3 scripts/gen-index.py --check` passes; no generated map is stale.
 - CI runs the workspace tests, release build, musl targets, cargo-deny and installer checks on the pushed commit.
@@ -21,7 +23,7 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Next release: `v0.1.0-alpha.50` aft
 
 ## Limits and next prompt
 - Prior fixes' Linux owner checks in `docs/QA.md` still need the `opsbox-vm`; none were run here.
-- Fix prompts 01–35 are complete in the working tree; 36 and 37 remain.
+- Fix prompts 01–36 are complete in the working tree; 37 remains.
 
 ## Found, not fixed
 - The Security width rule uses `main:has(> .hdr a[href="#/security/access"])`, coupled to the header link; a header or page change can silently drop the 880 px cap.

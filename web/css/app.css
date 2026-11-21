@@ -831,6 +831,25 @@ tbody[data-flip]>tr{will-change:transform;background:var(--hl)}
 .cap-sort:hover{color:var(--text)}
 .cap-press{font-size:28px!important;letter-spacing:-.03em}
 .cap-press.ok{color:var(--ok)}.cap-press.warn{color:var(--warn)}.cap-press.fail{color:var(--danger)}
+.cap-blocked{min-width:0;max-width:760px;padding:20px;border:1px solid var(--line);border-radius:12px;background:var(--hl);overflow-wrap:anywhere}
+.cap-blocked-title{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px}
+.cap-blocked-title h3,.cap-fixes h4{margin:0}
+.cap-blocked>p{margin:0 0 18px;line-height:1.5}
+.cap-checks{display:grid;gap:14px}
+.cap-check{min-width:0;display:grid;gap:6px}
+.cap-check-head{display:flex;justify-content:space-between;flex-wrap:wrap;gap:4px 12px;font-size:14px}
+.cap-check-head span{color:var(--muted)}
+.cap-short{color:var(--warn);font-size:13px;font-weight:600}
+.cap-paths{overflow-wrap:anywhere}
+.cap-details{margin-top:18px}
+.cap-details summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600}
+.cap-details table{width:100%;max-width:420px;border-collapse:collapse;font-size:13px}
+.cap-details th,.cap-details td{padding:5px 0;border-bottom:1px solid var(--line)}
+.cap-details th{text-align:left;font-weight:400}.cap-details td{text-align:right;font-family:var(--mono)}
+.cap-fixes{display:grid;gap:8px;margin-top:18px}
+.cap-fixes h4{margin-bottom:4px}
+.cap-action{min-height:44px;max-width:100%;width:fit-content;white-space:normal;text-align:left;justify-content:flex-start;overflow-wrap:anywhere}
+@media (max-width:640px){.cap-blocked{padding:16px}.cap-action{width:100%}}
 .kpi-foot{display:block;margin-top:2px;font:500 13px var(--ui);color:var(--muted);text-decoration:none}
 .kpi-foot:hover{color:var(--text)}
 .kpi-foot.warn,.kpi.warn-foot .kpi-foot{color:var(--warn)}

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 globalThis.location={search:'?mode=http',protocol:'https:',port:'8443'};
 globalThis.document={cookie:'opsbox_csrf=test-csrf'};
-const calls=[];let blocked=false;
-globalThis.fetch=async(url,options)=>{calls.push({url,...options});return {ok:true,json:async()=>url.includes('/check?')?{fit:blocked?{status:'blocked',reasons:['Needs 512 MB'],suggestions:['Add swap']}:{status:'ok'}}:{ok:true}};};
+const calls=[];let blocked=false,structured=null;
+globalThis.fetch=async(url,options)=>{calls.push({url,...options});return {ok:true,json:async()=>url.includes('/check?')?(structured||{fit:blocked?{status:'blocked',reasons:['Needs 512 MB'],suggestions:['Add swap']}:{status:'ok'}}):{ok:true}};};
 const data=s=>`data:text/javascript;base64,${Buffer.from(s).toString('base64')}`;
 const apiUrl=data(await readFile(new URL('../web/js/api.js',import.meta.url),'utf8'));const api=await import(apiUrl);
 await api.getCapacity();await api.checkCapacity({feature:'database',memory_mb:512,database:true});await api.addCapacitySwap(1024);
@@ -19,6 +19,24 @@ const result={textContent:''},button={disabled:false},memory={value:'128'},root=
 const control=cap.bindCapacity(root,()=>({feature:'app',memory_mb:cap.capacityPayload(root).memoryLimitMb}));await control.refresh();assert.equal(button.disabled,false);assert.equal(result.textContent,'Fits');
 blocked=true;memory.value='512';await control.refresh();assert.equal(button.disabled,true);assert(result.textContent.includes('Needs 512 MB')&&button.title.includes('Add swap'));control.dispose();
 server.role='admin';
+const blockedFixture={fit:{status:'blocked'},text:'Legacy blocked result',checks:[
+  {kind:'memory',need_mb:1536,have_mb:700,ok:false,breakdown:[{label:'RAM',mb:2048},{label:'OS',mb:192},{label:'opsbox',mb:128},{label:'Docker',mb:150},{label:'workloads',mb:768},{label:'swap credit',mb:0}]},
+  {kind:'disk',need_mb:7168,have_mb:3482,ok:false,paths:['/var/lib/docker','/srv/apps'],reserve_mb:1024},
+],actions:[{id:'lower_limit',effect_mb:640},{id:'build_in_ci'},{id:'stop_service',target:'shop',effect_mb:256},{id:'cleanup_disk'},{id:'upgrade_instance'}]};
+const blockedHtml=cap.blockedCapacityCard(blockedFixture).toString();
+structured=blockedFixture;await control.refresh();assert(result.innerHTML.includes('cap-blocked'));structured=null;
+const capacityCss=await readFile(new URL('../web/css/app.css',import.meta.url),'utf8');
+assert.equal((blockedHtml.match(/class="cap-check"/g)||[]).length,2);
+for(const path of blockedFixture.checks[1].paths)assert.equal(blockedHtml.split(path).length-1,1);
+assert(blockedHtml.includes('<details')&&!blockedHtml.includes('<details open'));
+assert.equal((blockedHtml.match(/<tr>/g)||[]).length,6);
+assert.equal((blockedHtml.match(/class="cap-action btn/g)||[]).length,5);
+assert(blockedHtml.includes('data-capacity-action="lower_limit"')&&blockedHtml.includes('data-capacity-action="stop_service"'));
+assert(blockedHtml.includes('href="#/cleanup"')&&blockedHtml.includes('docs.github.com')&&blockedHtml.includes('docs/INSTALL.md'));
+assert(blockedHtml.includes('need 1.5 GB')&&blockedHtml.includes('have 0.7 GB'));
+assert(cap.blockedCapacityCard({text:'Old server message'}).toString().includes('Old server message'));
+assert(/\.cap-action\{[^}]*min-height:44px/.test(capacityCss),'capacity actions need 44px height');
+assert(/\.cap-blocked\{[^}]*min-width:0/.test(capacityCss),'capacity card must shrink inside phone layouts');
 const sample={profile:{memory_mb:1024,swap_mb:0,cpu_millis:1000},allocatable:{os_mb:192,opsbox_mb:128,docker_mb:150,reserved_mb:256,swap_credit_mb:0,allocatable_mb:298,database_allocatable_mb:298},reservations:[{name:'<api>',memory_mb:256,cpu_millis:0,database:false}],features:[{feature:'build',minimum_mb:1536,recommended_mb:2048,disk_mb:5120,fit:{status:'blocked',reasons:['Needs 1536 MB']}},{feature:'app',minimum_mb:128,recommended_mb:256,disk_mb:0,fit:{status:'ok'}}],pressure:false,swap_offer_mb:1024};
 const page=cap.capacityPage(sample).toString();
 assert(page.includes('&lt;api&gt;')&&!page.includes('<api>'));assert(page.includes('capacity-swap')&&page.includes('298'));assert(page.includes('Build on this server')&&page.includes('Blocked'));
