@@ -17,6 +17,8 @@ Primary targets (x86_64 and arm64, systemd):
 
 Other Linux distributions may work; they are not the alpha release bar yet.
 
+Requirements (proposed, pending VM measurements): **1 GB to run apps, 2 GB or more to build on the server**. See the [server size guide](docs/INSTALL.md#server-size-guide) for proposed disk sizes and workload examples.
+
 ## Install
 
 ```sh

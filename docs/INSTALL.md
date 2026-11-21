@@ -2,6 +2,22 @@
 
 Phase 0 has no signed releases yet, so the supported way to try the installer is with a binary you built yourself.
 
+## Requirements
+
+Proposed starting sizes: **1 GB to run apps, 2 GB or more to build on the server**; these have not yet been measured on the disposable VM. See the [server size guide](#server-size-guide).
+
+## Server size guide
+
+**Proposed — all RAM and disk sizes below are starting estimates, pending VM measurements.**
+
+| What you run | RAM (proposed) | Disk (proposed) |
+|---|---|---|
+| Try it: 1 to 2 small apps from prebuilt images | 1 GB | 20 GB |
+| 2 to 3 apps and 1 database, building on the server | 2 GB | 25 GB |
+| 4 to 8 containers, several databases, frequent builds | 4 GB | 50 GB |
+
+Use a 1 GB server to run apps, with builds done in GitHub Actions and the resulting image pulled onto the server. These are guides, and the panel's Capacity view checks your server's available memory and free disk for each workload; a busy server may need more space or memory than the proposed sizes.
+
 ## What gets installed
 
 | Path | What | Owner / mode |

@@ -1,9 +1,10 @@
 # Status
 
-Last prompt completed: **Fix 38 — Proxy modes and port conflict choices**.
+Last prompt completed: **Fix 40 — Server size guide (proposed sizes)**.
 Released: `v0.1.0-alpha.49` (fixes 33–34). Fix 38 implementation is complete; next release follows CI. Live Linux owner checks remain in `docs/QA.md`.
 
 ## Completed
+- Fix 40: single proposed workload/RAM/disk guide in INSTALL; matching README/site requirements and links. VM 1 GB/2 GB measurements remain explicitly NOT RUN in QA owner checks.
 - Fix 38 part 3: confirmed Admin-only helper mode changes with rollback; Domains holder/PID choices and active upstream; mode-aware readiness, watchdog, certificate endpoints and installer preflight.
 - Fix 38 part 2: validated builtin/external/off file modes, no proxy binds or ACME in external/off, installer flag with omission preservation/idempotence, and CLI mode/holder PID output.
 - Fix 38 part 1: additive `ports_busy` proxy status with holder name/PID, stable fallback serving and injectable 30-second retries without catch-up bursts; unreadable helper port tables preserve cached holder details.
@@ -33,7 +34,7 @@ Released: `v0.1.0-alpha.49` (fixes 33–34). Fix 38 implementation is complete; 
 
 ## Limits and next prompt
 - Prior fixes' Linux owner checks in `docs/QA.md` still need the `opsbox-vm`; none were run here.
-- Fix prompts 01–39 are implemented; fix 38 Linux installation/restart owner checks remain. Fix 40 server-size documentation is next.
+- Fix prompts 01–39 are implemented; fix 38 Linux installation/restart owner checks remain. Fix 40 documentation is complete with proposed sizes; live 1 GB/2 GB measurements remain.
 
 ## Found, not fixed
 - The Security width rule uses `main:has(> .hdr a[href="#/security/access"])`, coupled to the header link; a header or page change can silently drop the 880 px cap.

@@ -59,5 +59,4 @@ Order is by importance for the public alpha: 01 to 06 first.
 ## Security batch (19-30): do these BEFORE the public alpha post
 Order: 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30. Items 19 to 21 are the must-haves; 22 to 25 are quick hardening; 26 to 28 are the structural root-boundary work (26 before 27); 30 is docs and can run any time. Prompts 01 to 18 can wait until these are done.
 | 38 | Proxy port conflict ([38-proxy-port-conflict.md](archive/38-proxy-port-conflict.md)) | Fixed in fix 38 (live owner checks pending) |
-| 40 | Server size guide (`40-server-size-guide.md`) | |
-| 40 | Server size guide (`40-server-size-guide.md`), docs only | |
+| 40 | Server size guide ([40-server-size-guide.md](archive/40-server-size-guide.md)), docs only | Fixed in fix 40 (proposed sizes; measurements pending) |

@@ -1207,3 +1207,23 @@ Test-first evidence: `discord_embed_limits_colours_and_url_validation` initially
 ### Owner checks — 39
 
 1. On a disposable installed host, connect a real Discord webhook from Alerts → Channels → Discord, then click Send test. Confirm one embed arrives with the host footer, amber warning colour and timestamp; the panel status changes to delivery working. Confirm the list shows `…/<last four token characters>` and never the complete URL. Try an HTTP URL, an internal address, a lookalike hostname and an extra path segment; each must be refused.
+
+
+## Fixed in fix 40 — Server size guide (2026-11-22)
+
+README, INSTALL and the site's install section use the same proposed RAM guidance and link to the single workload/RAM/disk guide in `docs/INSTALL.md`. Every size in the guide is explicitly proposed; no measured workload fit is claimed. QA 14's source-derived reserves are not idle-memory measurements. `multipass info opsbox-vm` returned `multipass socket access denied` on 2026-11-22, so the live measurements could not be run.
+
+### Owner checks — 40: Measure proposed server sizes
+
+Use only disposable `opsbox-vm` with recoverable snapshots. Start with a clean installed Ubuntu VM and record OS/version, CPU, total RAM, disk size, free disk and swap; repeat at 1 GB and 2 GB RAM after reboot. Record idle memory from Overview and `free -m`, with separate OS-only, opsbox-installed, and Docker-installed readings (label component amounts as incremental estimates; workload limits/reserves are not actual usage).
+
+For each RAM size, record app/image versions, memory limits, swap, free disk before/after, peak memory, build outcome and any OOM/journal evidence for: (a) two small prebuilt-image apps; (b) two to three apps plus one database with a local build; (c) the same apps/database with a GitHub Actions-built image pulled onto the server. Keep database data disposable and test health endpoints, not only container startup. A capacity refusal is a result to record; do not override it to imply the size is sufficient. A local build on the 1 GB VM without sufficient headroom must be refused safely.
+
+| Measurement / workload | 1 GB VM | 2 GB VM |
+|---|---|---|
+| Idle used memory: OS / opsbox increment / Docker increment | NOT RUN | NOT RUN |
+| Two small prebuilt-image apps: health, used/peak memory, disk | NOT RUN | NOT RUN |
+| Two to three apps + database + local build: fit/refusal, peak memory, disk | NOT RUN | NOT RUN |
+| Same workload + GitHub Actions-built image: health, memory, disk | NOT RUN | NOT RUN |
+
+From `/home/ubuntu/opsbox`, build with `CARGO_TARGET_DIR=~/target cargo build --release`, reinstall with `sudo sh install.sh --dev --binary ~/target/release/opsbox`, and open the panel through `ssh -L 8443:127.0.0.1:8443 ubuntu@<vm-ip>`. Capture the measurements above, replace proposed guide entries only when supported by the recorded workload, and leave the 4 GB/50 GB row proposed until separately measured. Restore snapshots between workloads and after testing.
